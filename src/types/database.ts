@@ -8,6 +8,10 @@
  * everyday use — e.g. `import type { User, Ride } from '@/types/database'`.
  *
  * Geometry columns (PostGIS) are returned as GeoJSON by the Supabase JS client.
+ *
+ * NOTE: Each table requires a `Relationships: never[]` field to satisfy the
+ * supabase-js `GenericTable` constraint introduced in v2.x. Without it, the
+ * generic resolves `Schema` to `never` and all query builder methods break.
  */
 
 // ── Shared ────────────────────────────────────────────────────────────────────
@@ -75,6 +79,7 @@ export type Database = {
           home_location?: GeoPoint | null
           created_at?: string
         }
+        Relationships: never[]
       }
 
       // ── vehicles ────────────────────────────────────────────────────────────
@@ -121,6 +126,7 @@ export type Database = {
           seats_available?: number
           is_active?: boolean
         }
+        Relationships: never[]
       }
 
       // ── driver_locations ────────────────────────────────────────────────────
@@ -149,6 +155,7 @@ export type Database = {
           speed?: number | null
           recorded_at?: string
         }
+        Relationships: never[]
       }
 
       // ── rides ───────────────────────────────────────────────────────────────
@@ -201,6 +208,7 @@ export type Database = {
           ended_at?: string | null
           created_at?: string
         }
+        Relationships: never[]
       }
 
       // ── transactions ────────────────────────────────────────────────────────
@@ -235,6 +243,7 @@ export type Database = {
           description?: string | null
           created_at?: string
         }
+        Relationships: never[]
       }
 
       // ── driver_routines ─────────────────────────────────────────────────────
@@ -281,6 +290,7 @@ export type Database = {
           is_active?: boolean
           created_at?: string
         }
+        Relationships: never[]
       }
 
       // ── messages ────────────────────────────────────────────────────────────
@@ -306,6 +316,7 @@ export type Database = {
           content?: string
           created_at?: string
         }
+        Relationships: never[]
       }
 
       // ── push_tokens ─────────────────────────────────────────────────────────
@@ -328,6 +339,7 @@ export type Database = {
           token?: string
           created_at?: string
         }
+        Relationships: never[]
       }
     }
     Views: Record<string, never>
