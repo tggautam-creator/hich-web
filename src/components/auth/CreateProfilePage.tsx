@@ -76,8 +76,20 @@ export default function CreateProfilePage() {
 
       navigate('/onboarding/location')
     } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : 'Something went wrong. Please try again.'
+      // eslint-disable-next-line no-console
+      console.error('[CreateProfilePage] submit error:', err)
+      // Supabase errors are plain objects with a `message` field, not Error instances
+      let message = 'Something went wrong. Please try again.'
+      if (err instanceof Error) {
+        message = err.message
+      } else if (
+        typeof err === 'object' &&
+        err !== null &&
+        'message' in err &&
+        typeof (err as Record<string, unknown>).message === 'string'
+      ) {
+        message = (err as { message: string }).message
+      }
       setErrors({ submit: message })
     } finally {
       setIsLoading(false)
