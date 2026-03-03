@@ -66,7 +66,7 @@ function renderPage() {
   )
 }
 
-/** Fill all required fields with valid data. */
+/** Fill all required fields with valid data (photos are optional, omitted here). */
 function fillValidForm() {
   fireEvent.change(screen.getByTestId('vin-input'), { target: { value: '1HGBH41JXMN109186' } })
   fireEvent.change(screen.getByTestId('make-input'), { target: { value: 'Honda' } })
@@ -74,10 +74,13 @@ function fillValidForm() {
   fireEvent.change(screen.getByTestId('year-input'), { target: { value: '2020' } })
   fireEvent.change(screen.getByTestId('plate-input'), { target: { value: 'ABC1234' } })
   fireEvent.click(screen.getByTestId('color-blue'))
+}
 
+/** Fill required fields + both optional photos. */
+function fillValidFormWithPhotos() {
+  fillValidForm()
   const carFile = new File(['car'], 'car.jpg', { type: 'image/jpeg' })
   fireEvent.change(screen.getByTestId('car-photo-input'), { target: { files: [carFile] } })
-
   const licFile = new File(['lic'], 'license.jpg', { type: 'image/jpeg' })
   fireEvent.change(screen.getByTestId('license-photo-input'), { target: { files: [licFile] } })
 }
@@ -261,8 +264,9 @@ describe('VehicleRegistrationPage', () => {
       expect(screen.getByText('Year is required')).toBeDefined()
       expect(screen.getByText('License plate is required')).toBeDefined()
       expect(screen.getByText('Please select a car color')).toBeDefined()
-      expect(screen.getByText('Car photo is required')).toBeDefined()
-      expect(screen.getByText('License plate photo is required')).toBeDefined()
+      // photos are optional — no required errors
+      expect(screen.queryByText('Car photo is required')).toBeNull()
+      expect(screen.queryByText('License plate photo is required')).toBeNull()
     })
 
     it('shows VIN error for invalid VIN', async () => {
@@ -294,17 +298,17 @@ describe('VehicleRegistrationPage', () => {
 
   // ── Successful submit ────────────────────────────────────────────────────
   describe('successful submit', () => {
-    it('uploads car photo, license photo, inserts vehicle, updates user, and navigates', async () => {
+    it('inserts vehicle, updates user, and navigates without photos', async () => {
       renderPage()
-      fillValidForm()
+      fillValidForm()  // no photos
 
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-button'))
       })
 
       await waitFor(() => {
-        // Uploaded both photos
-        expect(mockStorageUpload).toHaveBeenCalledTimes(2)
+        // No uploads when no photos selected
+        expect(mockStorageUpload).not.toHaveBeenCalled()
         // Inserted vehicle
         expect(mockInsert).toHaveBeenCalledTimes(1)
         const insertArg = mockInsert.mock.calls[0][0] as Record<string, unknown>
@@ -314,6 +318,8 @@ describe('VehicleRegistrationPage', () => {
         expect(insertArg.year).toBe(2020)
         expect(insertArg.color).toBe('Blue')
         expect(insertArg.seats_available).toBe(2)
+        expect(insertArg.car_photo_url).toBeNull()
+        expect(insertArg.license_plate_photo_url).toBeNull()
         // Updated user is_driver
         expect(mockUpdate).toHaveBeenCalledWith({ is_driver: true })
         // Navigated
@@ -321,9 +327,22 @@ describe('VehicleRegistrationPage', () => {
       })
     })
 
-    it('stores license photo path (not public URL) in vehicle record', async () => {
+    it('uploads both photos when provided', async () => {
       renderPage()
-      fillValidForm()
+      fillValidFormWithPhotos()
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('submit-button'))
+      })
+
+      await waitFor(() => {
+        expect(mockStorageUpload).toHaveBeenCalledTimes(2)
+      })
+    })
+
+    it('stores license photo path (not public URL) when provided', async () => {
+      renderPage()
+      fillValidFormWithPhotos()
 
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-button'))
@@ -331,15 +350,15 @@ describe('VehicleRegistrationPage', () => {
 
       await waitFor(() => {
         const insertArg = mockInsert.mock.calls[0][0] as Record<string, unknown>
-        // license_plate_photo_url should be a storage path (starts with user id), NOT a public URL
+        // license_plate_photo_url should be a storage path, NOT a public URL
         expect(insertArg.license_plate_photo_url).toMatch(/^u-1-/)
         expect(insertArg.license_plate_photo_url).not.toContain('https://')
       })
     })
 
-    it('stores public URL for car photo in vehicle record', async () => {
+    it('stores public URL for car photo when provided', async () => {
       renderPage()
-      fillValidForm()
+      fillValidFormWithPhotos()
 
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-button'))
@@ -387,7 +406,7 @@ describe('VehicleRegistrationPage', () => {
     it('shows error when photo upload fails', async () => {
       mockStorageUpload.mockResolvedValue({ error: { message: 'Upload quota exceeded' } })
       renderPage()
-      fillValidForm()
+      fillValidFormWithPhotos()  // must include photos so upload is attempted
 
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-button'))

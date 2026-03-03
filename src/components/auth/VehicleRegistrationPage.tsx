@@ -71,13 +71,11 @@ export default function VehicleRegistrationPage({
     const yearErr  = validateYear(year)
     const plateErr = !plate.trim() ? 'License plate is required' : undefined
     const colorErr = !color ? 'Please select a car color' : undefined
-    const carErr   = !carPhoto ? 'Car photo is required' : undefined
-    const licErr   = !licensePhoto ? 'License plate photo is required' : undefined
 
-    if (vinErr ?? makeErr ?? modelErr ?? yearErr ?? plateErr ?? colorErr ?? carErr ?? licErr) {
+    if (vinErr ?? makeErr ?? modelErr ?? yearErr ?? plateErr ?? colorErr) {
       setErrors({
         vin: vinErr, make: makeErr, model: modelErr, year: yearErr,
-        plate: plateErr, color: colorErr, carPhoto: carErr, licensePhoto: licErr,
+        plate: plateErr, color: colorErr,
       })
       return
     }
@@ -89,25 +87,31 @@ export default function VehicleRegistrationPage({
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('Not authenticated — please sign in again')
 
-      // Upload car photo (public bucket)
-      const carExt  = carPhoto!.name.split('.').pop() ?? 'jpg'
-      const carPath = `${user.id}-${Date.now()}.${carExt}`
-      const { error: carUpErr } = await supabase.storage
-        .from('car-photos')
-        .upload(carPath, carPhoto!, { upsert: true })
-      if (carUpErr) throw carUpErr
+      // Upload car photo if provided (optional)
+      let carPhotoUrl: string | null = null
+      if (carPhoto) {
+        const carExt  = carPhoto.name.split('.').pop() ?? 'jpg'
+        const carPath = `${user.id}-${Date.now()}.${carExt}`
+        const { error: carUpErr } = await supabase.storage
+          .from('car-photos')
+          .upload(carPath, carPhoto, { upsert: true })
+        if (carUpErr) throw carUpErr
+        const { data: carUrlData } = supabase.storage
+          .from('car-photos')
+          .getPublicUrl(carPath)
+        carPhotoUrl = carUrlData.publicUrl
+      }
 
-      const { data: carUrlData } = supabase.storage
-        .from('car-photos')
-        .getPublicUrl(carPath)
-
-      // Upload license plate photo (private bucket — store path only)
-      const licExt  = licensePhoto!.name.split('.').pop() ?? 'jpg'
-      const licPath = `${user.id}-${Date.now()}.${licExt}`
-      const { error: licUpErr } = await supabase.storage
-        .from('license-photos')
-        .upload(licPath, licensePhoto!, { upsert: true })
-      if (licUpErr) throw licUpErr
+      // Upload license plate photo if provided (optional — private bucket, store path only)
+      let licPath: string | null = null
+      if (licensePhoto) {
+        const licExt = licensePhoto.name.split('.').pop() ?? 'jpg'
+        licPath = `${user.id}-${Date.now()}.${licExt}`
+        const { error: licUpErr } = await supabase.storage
+          .from('license-photos')
+          .upload(licPath, licensePhoto, { upsert: true })
+        if (licUpErr) throw licUpErr
+      }
 
       // Insert vehicle record
       const { error: vehErr } = await supabase.from('vehicles').insert({
@@ -118,7 +122,7 @@ export default function VehicleRegistrationPage({
         year:                    Number(year),
         color:                   color,
         plate:                   plate.trim().toUpperCase(),
-        car_photo_url:           carUrlData.publicUrl,
+        car_photo_url:           carPhotoUrl,
         license_plate_photo_url: licPath,
         seats_available:         seats,
       })
@@ -212,6 +216,8 @@ export default function VehicleRegistrationPage({
             label="Year"
             type="number"
             placeholder="1990–2026"
+            min={1990}
+            max={2026}
             value={year}
             onChange={(e) => { setYear(e.target.value) }}
             error={errors.year}
@@ -264,7 +270,8 @@ export default function VehicleRegistrationPage({
           {/* ── Car photo ───────────────────────────────────────────── */}
           <div className="flex flex-col gap-1">
             <label htmlFor="car-photo-input" className="text-sm font-medium text-text-primary">
-              Car photo <span className="text-danger">*</span>
+              Car photo{' '}
+              <span className="font-normal text-text-secondary">(optional)</span>
             </label>
             <input
               id="car-photo-input"
@@ -287,7 +294,8 @@ export default function VehicleRegistrationPage({
           {/* ── License plate photo ─────────────────────────────────── */}
           <div className="flex flex-col gap-1">
             <label htmlFor="license-photo-input" className="text-sm font-medium text-text-primary">
-              License plate photo <span className="text-danger">*</span>
+              License plate photo{' '}
+              <span className="font-normal text-text-secondary">(optional)</span>
             </label>
             <p className="text-xs text-text-secondary">Stored securely — not visible to riders</p>
             <input

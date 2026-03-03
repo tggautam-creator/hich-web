@@ -93,8 +93,8 @@ export type Database = {
           year: number
           color: string
           plate: string
-          license_plate_photo_url: string
-          car_photo_url: string
+          license_plate_photo_url: string | null
+          car_photo_url: string | null
           seats_available: number
           is_active: boolean
         }
@@ -107,8 +107,8 @@ export type Database = {
           year: number
           color: string
           plate: string
-          license_plate_photo_url: string
-          car_photo_url: string
+          license_plate_photo_url?: string | null
+          car_photo_url?: string | null
           seats_available?: number
           is_active?: boolean
         }
