@@ -7,6 +7,9 @@ import Signup from '@/components/Signup'
 import Login from '@/components/Login'
 import CheckInbox from '@/components/CheckInbox'
 import CreateProfilePage from '@/components/auth/CreateProfilePage'
+import LocationPermissionsPage from '@/components/auth/LocationPermissionsPage'
+import ModeSelectionPage from '@/components/auth/ModeSelectionPage'
+import VehicleRegistrationPage from '@/components/auth/VehicleRegistrationPage'
 import Placeholder from '@/components/Placeholder'
 import './index.css'
 
@@ -33,9 +36,9 @@ createRoot(rootEl).render(
           <Route path="/login" element={<Login />} />
           <Route path="/check-inbox" element={<CheckInbox />} />
           <Route path="/onboarding/profile" element={<CreateProfilePage />} />
-          <Route path="/onboarding/location" element={<Placeholder name="Location Permissions" />} />
-          <Route path="/onboarding/mode" element={<Placeholder name="Mode Selection" />} />
-          <Route path="/onboarding/vehicle" element={<Placeholder name="Vehicle Registration" />} />
+          <Route path="/onboarding/location" element={<LocationPermissionsPage />} />
+          <Route path="/onboarding/mode" element={<ModeSelectionPage />} />
+          <Route path="/onboarding/vehicle" element={<VehicleRegistrationPage />} />
 
           {/* Week 3 — Rider & Driver Flows */}
           <Route path="/home/rider" element={<Placeholder name="Rider Home" />} />

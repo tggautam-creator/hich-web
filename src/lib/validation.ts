@@ -36,3 +36,19 @@ export function validatePassword(password: string): string | undefined {
   if (!/\d/.test(password)) return 'Password must contain at least one number'
   return undefined
 }
+
+/** Returns an error string if VIN is not a valid 17-character alphanumeric string, else undefined. */
+export function validateVin(vin: string): string | undefined {
+  if (!vin.trim()) return 'VIN is required'
+  if (!/^[A-Z0-9]{17}$/i.test(vin.trim())) return 'VIN must be 17 alphanumeric characters'
+  return undefined
+}
+
+/** Returns an error string if year is outside 1990–2026, else undefined. */
+export function validateYear(year: string): string | undefined {
+  if (!year.trim()) return 'Year is required'
+  const num = Number(year)
+  if (!Number.isInteger(num) || isNaN(num)) return 'Enter a valid year'
+  if (num < 1990 || num > 2026) return 'Year must be between 1990 and 2026'
+  return undefined
+}
