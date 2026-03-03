@@ -1,7 +1,8 @@
-import { useState, type FormEvent, type ChangeEvent } from 'react'
+import { useState, useRef, useEffect, type FormEvent, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { validateVin, validateYear } from '@/lib/validation'
+import { decodeVin } from '@/lib/vin'
 import InputField from '@/components/ui/InputField'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 
@@ -53,6 +54,35 @@ export default function VehicleRegistrationPage({
   const [seats, setSeats]                   = useState(2)
   const [errors, setErrors]                 = useState<FormErrors>({})
   const [isLoading, setIsLoading]           = useState(false)
+  const [vinDecoding, setVinDecoding]       = useState(false)
+  const vinDecodeRef                        = useRef<AbortController | null>(null)
+
+  // Auto-decode VIN when it reaches 17 valid alphanumeric characters
+  useEffect(() => {
+    if (!/^[A-Z0-9]{17}$/i.test(vin.trim())) return
+
+    // Cancel any previous in-flight request
+    vinDecodeRef.current?.abort()
+    const controller = new AbortController()
+    vinDecodeRef.current = controller
+
+    setVinDecoding(true)
+    decodeVin(vin.trim())
+      .then((result) => {
+        if (controller.signal.aborted) return
+        if (result.make) setMake(result.make)
+        if (result.model) setModel(result.model)
+        if (result.year) setYear(result.year)
+      })
+      .catch(() => {
+        // Silently ignore — user can still type make/model/year manually
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setVinDecoding(false)
+      })
+
+    return () => { controller.abort() }
+  }, [vin])
 
   function handleCarPhotoChange(e: ChangeEvent<HTMLInputElement>) {
     setCarPhoto(e.target.files?.[0] ?? null)
@@ -185,7 +215,7 @@ export default function VehicleRegistrationPage({
             value={vin}
             onChange={(e) => { setVin(e.target.value.toUpperCase()) }}
             error={errors.vin}
-            hint="Found on your dashboard, door frame, or registration"
+            hint={vinDecoding ? 'Looking up vehicle info...' : 'Enter your VIN to auto-fill make, model, and year'}
           />
 
           <InputField

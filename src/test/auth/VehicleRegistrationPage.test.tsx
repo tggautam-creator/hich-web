@@ -7,7 +7,7 @@ import { validateVin, validateYear } from '@/lib/validation'
 // ── Mocks ────────────────────────────────────────────────────────────────────
 const {
   mockNavigate, mockGetUser, mockStorageUpload, mockStorageGetPublicUrl,
-  mockInsert, mockEq, mockUpdate,
+  mockInsert, mockEq, mockUpdate, mockDecodeVin,
 } = vi.hoisted(() => {
   const mockEq = vi.fn()
   const mockUpdate = vi.fn().mockReturnValue({ eq: mockEq })
@@ -19,6 +19,7 @@ const {
     mockInsert: vi.fn(),
     mockEq,
     mockUpdate,
+    mockDecodeVin: vi.fn(),
   }
 })
 
@@ -26,6 +27,10 @@ vi.mock('react-router-dom', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-router-dom')>()
   return { ...actual, useNavigate: () => mockNavigate }
 })
+
+vi.mock('@/lib/vin', () => ({
+  decodeVin: mockDecodeVin,
+}))
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
@@ -47,6 +52,7 @@ vi.mock('@/lib/supabase', () => ({
 // ── Helpers ──────────────────────────────────────────────────────────────────
 beforeEach(() => {
   vi.clearAllMocks()
+  mockDecodeVin.mockResolvedValue({ make: null, model: null, year: null })
   mockGetUser.mockResolvedValue({
     data: { user: { id: 'u-1', email: 'test@ucdavis.edu' } },
   })
@@ -432,6 +438,59 @@ describe('VehicleRegistrationPage', () => {
       const file = new File(['img'], 'plate.jpg', { type: 'image/jpeg' })
       fireEvent.change(screen.getByTestId('license-photo-input'), { target: { files: [file] } })
       expect(screen.getByTestId('license-photo-name').textContent).toBe('plate.jpg')
+    })
+  })
+
+  // ── VIN auto-decode ──────────────────────────────────────────────────────
+  describe('VIN auto-decode', () => {
+    it('calls decodeVin when a valid 17-char VIN is entered', async () => {
+      mockDecodeVin.mockResolvedValue({ make: 'Honda', model: 'Accord', year: '2020' })
+      renderPage()
+      fireEvent.change(screen.getByTestId('vin-input'), { target: { value: '1HGBH41JXMN109186' } })
+      await waitFor(() => {
+        expect(mockDecodeVin).toHaveBeenCalledWith('1HGBH41JXMN109186')
+      })
+    })
+
+    it('does not call decodeVin for incomplete VIN', () => {
+      renderPage()
+      fireEvent.change(screen.getByTestId('vin-input'), { target: { value: '1HGBH' } })
+      expect(mockDecodeVin).not.toHaveBeenCalled()
+    })
+
+    it('auto-fills make, model, and year from decoded VIN', async () => {
+      mockDecodeVin.mockResolvedValue({ make: 'Toyota', model: 'Camry', year: '2018' })
+      renderPage()
+      fireEvent.change(screen.getByTestId('vin-input'), { target: { value: 'JTDKN3DU5A0123456' } })
+      await waitFor(() => {
+        expect((screen.getByTestId('make-input') as HTMLInputElement).value).toBe('Toyota')
+        expect((screen.getByTestId('model-input') as HTMLInputElement).value).toBe('Camry')
+        expect((screen.getByTestId('year-input') as HTMLInputElement).value).toBe('2018')
+      })
+    })
+
+    it('does not overwrite fields when decode returns null', async () => {
+      mockDecodeVin.mockResolvedValue({ make: null, model: null, year: null })
+      renderPage()
+      fireEvent.change(screen.getByTestId('make-input'), { target: { value: 'Ford' } })
+      fireEvent.change(screen.getByTestId('vin-input'), { target: { value: 'AAAAAAAAAAAAAAAAA' } })
+      await waitFor(() => {
+        expect(mockDecodeVin).toHaveBeenCalled()
+      })
+      // Make should still be 'Ford' since decode returned null
+      expect((screen.getByTestId('make-input') as HTMLInputElement).value).toBe('Ford')
+    })
+
+    it('silently handles decode errors without breaking the form', async () => {
+      mockDecodeVin.mockRejectedValue(new Error('Network error'))
+      renderPage()
+      fireEvent.change(screen.getByTestId('vin-input'), { target: { value: 'AAAAAAAAAAAAAAAAA' } })
+      await waitFor(() => {
+        expect(mockDecodeVin).toHaveBeenCalled()
+      })
+      // Form should still be functional — no error shown
+      expect(screen.queryByTestId('submit-error')).toBeNull()
+      expect(screen.getByTestId('submit-button')).not.toBeDisabled()
     })
   })
 })
