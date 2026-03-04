@@ -12,11 +12,16 @@ CREATE TABLE IF NOT EXISTS vehicles (
   year                    integer     NOT NULL,
   color                   text        NOT NULL,
   plate                   text        NOT NULL,
-  license_plate_photo_url text        NOT NULL,
-  car_photo_url           text        NOT NULL,
+  license_plate_photo_url text,                  -- optional; NULL allowed
+  car_photo_url           text,                  -- optional; NULL allowed
   seats_available         integer     NOT NULL DEFAULT 4,
   is_active               boolean     NOT NULL DEFAULT true
 );
+
+-- Make photo columns nullable on existing deployments (photos are optional for MVP).
+-- Safe to re-run: DROP NOT NULL is a no-op when the column is already nullable.
+ALTER TABLE vehicles ALTER COLUMN license_plate_photo_url DROP NOT NULL;
+ALTER TABLE vehicles ALTER COLUMN car_photo_url           DROP NOT NULL;
 
 ALTER TABLE vehicles ENABLE ROW LEVEL SECURITY;
 

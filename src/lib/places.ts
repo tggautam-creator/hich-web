@@ -1,0 +1,106 @@
+/**
+ * Google Places API helpers + recent-destinations localStorage cache.
+ *
+ * Uses the Google Places New API (v1) which supports CORS — no SDK needed.
+ * API key is read from env.GOOGLE_PLACES_KEY (may be undefined in dev without a key).
+ *
+ * Recent destinations are stored in localStorage under RECENT_KEY,
+ * capped at MAX_RECENT entries, deduplicated by placeId.
+ */
+
+import { env } from './env'
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface PlaceSuggestion {
+  placeId:       string
+  mainText:      string   // e.g. "UC Davis Memorial Union"
+  secondaryText: string   // e.g. "Davis, CA, USA"
+  fullAddress:   string   // e.g. "UC Davis Memorial Union, Davis, CA, USA"
+}
+
+// Google Places New API (v1) — raw response shape
+interface RawStructuredFormat {
+  mainText:      { text: string }
+  secondaryText: { text: string }
+}
+
+interface RawPlacePrediction {
+  placeId:         string
+  text:            { text: string }
+  structuredFormat: RawStructuredFormat
+}
+
+interface RawSuggestion {
+  placePrediction: RawPlacePrediction
+}
+
+interface PlacesApiResponse {
+  suggestions?: RawSuggestion[]
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const PLACES_ENDPOINT = 'https://places.googleapis.com/v1/places:autocomplete'
+const RECENT_KEY      = 'hich:recent-destinations'
+const MAX_RECENT      = 5
+
+// ── Search ────────────────────────────────────────────────────────────────────
+
+/**
+ * Calls the Google Places New API autocomplete endpoint.
+ * Returns an empty array if the API key is missing or the request fails.
+ */
+export async function searchPlaces(input: string): Promise<PlaceSuggestion[]> {
+  const key = env.GOOGLE_PLACES_KEY
+  if (!key || !input.trim()) return []
+
+  try {
+    const response = await fetch(PLACES_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'X-Goog-Api-Key': key,
+      },
+      body: JSON.stringify({ input }),
+    })
+
+    if (!response.ok) return []
+
+    const data = await response.json() as PlacesApiResponse
+
+    return (data.suggestions ?? []).map((s) => ({
+      placeId:       s.placePrediction.placeId,
+      mainText:      s.placePrediction.structuredFormat.mainText.text,
+      secondaryText: s.placePrediction.structuredFormat.secondaryText.text,
+      fullAddress:   s.placePrediction.text.text,
+    }))
+  } catch {
+    return []
+  }
+}
+
+// ── Recent destinations ───────────────────────────────────────────────────────
+
+/** Read up to MAX_RECENT recent destinations from localStorage. */
+export function getRecentDestinations(): PlaceSuggestion[] {
+  try {
+    const raw = localStorage.getItem(RECENT_KEY)
+    return raw ? (JSON.parse(raw) as PlaceSuggestion[]) : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Prepend a destination to the recent list.
+ * Deduplicates by placeId and caps the list at MAX_RECENT.
+ */
+export function saveRecentDestination(place: PlaceSuggestion): void {
+  const updated = [
+    place,
+    ...getRecentDestinations().filter((p) => p.placeId !== place.placeId),
+  ].slice(0, MAX_RECENT)
+
+  localStorage.setItem(RECENT_KEY, JSON.stringify(updated))
+}

@@ -42,6 +42,12 @@ CREATE POLICY "users_select_own"
   ON users FOR SELECT
   USING (auth.uid() = id);
 
+-- Users can insert their own row (needed for first-time profile creation via upsert)
+DROP POLICY IF EXISTS "users_insert_own" ON users;
+CREATE POLICY "users_insert_own"
+  ON users FOR INSERT
+  WITH CHECK (auth.uid() = id);
+
 -- Users can update their own row
 DROP POLICY IF EXISTS "users_update_own" ON users;
 CREATE POLICY "users_update_own"
