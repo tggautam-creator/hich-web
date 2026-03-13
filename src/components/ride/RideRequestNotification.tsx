@@ -59,6 +59,12 @@ interface NotificationState {
   isBoardRequest?: boolean
 }
 
+interface InboxNotification {
+  id: string
+  type: string
+  data: Record<string, unknown>
+}
+
 const DISMISS_SECONDS = 90
 
 export default function RideRequestNotification({
@@ -81,6 +87,7 @@ export default function RideRequestNotification({
   }, [])
 
   const profile = useAuthStore((s) => s.profile)
+  const seenInboxNotifIdsRef = useRef<Set<string>>(new Set())
 
   // Ref to track current rideId so the Realtime channel callback
   // always sees the latest value without re-creating the channel.
@@ -229,6 +236,51 @@ export default function RideRequestNotification({
       if (unsub) unsub()
     }
   }, [handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled])
+
+  // Last-resort fallback: poll unread notifications for ride_request entries.
+  useEffect(() => {
+    if (!profile?.id) return
+
+    let cancelled = false
+
+    const poll = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) return
+
+        const resp = await fetch('/api/notifications?unread_only=true&limit=20', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+        if (!resp.ok || cancelled) return
+
+        const body = (await resp.json()) as { notifications?: InboxNotification[] }
+        const rows = body.notifications ?? []
+
+        for (const notif of rows) {
+          if (seenInboxNotifIdsRef.current.has(notif.id)) continue
+          seenInboxNotifIdsRef.current.add(notif.id)
+
+          if (notif.type !== 'ride_request') continue
+
+          const data = notif.data as unknown as RideRequestData
+          if (data.type === 'ride_request' && data.ride_id) {
+            handleRideRequest(data)
+            break
+          }
+        }
+      } catch {
+        // non-fatal fallback path
+      }
+    }
+
+    void poll()
+    const intervalId = setInterval(() => { void poll() }, 8000)
+
+    return () => {
+      cancelled = true
+      clearInterval(intervalId)
+    }
+  }, [profile?.id, handleRideRequest])
 
   // Countdown timer — auto-dismiss after 90s
   useEffect(() => {

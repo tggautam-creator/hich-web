@@ -342,6 +342,35 @@ ridesRouter.post(
       data: { type: 'ride_request', ride_id: ride.id },
     })
 
+    // Persist notifications as a reliable fallback when realtime/push is delayed.
+    if (driverIds.length > 0) {
+      const notificationRows = driverIds.map((driverId) => ({
+        user_id: driverId,
+        type: 'ride_request',
+        title: 'New ride request nearby',
+        body: 'A rider needs a lift — open HICH to view.',
+        data: {
+          type: 'ride_request',
+          ride_id: ride.id,
+          destination: body.destination_name ?? 'Nearby destination',
+          distance_km: String(body.distance_km ?? '–'),
+          estimated_earnings_cents: String(driverEarns),
+          origin_lat: String(body.origin.coordinates[1]),
+          origin_lng: String(body.origin.coordinates[0]),
+          destination_lat: typeof body.destination_lat === 'number' ? String(body.destination_lat) : '',
+          destination_lng: typeof body.destination_lng === 'number' ? String(body.destination_lng) : '',
+        },
+      }))
+
+      const { error: notifErr } = await supabaseAdmin
+        .from('notifications')
+        .insert(notificationRows)
+
+      if (notifErr) {
+        console.error(`[rides/request] Failed to persist notifications: ${notifErr.message}`)
+      }
+    }
+
     // Broadcast via Supabase Realtime so in-app listeners receive instantly
     const riderProfile = await supabaseAdmin
       .from('users')
