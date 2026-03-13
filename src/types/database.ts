@@ -529,6 +529,35 @@ export type Database = {
         }
         Relationships: never[]
       }
+
+      // ── location_shares ──────────────────────────────────────────────────────
+      location_shares: {
+        Row: {
+          id: string
+          token: string
+          ride_id: string
+          user_id: string
+          expires_at: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          token: string
+          ride_id: string
+          user_id: string
+          expires_at: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          token?: string
+          ride_id?: string
+          user_id?: string
+          expires_at?: string
+          created_at?: string
+        }
+        Relationships: never[]
+      }
     }
     Views: Record<string, never>
     Functions: {
