@@ -1,3 +1,4 @@
+import React from 'react'
 import { render, screen } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
@@ -13,6 +14,20 @@ const { mockUseAuthStore } = vi.hoisted(() => ({
 
 vi.mock('@/stores/authStore', () => ({
   useAuthStore: mockUseAuthStore,
+}))
+
+// Mock Google Maps APIProvider to a simple passthrough
+vi.mock('@vis.gl/react-google-maps', () => ({
+  APIProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
+vi.mock('@/lib/env', () => ({
+  env: { GOOGLE_MAPS_KEY: 'test-key' },
+}))
+
+// Stub out RideRequestNotification — it pulls in FCM/Supabase which need env vars
+vi.mock('@/components/ride/RideRequestNotification', () => ({
+  default: () => null,
 }))
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────

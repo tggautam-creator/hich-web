@@ -1,6 +1,7 @@
 import { useState, useRef, type FormEvent, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { useAuthStore } from '@/stores/authStore'
 import { validateFullName, validatePhone, validatePassword } from '@/lib/validation'
 import InputField from '@/components/ui/InputField'
 import PrimaryButton from '@/components/ui/PrimaryButton'
@@ -45,6 +46,7 @@ const INPUT_CLASS = [
 
 export default function CreateProfilePage() {
   const navigate = useNavigate()
+  const refreshProfile = useAuthStore((s) => s.refreshProfile)
 
   const [fullName,    setFullName]    = useState('')
   const [countryKey,  setCountryKey]  = useState<string>('US')
@@ -135,6 +137,8 @@ export default function CreateProfilePage() {
         if (insertErr) throw insertErr
       }
 
+      // Refresh the auth store so AuthGuard sees the new full_name
+      await refreshProfile()
       navigate('/onboarding/location')
     } catch (err: unknown) {
       // eslint-disable-next-line no-console
@@ -197,7 +201,7 @@ export default function CreateProfilePage() {
                 onChange={(e) => { setCountryKey(e.target.value) }}
                 className={[
                   INPUT_CLASS,
-                  'w-auto shrink-0 cursor-pointer appearance-none pr-2',
+                  'w-[5.5rem] shrink-0 cursor-pointer',
                   errors.phone ? 'border-danger focus:ring-danger' : '',
                 ].join(' ')}
                 aria-label="Country code"

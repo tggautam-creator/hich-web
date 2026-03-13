@@ -1,0 +1,384 @@
+import { useState, useEffect, useRef } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { useAuthStore } from '@/stores/authStore'
+import { supabase } from '@/lib/supabase'
+import { formatCents, calculateFare } from '@/lib/fare'
+import { haversineMetres } from '@/lib/geo'
+import PrimaryButton from '@/components/ui/PrimaryButton'
+import type { Ride, User, Vehicle } from '@/types/database'
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface RideSummaryPageProps {
+  'data-testid'?: string
+}
+
+// ── Confetti ──────────────────────────────────────────────────────────────────
+
+function Confetti() {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    canvas.width = window.innerWidth
+    canvas.height = window.innerHeight
+
+    const colors = ['#2563EB', '#10B981', '#F59E0B', '#EF4444', '#0D9488', '#DBEAFE']
+    const particles: Array<{
+      x: number; y: number; w: number; h: number
+      color: string; vx: number; vy: number; rot: number; vr: number
+    }> = []
+
+    for (let i = 0; i < 120; i++) {
+      particles.push({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height * -1,
+        w: 6 + Math.random() * 6,
+        h: 4 + Math.random() * 4,
+        color: colors[Math.floor(Math.random() * colors.length)] ?? '#2563EB',
+        vx: (Math.random() - 0.5) * 3,
+        vy: 2 + Math.random() * 4,
+        rot: Math.random() * Math.PI * 2,
+        vr: (Math.random() - 0.5) * 0.15,
+      })
+    }
+
+    let frameId: number
+    let frame = 0
+    const maxFrames = 180 // ~3 seconds at 60fps
+
+    function animate() {
+      if (!ctx || !canvas) return
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      frame++
+
+      const alpha = frame > maxFrames - 30 ? Math.max(0, (maxFrames - frame) / 30) : 1
+      ctx.globalAlpha = alpha
+
+      for (const p of particles) {
+        p.x += p.vx
+        p.y += p.vy
+        p.rot += p.vr
+        p.vy += 0.05 // gravity
+
+        ctx.save()
+        ctx.translate(p.x, p.y)
+        ctx.rotate(p.rot)
+        ctx.fillStyle = p.color
+        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h)
+        ctx.restore()
+      }
+
+      if (frame < maxFrames) {
+        frameId = requestAnimationFrame(animate)
+      }
+    }
+
+    frameId = requestAnimationFrame(animate)
+    return () => cancelAnimationFrame(frameId)
+  }, [])
+
+  return (
+    <canvas
+      ref={canvasRef}
+      data-testid="confetti"
+      className="pointer-events-none fixed inset-0 z-50"
+    />
+  )
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
+export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPageProps) {
+  const { rideId } = useParams<{ rideId: string }>()
+  const navigate = useNavigate()
+  const profile = useAuthStore((s) => s.profile)
+  const refreshProfile = useAuthStore((s) => s.refreshProfile)
+
+  const [ride, setRide] = useState<Ride | null>(null)
+  const [otherUser, setOtherUser] = useState<User | null>(null)
+  const [vehicle, setVehicle] = useState<Vehicle | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [showBreakdown, setShowBreakdown] = useState(false)
+
+  const isDriver = profile?.id === ride?.driver_id
+
+  // Refresh profile to get latest wallet_balance after fare transfer
+  useEffect(() => { void refreshProfile() }, [refreshProfile])
+
+  // ── Fetch ride + related data ───────────────────────────────────────────
+  useEffect(() => {
+    if (!rideId || !profile?.id) return
+
+    const profileId = profile.id
+
+    async function load() {
+      const { data: rideData } = await supabase
+        .from('rides')
+        .select('*')
+        .eq('id', rideId!)
+        .single()
+
+      if (!rideData) { setLoading(false); return }
+      setRide(rideData)
+
+      // Fetch the other party's profile
+      const otherId = profileId === rideData.driver_id
+        ? rideData.rider_id
+        : rideData.driver_id
+
+      if (otherId) {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', otherId)
+          .single()
+        if (userData) setOtherUser(userData)
+      }
+
+      // Fetch vehicle
+      if (rideData.vehicle_id) {
+        const { data: vehicleData } = await supabase
+          .from('vehicles')
+          .select('*')
+          .eq('id', rideData.vehicle_id)
+          .single()
+        if (vehicleData) setVehicle(vehicleData)
+      }
+
+      setLoading(false)
+    }
+
+    void load()
+  }, [rideId, profile])
+
+  // ── Derived fare values ────────────────────────────────────────────────
+  const fareCents = ride?.fare_cents ?? 0
+  const platformFeeCents = Math.round(fareCents * 0.15)
+  const driverEarnsCents = fareCents - platformFeeCents
+
+  // ── Fare breakdown details ────────────────────────────────────────────
+  const fareBreakdown = (() => {
+    if (!ride) return null
+    // Use actual pickup/dropoff points, falling back to origin/destination
+    const pickup = (ride.pickup_point ?? ride.origin) as { type: string; coordinates: [number, number] } | null
+    const dropoff = (ride.dropoff_point ?? ride.destination) as { type: string; coordinates: [number, number] } | null
+    if (!pickup || !dropoff) return null
+    const distanceM = haversineMetres(
+      pickup.coordinates[1], pickup.coordinates[0],
+      dropoff.coordinates[1], dropoff.coordinates[0],
+    )
+    const distanceKm = distanceM / 1000
+    const durationMin = ride.started_at && ride.ended_at
+      ? Math.round((new Date(ride.ended_at).getTime() - new Date(ride.started_at).getTime()) / 60000)
+      : 0
+    return calculateFare(distanceKm, durationMin)
+  })()
+
+  // ── Duration ──────────────────────────────────────────────────────────
+  const durationLabel = (() => {
+    if (!ride?.started_at || !ride?.ended_at) return null
+    const diffMs = new Date(ride.ended_at).getTime() - new Date(ride.started_at).getTime()
+    const mins = Math.round(diffMs / 60000)
+    return mins < 1 ? 'Less than a minute' : `${mins} min`
+  })()
+
+  // ── Navigation ────────────────────────────────────────────────────────
+  const goHome = () => {
+    navigate(isDriver ? '/home/driver' : '/home/rider', { replace: true })
+  }
+
+  const goRate = () => {
+    navigate(`/ride/rate/${rideId}`)
+  }
+
+  // ── Loading state ──────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-surface" data-testid={testId ?? 'ride-summary'}>
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    )
+  }
+
+  if (!ride) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-surface px-6" data-testid={testId ?? 'ride-summary'}>
+        <p className="text-text-secondary">Ride not found.</p>
+        <PrimaryButton onClick={() => navigate('/home/rider', { replace: true })} data-testid="go-home">
+          Go Home
+        </PrimaryButton>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex min-h-screen flex-col bg-surface" data-testid={testId ?? 'ride-summary'}>
+      <Confetti />
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <div className="flex flex-col items-center gap-3 px-6 pt-12 pb-6">
+        {/* Green checkmark */}
+        <div
+          className="flex h-20 w-20 items-center justify-center rounded-full bg-success"
+          data-testid="checkmark"
+        >
+          <svg className="h-10 w-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+        </div>
+
+        <h1 className="text-2xl font-bold text-text-primary">Ride Complete!</h1>
+
+        {/* Main fare message */}
+        <p className="text-lg text-text-secondary" data-testid="fare-message">
+          {isDriver
+            ? `You earned ${formatCents(driverEarnsCents)}`
+            : `${formatCents(fareCents)} charged`
+          }
+        </p>
+      </div>
+
+      {/* ── Ride info card ────────────────────────────────────────────────── */}
+      <div className="mx-6 rounded-2xl bg-white p-5 shadow-sm" data-testid="ride-card">
+        {/* Other user info */}
+        {otherUser && (
+          <div className="mb-4 flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary-light text-primary font-bold">
+              {otherUser.full_name?.charAt(0)?.toUpperCase() ?? '?'}
+            </div>
+            <div>
+              <p className="font-semibold text-text-primary">{otherUser.full_name}</p>
+              <p className="text-sm text-text-secondary">
+                {isDriver ? 'Rider' : 'Driver'}
+                {otherUser.rating_avg != null && ` · ★ ${otherUser.rating_avg.toFixed(1)}`}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Vehicle info (shown to rider) */}
+        {!isDriver && vehicle && (
+          <p className="mb-4 text-sm text-text-secondary">
+            {vehicle.color} {vehicle.year} {vehicle.make} {vehicle.model} · {vehicle.plate}
+          </p>
+        )}
+
+        {/* Destination */}
+        {ride.destination_name && (
+          <div className="mb-3 flex items-start gap-2">
+            <span className="mt-0.5 text-primary">📍</span>
+            <p className="text-sm text-text-primary">{ride.destination_name}</p>
+          </div>
+        )}
+
+        {/* Duration */}
+        {durationLabel && (
+          <div className="flex items-center gap-2">
+            <span className="text-text-secondary">⏱</span>
+            <p className="text-sm text-text-secondary">Time together: {durationLabel}</p>
+          </div>
+        )}
+
+        {/* Distance traveled */}
+        {fareBreakdown && (
+          <div className="flex items-center gap-2 mt-1">
+            <span className="text-text-secondary">📏</span>
+            <p className="text-sm text-text-secondary">Distance: {fareBreakdown.distance_miles.toFixed(1)} mi</p>
+          </div>
+        )}
+      </div>
+
+      {/* ── Fare breakdown (tappable) ────────────────────────────────────── */}
+      <div className="mx-6 mt-4">
+        <button
+          onClick={() => setShowBreakdown(!showBreakdown)}
+          className="flex w-full items-center justify-between rounded-2xl bg-white px-5 py-4 shadow-sm"
+          data-testid="fare-breakdown-toggle"
+        >
+          <span className="font-semibold text-text-primary">Fare Breakdown</span>
+          <span className="text-text-secondary">{showBreakdown ? '▲' : '▼'}</span>
+        </button>
+
+        {showBreakdown && (
+          <div className="mt-1 rounded-b-2xl bg-white px-5 pb-4 shadow-sm" data-testid="fare-breakdown">
+            <div className="space-y-2 border-t border-border pt-3 text-sm">
+              {fareBreakdown && (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">Base fare</span>
+                    <span className="text-text-primary">{formatCents(fareBreakdown.base_cents)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">Gas cost ({fareBreakdown.distance_miles.toFixed(1)} mi)</span>
+                    <span className="text-text-primary">{formatCents(fareBreakdown.gas_cost_cents)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">Time ({fareBreakdown.duration_min} min × $0.05)</span>
+                    <span className="text-text-primary">{formatCents(fareBreakdown.time_cost_cents)}</span>
+                  </div>
+                  {fareCents > fareBreakdown.base_cents + fareBreakdown.gas_cost_cents + fareBreakdown.time_cost_cents && (
+                    <div className="flex justify-between text-xs">
+                      <span className="text-text-secondary italic">Minimum fare applied</span>
+                      <span className="text-text-secondary italic">{formatCents(fareCents)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between border-t border-border pt-2">
+                    <span className="font-medium text-text-primary">Ride fare</span>
+                    <span className="font-medium text-text-primary">{formatCents(fareCents)}</span>
+                  </div>
+                </>
+              )}
+              {!fareBreakdown && (
+                <div className="flex justify-between">
+                  <span className="text-text-secondary">Ride fare</span>
+                  <span className="text-text-primary">{formatCents(fareCents)}</span>
+                </div>
+              )}
+              <div className="flex justify-between">
+                <span className="text-text-secondary">Platform fee (15%)</span>
+                <span className="text-text-primary">−{formatCents(platformFeeCents)}</span>
+              </div>
+              <div className="flex justify-between border-t border-border pt-2 font-semibold">
+                <span className="text-text-primary">Driver earns</span>
+                <span className="text-success">{formatCents(driverEarnsCents)}</span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Actions ───────────────────────────────────────────────────────── */}
+      <div className="mt-auto space-y-3 px-6 pb-8 pt-6">
+        <PrimaryButton
+          onClick={goRate}
+          className="w-full"
+          data-testid="rate-button"
+        >
+          Rate Your {isDriver ? 'Rider' : 'Driver'}
+        </PrimaryButton>
+
+        <button
+          onClick={goHome}
+          className="w-full rounded-xl border border-border py-3 text-sm font-medium text-text-secondary"
+          data-testid="done-button"
+        >
+          Done
+        </button>
+
+        <button
+          onClick={() => navigate(`/report/${rideId}`)}
+          className="w-full text-center text-xs text-text-secondary underline"
+          data-testid="report-link"
+        >
+          Report an issue
+        </button>
+      </div>
+    </div>
+  )
+}

@@ -4,10 +4,12 @@ import { MemoryRouter } from 'react-router-dom'
 import AuthCallback from '@/components/auth/AuthCallback'
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
-const { mockNavigate, mockOnAuthStateChange, mockGetSession } = vi.hoisted(() => ({
+const { mockNavigate, mockOnAuthStateChange, mockGetSession, mockGetUser, mockFrom } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockOnAuthStateChange: vi.fn(),
   mockGetSession: vi.fn(),
+  mockGetUser: vi.fn(),
+  mockFrom: vi.fn(),
 }))
 
 vi.mock('@/lib/supabase', () => ({
@@ -15,7 +17,9 @@ vi.mock('@/lib/supabase', () => ({
     auth: {
       onAuthStateChange: mockOnAuthStateChange,
       getSession: mockGetSession,
+      getUser: mockGetUser,
     },
+    from: mockFrom,
   },
 }))
 
@@ -33,6 +37,17 @@ function renderPage() {
   )
 }
 
+/** Helper: set up mockFrom to return a profile with the given full_name */
+function mockProfileLookup(fullName: string | null) {
+  mockFrom.mockReturnValue({
+    select: () => ({
+      eq: () => ({
+        single: () => Promise.resolve({ data: fullName ? { full_name: fullName } : null, error: null }),
+      }),
+    }),
+  })
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 describe('AuthCallback', () => {
   beforeEach(() => {
@@ -41,6 +56,8 @@ describe('AuthCallback', () => {
       data: { subscription: { unsubscribe: vi.fn() } },
     })
     mockGetSession.mockResolvedValue({ data: { session: null } })
+    mockGetUser.mockResolvedValue({ data: { user: null } })
+    mockProfileLookup(null)
   })
 
   it('renders loading spinner', () => {
@@ -49,7 +66,7 @@ describe('AuthCallback', () => {
     expect(screen.getByText('Signing you in…')).toBeDefined()
   })
 
-  it('navigates to /onboarding/profile on SIGNED_IN event', () => {
+  it('navigates to /reset-password on PASSWORD_RECOVERY event', () => {
     let capturedCallback: ((event: string) => void) | null = null
     mockOnAuthStateChange.mockImplementation(
       (callback: unknown) => {
@@ -59,23 +76,61 @@ describe('AuthCallback', () => {
     )
     renderPage()
     expect(capturedCallback).not.toBeNull()
-    capturedCallback!('SIGNED_IN')
-    expect(mockNavigate).toHaveBeenCalledWith('/onboarding/profile', { replace: true })
+    capturedCallback!('PASSWORD_RECOVERY')
+    expect(mockNavigate).toHaveBeenCalledWith('/reset-password', { replace: true })
   })
 
-  it('navigates immediately if session already exists', async () => {
-    mockGetSession.mockResolvedValue({
-      data: { session: { access_token: 'abc', user: { id: '1' } } },
-    })
+  it('navigates to /home/rider on SIGNED_IN when user has profile', async () => {
+    mockGetUser.mockResolvedValue({ data: { user: { id: 'u1' } } })
+    mockProfileLookup('Jane Smith')
+
+    let capturedCallback: ((event: string) => void) | null = null
+    mockOnAuthStateChange.mockImplementation(
+      (callback: unknown) => {
+        capturedCallback = callback as (event: string) => void
+        return { data: { subscription: { unsubscribe: vi.fn() } } }
+      },
+    )
     renderPage()
+    capturedCallback!('SIGNED_IN')
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/home/rider', { replace: true })
+    })
+  })
+
+  it('navigates to /onboarding/profile on SIGNED_IN when user has no profile', async () => {
+    mockGetUser.mockResolvedValue({ data: { user: { id: 'u1' } } })
+    mockProfileLookup(null)
+
+    let capturedCallback: ((event: string) => void) | null = null
+    mockOnAuthStateChange.mockImplementation(
+      (callback: unknown) => {
+        capturedCallback = callback as (event: string) => void
+        return { data: { subscription: { unsubscribe: vi.fn() } } }
+      },
+    )
+    renderPage()
+    capturedCallback!('SIGNED_IN')
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/onboarding/profile', { replace: true })
     })
   })
 
-  it('does not navigate when no session and no SIGNED_IN event', async () => {
+  it('navigates immediately if session already exists (existing profile)', async () => {
+    mockGetSession.mockResolvedValue({
+      data: { session: { access_token: 'abc', user: { id: '1' } } },
+    })
+    mockGetUser.mockResolvedValue({ data: { user: { id: '1' } } })
+    mockProfileLookup('Jane Smith')
+
     renderPage()
-    // Give async getSession a tick to resolve
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/home/rider', { replace: true })
+    })
+  })
+
+  it('does not navigate when no session and no auth event', async () => {
+    renderPage()
     await waitFor(() => {
       expect(mockGetSession).toHaveBeenCalled()
     })

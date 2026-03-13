@@ -10,8 +10,8 @@
  *  6.  Cancel button present
  *  7.  Cancel updates ride to cancelled and navigates home
  *  8.  Redirects to /home/rider when no rideId in state
- *  9.  Subscribes to Realtime channel on mount
- * 10.  Navigates to /ride/messaging/:rideId when status changes to accepted
+ *  9.  Subscribes to Realtime broadcast channel on mount
+ * 10.  Navigates to /ride/messaging/:rideId when ride_accepted broadcast received
  * 11.  Unsubscribes from channel on unmount
  */
 
@@ -39,6 +39,11 @@ vi.mock('@/lib/supabase', () => ({
     channel: mockChannel,
     removeChannel: mockRemoveChannel,
     from: () => ({ update: mockUpdate }),
+    auth: {
+      getSession: vi.fn().mockResolvedValue({
+        data: { session: { access_token: 'test-token' } },
+      }),
+    },
   },
 }))
 
@@ -51,6 +56,17 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => mockNavigate }
 })
 
+// ── AuthStore mock ────────────────────────────────────────────────────────────
+
+const PROFILE_ID = 'user-rider-001'
+
+vi.mock('@/stores/authStore', () => ({
+  useAuthStore: vi.fn(
+    (selector: (s: { profile: { id: string } | null }) => unknown) =>
+      selector({ profile: { id: PROFILE_ID } }),
+  ),
+}))
+
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 const DEST: PlaceSuggestion = {
@@ -61,13 +77,13 @@ const DEST: PlaceSuggestion = {
 }
 
 const FARE_RANGE: FareRange = {
-  low:  { fare_cents: 300, platform_fee_cents: 45, driver_earns_cents: 255 },
-  high: { fare_cents: 400, platform_fee_cents: 60, driver_earns_cents: 340 },
+  low:  { fare_cents: 300, platform_fee_cents: 45, driver_earns_cents: 255, base_cents: 100, gas_cost_cents: 87, time_cost_cents: 75, distance_km: 10, distance_miles: 6.2, duration_min: 15, mpg: 25, gas_price_per_gallon: 3.50 },
+  high: { fare_cents: 400, platform_fee_cents: 60, driver_earns_cents: 340, base_cents: 100, gas_cost_cents: 150, time_cost_cents: 100, distance_km: 15, distance_miles: 9.3, duration_min: 20, mpg: 25, gas_price_per_gallon: 3.50 },
 }
 
 const FARE_SINGLE: FareRange = {
-  low:  { fare_cents: 350, platform_fee_cents: 53, driver_earns_cents: 297 },
-  high: { fare_cents: 350, platform_fee_cents: 53, driver_earns_cents: 297 },
+  low:  { fare_cents: 350, platform_fee_cents: 53, driver_earns_cents: 297, base_cents: 100, gas_cost_cents: 120, time_cost_cents: 90, distance_km: 12, distance_miles: 7.5, duration_min: 18, mpg: 25, gas_price_per_gallon: 3.50 },
+  high: { fare_cents: 350, platform_fee_cents: 53, driver_earns_cents: 297, base_cents: 100, gas_cost_cents: 120, time_cost_cents: 90, distance_km: 12, distance_miles: 7.5, duration_min: 18, mpg: 25, gas_price_per_gallon: 3.50 },
 }
 
 const RIDE_ID = 'ride-abc-123'
@@ -141,15 +157,19 @@ describe('WaitingRoom', () => {
     expect(screen.getByTestId('cancel-button')).toBeInTheDocument()
   })
 
-  it('cancel button updates ride to cancelled and navigates home', async () => {
+  it('cancel button calls API and navigates home', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
     const user = userEvent.setup()
     renderPage()
 
     await user.click(screen.getByTestId('cancel-button'))
 
-    expect(mockUpdate).toHaveBeenCalledWith({ status: 'cancelled' })
-    expect(mockEq).toHaveBeenCalledWith('id', RIDE_ID)
+    expect(fetchSpy).toHaveBeenCalledWith(`/api/rides/${RIDE_ID}/cancel`, {
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer test-token' },
+    })
     expect(mockNavigate).toHaveBeenCalledWith('/home/rider', { replace: true })
+    fetchSpy.mockRestore()
   })
 
   // ── Redirect ───────────────────────────────────────────────────────────────
@@ -161,29 +181,39 @@ describe('WaitingRoom', () => {
 
   // ── Realtime subscription ──────────────────────────────────────────────────
 
-  it('subscribes to Supabase Realtime channel on mount', () => {
+  it('subscribes to Supabase Realtime broadcast channel on mount', () => {
     renderPage()
-    expect(mockChannel).toHaveBeenCalledWith(`ride-status-${RIDE_ID}`)
+    expect(mockChannel).toHaveBeenCalledWith(`waiting:${PROFILE_ID}`)
     expect(mockOn).toHaveBeenCalledWith(
-      'postgres_changes',
-      expect.objectContaining({
-        event: 'UPDATE',
-        table: 'rides',
-        filter: `id=eq.${RIDE_ID}`,
-      }),
+      'broadcast',
+      { event: 'ride_accepted' },
       expect.any(Function),
     )
     expect(mockSubscribe).toHaveBeenCalled()
   })
 
-  it('navigates to messaging window when ride status changes to accepted', () => {
+  it('navigates to messaging window when ride_accepted broadcast received', async () => {
+    vi.useFakeTimers()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ride_id: RIDE_ID, status: 'accepted' }), { status: 200 }),
+    )
     renderPage()
 
     act(() => {
-      realtimeCallback?.({ new: { status: 'accepted' } })
+      realtimeCallback?.({ payload: { ride_id: RIDE_ID, driver_id: 'driver-001' } })
     })
 
-    expect(mockNavigate).toHaveBeenCalledWith(`/ride/messaging/${RIDE_ID}`, { replace: true })
+    // WaitingRoom waits 15s after first acceptance before auto-selecting
+    await act(async () => {
+      vi.advanceTimersByTime(15000)
+    })
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      `/ride/messaging/${RIDE_ID}`,
+      expect.objectContaining({ replace: true }),
+    )
+    fetchSpy.mockRestore()
+    vi.useRealTimers()
   })
 
   it('removes channel on unmount', () => {

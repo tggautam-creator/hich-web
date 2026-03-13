@@ -3,14 +3,14 @@
  *
  * Verifies:
  *  1. Does not render sheet when there is no notification
- *  2. Shows bottom sheet when ride_request message arrives
+ *  2. Shows banner when ride_request message arrives
  *  3. Displays rider name from payload
  *  4. Displays destination from payload
  *  5. Displays distance from payload
  *  6. Displays formatted earnings from payload
  *  7. Shows fallback values when payload fields are missing
  *  8. View Details navigates to /ride/suggestion/:rideId and dismisses
- *  9. Close button dismisses the sheet
+ *  9. Dismiss button dismisses the banner
  * 10. Auto-dismisses after 90 seconds
  * 11. Ignores non-ride_request messages
  * 12. Countdown displays seconds remaining
@@ -30,13 +30,37 @@ type FcmCallback = (payload: {
 }) => void
 
 let capturedCallback: FcmCallback | null = null
-const mockUnsubscribe = vi.fn()
+
+const { mockUnsubscribe, mockOn, mockSubscribe, mockRemoveChannel } = vi.hoisted(() => ({
+  mockUnsubscribe: vi.fn(),
+  mockOn: vi.fn(),
+  mockSubscribe: vi.fn(),
+  mockRemoveChannel: vi.fn(),
+}))
 
 vi.mock('@/lib/fcm', () => ({
   onForegroundMessage: (cb: FcmCallback) => {
     capturedCallback = cb
     return mockUnsubscribe
   },
+}))
+
+// ── Supabase mock (Realtime) ──────────────────────────────────────────────────
+
+vi.mock('@/lib/supabase', () => ({
+  supabase: {
+    channel: () => ({
+      on: mockOn.mockReturnThis(),
+      subscribe: mockSubscribe.mockReturnThis(),
+    }),
+    removeChannel: mockRemoveChannel,
+  },
+}))
+
+// ── Auth store mock ───────────────────────────────────────────────────────────
+vi.mock('@/stores/authStore', () => ({
+  useAuthStore: (selector: (s: { profile: { id: string } }) => unknown) =>
+    selector({ profile: { id: 'driver-123' } }),
 }))
 
 // ── Navigate mock ─────────────────────────────────────────────────────────────
@@ -105,7 +129,7 @@ describe('RideRequestNotification', () => {
     expect(screen.queryByTestId('ride-request-content')).not.toBeInTheDocument()
   })
 
-  it('shows bottom sheet when ride_request message arrives', () => {
+  it('shows banner when ride_request message arrives', () => {
     renderComponent()
     triggerRideRequest()
     expect(screen.getByTestId('ride-request-notification')).toBeInTheDocument()
@@ -127,7 +151,7 @@ describe('RideRequestNotification', () => {
   it('displays distance from payload', () => {
     renderComponent()
     triggerRideRequest()
-    expect(screen.getByTestId('notification-distance')).toHaveTextContent('8.5 km')
+    expect(screen.getByTestId('notification-distance')).toHaveTextContent('5.3 mi')
   })
 
   it('displays formatted earnings from payload', () => {
@@ -149,7 +173,7 @@ describe('RideRequestNotification', () => {
     })
     expect(screen.getByTestId('rider-name')).toHaveTextContent('A rider')
     expect(screen.getByTestId('notification-destination')).toHaveTextContent('Nearby destination')
-    expect(screen.getByTestId('notification-distance')).toHaveTextContent('– km')
+    expect(screen.getByTestId('notification-distance')).toHaveTextContent('–')
     expect(screen.getByTestId('notification-earnings')).toHaveTextContent('–')
   })
 
@@ -161,18 +185,29 @@ describe('RideRequestNotification', () => {
       fireEvent.click(screen.getByTestId('view-details-button'))
     })
 
-    expect(mockNavigate).toHaveBeenCalledWith('/ride/suggestion/ride-abc-123')
+    expect(mockNavigate).toHaveBeenCalledWith('/ride/suggestion/ride-abc-123', {
+      state: {
+        riderName: 'Alice',
+        destination: 'Downtown',
+        distanceKm: '8.5',
+        estimatedEarnings: '$12.50',
+        originLat: '',
+        originLng: '',
+        destinationLat: '',
+        destinationLng: '',
+      },
+    })
     expect(screen.queryByTestId('ride-request-content')).not.toBeInTheDocument()
   })
 
-  it('Close button dismisses the sheet', () => {
+  it('Dismiss button dismisses the banner', () => {
     renderComponent()
     triggerRideRequest()
 
     expect(screen.getByTestId('ride-request-content')).toBeInTheDocument()
 
     act(() => {
-      fireEvent.click(screen.getByLabelText('Close'))
+      fireEvent.click(screen.getByLabelText('Dismiss'))
     })
 
     expect(screen.queryByTestId('ride-request-content')).not.toBeInTheDocument()
@@ -209,13 +244,13 @@ describe('RideRequestNotification', () => {
     renderComponent()
     triggerRideRequest()
 
-    expect(screen.getByTestId('countdown')).toHaveTextContent('Auto-dismiss in 90s')
+    expect(screen.getByTestId('countdown')).toHaveTextContent('90s')
 
     act(() => {
       vi.advanceTimersByTime(5_000)
     })
 
-    expect(screen.getByTestId('countdown')).toHaveTextContent('Auto-dismiss in 85s')
+    expect(screen.getByTestId('countdown')).toHaveTextContent('85s')
   })
 
   it('unsubscribes from FCM on unmount', () => {

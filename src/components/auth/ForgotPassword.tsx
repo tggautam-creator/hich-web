@@ -32,6 +32,7 @@ export default function ForgotPassword({ 'data-testid': testId }: ForgotPassword
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(
         email.trim().toLowerCase(),
+        { redirectTo: `${window.location.origin}/auth/callback` },
       )
 
       if (error) {

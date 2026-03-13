@@ -1,21 +1,31 @@
 /**
- * Reverse geocoding via Nominatim (OpenStreetMap) — free, no API key.
- * Rate limit: 1 req/sec. Only call once per GPS session (first fix).
+ * Reverse geocoding via Google Geocoding API.
+ * Only call once per GPS session (first fix).
  */
 
-interface NominatimResponse {
-  display_name?: string
+import { env } from '@/lib/env'
+
+interface GeoResult {
+  formatted_address?: string
+}
+
+interface GeocodeResponse {
+  results?: GeoResult[]
+  status?: string
 }
 
 export async function reverseGeocode(lat: number, lng: number): Promise<string> {
+  const key = env.GOOGLE_MAPS_KEY
+  if (!key) return 'Current Location'
+
   try {
     const resp = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=0`,
-      { headers: { 'User-Agent': 'HICH-App/1.0' } },
+      `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${encodeURIComponent(key)}`,
     )
     if (!resp.ok) return 'Current Location'
-    const data = (await resp.json()) as NominatimResponse
-    const parts = data.display_name?.split(',') ?? []
+    const data = (await resp.json()) as GeocodeResponse
+    if (data.status !== 'OK' || !data.results?.length) return 'Current Location'
+    const parts = data.results[0].formatted_address?.split(',') ?? []
     // Return first 2 comma-separated parts for brevity: "UC Davis, Davis"
     return parts.length >= 2
       ? `${parts[0].trim()}, ${parts[1].trim()}`

@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect, type FormEvent, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { useAuthStore } from '@/stores/authStore'
 import { validateVin, validateYear } from '@/lib/validation'
 import { decodeVin } from '@/lib/vin'
+import { lookupFuelEconomy, DEFAULT_MPG } from '@/lib/fuelEconomy'
 import InputField from '@/components/ui/InputField'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 
@@ -42,6 +44,7 @@ export default function VehicleRegistrationPage({
   'data-testid': testId = 'vehicle-registration-page',
 }: VehicleRegistrationPageProps) {
   const navigate = useNavigate()
+  const refreshProfile = useAuthStore((s) => s.refreshProfile)
 
   const [vin, setVin]                       = useState('')
   const [make, setMake]                     = useState('')
@@ -55,6 +58,7 @@ export default function VehicleRegistrationPage({
   const [errors, setErrors]                 = useState<FormErrors>({})
   const [isLoading, setIsLoading]           = useState(false)
   const [vinDecoding, setVinDecoding]       = useState(false)
+  const [fuelMpg, setFuelMpg]               = useState<number | null>(null)
   const vinDecodeRef                        = useRef<AbortController | null>(null)
 
   // Auto-decode VIN when it reaches 17 valid alphanumeric characters
@@ -68,11 +72,23 @@ export default function VehicleRegistrationPage({
 
     setVinDecoding(true)
     decodeVin(vin.trim())
-      .then((result) => {
+      .then(async (result) => {
         if (controller.signal.aborted) return
         if (result.make) setMake(result.make)
         if (result.model) setModel(result.model)
         if (result.year) setYear(result.year)
+
+        // Look up fuel economy from EPA database
+        if (result.year && result.make && result.model) {
+          const fuel = await lookupFuelEconomy(
+            Number(result.year),
+            result.make,
+            result.model,
+          )
+          if (!controller.signal.aborted && fuel) {
+            setFuelMpg(fuel.combined_mpg)
+          }
+        }
       })
       .catch(() => {
         // Silently ignore — user can still type make/model/year manually
@@ -155,6 +171,7 @@ export default function VehicleRegistrationPage({
         car_photo_url:           carPhotoUrl,
         license_plate_photo_url: licPath,
         seats_available:         seats,
+        fuel_efficiency_mpg:     fuelMpg ?? DEFAULT_MPG,
       })
       if (vehErr) throw vehErr
 
@@ -165,6 +182,8 @@ export default function VehicleRegistrationPage({
         .eq('id', user.id)
       if (userErr) throw userErr
 
+      // Refresh auth store so AuthGuard sees is_driver + full_name
+      await refreshProfile()
       navigate('/home/driver')
     } catch (err: unknown) {
       // eslint-disable-next-line no-console

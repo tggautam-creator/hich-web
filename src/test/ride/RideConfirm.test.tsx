@@ -12,6 +12,9 @@
  *  8.  Custom data-testid forwarded
  *  9.  Shows single fare when low === high (both at minimum)
  * 10.  Uses custom distance/duration from state when provided
+ * 11.  Shows route info (distance + duration) when real estimates provided
+ * 12.  Hides route info when using default estimates
+ * 13.  Fare breakdown toggle shows detailed cost breakdown
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -28,6 +31,16 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
   return { ...actual, useNavigate: () => mockNavigate }
 })
+
+const mockGetSession = vi.fn()
+
+vi.mock('@/lib/supabase', () => ({
+  supabase: {
+    auth: {
+      getSession: () => mockGetSession(),
+    },
+  },
+}))
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
 
@@ -56,6 +69,13 @@ function renderWithState(state?: Record<string, unknown>, testId?: string) {
 describe('RideConfirm', () => {
   beforeEach(() => {
     mockNavigate.mockReset()
+    mockGetSession.mockResolvedValue({
+      data: { session: { access_token: 'test-token' } },
+    })
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ride_id: 'ride-abc-123' }),
+    })
   })
 
   // ── Rendering ────────────────────────────────────────────────────────
@@ -98,7 +118,6 @@ describe('RideConfirm', () => {
       estimatedDurationMin: 40,
     })
     const fareEl = screen.getByTestId('fare-range')
-    // 30 km, 40 min → fare ~$8.40 base, range ~$7.35–$9.45
     expect(fareEl.textContent).toMatch(/\$/)
   })
 
@@ -113,16 +132,73 @@ describe('RideConfirm', () => {
     expect(fareEl.textContent).toBe('$2.00')
   })
 
+  // ── Route info ─────────────────────────────────────────────────────
+
+  it('shows route info when real estimates are provided', () => {
+    renderWithState({
+      destination: MOCK_DESTINATION,
+      estimatedDistanceKm: 12.3,
+      estimatedDurationMin: 18,
+    })
+    expect(screen.getByTestId('route-info')).toBeInTheDocument()
+    expect(screen.getByTestId('route-distance').textContent).toBe('7.6 mi')
+    expect(screen.getByTestId('route-duration').textContent).toBe('18 min')
+  })
+
+  it('hides route info when using default estimates', () => {
+    renderWithState({ destination: MOCK_DESTINATION })
+    expect(screen.queryByTestId('route-info')).not.toBeInTheDocument()
+  })
+
+  // ── Fare breakdown ─────────────────────────────────────────────────
+
+  it('breakdown is hidden by default', () => {
+    renderWithState({ destination: MOCK_DESTINATION })
+    expect(screen.queryByTestId('fare-breakdown')).not.toBeInTheDocument()
+  })
+
+  it('clicking toggle shows fare breakdown with gas, time, and base', async () => {
+    const user = userEvent.setup()
+    renderWithState({
+      destination: MOCK_DESTINATION,
+      estimatedDistanceKm: 10,
+      estimatedDurationMin: 15,
+    })
+    await user.click(screen.getByTestId('breakdown-toggle'))
+    expect(screen.getByTestId('fare-breakdown')).toBeInTheDocument()
+    expect(screen.getByTestId('breakdown-base')).toBeInTheDocument()
+    expect(screen.getByTestId('breakdown-gas')).toBeInTheDocument()
+    expect(screen.getByTestId('breakdown-time')).toBeInTheDocument()
+    expect(screen.getByTestId('breakdown-fee')).toBeInTheDocument()
+    expect(screen.getByTestId('breakdown-driver-earns')).toBeInTheDocument()
+  })
+
+  it('clicking toggle twice hides the breakdown', async () => {
+    const user = userEvent.setup()
+    renderWithState({ destination: MOCK_DESTINATION })
+    await user.click(screen.getByTestId('breakdown-toggle'))
+    expect(screen.getByTestId('fare-breakdown')).toBeInTheDocument()
+    await user.click(screen.getByTestId('breakdown-toggle'))
+    expect(screen.queryByTestId('fare-breakdown')).not.toBeInTheDocument()
+  })
+
   // ── Navigation ─────────────────────────────────────────────────────
 
-  it('"Request Ride" button navigates to /ride/waiting', async () => {
+  it('"Request Ride" button calls API and navigates to /ride/waiting', async () => {
     const user = userEvent.setup()
     renderWithState({ destination: MOCK_DESTINATION })
     await user.click(screen.getByTestId('request-ride-button'))
-    expect(mockNavigate).toHaveBeenCalledWith(
-      '/ride/waiting',
-      expect.objectContaining({ state: expect.objectContaining({ destination: MOCK_DESTINATION }) }),
-    )
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith(
+        '/ride/waiting',
+        expect.objectContaining({
+          state: expect.objectContaining({
+            destination: MOCK_DESTINATION,
+            rideId: 'ride-abc-123',
+          }),
+        }),
+      )
+    })
   })
 
   it('"Change destination" button navigates to /ride/search', async () => {

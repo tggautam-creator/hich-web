@@ -79,6 +79,7 @@ describe('scaffold — @/ alias and database types', () => {
       license_plate_photo_url: 'https://example.com/plate.jpg',
       car_photo_url: 'https://example.com/car.jpg',
       seats_available: 3,
+      fuel_efficiency_mpg: 28,
       is_active: true,
     }
     expect(v.seats_available).toBeGreaterThanOrEqual(1)
@@ -111,6 +112,8 @@ describe('scaffold — @/ alias and database types', () => {
       day_of_week: [1, 3, 5], // Mon, Wed, Fri
       departure_time: '08:00',
       arrival_time: '08:30',
+      origin_address: null,
+      dest_address: null,
       is_active: true,
       created_at: new Date().toISOString(),
     }

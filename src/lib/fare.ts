@@ -3,24 +3,45 @@
  *
  * Money is always in cents (integers). Display only as dollars.
  *
- * Formula (from PRD):
- *   base  = $1.00  (100 cents)
- *   +distance × $0.18/km  (18 cents/km)
- *   +duration × $0.05/min (5 cents/min)
+ * Gas-cost-aware formula:
+ *   gas_cost    = (distance_km × 0.621371 / mpg) × gas_price_per_gallon
+ *   time_cost   = duration_min × $0.05/min (5 cents/min)
+ *   base        = $1.00 (100 cents)
+ *   subtotal    = base + gas_cost + time_cost
+ *   fare_cents  = max(200, min(4000, round(subtotal)))
+ *   platform_fee = round(fare × 0.15)
+ *   driver_earns = fare - platform_fee
  *
- *   fare_cents         = max(200, min(4000, round(100 + distance_km * 18 + duration_min * 5)))
- *   platform_fee_cents = round(fare_cents * 0.15)
- *   driver_earns_cents = fare_cents - platform_fee_cents
+ * If mpg/gas_price are not available, falls back to flat per-km rate.
  */
+
+import { DEFAULT_MPG } from '@/lib/fuelEconomy'
 
 const MIN_FARE_CENTS    = 200
 const MAX_FARE_CENTS    = 4000
 const BASE_CENTS        = 100
-const PER_KM_CENTS      = 18
 const PER_MIN_CENTS     = 5
 const PLATFORM_FEE_RATE = 0.15
+const KM_TO_MILES       = 0.621371
+
+/** Average US gas price — updated periodically. Users see this on the breakdown. */
+export const DEFAULT_GAS_PRICE_PER_GALLON = 3.50
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface FareBreakdown {
+  base_cents: number
+  gas_cost_cents: number
+  time_cost_cents: number
+  platform_fee_cents: number
+  driver_earns_cents: number
+  fare_cents: number
+  distance_km: number
+  distance_miles: number
+  duration_min: number
+  mpg: number
+  gas_price_per_gallon: number
+}
 
 export interface FareEstimate {
   fare_cents: number
@@ -29,28 +50,56 @@ export interface FareEstimate {
 }
 
 export interface FareRange {
-  low:  FareEstimate
-  high: FareEstimate
+  low:  FareBreakdown
+  high: FareBreakdown
 }
 
 // ── Functions ─────────────────────────────────────────────────────────────────
 
-/** Calculate the exact fare for a given distance and duration. */
-export function calculateFare(distance_km: number, duration_min: number): FareEstimate {
-  const raw = Math.round(BASE_CENTS + distance_km * PER_KM_CENTS + duration_min * PER_MIN_CENTS)
+/** Calculate the exact fare with a transparent breakdown. */
+export function calculateFare(
+  distance_km: number,
+  duration_min: number,
+  mpg: number = DEFAULT_MPG,
+  gas_price_per_gallon: number = DEFAULT_GAS_PRICE_PER_GALLON,
+): FareBreakdown {
+  const distance_miles = distance_km * KM_TO_MILES
+  const gallons_used = mpg > 0 ? distance_miles / mpg : distance_miles / DEFAULT_MPG
+  const gas_cost_cents = Math.round(gallons_used * gas_price_per_gallon * 100)
+  const time_cost_cents = Math.round(duration_min * PER_MIN_CENTS)
+
+  const raw = BASE_CENTS + gas_cost_cents + time_cost_cents
   const fare_cents = Math.max(MIN_FARE_CENTS, Math.min(MAX_FARE_CENTS, raw))
   const platform_fee_cents = Math.round(fare_cents * PLATFORM_FEE_RATE)
   const driver_earns_cents = fare_cents - platform_fee_cents
-  return { fare_cents, platform_fee_cents, driver_earns_cents }
+
+  return {
+    base_cents: BASE_CENTS,
+    gas_cost_cents,
+    time_cost_cents,
+    platform_fee_cents,
+    driver_earns_cents,
+    fare_cents,
+    distance_km,
+    distance_miles,
+    duration_min,
+    mpg,
+    gas_price_per_gallon,
+  }
 }
 
 /**
  * Calculate a fare range (low–high) by applying ±15% variance
  * on the distance and duration estimates.
  */
-export function calculateFareRange(distance_km: number, duration_min: number): FareRange {
-  const low  = calculateFare(distance_km * 0.85, duration_min * 0.85)
-  const high = calculateFare(distance_km * 1.15, duration_min * 1.15)
+export function calculateFareRange(
+  distance_km: number,
+  duration_min: number,
+  mpg: number = DEFAULT_MPG,
+  gas_price_per_gallon: number = DEFAULT_GAS_PRICE_PER_GALLON,
+): FareRange {
+  const low  = calculateFare(distance_km * 0.85, duration_min * 0.85, mpg, gas_price_per_gallon)
+  const high = calculateFare(distance_km * 1.15, duration_min * 1.15, mpg, gas_price_per_gallon)
   return { low, high }
 }
 

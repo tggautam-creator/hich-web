@@ -32,6 +32,7 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
     try {
       const { error } = await supabase.auth.signInWithOtp({
         email: email.trim().toLowerCase(),
+        options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
       })
       if (error) {
         setServerError(error.message)
@@ -66,7 +67,20 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
           setServerError(error.message)
         }
       } else {
-        navigate('/home/rider')
+        // Check if user has completed onboarding (profile with full_name)
+        const { data: { user } } = await supabase.auth.getUser()
+        const { data: profile } = await supabase
+          .from('users')
+          .select('full_name, is_driver')
+          .eq('id', user?.id ?? '')
+          .single()
+
+        if (!profile?.full_name) {
+          // No profile or incomplete — send to onboarding
+          navigate('/onboarding/profile')
+        } else {
+          navigate(profile.is_driver ? '/home/driver' : '/home/rider')
+        }
       }
     } catch {
       setServerError('Something went wrong. Please try again.')

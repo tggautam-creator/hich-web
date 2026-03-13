@@ -6,6 +6,7 @@ import {
   saveRecentDestination,
   type PlaceSuggestion,
 } from '@/lib/places'
+import { getDirections } from '@/lib/directions'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -15,6 +16,8 @@ interface DestinationSearchProps {
 
 interface LocationState {
   locationName?: string
+  originLat?: number
+  originLng?: number
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -24,6 +27,8 @@ export default function DestinationSearch({ 'data-testid': testId }: Destination
   const location = useLocation()
   const locState = location.state as LocationState | null
   const fromName = locState?.locationName ?? 'Current Location'
+  const originLat = locState?.originLat
+  const originLng = locState?.originLng
 
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -32,6 +37,7 @@ export default function DestinationSearch({ 'data-testid': testId }: Destination
   const [isLoading,    setIsLoading]    = useState(false)
   const [recent,       setRecent]       = useState<PlaceSuggestion[]>([])
   const [selectedDest, setSelectedDest] = useState<PlaceSuggestion | null>(null)
+  const [isResolving,   setIsResolving]  = useState(false)
 
   // Load recent destinations once on mount
   useEffect(() => {
@@ -69,10 +75,39 @@ export default function DestinationSearch({ 'data-testid': testId }: Destination
     inputRef.current?.blur()
   }
 
-  function handleDone() {
+  async function handleDone() {
     if (!selectedDest) return
     saveRecentDestination(selectedDest)
-    navigate('/ride/confirm', { state: { destination: selectedDest } })
+
+    // Fetch real driving directions via the Maps JS API DirectionsService
+    setIsResolving(true)
+    try {
+      if (originLat != null && originLng != null) {
+        const directions = await getDirections(originLat, originLng, selectedDest.placeId)
+        if (directions) {
+          navigate('/ride/confirm', {
+            state: {
+              destination: selectedDest,
+              estimatedDistanceKm: directions.distance_km,
+              estimatedDurationMin: directions.duration_min,
+              polyline: directions.polyline,
+              originLat,
+              originLng,
+              destinationLat: directions.destLat,
+              destinationLng: directions.destLng,
+            },
+          })
+          return
+        }
+      }
+    } catch {
+      // Fall through to default navigation
+    } finally {
+      setIsResolving(false)
+    }
+
+    // Fallback: navigate without real estimates (uses defaults)
+    navigate('/ride/confirm', { state: { destination: selectedDest, originLat, originLng } })
   }
 
   function handleInputChange(value: string) {
@@ -277,15 +312,15 @@ export default function DestinationSearch({ 'data-testid': testId }: Destination
       >
         <button
           data-testid="done-button"
-          onClick={handleDone}
-          disabled={!selectedDest}
+          onClick={() => { void handleDone() }}
+          disabled={!selectedDest || isResolving}
           className={`w-full rounded-2xl py-4 text-base font-semibold text-white transition-all ${
-            selectedDest
+            selectedDest && !isResolving
               ? 'bg-primary active:scale-[0.99]'
               : 'bg-primary/40 cursor-not-allowed'
           }`}
         >
-          Done
+          {isResolving ? 'Getting route...' : 'Done'}
         </button>
       </div>
     </div>

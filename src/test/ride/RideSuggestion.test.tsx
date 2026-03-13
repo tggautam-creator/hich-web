@@ -86,6 +86,18 @@ vi.mock('@/lib/fcm', () => ({
   onForegroundMessage: () => null,
 }))
 
+// ── Google Maps mock ──────────────────────────────────────────────────────────
+vi.mock('@vis.gl/react-google-maps', () => ({
+  Map: ({ children, ...props }: Record<string, unknown>) => <div data-testid="google-map" {...props}>{children as React.ReactNode}</div>,
+  AdvancedMarker: ({ children, ...props }: Record<string, unknown>) => <div data-testid="map-marker" {...props}>{children as React.ReactNode}</div>,
+  useMap: () => null,
+}))
+
+// ── Directions mock ───────────────────────────────────────────────────────────
+vi.mock('@/lib/directions', () => ({
+  getDirectionsByLatLng: vi.fn().mockResolvedValue(null),
+}))
+
 // ── Fetch mock ────────────────────────────────────────────────────────────────
 
 const mockFetch = vi.fn()
@@ -99,6 +111,8 @@ const RIDE = {
   vehicle_id: null,
   status: 'requested',
   origin: { type: 'Point', coordinates: [-121.74, 38.54] },
+  destination: { type: 'Point', coordinates: [-122.42, 37.77] },
+  destination_name: 'San Francisco',
   destination_bearing: null,
   pickup_point: null,
   pickup_note: null,
@@ -182,7 +196,7 @@ describe('RideSuggestion', () => {
     renderWithRoute()
 
     await waitFor(() => {
-      expect(screen.getByTestId('countdown-text')).toHaveTextContent('90s to respond')
+      expect(screen.getByTestId('countdown-text')).toHaveTextContent('90s')
     })
   })
 

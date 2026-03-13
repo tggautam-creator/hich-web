@@ -15,18 +15,24 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import DriverHomePage from '@/components/ride/DriverHomePage'
 
-// ── Mock react-leaflet ────────────────────────────────────────────────────────
+// ── Mock @vis.gl/react-google-maps ────────────────────────────────────────────
 
-const mockSetView = vi.fn()
-const mockGetZoom = vi.fn().mockReturnValue(15)
-
-vi.mock('react-leaflet', () => ({
-  MapContainer: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="map-container">{children}</div>
+vi.mock('@vis.gl/react-google-maps', () => ({
+  APIProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Map: ({ children, 'data-testid': tid }: { children?: React.ReactNode; 'data-testid'?: string; [k: string]: unknown }) => (
+    <div data-testid={tid ?? 'map-container'}>{children}</div>
   ),
-  TileLayer:    () => null,
-  CircleMarker: () => <div data-testid="green-dot-marker" />,
-  useMap:       () => ({ setView: mockSetView, getZoom: mockGetZoom }),
+  AdvancedMarker: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+}))
+
+// ── Mock env ──────────────────────────────────────────────────────────────────
+
+vi.mock('@/lib/env', () => ({
+  env: {
+    GOOGLE_MAPS_KEY: 'test-key',
+    SUPABASE_URL: 'https://test.supabase.co',
+    SUPABASE_ANON_KEY: 'test-anon-key',
+  },
 }))
 
 // ── Mock authStore ─────────────────────────────────────────────────────────────
@@ -48,6 +54,13 @@ vi.mock('@/lib/supabase', () => ({
       upsert: mockUpsert,
     }),
   },
+}))
+
+// ── Mock FCM (used by RideRequestNotification) ───────────────────────────────
+
+vi.mock('@/lib/fcm', () => ({
+  onForegroundMessage: () => () => { /* unsubscribe stub */ },
+  requestAndSaveFcmToken: vi.fn(),
 }))
 
 // ── Mock react-router-dom navigate ───────────────────────────────────────────
@@ -144,12 +157,6 @@ describe('DriverHomePage', () => {
     expect(screen.getByTestId('green-dot-marker')).toBeInTheDocument()
   })
 
-  it('calls setView when a GPS position is received', () => {
-    renderPage()
-    fireGpsSuccess(38.54, -121.77)
-    expect(mockSetView).toHaveBeenCalledWith([38.54, -121.77], 15, { animate: true })
-  })
-
   it('calls clearWatch on unmount', () => {
     const { unmount } = renderPage()
     unmount()
@@ -226,7 +233,7 @@ describe('DriverHomePage', () => {
     vi.useRealTimers()
     const user = userEvent.setup()
     renderPage()
-    await user.click(screen.getByTestId('rider-tab'))
+    await user.click(screen.getByTestId('home-tab'))
     expect(mockNavigate).toHaveBeenCalledWith('/home/rider')
   })
 

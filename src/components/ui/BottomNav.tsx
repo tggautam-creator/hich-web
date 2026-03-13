@@ -3,7 +3,7 @@ import { useAuthStore } from '@/stores/authStore'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Tab = 'home' | 'drive' | 'wallet' | 'profile'
+type Tab = 'home' | 'drive' | 'rides' | 'wallet' | 'profile'
 
 interface BottomNavProps {
   activeTab: Tab
@@ -13,12 +13,13 @@ interface BottomNavProps {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 /**
- * Shared bottom navigation — 4 tabs, consistent across all pages.
+ * Shared bottom navigation — 5 tabs, consistent across all pages.
  *
- * Home 🏠 | Drive 🚗 | Wallet 💳 | Profile 👤
+ * Home | Drive | Rides | Wallet | Profile
  *
  * - `activeTab` receives `text-primary` styling; others are `text-text-secondary`.
  * - Drive tab routes to `/home/driver` (if already a driver) or `/become-driver`.
+ * - Rides tab links to My Rides (hub for active/upcoming rides).
  * - Uses `fixed` positioning so it works in both map pages and scrollable pages.
  */
 export default function BottomNav({
@@ -29,7 +30,7 @@ export default function BottomNav({
   const isDriver = useAuthStore((s) => s.isDriver)
 
   function handleDriveTab() {
-    if (activeTab === 'drive') return // already on a drive page
+    if (activeTab === 'drive') return
     navigate(isDriver ? '/home/driver' : '/become-driver')
   }
 
@@ -40,12 +41,12 @@ export default function BottomNav({
 
   const tabClass = (tab: Tab) =>
     [
-      'flex-1 flex flex-col items-center gap-1 py-2.5 transition-colors',
+      'flex-1 flex flex-col items-center gap-0.5 py-2 transition-colors',
       activeTab === tab ? 'text-primary' : 'text-text-secondary hover:text-primary',
     ].join(' ')
 
   const labelClass = (tab: Tab) =>
-    activeTab === tab ? 'text-xs font-semibold' : 'text-xs font-medium'
+    activeTab === tab ? 'text-[10px] font-semibold' : 'text-[10px] font-medium'
 
   return (
     <nav
@@ -83,6 +84,21 @@ export default function BottomNav({
             <circle cx="17" cy="18" r="2" />
           </svg>
           <span className={labelClass('drive')}>Drive</span>
+        </button>
+
+        {/* Rides */}
+        <button
+          data-testid="rides-tab"
+          onClick={() => { if (activeTab !== 'rides') navigate('/rides') }}
+          aria-label="My Rides"
+          className={tabClass('rides')}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
+            <path d="M16 3h5v5" />
+            <line x1="21" y1="3" x2="14" y2="10" />
+            <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+          </svg>
+          <span className={labelClass('rides')}>Rides</span>
         </button>
 
         {/* Wallet */}

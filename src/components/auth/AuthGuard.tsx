@@ -1,6 +1,8 @@
 import { useEffect } from 'react'
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
+import { APIProvider } from '@vis.gl/react-google-maps'
 import { useAuthStore } from '@/stores/authStore'
+import { env } from '@/lib/env'
 import RideRequestNotification from '@/components/ride/RideRequestNotification'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -66,9 +68,9 @@ export default function AuthGuard({ 'data-testid': testId }: AuthGuardProps) {
 
   // ── 4. Authenticated + sufficient profile ────────────────────────────────────
   return (
-    <>
+    <APIProvider apiKey={env.GOOGLE_MAPS_KEY ?? ''}>
       <Outlet />
       <RideRequestNotification />
-    </>
+    </APIProvider>
   )
 }

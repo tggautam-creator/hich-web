@@ -13,18 +13,24 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import RiderHomePage from '@/components/ride/RiderHomePage'
 
-// ── Mock react-leaflet ────────────────────────────────────────────────────────
+// ── Mock @vis.gl/react-google-maps ────────────────────────────────────────────
 
-const mockSetView = vi.fn()
-const mockGetZoom = vi.fn().mockReturnValue(15)
-
-vi.mock('react-leaflet', () => ({
-  MapContainer: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="map-container">{children}</div>
+vi.mock('@vis.gl/react-google-maps', () => ({
+  APIProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Map: ({ children, 'data-testid': tid }: { children?: React.ReactNode; 'data-testid'?: string; [k: string]: unknown }) => (
+    <div data-testid={tid ?? 'map-container'}>{children}</div>
   ),
-  TileLayer:    () => null,
-  CircleMarker: () => <div data-testid="blue-dot-marker" />,
-  useMap:       () => ({ setView: mockSetView, getZoom: mockGetZoom }),
+  AdvancedMarker: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+}))
+
+// ── Mock env ──────────────────────────────────────────────────────────────────
+
+vi.mock('@/lib/env', () => ({
+  env: {
+    GOOGLE_MAPS_KEY: 'test-key',
+    SUPABASE_URL: 'https://test.supabase.co',
+    SUPABASE_ANON_KEY: 'test-anon-key',
+  },
 }))
 
 // ── Mock authStore ─────────────────────────────────────────────────────────────
@@ -107,7 +113,6 @@ describe('RiderHomePage', () => {
     mockNavigate.mockReset()
     mockWatchPosition.mockClear()
     mockClearWatch.mockClear()
-    mockSetView.mockClear()
     capturedWatch = null
     isDriverMock  = false
   })
@@ -135,12 +140,6 @@ describe('RiderHomePage', () => {
     renderPage()
     fireGpsSuccess()
     expect(screen.getByTestId('blue-dot-marker')).toBeInTheDocument()
-  })
-
-  it('calls setView when a GPS position is received', () => {
-    renderPage()
-    fireGpsSuccess(38.54, -121.77)
-    expect(mockSetView).toHaveBeenCalledWith([38.54, -121.77], 15, { animate: true })
   })
 
   it('calls clearWatch on unmount', () => {
@@ -191,16 +190,16 @@ describe('RiderHomePage', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/ride/search', expect.objectContaining({ state: expect.objectContaining({ locationName: expect.any(String) }) }))
   })
 
-  it('renders the schedule button', () => {
+  it('renders the ride board button', () => {
     renderPage()
-    expect(screen.getByTestId('schedule-button')).toBeInTheDocument()
+    expect(screen.getByTestId('ride-board-button')).toBeInTheDocument()
   })
 
-  it('clicking the schedule button navigates to /schedule', async () => {
+  it('clicking the ride board button navigates to /rides/board', async () => {
     const user = userEvent.setup()
     renderPage()
-    await user.click(screen.getByTestId('schedule-button'))
-    expect(mockNavigate).toHaveBeenCalledWith('/schedule')
+    await user.click(screen.getByTestId('ride-board-button'))
+    expect(mockNavigate).toHaveBeenCalledWith('/rides/board', { state: { fromTab: 'home' } })
   })
 
   // ── Bottom nav ─────────────────────────────────────────────────────────────
@@ -223,12 +222,12 @@ describe('RiderHomePage', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/home/driver')
   })
 
-  it('drive tab navigates to /onboarding/vehicle when the user is not yet a driver', async () => {
+  it('drive tab navigates to /become-driver when the user is not yet a driver', async () => {
     isDriverMock = false
     const user = userEvent.setup()
     renderPage()
     await user.click(screen.getByTestId('driver-tab'))
-    expect(mockNavigate).toHaveBeenCalledWith('/onboarding/vehicle')
+    expect(mockNavigate).toHaveBeenCalledWith('/become-driver')
   })
 
   it('wallet tab navigates to /wallet', async () => {

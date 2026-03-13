@@ -1,0 +1,4 @@
+
+> hich-web@0.1.0 test
+> vitest --run --reporter=json
+

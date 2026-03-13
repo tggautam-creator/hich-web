@@ -44,6 +44,14 @@ vi.mock('@/lib/places', () => ({
   saveRecentDestination: (...args: Parameters<typeof mockSaveRecentDestination>) => mockSaveRecentDestination(...args),
 }))
 
+// ── Mock directions module ────────────────────────────────────────────────────
+
+const mockGetDirections = vi.fn<() => Promise<{ distance_km: number; duration_min: number; polyline: string } | null>>()
+
+vi.mock('@/lib/directions', () => ({
+  getDirections: (...args: Parameters<typeof mockGetDirections>) => mockGetDirections(...args),
+}))
+
 // ── Mock react-router-dom navigate ───────────────────────────────────────────
 
 const { mockNavigate } = vi.hoisted(() => ({ mockNavigate: vi.fn() }))
@@ -88,6 +96,7 @@ describe('DestinationSearch', () => {
     mockSearchPlaces.mockResolvedValue([])
     mockGetRecentDestinations.mockReturnValue([])
     mockSaveRecentDestination.mockReset()
+    mockGetDirections.mockResolvedValue(null)
   })
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -236,8 +245,10 @@ describe('DestinationSearch', () => {
     await waitFor(() => screen.getAllByTestId('result-item'))
     await user.click(screen.getAllByTestId('result-item')[0])
     await user.click(screen.getByTestId('done-button'))
-    expect(mockNavigate).toHaveBeenCalledWith('/ride/confirm', {
-      state: { destination: PLACE_A },
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/ride/confirm', {
+        state: { destination: PLACE_A, originLat: undefined, originLng: undefined },
+      })
     })
   })
 
@@ -249,7 +260,9 @@ describe('DestinationSearch', () => {
     await waitFor(() => screen.getAllByTestId('result-item'))
     await user.click(screen.getAllByTestId('result-item')[0])
     await user.click(screen.getByTestId('done-button'))
-    expect(mockSaveRecentDestination).toHaveBeenCalledWith(PLACE_A)
+    await waitFor(() => {
+      expect(mockSaveRecentDestination).toHaveBeenCalledWith(PLACE_A)
+    })
   })
 
   it('selecting a recent item fills the Drop Off input', async () => {
@@ -266,8 +279,10 @@ describe('DestinationSearch', () => {
     renderPage()
     await user.click(screen.getByTestId('recent-item'))
     await user.click(screen.getByTestId('done-button'))
-    expect(mockNavigate).toHaveBeenCalledWith('/ride/confirm', {
-      state: { destination: PLACE_B },
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/ride/confirm', {
+        state: { destination: PLACE_B, originLat: undefined, originLng: undefined },
+      })
     })
   })
 
@@ -294,5 +309,30 @@ describe('DestinationSearch', () => {
       </MemoryRouter>,
     )
     expect(screen.getByTestId('custom-search')).toBeInTheDocument()
+  })
+
+  // ── Directions integration ─────────────────────────────────────────────────
+
+  it('passes real route estimates when directions resolve', async () => {
+    mockSearchPlaces.mockResolvedValue([PLACE_A])
+    mockGetDirections.mockResolvedValue({ distance_km: 115.2, duration_min: 85, polyline: 'abc' })
+    const user = userEvent.setup()
+    renderPage({ locationName: 'Davis', originLat: 38.54, originLng: -121.74 })
+    await user.type(screen.getByTestId('search-input'), 'UC')
+    await waitFor(() => screen.getAllByTestId('result-item'))
+    await user.click(screen.getAllByTestId('result-item')[0])
+    await user.click(screen.getByTestId('done-button'))
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/ride/confirm', {
+        state: {
+          destination: PLACE_A,
+          estimatedDistanceKm: 115.2,
+          estimatedDurationMin: 85,
+          polyline: 'abc',
+          originLat: 38.54,
+          originLng: -121.74,
+        },
+      })
+    })
   })
 })

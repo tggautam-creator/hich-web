@@ -96,6 +96,7 @@ export type Database = {
           license_plate_photo_url: string | null
           car_photo_url: string | null
           seats_available: number
+          fuel_efficiency_mpg: number | null
           is_active: boolean
         }
         Insert: {
@@ -110,6 +111,7 @@ export type Database = {
           license_plate_photo_url?: string | null
           car_photo_url?: string | null
           seats_available?: number
+          fuel_efficiency_mpg?: number | null
           is_active?: boolean
         }
         Update: {
@@ -124,6 +126,7 @@ export type Database = {
           license_plate_photo_url?: string
           car_photo_url?: string
           seats_available?: number
+          fuel_efficiency_mpg?: number | null
           is_active?: boolean
         }
         Relationships: never[]
@@ -167,14 +170,21 @@ export type Database = {
           vehicle_id: string | null
           status: RideStatus
           origin: GeoPoint
+          destination: GeoPoint | null
+          destination_name: string | null
           destination_bearing: number | null
           pickup_point: GeoPoint | null
           pickup_note: string | null
           dropoff_point: GeoPoint | null
+          pickup_confirmed: boolean
+          dropoff_confirmed: boolean
           fare_cents: number | null     // cents — never floats
           started_at: string | null
           ended_at: string | null
           created_at: string
+          schedule_id: string | null
+          trip_date: string | null      // ISO date YYYY-MM-DD
+          trip_time: string | null      // HH:MM:SS
         }
         Insert: {
           id?: string
@@ -183,14 +193,21 @@ export type Database = {
           vehicle_id?: string | null
           status?: RideStatus
           origin: GeoPoint
+          destination?: GeoPoint | null
+          destination_name?: string | null
           destination_bearing?: number | null
           pickup_point?: GeoPoint | null
           pickup_note?: string | null
           dropoff_point?: GeoPoint | null
+          pickup_confirmed?: boolean
+          dropoff_confirmed?: boolean
           fare_cents?: number | null
           started_at?: string | null
           ended_at?: string | null
           created_at?: string
+          schedule_id?: string | null
+          trip_date?: string | null
+          trip_time?: string | null
         }
         Update: {
           id?: string
@@ -199,14 +216,21 @@ export type Database = {
           vehicle_id?: string | null
           status?: RideStatus
           origin?: GeoPoint
+          destination?: GeoPoint | null
+          destination_name?: string | null
           destination_bearing?: number | null
           pickup_point?: GeoPoint | null
           pickup_note?: string | null
           dropoff_point?: GeoPoint | null
+          pickup_confirmed?: boolean
+          dropoff_confirmed?: boolean
           fare_cents?: number | null
           started_at?: string | null
           ended_at?: string | null
           created_at?: string
+          schedule_id?: string | null
+          trip_date?: string | null
+          trip_time?: string | null
         }
         Relationships: never[]
       }
@@ -259,6 +283,8 @@ export type Database = {
           day_of_week: number[]         // 0 = Sun … 6 = Sat
           departure_time: string | null
           arrival_time: string | null
+          origin_address: string | null
+          dest_address: string | null
           is_active: boolean
           created_at: string
         }
@@ -273,6 +299,8 @@ export type Database = {
           day_of_week: number[]
           departure_time?: string | null
           arrival_time?: string | null
+          origin_address?: string | null
+          dest_address?: string | null
           is_active?: boolean
           created_at?: string
         }
@@ -287,6 +315,8 @@ export type Database = {
           day_of_week?: number[]
           departure_time?: string | null
           arrival_time?: string | null
+          origin_address?: string | null
+          dest_address?: string | null
           is_active?: boolean
           created_at?: string
         }
@@ -300,6 +330,8 @@ export type Database = {
           ride_id: string
           sender_id: string
           content: string
+          type: string            // 'text' | 'pickup_suggestion' | 'dropoff_suggestion' | 'details_accepted' | 'system'
+          meta: Record<string, unknown> | null
           created_at: string
         }
         Insert: {
@@ -307,6 +339,8 @@ export type Database = {
           ride_id: string
           sender_id: string
           content: string
+          type?: string
+          meta?: Record<string, unknown> | null
           created_at?: string
         }
         Update: {
@@ -314,6 +348,8 @@ export type Database = {
           ride_id?: string
           sender_id?: string
           content?: string
+          type?: string
+          meta?: Record<string, unknown> | null
           created_at?: string
         }
         Relationships: never[]
@@ -337,6 +373,158 @@ export type Database = {
           id?: string
           user_id?: string
           token?: string
+          created_at?: string
+        }
+        Relationships: never[]
+      }
+
+      // ── ride_schedules ──────────────────────────────────────────────────────
+      ride_schedules: {
+        Row: {
+          id: string
+          user_id: string
+          mode: 'driver' | 'rider'
+          route_name: string
+          origin_place_id: string
+          origin_address: string
+          dest_place_id: string
+          dest_address: string
+          direction_type: 'one_way' | 'roundtrip'
+          trip_date: string             // ISO date YYYY-MM-DD
+          time_type: 'departure' | 'arrival'
+          trip_time: string             // HH:MM:SS
+          is_notified: boolean
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          mode: 'driver' | 'rider'
+          route_name: string
+          origin_place_id: string
+          origin_address: string
+          dest_place_id: string
+          dest_address: string
+          direction_type?: 'one_way' | 'roundtrip'
+          trip_date: string
+          time_type?: 'departure' | 'arrival'
+          trip_time: string
+          is_notified?: boolean
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          mode?: 'driver' | 'rider'
+          route_name?: string
+          origin_place_id?: string
+          origin_address?: string
+          dest_place_id?: string
+          dest_address?: string
+          direction_type?: 'one_way' | 'roundtrip'
+          trip_date?: string
+          time_type?: 'departure' | 'arrival'
+          trip_time?: string
+          is_notified?: boolean
+          created_at?: string
+        }
+        Relationships: never[]
+      }
+
+      // ── notifications ───────────────────────────────────────────────────────
+      notifications: {
+        Row: {
+          id: string
+          user_id: string
+          type: string
+          title: string
+          body: string
+          data: Record<string, unknown>
+          is_read: boolean
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          type: string
+          title: string
+          body: string
+          data?: Record<string, unknown>
+          is_read?: boolean
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          type?: string
+          title?: string
+          body?: string
+          data?: Record<string, unknown>
+          is_read?: boolean
+          created_at?: string
+        }
+        Relationships: never[]
+      }
+
+      // ── ride_offers ─────────────────────────────────────────────────────────
+      ride_offers: {
+        Row: {
+          id: string
+          ride_id: string
+          driver_id: string
+          vehicle_id: string | null
+          status: 'pending' | 'selected' | 'released'
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          ride_id: string
+          driver_id: string
+          vehicle_id?: string | null
+          status?: 'pending' | 'selected' | 'released'
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          ride_id?: string
+          driver_id?: string
+          vehicle_id?: string | null
+          status?: 'pending' | 'selected' | 'released'
+          created_at?: string
+        }
+        Relationships: never[]
+      }
+
+      // ── ride_ratings ────────────────────────────────────────────────────────
+      ride_ratings: {
+        Row: {
+          id: string
+          ride_id: string
+          rater_id: string
+          rated_id: string
+          stars: number
+          tags: string[]
+          comment: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          ride_id: string
+          rater_id: string
+          rated_id: string
+          stars: number
+          tags?: string[]
+          comment?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          ride_id?: string
+          rater_id?: string
+          rated_id?: string
+          stars?: number
+          tags?: string[]
+          comment?: string | null
           created_at?: string
         }
         Relationships: never[]
@@ -373,3 +561,7 @@ export type Transaction    = Database['public']['Tables']['transactions']['Row']
 export type DriverRoutine  = Database['public']['Tables']['driver_routines']['Row']
 export type Message        = Database['public']['Tables']['messages']['Row']
 export type PushToken      = Database['public']['Tables']['push_tokens']['Row']
+export type RideSchedule   = Database['public']['Tables']['ride_schedules']['Row']
+export type RideOffer      = Database['public']['Tables']['ride_offers']['Row']
+export type RideRating     = Database['public']['Tables']['ride_ratings']['Row']
+export type Notification   = Database['public']['Tables']['notifications']['Row']

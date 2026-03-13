@@ -7,22 +7,49 @@ interface AuthCallbackProps {
 }
 
 /**
- * Handles the redirect after a user clicks a magic link.
+ * Handles the redirect after a user clicks a magic/reset link.
  *
  * Supabase (PKCE flow) appends `?code=…` to the redirect URL.
  * With `detectSessionInUrl: true` the client exchanges the code
- * for a session automatically on load.  This component waits for
- * the `SIGNED_IN` event and then navigates to onboarding.
+ * for a session automatically on load.
+ *
+ * Routing logic:
+ *  - PASSWORD_RECOVERY → /reset-password (user needs to set new password)
+ *  - SIGNED_IN with existing profile → /home/rider (returning user)
+ *  - SIGNED_IN without profile → /onboarding/profile (new user)
  */
 export default function AuthCallback({ 'data-testid': testId }: AuthCallbackProps) {
   const navigate = useNavigate()
 
   useEffect(() => {
+    /** Look up the users-table row and navigate accordingly. */
+    async function routeSignedInUser() {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) {
+        navigate('/onboarding/profile', { replace: true })
+        return
+      }
+
+      const { data } = await supabase
+        .from('users')
+        .select('full_name')
+        .eq('id', user.id)
+        .single()
+
+      if (data?.full_name) {
+        navigate('/home/rider', { replace: true })
+      } else {
+        navigate('/onboarding/profile', { replace: true })
+      }
+    }
+
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_IN') {
-        navigate('/onboarding/profile', { replace: true })
+      if (event === 'PASSWORD_RECOVERY') {
+        navigate('/reset-password', { replace: true })
+      } else if (event === 'SIGNED_IN') {
+        void routeSignedInUser()
       }
     })
 
@@ -31,7 +58,7 @@ export default function AuthCallback({ 'data-testid': testId }: AuthCallbackProp
     // check once and navigate.
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
-        navigate('/onboarding/profile', { replace: true })
+        void routeSignedInUser()
       }
     })
 

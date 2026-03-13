@@ -1,0 +1,909 @@
+/**
+ * SchedulePage tests
+ *
+ * Verifies:
+ *  1.  Component renders with default data-testid
+ *  2.  Custom data-testid forwarded to root wrapper
+ *  3.  Mode prop changes header text (driver vs rider)
+ *  4.  Route name input renders and accepts text
+ *  5.  From location input renders
+ *  6.  To location input renders
+ *  7.  Direction toggles between one-way and roundtrip
+ *  8.  Trip type toggles between one-time and routine
+ *  9.  Continue button disabled when form incomplete
+ * 10.  Validation error shown when route name empty on continue
+ * 11.  Validation error shown when from location not selected on continue
+ * 12.  Validation error shown when to location not selected on continue
+ * 13.  From location autocomplete calls searchPlaces with debounce
+ * 14.  From location suggestions displayed when results returned
+ * 15.  Selecting from suggestion fills the field
+ * 16.  To location autocomplete calls searchPlaces with debounce
+ * 17.  To location suggestions displayed when results returned
+ * 18.  Selecting to suggestion fills the field
+ * 19.  Loading indicator shown during from search
+ * 20.  Loading indicator shown during to search
+ * 21.  Continue button enabled when all fields valid
+ * 22.  Cancel button calls window.history.back
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import SchedulePage from '@/components/schedule/SchedulePage'
+import type { PlaceSuggestion } from '@/lib/places'
+
+// ── Mock react-router-dom ─────────────────────────────────────────────────────
+
+const mockNavigate = vi.fn()
+
+vi.mock('react-router-dom', () => ({
+  useNavigate: () => mockNavigate,
+}))
+
+// ── Mock places module ────────────────────────────────────────────────────────
+
+const mockSearchPlaces = vi.fn<() => Promise<PlaceSuggestion[]>>()
+const mockGetPlaceCoordinates = vi.fn<() => Promise<{ lat: number; lng: number } | null>>()
+
+vi.mock('@/lib/places', () => ({
+  searchPlaces: (...args: Parameters<typeof mockSearchPlaces>) => mockSearchPlaces(...args),
+  getPlaceCoordinates: (...args: Parameters<typeof mockGetPlaceCoordinates>) => mockGetPlaceCoordinates(...args),
+}))
+
+// ── Mock Supabase ─────────────────────────────────────────────────────────────
+
+/** Creates a mock return value that works for both `.insert()` (awaitable) and `.insert().select()` chains */
+function mockInsertReturn(result: { data?: unknown; error: unknown }) {
+  const p = Promise.resolve(result)
+  return Object.assign(p, { select: () => Promise.resolve(result) })
+}
+
+const mockInsert = vi.fn().mockReturnValue(mockInsertReturn({ data: [{ id: 'test-id' }], error: null }))
+
+vi.mock('@/lib/supabase', () => ({
+  supabase: {
+    from: () => ({
+      insert: mockInsert,
+    }),
+    auth: {
+      getSession: () => Promise.resolve({ data: { session: { access_token: 'test-token' } } }),
+    },
+  },
+}))
+
+// ── Mock geo ──────────────────────────────────────────────────────────────────
+
+vi.mock('@/lib/geo', () => ({
+  calculateBearing: () => 45.0,
+}))
+
+// ── Mock auth store ───────────────────────────────────────────────────────────
+
+vi.mock('@/stores/authStore', () => ({
+  useAuthStore: (selector: (s: Record<string, unknown>) => unknown) =>
+    selector({ user: { id: 'user-123' } }),
+}))
+
+// ── Fixtures ──────────────────────────────────────────────────────────────────
+
+const PLACE_FROM: PlaceSuggestion = {
+  placeId:       'place-001',
+  mainText:      'UC Davis',
+  secondaryText: 'Davis, CA, USA',
+  fullAddress:   'UC Davis, Davis, CA, USA',
+}
+
+const PLACE_TO: PlaceSuggestion = {
+  placeId:       'place-002',
+  mainText:      'San Francisco',
+  secondaryText: 'CA, USA',
+  fullAddress:   'San Francisco, CA, USA',
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe('SchedulePage', () => {
+  beforeEach(() => {
+    mockSearchPlaces.mockResolvedValue([])
+    mockInsert.mockReturnValue(mockInsertReturn({ data: [{ id: 'test-id' }], error: null }))
+    mockGetPlaceCoordinates.mockResolvedValue({ lat: 38.54, lng: -121.76 })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  // ── Rendering ──────────────────────────────────────────────────────────────
+
+  it('renders with default data-testid', () => {
+    render(<SchedulePage mode="rider" />)
+    expect(screen.getByTestId('schedule-page')).toBeInTheDocument()
+  })
+
+  it('forwards custom data-testid to root wrapper', () => {
+    render(<SchedulePage mode="rider" data-testid="custom-schedule" />)
+    expect(screen.getByTestId('custom-schedule')).toBeInTheDocument()
+  })
+
+  it('displays "Schedule a Ride" header for rider mode', () => {
+    render(<SchedulePage mode="rider" />)
+    expect(screen.getByText('Schedule a Ride')).toBeInTheDocument()
+  })
+
+  it('displays "Schedule a Drive" header for driver mode', () => {
+    render(<SchedulePage mode="driver" />)
+    expect(screen.getByText('Schedule a Drive')).toBeInTheDocument()
+  })
+
+  it('displays "Where do you usually travel?" subheading', () => {
+    render(<SchedulePage mode="rider" />)
+    expect(screen.getByText('Where do you usually travel?')).toBeInTheDocument()
+  })
+
+  // ── Form Fields ────────────────────────────────────────────────────────────
+
+  it('renders route name input', () => {
+    render(<SchedulePage mode="rider" />)
+    expect(screen.getByTestId('route-name-input')).toBeInTheDocument()
+  })
+
+  it('route name input accepts text', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    const input = screen.getByTestId('route-name-input')
+    await user.type(input, 'Home to SF')
+    expect(input).toHaveValue('Home to SF')
+  })
+
+  it('renders from location input', () => {
+    render(<SchedulePage mode="rider" />)
+    expect(screen.getByTestId('from-location-input')).toBeInTheDocument()
+  })
+
+  it('renders to location input', () => {
+    render(<SchedulePage mode="rider" />)
+    expect(screen.getByTestId('to-location-input')).toBeInTheDocument()
+  })
+
+  // ── Direction Toggles ──────────────────────────────────────────────────────
+
+  it('defaults to one-way direction', () => {
+    render(<SchedulePage mode="rider" />)
+    const oneWayBtn = screen.getByTestId('direction-one-way')
+    expect(oneWayBtn).toHaveClass('bg-primary')
+  })
+
+  it('switches to roundtrip when clicked', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    const roundtripBtn = screen.getByTestId('direction-roundtrip')
+    await user.click(roundtripBtn)
+    expect(roundtripBtn).toHaveClass('bg-primary')
+  })
+
+  // ── Trip Type Toggles ──────────────────────────────────────────────────────
+
+  it('defaults to one-time trip type', () => {
+    render(<SchedulePage mode="rider" />)
+    const oneTimeBtn = screen.getByTestId('trip-type-one-time')
+    expect(oneTimeBtn).toHaveClass('bg-primary')
+  })
+
+  it('switches to routine when clicked', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    const routineBtn = screen.getByTestId('trip-type-routine')
+    await user.click(routineBtn)
+    expect(routineBtn).toHaveClass('bg-primary')
+  })
+
+  // ── Validation ─────────────────────────────────────────────────────────────
+
+  it('shows all validation errors when continue clicked with empty form', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    const continueBtn = screen.getByTestId('continue-button')
+    await user.click(continueBtn)
+    expect(screen.getByText('Please enter a route name')).toBeInTheDocument()
+    expect(screen.getByText('Please select a From location')).toBeInTheDocument()
+    expect(screen.getByText('Please select a To location')).toBeInTheDocument()
+  })
+
+  it('shows validation error when route name empty on continue click', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    
+    // Enable button by filling locations (but not route name)
+    const fromInput = screen.getByTestId('from-location-input')
+    await user.type(fromInput, 'UC')
+    
+    mockSearchPlaces.mockResolvedValue([PLACE_FROM])
+    
+    await waitFor(() => {
+      expect(screen.getByTestId('from-suggestions')).toBeInTheDocument()
+    })
+    
+    await user.click(screen.getByTestId(`from-suggestion-${PLACE_FROM.placeId}`))
+    
+    const toInput = screen.getByTestId('to-location-input')
+    await user.type(toInput, 'SF')
+    
+    mockSearchPlaces.mockResolvedValue([PLACE_TO])
+    
+    await waitFor(() => {
+      expect(screen.getByTestId('to-suggestions')).toBeInTheDocument()
+    })
+    
+    await user.click(screen.getByTestId(`to-suggestion-${PLACE_TO.placeId}`))
+    
+    // Now click continue without route name
+    const continueBtn = screen.getByTestId('continue-button')
+    await user.click(continueBtn)
+    
+    expect(screen.getByText('Please enter a route name')).toBeInTheDocument()
+  })
+
+  it('shows validation error when from location not selected on continue', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    
+    // Fill only route name
+    const routeInput = screen.getByTestId('route-name-input')
+    await user.type(routeInput, 'Home to SF')
+    
+    // Try to continue
+    const continueBtn = screen.getByTestId('continue-button')
+    await user.click(continueBtn)
+    
+    expect(screen.getByText('Please select a From location')).toBeInTheDocument()
+  })
+
+  it('shows validation error when to location not selected on continue', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    
+    // Fill route name
+    const routeInput = screen.getByTestId('route-name-input')
+    await user.type(routeInput, 'Home to SF')
+    
+    // Fill from location
+    const fromInput = screen.getByTestId('from-location-input')
+    await user.type(fromInput, 'UC')
+    
+    mockSearchPlaces.mockResolvedValue([PLACE_FROM])
+    
+    await waitFor(() => {
+      expect(screen.getByTestId('from-suggestions')).toBeInTheDocument()
+    })
+    
+    await user.click(screen.getByTestId(`from-suggestion-${PLACE_FROM.placeId}`))
+    
+    // Try to continue without to location
+    const continueBtn = screen.getByTestId('continue-button')
+    await user.click(continueBtn)
+    
+    expect(screen.getByText('Please select a To location')).toBeInTheDocument()
+  })
+
+  // ── From Location Autocomplete ─────────────────────────────────────────────
+
+  it('does not call searchPlaces before debounce fires for from input', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    
+    const input = screen.getByTestId('from-location-input')
+    await user.type(input, 'UC')
+    
+    // Immediately after typing, searchPlaces should not have been called yet
+    expect(mockSearchPlaces).not.toHaveBeenCalled()
+  })
+
+  it('calls searchPlaces after 300ms debounce for from input', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    
+    const input = screen.getByTestId('from-location-input')
+    await user.type(input, 'UC Davis')
+    
+    await waitFor(() => {
+      expect(mockSearchPlaces).toHaveBeenCalledWith('UC Davis')
+    }, { timeout: 1000 })
+  })
+
+  it('displays from location suggestions when results returned', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    
+    mockSearchPlaces.mockResolvedValue([PLACE_FROM])
+    
+    const input = screen.getByTestId('from-location-input')
+    await user.type(input, 'UC')
+    
+    await waitFor(() => {
+      expect(screen.getByTestId('from-suggestions')).toBeInTheDocument()
+      expect(screen.getByText('UC Davis')).toBeInTheDocument()
+    }, { timeout: 1000 })
+  })
+
+  it('fills from field when from suggestion selected', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    
+    mockSearchPlaces.mockResolvedValue([PLACE_FROM])
+    
+    const input = screen.getByTestId('from-location-input')
+    await user.type(input, 'UC')
+    
+    await waitFor(() => {
+      expect(screen.getByTestId('from-suggestions')).toBeInTheDocument()
+    }, { timeout: 1000 })
+    
+    await user.click(screen.getByTestId(`from-suggestion-${PLACE_FROM.placeId}`))
+    
+    expect(input).toHaveValue('UC Davis')
+    expect(screen.queryByTestId('from-suggestions')).not.toBeInTheDocument()
+  })
+
+  // ── To Location Autocomplete ───────────────────────────────────────────────
+
+  it('does not call searchPlaces before debounce fires for to input', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    
+    mockSearchPlaces.mockClear()
+    
+    const input = screen.getByTestId('to-location-input')
+    await user.type(input, 'SF')
+    
+    // Immediately after typing, searchPlaces should not have been called yet
+    expect(mockSearchPlaces).not.toHaveBeenCalled()
+  })
+
+  it('calls searchPlaces after 300ms debounce for to input', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    
+    mockSearchPlaces.mockClear()
+    
+    const input = screen.getByTestId('to-location-input')
+    await user.type(input, 'San Francisco')
+    
+    await waitFor(() => {
+      expect(mockSearchPlaces).toHaveBeenCalledWith('San Francisco')
+    }, { timeout: 1000 })
+  })
+
+  it('displays to location suggestions when results returned', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    
+    mockSearchPlaces.mockResolvedValue([PLACE_TO])
+    
+    const input = screen.getByTestId('to-location-input')
+    await user.type(input, 'SF')
+    
+    await waitFor(() => {
+      expect(screen.getByTestId('to-suggestions')).toBeInTheDocument()
+      expect(screen.getByText('San Francisco')).toBeInTheDocument()
+    }, { timeout: 1000 })
+  })
+
+  it('fills to field when to suggestion selected', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    
+    mockSearchPlaces.mockResolvedValue([PLACE_TO])
+    
+    const input = screen.getByTestId('to-location-input')
+    await user.type(input, 'SF')
+    
+    await waitFor(() => {
+      expect(screen.getByTestId('to-suggestions')).toBeInTheDocument()
+    }, { timeout: 1000 })
+    
+    await user.click(screen.getByTestId(`to-suggestion-${PLACE_TO.placeId}`))
+    
+    expect(input).toHaveValue('San Francisco')
+    expect(screen.queryByTestId('to-suggestions')).not.toBeInTheDocument()
+  })
+
+  // ── Continue Button ────────────────────────────────────────────────────────
+
+  it('continue button enabled when all required fields filled', async () => {
+    const user = userEvent.setup()
+    render(<SchedulePage mode="rider" />)
+    
+    // Fill route name
+    const routeInput = screen.getByTestId('route-name-input')
+    await user.type(routeInput, 'Home to SF')
+    
+    // Fill from location
+    const fromInput = screen.getByTestId('from-location-input')
+    await user.type(fromInput, 'UC')
+    
+    mockSearchPlaces.mockResolvedValue([PLACE_FROM])
+    
+    await waitFor(() => {
+      expect(screen.getByTestId('from-suggestions')).toBeInTheDocument()
+    }, { timeout: 1000 })
+    
+    await user.click(screen.getByTestId(`from-suggestion-${PLACE_FROM.placeId}`))
+    
+    // Fill to location
+    mockSearchPlaces.mockClear()
+    const toInput = screen.getByTestId('to-location-input')
+    await user.type(toInput, 'SF')
+    
+    mockSearchPlaces.mockResolvedValue([PLACE_TO])
+    
+    await waitFor(() => {
+      expect(screen.getByTestId('to-suggestions')).toBeInTheDocument()
+    }, { timeout: 1000 })
+    
+    await user.click(screen.getByTestId(`to-suggestion-${PLACE_TO.placeId}`))
+    
+    const continueBtn = screen.getByTestId('continue-button')
+    expect(continueBtn).not.toBeDisabled()
+  })
+
+  // ── Cancel Button ──────────────────────────────────────────────────────────
+
+  it('cancel button calls window.history.back', async () => {
+    const user = userEvent.setup()
+    const backSpy = vi.spyOn(window.history, 'back')
+    
+    render(<SchedulePage mode="rider" />)
+    
+    const cancelBtn = screen.getByTestId('cancel-button')
+    await user.click(cancelBtn)
+    
+    expect(backSpy).toHaveBeenCalled()
+    
+    backSpy.mockRestore()
+  })
+
+  // ── One-Time Trip Flow ─────────────────────────────────────────────────────
+
+  describe('One-Time Trip schedule step', () => {
+    /** Helper: fill out the details form and click Continue to reach schedule step */
+    async function goToScheduleStep() {
+      const user = userEvent.setup()
+      render(<SchedulePage mode="rider" />)
+
+      // Route name
+      await user.type(screen.getByTestId('route-name-input'), 'Home to SF')
+
+      // From location
+      mockSearchPlaces.mockResolvedValue([PLACE_FROM])
+      await user.type(screen.getByTestId('from-location-input'), 'UC')
+      await waitFor(() => {
+        expect(screen.getByTestId('from-suggestions')).toBeInTheDocument()
+      }, { timeout: 1000 })
+      await user.click(screen.getByTestId(`from-suggestion-${PLACE_FROM.placeId}`))
+
+      // To location
+      mockSearchPlaces.mockResolvedValue([PLACE_TO])
+      await user.type(screen.getByTestId('to-location-input'), 'SF')
+      await waitFor(() => {
+        expect(screen.getByTestId('to-suggestions')).toBeInTheDocument()
+      }, { timeout: 1000 })
+      await user.click(screen.getByTestId(`to-suggestion-${PLACE_TO.placeId}`))
+
+      // Click continue (trip-type defaults to one-time)
+      await user.click(screen.getByTestId('continue-button'))
+
+      return user
+    }
+
+    it('shows date & time step after clicking continue with trip-type one-time', async () => {
+      await goToScheduleStep()
+      expect(screen.getByTestId('trip-date-input')).toBeInTheDocument()
+      expect(screen.getByTestId('trip-time-input')).toBeInTheDocument()
+      expect(screen.getByText('Pick Date & Time')).toBeInTheDocument()
+    })
+
+    it('renders departure/arrival toggle defaulting to departure', async () => {
+      await goToScheduleStep()
+      const depBtn = screen.getByTestId('time-type-departure')
+      expect(depBtn).toHaveClass('bg-primary')
+    })
+
+    it('switches time type to arrival when clicked', async () => {
+      const user = await goToScheduleStep()
+      await user.click(screen.getByTestId('time-type-arrival'))
+      expect(screen.getByTestId('time-type-arrival')).toHaveClass('bg-primary')
+      expect(screen.getByText('Arrival Time')).toBeInTheDocument()
+    })
+
+    it('date input has min set to today', async () => {
+      await goToScheduleStep()
+      const dateInput = screen.getByTestId('trip-date-input')
+      const today = new Date()
+      const y = today.getFullYear()
+      const m = String(today.getMonth() + 1).padStart(2, '0')
+      const d = String(today.getDate()).padStart(2, '0')
+      expect(dateInput).toHaveAttribute('min', `${y}-${m}-${d}`)
+    })
+
+    it('shows validation error when submitting without date', async () => {
+      const user = await goToScheduleStep()
+      await user.click(screen.getByTestId('submit-schedule-button'))
+      expect(screen.getByTestId('trip-date-error')).toBeInTheDocument()
+      expect(screen.getByText('Please select a date')).toBeInTheDocument()
+    })
+
+    it('shows validation error when submitting without time', async () => {
+      const user = await goToScheduleStep()
+      // Set a valid date but no time
+      const dateInput = screen.getByTestId('trip-date-input')
+      await user.clear(dateInput)
+      // Set date via native change event
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(dateInput, '2027-06-15')
+      dateInput.dispatchEvent(new Event('change', { bubbles: true }))
+      
+      await user.click(screen.getByTestId('submit-schedule-button'))
+      expect(screen.getByTestId('trip-time-error')).toBeInTheDocument()
+      expect(screen.getByText('Please select a time')).toBeInTheDocument()
+    })
+
+    it('shows past date error when date is before today', async () => {
+      const user = await goToScheduleStep()
+      const dateInput = screen.getByTestId('trip-date-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(dateInput, '2020-01-01')
+      dateInput.dispatchEvent(new Event('change', { bubbles: true }))
+      
+      // Set a valid time
+      const timeInput = screen.getByTestId('trip-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(timeInput, '09:00')
+      timeInput.dispatchEvent(new Event('change', { bubbles: true }))
+      
+      await user.click(screen.getByTestId('submit-schedule-button'))
+      expect(screen.getByTestId('trip-date-error')).toBeInTheDocument()
+      expect(screen.getByText('Date cannot be in the past')).toBeInTheDocument()
+    })
+
+    it('calls supabase insert on valid submit', async () => {
+      const user = await goToScheduleStep()
+
+      // Set valid date
+      const dateInput = screen.getByTestId('trip-date-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(dateInput, '2027-06-15')
+      dateInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      // Set valid time
+      const timeInput = screen.getByTestId('trip-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(timeInput, '09:30')
+      timeInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      // Mock fetch for /api/schedule/notify
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response())
+
+      await user.click(screen.getByTestId('submit-schedule-button'))
+
+      await waitFor(() => {
+        expect(mockInsert).toHaveBeenCalledWith({
+          user_id:          'user-123',
+          mode:             'rider',
+          route_name:       'Home to SF',
+          origin_place_id:  PLACE_FROM.placeId,
+          origin_address:   PLACE_FROM.fullAddress,
+          dest_place_id:    PLACE_TO.placeId,
+          dest_address:     PLACE_TO.fullAddress,
+          direction_type:   'one_way',
+          trip_date:        '2027-06-15',
+          time_type:        'departure',
+          trip_time:        '09:30:00',
+        })
+      })
+
+      // Shows confirmation screen instead of navigating back
+      await waitFor(() => {
+        expect(screen.getByTestId('schedule-confirmation')).toBeInTheDocument()
+      })
+      expect(screen.getByText('Ride Scheduled!')).toBeInTheDocument()
+      fetchSpy.mockRestore()
+    })
+
+    it('shows submit error when supabase insert fails', async () => {
+      mockInsert.mockReturnValue(mockInsertReturn({ data: null, error: { message: 'DB error' } }))
+      const user = await goToScheduleStep()
+
+      const dateInput = screen.getByTestId('trip-date-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(dateInput, '2027-06-15')
+      dateInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      const timeInput = screen.getByTestId('trip-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(timeInput, '09:30')
+      timeInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      await user.click(screen.getByTestId('submit-schedule-button'))
+
+      await waitFor(() => {
+        expect(screen.getByTestId('submit-error')).toBeInTheDocument()
+        expect(screen.getByText('DB error')).toBeInTheDocument()
+      })
+    })
+
+    it('back button returns to details step', async () => {
+      const user = await goToScheduleStep()
+      await user.click(screen.getByTestId('back-button'))
+      // Should see the route name input again
+      expect(screen.getByTestId('route-name-input')).toBeInTheDocument()
+      expect(screen.getByText('Schedule a Ride')).toBeInTheDocument()
+    })
+  })
+
+  // ── Recurring Routine Flow ─────────────────────────────────────────────────
+
+  describe('Recurring Routine schedule step', () => {
+    /** Helper: fill details form with trip-type=routine and click Continue */
+    async function goToRoutineStep() {
+      const user = userEvent.setup()
+      render(<SchedulePage mode="driver" />)
+
+      // Route name
+      await user.type(screen.getByTestId('route-name-input'), 'Daily Commute')
+
+      // From location
+      mockSearchPlaces.mockResolvedValue([PLACE_FROM])
+      await user.type(screen.getByTestId('from-location-input'), 'UC')
+      await waitFor(() => {
+        expect(screen.getByTestId('from-suggestions')).toBeInTheDocument()
+      }, { timeout: 1000 })
+      await user.click(screen.getByTestId(`from-suggestion-${PLACE_FROM.placeId}`))
+
+      // To location
+      mockSearchPlaces.mockResolvedValue([PLACE_TO])
+      await user.type(screen.getByTestId('to-location-input'), 'SF')
+      await waitFor(() => {
+        expect(screen.getByTestId('to-suggestions')).toBeInTheDocument()
+      }, { timeout: 1000 })
+      await user.click(screen.getByTestId(`to-suggestion-${PLACE_TO.placeId}`))
+
+      // Select routine trip type
+      await user.click(screen.getByTestId('trip-type-routine'))
+
+      // Click continue
+      await user.click(screen.getByTestId('continue-button'))
+
+      return user
+    }
+
+    it('shows day pills after clicking continue with trip-type routine', async () => {
+      await goToRoutineStep()
+      expect(screen.getByText('Pick Your Days')).toBeInTheDocument()
+      for (let d = 0; d <= 6; d++) {
+        expect(screen.getByTestId(`day-pill-${d}`)).toBeInTheDocument()
+      }
+    })
+
+    it('clicking a day pill selects it and opens bottom sheet', async () => {
+      const user = await goToRoutineStep()
+      const mondayPill = screen.getByTestId('day-pill-1')
+      expect(mondayPill).toHaveAttribute('aria-pressed', 'false')
+
+      await user.click(mondayPill)
+
+      expect(mondayPill).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByTestId('day-time-sheet')).toBeInTheDocument()
+      expect(screen.getByText('Set Time — Monday')).toBeInTheDocument()
+    })
+
+    it('supports multi-day selection', async () => {
+      const user = await goToRoutineStep()
+
+      // Select Monday → opens sheet → close
+      await user.click(screen.getByTestId('day-pill-1'))
+      await user.click(screen.getByLabelText('Close'))
+
+      // Select Wednesday → opens sheet → close
+      await user.click(screen.getByTestId('day-pill-3'))
+      await user.click(screen.getByLabelText('Close'))
+
+      // Select Friday → opens sheet → close
+      await user.click(screen.getByTestId('day-pill-5'))
+      await user.click(screen.getByLabelText('Close'))
+
+      expect(screen.getByTestId('day-pill-1')).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByTestId('day-pill-3')).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByTestId('day-pill-5')).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByTestId('day-pill-0')).toHaveAttribute('aria-pressed', 'false')
+    })
+
+    it('bottom sheet has departure/arrival toggle defaulting to departure', async () => {
+      const user = await goToRoutineStep()
+      await user.click(screen.getByTestId('day-pill-1'))
+      expect(screen.getByTestId('sheet-time-type-departure')).toHaveClass('bg-primary')
+    })
+
+    it('bottom sheet switches to arrival when clicked', async () => {
+      const user = await goToRoutineStep()
+      await user.click(screen.getByTestId('day-pill-1'))
+      await user.click(screen.getByTestId('sheet-time-type-arrival'))
+      expect(screen.getByTestId('sheet-time-type-arrival')).toHaveClass('bg-primary')
+      expect(screen.getByText('Arrival Time')).toBeInTheDocument()
+    })
+
+    it('saves per-day time config when Save clicked', async () => {
+      const user = await goToRoutineStep()
+
+      // Select Monday and set time
+      await user.click(screen.getByTestId('day-pill-1'))
+      const timeInput = screen.getByTestId('sheet-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(timeInput, '08:30')
+      timeInput.dispatchEvent(new Event('change', { bubbles: true }))
+      await user.click(screen.getByTestId('sheet-save-button'))
+
+      // Summary should show the saved time
+      expect(screen.getByTestId('day-summary-1')).toBeInTheDocument()
+      expect(screen.getByText('Dep 08:30')).toBeInTheDocument()
+    })
+
+    it('stores different times for different days', async () => {
+      const user = await goToRoutineStep()
+
+      // Monday: departure 08:30
+      await user.click(screen.getByTestId('day-pill-1'))
+      const timeInput1 = screen.getByTestId('sheet-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(timeInput1, '08:30')
+      timeInput1.dispatchEvent(new Event('change', { bubbles: true }))
+      await user.click(screen.getByTestId('sheet-save-button'))
+
+      // Wednesday: arrival 09:00
+      await user.click(screen.getByTestId('day-pill-3'))
+      await user.click(screen.getByTestId('sheet-time-type-arrival'))
+      const timeInput2 = screen.getByTestId('sheet-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(timeInput2, '09:00')
+      timeInput2.dispatchEvent(new Event('change', { bubbles: true }))
+      await user.click(screen.getByTestId('sheet-save-button'))
+
+      expect(screen.getByText('Dep 08:30')).toBeInTheDocument()
+      expect(screen.getByText('Arr 09:00')).toBeInTheDocument()
+    })
+
+    it('removes a day via Remove Day button in bottom sheet', async () => {
+      const user = await goToRoutineStep()
+
+      // Select and configure Monday
+      await user.click(screen.getByTestId('day-pill-1'))
+      const timeInput = screen.getByTestId('sheet-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(timeInput, '08:00')
+      timeInput.dispatchEvent(new Event('change', { bubbles: true }))
+      await user.click(screen.getByTestId('sheet-save-button'))
+
+      // Re-open sheet for Monday
+      await user.click(screen.getByTestId('day-pill-1'))
+      await user.click(screen.getByTestId('sheet-remove-button'))
+
+      expect(screen.getByTestId('day-pill-1')).toHaveAttribute('aria-pressed', 'false')
+      expect(screen.queryByTestId('day-summary-1')).not.toBeInTheDocument()
+    })
+
+    it('shows validation error when submitting with no days selected', async () => {
+      const user = await goToRoutineStep()
+      await user.click(screen.getByTestId('submit-routine-button'))
+      expect(screen.getByTestId('days-error')).toBeInTheDocument()
+      expect(screen.getByText('Please select at least one day')).toBeInTheDocument()
+    })
+
+    it('shows validation error when a selected day has no time set', async () => {
+      const user = await goToRoutineStep()
+
+      // Select Monday but close sheet without saving time
+      await user.click(screen.getByTestId('day-pill-1'))
+      await user.click(screen.getByLabelText('Close'))
+
+      await user.click(screen.getByTestId('submit-routine-button'))
+      expect(screen.getByTestId('days-error')).toBeInTheDocument()
+      expect(screen.getByText('Please set a time for each selected day')).toBeInTheDocument()
+    })
+
+    it('calls supabase insert with correct driver_routines data on submit', async () => {
+      const user = await goToRoutineStep()
+
+      // Select Monday and set departure 08:30
+      await user.click(screen.getByTestId('day-pill-1'))
+      const timeInput = screen.getByTestId('sheet-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(timeInput, '08:30')
+      timeInput.dispatchEvent(new Event('change', { bubbles: true }))
+      await user.click(screen.getByTestId('sheet-save-button'))
+
+      await user.click(screen.getByTestId('submit-routine-button'))
+
+      await waitFor(() => {
+        expect(mockInsert).toHaveBeenCalledWith({
+          user_id:             'user-123',
+          route_name:          'Daily Commute',
+          origin:              { type: 'Point', coordinates: [-121.76, 38.54] },
+          destination:         { type: 'Point', coordinates: [-121.76, 38.54] },
+          destination_bearing: 45.0,
+          direction_type:      'one_way',
+          day_of_week:         [1],
+          departure_time:      '08:30:00',
+          arrival_time:        null,
+          origin_address:      'UC Davis, Davis, CA, USA',
+          dest_address:        'San Francisco, CA, USA',
+        })
+      })
+
+      // Shows confirmation screen
+      await waitFor(() => {
+        expect(screen.getByTestId('schedule-confirmation')).toBeInTheDocument()
+      })
+      expect(screen.getByText('Routine Saved!')).toBeInTheDocument()
+    })
+
+    it('shows error when getPlaceCoordinates returns null', async () => {
+      mockGetPlaceCoordinates.mockResolvedValue(null)
+      const user = await goToRoutineStep()
+
+      // Select Monday and set time
+      await user.click(screen.getByTestId('day-pill-1'))
+      const timeInput = screen.getByTestId('sheet-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(timeInput, '08:30')
+      timeInput.dispatchEvent(new Event('change', { bubbles: true }))
+      await user.click(screen.getByTestId('sheet-save-button'))
+
+      await user.click(screen.getByTestId('submit-routine-button'))
+
+      await waitFor(() => {
+        expect(screen.getByTestId('submit-error')).toBeInTheDocument()
+        expect(screen.getByText('Could not determine coordinates for your locations.')).toBeInTheDocument()
+      })
+    })
+
+    it('shows error when supabase insert fails', async () => {
+      mockInsert.mockReturnValue(mockInsertReturn({ error: { message: 'DB error' } }))
+      const user = await goToRoutineStep()
+
+      // Select Monday and set time
+      await user.click(screen.getByTestId('day-pill-1'))
+      const timeInput = screen.getByTestId('sheet-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(timeInput, '08:30')
+      timeInput.dispatchEvent(new Event('change', { bubbles: true }))
+      await user.click(screen.getByTestId('sheet-save-button'))
+
+      await user.click(screen.getByTestId('submit-routine-button'))
+
+      await waitFor(() => {
+        expect(screen.getByTestId('submit-error')).toBeInTheDocument()
+        expect(screen.getByText('DB error')).toBeInTheDocument()
+      })
+    })
+
+    it('back button returns to details step', async () => {
+      const user = await goToRoutineStep()
+      await user.click(screen.getByTestId('back-button'))
+      expect(screen.getByTestId('route-name-input')).toBeInTheDocument()
+      expect(screen.getByText('Schedule a Drive')).toBeInTheDocument()
+    })
+  })
+})

@@ -86,7 +86,10 @@ describe('ForgotPassword', () => {
     renderPage()
     await user.type(screen.getByTestId('email-input'), 'Maya@UCDavis.EDU')
     await user.click(screen.getByTestId('submit-button'))
-    expect(mockResetPasswordForEmail).toHaveBeenCalledWith('maya@ucdavis.edu')
+    expect(mockResetPasswordForEmail).toHaveBeenCalledWith(
+      'maya@ucdavis.edu',
+      { redirectTo: expect.stringContaining('/auth/callback') },
+    )
   })
 
   it('shows success message after successful send', async () => {

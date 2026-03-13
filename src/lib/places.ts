@@ -80,6 +80,35 @@ export async function searchPlaces(input: string): Promise<PlaceSuggestion[]> {
   }
 }
 
+// ── Place coordinates ─────────────────────────────────────────────────────────
+
+interface PlaceDetailsResponse {
+  location?: { latitude: number; longitude: number }
+}
+
+/**
+ * Fetch lat/lng for a Google placeId via the Places New API (v1).
+ * Returns null if the key is missing or the request fails.
+ */
+export async function getPlaceCoordinates(
+  placeId: string,
+): Promise<{ lat: number; lng: number } | null> {
+  const key = env.GOOGLE_PLACES_KEY
+  if (!key || !placeId) return null
+
+  try {
+    const resp = await fetch(
+      `https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}?fields=location&key=${encodeURIComponent(key)}`,
+    )
+    if (!resp.ok) return null
+    const data = (await resp.json()) as PlaceDetailsResponse
+    if (!data.location) return null
+    return { lat: data.location.latitude, lng: data.location.longitude }
+  } catch {
+    return null
+  }
+}
+
 // ── Recent destinations ───────────────────────────────────────────────────────
 
 /** Read up to MAX_RECENT recent destinations from localStorage. */

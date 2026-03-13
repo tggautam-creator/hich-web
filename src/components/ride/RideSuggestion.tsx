@@ -1,7 +1,10 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
+import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
 import { formatCents } from '@/lib/fare'
+import { getDirectionsByLatLng } from '@/lib/directions'
+import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
 import type { Ride, User } from '@/types/database'
 
 const COUNTDOWN_SECONDS = 90
@@ -11,6 +14,18 @@ interface RideWithRider {
   rider: Pick<User, 'id' | 'full_name' | 'avatar_url' | 'rating_avg' | 'rating_count'>
 }
 
+/** Data passed from the notification banner via navigation state. */
+interface NotificationState {
+  riderName?: string
+  destination?: string
+  distanceKm?: string
+  estimatedEarnings?: string
+  originLat?: string
+  originLng?: string
+  destinationLat?: string
+  destinationLng?: string
+}
+
 export default function RideSuggestion({
   'data-testid': testId = 'ride-suggestion',
 }: {
@@ -18,12 +33,22 @@ export default function RideSuggestion({
 }) {
   const { rideId } = useParams<{ rideId: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
+  const navState = location.state as NotificationState | null
+  // Stabilize navState ref so it doesn't trigger re-fetches on re-render
+  const navStateRef = useRef(navState)
 
   const [data, setData] = useState<RideWithRider | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS)
   const [submitting, setSubmitting] = useState(false)
+  // Polyline from rider pickup → destination
+  const [ridePolyline, setRidePolyline] = useState<string | null>(null)
+  // Polyline from driver → rider pickup
+  const [pickupPolyline, setPickupPolyline] = useState<string | null>(null)
+  // Driver's current location
+  const [driverLoc, setDriverLoc] = useState<{ lat: number; lng: number } | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // ── Fetch ride + rider ────────────────────────────────────────────────────
@@ -33,6 +58,8 @@ export default function RideSuggestion({
       return
     }
 
+    const ns = navStateRef.current
+
     async function fetchRide() {
       const { data: ride, error: rideErr } = await supabase
         .from('rides')
@@ -41,6 +68,21 @@ export default function RideSuggestion({
         .single()
 
       if (rideErr || !ride) {
+        // If the DB query fails (e.g. RLS), fall back to notification nav state
+        if (ns?.riderName) {
+          setData({
+            ride: { id: rideId, fare_cents: null } as unknown as Ride,
+            rider: {
+              id: '',
+              full_name: ns.riderName,
+              avatar_url: null,
+              rating_avg: null,
+              rating_count: 0,
+            },
+          })
+          setLoading(false)
+          return
+        }
         setError('Could not load ride details')
         setLoading(false)
         return
@@ -53,6 +95,21 @@ export default function RideSuggestion({
         .single()
 
       if (riderErr || !rider) {
+        // RLS blocks reading other users — fall back to nav state
+        if (ns?.riderName) {
+          setData({
+            ride,
+            rider: {
+              id: ride.rider_id,
+              full_name: ns.riderName,
+              avatar_url: null,
+              rating_avg: null,
+              rating_count: 0,
+            },
+          })
+          setLoading(false)
+          return
+        }
         setError('Could not load rider details')
         setLoading(false)
         return
@@ -124,6 +181,47 @@ export default function RideSuggestion({
     }
   }
 
+  // ── Get driver's current location ────────────────────────────────────────
+  useEffect(() => {
+    if (!navigator.geolocation) return
+    navigator.geolocation.getCurrentPosition(
+      (pos) => setDriverLoc({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => { /* location unavailable */ },
+      { enableHighAccuracy: true, timeout: 5000 },
+    )
+  }, [])
+
+  // ── Fetch polylines once data + coords available ─────────────────────────
+  useEffect(() => {
+    if (!data) return
+    const ns = navStateRef.current
+    const oLat = data.ride.origin?.coordinates?.[1] ?? parseFloat(ns?.originLat ?? '')
+    const oLng = data.ride.origin?.coordinates?.[0] ?? parseFloat(ns?.originLng ?? '')
+    const dLat = data.ride.destination?.coordinates?.[1] ?? parseFloat(ns?.destinationLat ?? '')
+    const dLng = data.ride.destination?.coordinates?.[0] ?? parseFloat(ns?.destinationLng ?? '')
+
+    if (isNaN(oLat) || isNaN(oLng) || isNaN(dLat) || isNaN(dLng)) return
+
+    // Fetch pickup → destination polyline
+    void getDirectionsByLatLng(oLat, oLng, dLat, dLng).then((result) => {
+      if (result?.polyline) setRidePolyline(result.polyline)
+    })
+  }, [data])
+
+  // ── Fetch driver → pickup polyline once we have driver location ──────────
+  useEffect(() => {
+    if (!data || !driverLoc) return
+    const ns = navStateRef.current
+    const oLat = data.ride.origin?.coordinates?.[1] ?? parseFloat(ns?.originLat ?? '')
+    const oLng = data.ride.origin?.coordinates?.[0] ?? parseFloat(ns?.originLng ?? '')
+
+    if (isNaN(oLat) || isNaN(oLng)) return
+
+    void getDirectionsByLatLng(driverLoc.lat, driverLoc.lng, oLat, oLng).then((result) => {
+      if (result?.polyline) setPickupPolyline(result.polyline)
+    })
+  }, [data, driverLoc])
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   if (loading) {
@@ -160,46 +258,113 @@ export default function RideSuggestion({
   if (!data) return null
 
   const { ride, rider } = data
+  const ns = navStateRef.current
+
+  // ── Extract origin / destination coordinates ────────────────────────────
+  const oLat = ride.origin?.coordinates?.[1] ?? parseFloat(ns?.originLat ?? '')
+  const oLng = ride.origin?.coordinates?.[0] ?? parseFloat(ns?.originLng ?? '')
+  const dLat = ride.destination?.coordinates?.[1] ?? parseFloat(ns?.destinationLat ?? '')
+  const dLng = ride.destination?.coordinates?.[0] ?? parseFloat(ns?.destinationLng ?? '')
+  const hasOrigin = !isNaN(oLat) && !isNaN(oLng) && oLat !== 0 && oLng !== 0
+  const hasDest = !isNaN(dLat) && !isNaN(dLng) && dLat !== 0 && dLng !== 0
+  const hasRoute = hasOrigin && hasDest
+
   const estimatedEarnings = ride.fare_cents
     ? formatCents(ride.fare_cents - Math.round(ride.fare_cents * 0.15))
-    : '–'
+    : (ns?.estimatedEarnings ?? '–')
   const fareCents = ride.fare_cents ? formatCents(ride.fare_cents) : '–'
   const riderRating = rider.rating_avg?.toFixed(1) ?? '–'
   const progressPct = (secondsLeft / COUNTDOWN_SECONDS) * 100
+
+  // ── Collect all map points for bounds fitting ────────────────────────────
+  const mapPoints: Array<{ lat: number; lng: number }> = []
+  if (hasOrigin) mapPoints.push({ lat: oLat, lng: oLng })
+  if (hasDest) mapPoints.push({ lat: dLat, lng: dLng })
+  if (driverLoc) mapPoints.push(driverLoc)
 
   return (
     <div
       data-testid={testId}
       className="flex min-h-dvh flex-col bg-surface"
     >
-      {/* ── Top bar ─────────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-4 py-3">
+      {/* ── Route map (top, Uber-style) ─────────────────────────────────────── */}
+      <div
+        className="relative w-full"
+        style={{ height: '40dvh' }}
+        data-testid="map-preview"
+      >
+        {hasRoute ? (
+          <Map
+            mapId="8cb10228438378796542e8f0"
+            defaultCenter={{ lat: (oLat + dLat) / 2, lng: (oLng + dLng) / 2 }}
+            defaultZoom={11}
+            gestureHandling="cooperative"
+            disableDefaultUI
+            className="h-full w-full"
+          >
+            {/* Driver marker (blue car) */}
+            {driverLoc && (
+              <AdvancedMarker position={driverLoc} title="Your Location">
+                <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-blue-600 shadow-lg text-xs">
+                  🚗
+                </div>
+              </AdvancedMarker>
+            )}
+            {/* Rider pickup marker (green P) */}
+            <AdvancedMarker position={{ lat: oLat, lng: oLng }} title="Pickup">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-green-500 shadow-lg text-xs font-bold text-white">
+                P
+              </div>
+            </AdvancedMarker>
+            {/* Final destination marker (red D) */}
+            <AdvancedMarker position={{ lat: dLat, lng: dLng }} title="Destination">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-red-500 shadow-lg text-xs font-bold text-white">
+                D
+              </div>
+            </AdvancedMarker>
+            {/* Driver → Pickup polyline (dashed gray) */}
+            {pickupPolyline && (
+              <RoutePolyline encodedPath={pickupPolyline} color="#6B7280" weight={3} fitBounds={false} />
+            )}
+            {/* Pickup → Destination polyline (blue) */}
+            {ridePolyline && (
+              <RoutePolyline encodedPath={ridePolyline} color="#4F46E5" weight={4} fitBounds={false} />
+            )}
+            {/* Fit bounds to all 3 points */}
+            {mapPoints.length >= 2 && <MapBoundsFitter points={mapPoints} />}
+          </Map>
+        ) : (
+          <div className="flex h-full items-center justify-center bg-primary-light">
+            <p className="text-sm text-text-secondary">Route preview unavailable</p>
+          </div>
+        )}
+
+        {/* Countdown overlay */}
+        <div className="absolute top-3 right-3 flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 shadow-md backdrop-blur-sm">
+          <span className="text-sm font-semibold text-warning" data-testid="countdown-text">{secondsLeft}s</span>
+        </div>
+        {/* Back button overlay */}
         <button
           type="button"
           onClick={() => void handleDecline()}
-          className="text-sm text-text-secondary"
+          className="absolute top-3 left-3 flex items-center gap-1 rounded-full bg-white/90 px-3 py-1.5 shadow-md backdrop-blur-sm text-sm text-text-secondary"
           data-testid="back-button"
         >
           ← Back
         </button>
-        <h1 className="text-lg font-semibold text-text-primary">Ride Request</h1>
-        <div className="w-10" />
       </div>
 
       {/* ── Countdown progress bar ──────────────────────────────────────────── */}
-      <div className="mx-4 h-1.5 overflow-hidden rounded-full bg-border">
+      <div className="h-1 bg-border">
         <div
-          className="h-full rounded-full bg-warning transition-all duration-1000 ease-linear"
+          className="h-full bg-warning transition-all duration-1000 ease-linear"
           style={{ width: `${progressPct}%` }}
           data-testid="countdown-bar"
         />
       </div>
-      <p className="mt-1 text-center text-xs text-text-secondary" data-testid="countdown-text">
-        {secondsLeft}s to respond
-      </p>
 
       {/* ── Rider card ──────────────────────────────────────────────────────── */}
-      <div className="mx-4 mt-4 rounded-2xl bg-white p-4 shadow-sm" data-testid="rider-card">
+      <div className="mx-4 mt-3 rounded-2xl bg-white p-4 shadow-sm" data-testid="rider-card">
         <div className="flex items-center gap-3">
           {rider.avatar_url ? (
             <img
@@ -226,31 +391,31 @@ export default function RideSuggestion({
               </span>
             </div>
           </div>
+          <div className="text-right">
+            <p className="text-xs text-text-secondary">You Earn</p>
+            <p className="text-lg font-bold text-success" data-testid="driver-earnings">
+              {estimatedEarnings}
+            </p>
+          </div>
         </div>
       </div>
 
-      {/* ── Route / earnings summary ────────────────────────────────────────── */}
-      <div className="mx-4 mt-3 grid grid-cols-2 gap-3">
-        <div className="rounded-2xl bg-white p-4 text-center shadow-sm">
-          <p className="text-xs text-text-secondary">Total Fare</p>
-          <p className="mt-1 text-xl font-bold text-text-primary" data-testid="total-fare">
-            {fareCents}
-          </p>
+      {/* ── Route summary ───────────────────────────────────────────────────── */}
+      <div className="mx-4 mt-3 rounded-2xl bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs text-text-secondary">Total Fare</p>
+            <p className="text-lg font-bold text-text-primary" data-testid="total-fare">
+              {fareCents}
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-text-secondary">Distance</p>
+            <p className="text-lg font-bold text-text-primary">
+              {ns?.distanceKm ? `${(Number(ns.distanceKm) * 0.621371).toFixed(1)} mi` : '–'}
+            </p>
+          </div>
         </div>
-        <div className="rounded-2xl bg-white p-4 text-center shadow-sm">
-          <p className="text-xs text-text-secondary">You Earn</p>
-          <p className="mt-1 text-xl font-bold text-success" data-testid="driver-earnings">
-            {estimatedEarnings}
-          </p>
-        </div>
-      </div>
-
-      {/* ── Map placeholder ─────────────────────────────────────────────────── */}
-      <div
-        className="mx-4 mt-3 flex h-40 items-center justify-center rounded-2xl bg-primary-light"
-        data-testid="map-preview"
-      >
-        <p className="text-sm text-text-secondary">Route preview</p>
       </div>
 
       {/* ── Actions ─────────────────────────────────────────────────────────── */}

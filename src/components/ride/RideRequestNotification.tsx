@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { onForegroundMessage } from '@/lib/fcm'
 import { formatCents } from '@/lib/fare'
-import BottomSheet from '@/components/ui/BottomSheet'
+import { supabase } from '@/lib/supabase'
+import { useAuthStore } from '@/stores/authStore'
+
+// ── Dismiss callback ref (stable across renders) ──────────────────────────────
 
 /** Payload shape sent by the ride request push. */
 interface RideRequestData {
@@ -12,6 +16,33 @@ interface RideRequestData {
   destination?: string
   distance_km?: string
   estimated_earnings_cents?: string
+  origin_lat?: string
+  origin_lng?: string
+  destination_lat?: string
+  destination_lng?: string
+}
+
+/** Payload shape sent by the board request push. */
+interface BoardRequestData {
+  type: 'board_request'
+  ride_id: string
+  requester_name?: string
+  route?: string
+  trip_date?: string
+  trip_time?: string
+}
+
+/** Payload shape for ride cancellation. */
+interface RideCancelledData {
+  type: 'ride_cancelled'
+  ride_id: string
+  cancelled_by?: string
+}
+
+/** Payload shape sent when a board request is accepted. */
+interface BoardAcceptedData {
+  type: 'board_accepted'
+  ride_id: string
 }
 
 interface NotificationState {
@@ -20,6 +51,12 @@ interface NotificationState {
   destination: string
   distanceKm: string
   estimatedEarnings: string
+  originLat: string
+  originLng: string
+  destinationLat: string
+  destinationLng: string
+  /** When true, navigate to board-review instead of ride suggestion */
+  isBoardRequest?: boolean
 }
 
 const DISMISS_SECONDS = 90
@@ -43,28 +80,155 @@ export default function RideRequestNotification({
     }
   }, [])
 
-  // Listen for foreground FCM messages
+  const profile = useAuthStore((s) => s.profile)
+
+  // Ref to track current rideId so the Realtime channel callback
+  // always sees the latest value without re-creating the channel.
+  const rideIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    rideIdRef.current = notification?.rideId ?? null
+  }, [notification?.rideId])
+
+  // Handle incoming ride request data from any source
+  const handleRideRequest = useCallback((data: RideRequestData) => {
+    const earningsCents = parseInt(data.estimated_earnings_cents ?? '0', 10)
+    setNotification({
+      rideId: data.ride_id,
+      riderName: data.rider_name ?? 'A rider',
+      destination: data.destination ?? 'Nearby destination',
+      distanceKm: data.distance_km ?? '–',
+      estimatedEarnings: earningsCents > 0 ? formatCents(earningsCents) : '–',
+      originLat: data.origin_lat ?? '',
+      originLng: data.origin_lng ?? '',
+      destinationLat: data.destination_lat ?? '',
+      destinationLng: data.destination_lng ?? '',
+    })
+    setSecondsLeft(DISMISS_SECONDS)
+  }, [])
+
+  // Handle incoming board request (from ride board)
+  const handleBoardRequest = useCallback((data: BoardRequestData) => {
+    // Build a subtitle from route + trip info when available
+    const routeLabel = data.route ?? ''
+    const timeLabel = [data.trip_date, data.trip_time].filter(Boolean).join(' at ')
+    const destination = routeLabel || timeLabel || ''
+
+    setNotification({
+      rideId: data.ride_id,
+      riderName: data.requester_name ?? 'Someone',
+      destination,
+      distanceKm: '–',
+      estimatedEarnings: '–',
+      originLat: '',
+      originLng: '',
+      destinationLat: '',
+      destinationLng: '',
+      isBoardRequest: true,
+    })
+    setSecondsLeft(DISMISS_SECONDS)
+  }, [])
+
+  // Handle board request accepted — show toast and navigate to messaging
+  const [acceptedToast, setAcceptedToast] = useState<{ rideId: string } | null>(null)
+  const acceptedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleBoardAccepted = useCallback((data: BoardAcceptedData) => {
+    console.log('[Realtime] Board accepted received:', data)
+    setAcceptedToast({ rideId: data.ride_id })
+    // Auto-dismiss after 10s
+    if (acceptedTimerRef.current) clearTimeout(acceptedTimerRef.current)
+    acceptedTimerRef.current = setTimeout(() => setAcceptedToast(null), 10000)
+  }, [])
+
+  // Cancelled toast — shown when the other party cancels the ride
+  const [cancelledToast, setCancelledToast] = useState<{ cancelledBy: string } | null>(null)
+  const cancelledTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleRideCancelled = useCallback((data: RideCancelledData) => {
+    console.log('[Realtime] Ride cancelled received:', data)
+    // If we're showing a notification for this ride, dismiss it
+    if (rideIdRef.current && rideIdRef.current === data.ride_id) {
+      dismiss()
+    }
+    // Show cancellation toast
+    setCancelledToast({ cancelledBy: data.cancelled_by ?? 'other party' })
+    if (cancelledTimerRef.current) clearTimeout(cancelledTimerRef.current)
+    cancelledTimerRef.current = setTimeout(() => setCancelledToast(null), 8000)
+  }, [dismiss])
+
+  // Primary: Supabase Realtime channel (works on all browsers)
+  useEffect(() => {
+    if (!profile?.id) return
+
+    const channel = supabase.channel(`driver:${profile.id}`)
+    channel.on('broadcast', { event: 'ride_request' }, (msg) => {
+      console.log('[Realtime] Ride request received:', msg.payload)
+      const data = msg.payload as unknown as RideRequestData
+      if (data.type === 'ride_request') handleRideRequest(data)
+    })
+    channel.on('broadcast', { event: 'ride_cancelled' }, (msg) => {
+      console.log('[Realtime] Ride cancelled:', msg.payload)
+      const data = msg.payload as { ride_id?: string }
+      if (rideIdRef.current && rideIdRef.current === data.ride_id) {
+        dismiss()
+      }
+    })
+    channel.subscribe((status) => {
+      console.log('[Realtime] Channel status:', status)
+    })
+
+    // Board channel — listens for ride board requests and acceptances
+    const boardChannel = supabase.channel(`board:${profile.id}`)
+    boardChannel.on('broadcast', { event: 'board_request' }, (msg) => {
+      console.log('[Realtime] Board request received:', msg.payload)
+      const data = msg.payload as unknown as BoardRequestData
+      if (data.type === 'board_request') handleBoardRequest(data)
+    })
+    boardChannel.on('broadcast', { event: 'board_accepted' }, (msg) => {
+      console.log('[Realtime] Board accepted received:', msg.payload)
+      const data = msg.payload as unknown as BoardAcceptedData
+      if (data.type === 'board_accepted') handleBoardAccepted(data)
+    })
+    boardChannel.subscribe()
+
+    // Rider channel — listens for ride cancellations (when driver cancels)
+    const riderChannel = supabase.channel(`rider:${profile.id}`)
+    riderChannel.on('broadcast', { event: 'ride_cancelled' }, (msg) => {
+      console.log('[Realtime] Ride cancelled (rider channel):', msg.payload)
+      const data = msg.payload as unknown as RideCancelledData
+      if (data.type === 'ride_cancelled') handleRideCancelled(data)
+    })
+    riderChannel.subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+      supabase.removeChannel(boardChannel)
+      supabase.removeChannel(riderChannel)
+    }
+  }, [profile?.id, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled, dismiss])
+
+  // Fallback: FCM foreground messages
   useEffect(() => {
     const unsub = onForegroundMessage((payload) => {
-      if (payload.data?.type !== 'ride_request') return
-      const data = payload.data as unknown as RideRequestData
-
-      const earningsCents = parseInt(data.estimated_earnings_cents ?? '0', 10)
-
-      setNotification({
-        rideId: data.ride_id,
-        riderName: data.rider_name ?? 'A rider',
-        destination: data.destination ?? 'Nearby destination',
-        distanceKm: data.distance_km ?? '–',
-        estimatedEarnings: earningsCents > 0 ? formatCents(earningsCents) : '–',
-      })
-      setSecondsLeft(DISMISS_SECONDS)
+      if (payload.data?.type === 'ride_request') {
+        const data = payload.data as unknown as RideRequestData
+        handleRideRequest(data)
+      } else if (payload.data?.type === 'board_request') {
+        const data = payload.data as unknown as BoardRequestData
+        handleBoardRequest(data)
+      } else if (payload.data?.type === 'board_accepted') {
+        const data = payload.data as unknown as BoardAcceptedData
+        handleBoardAccepted(data)
+      } else if (payload.data?.type === 'ride_cancelled') {
+        const data = payload.data as unknown as RideCancelledData
+        handleRideCancelled(data)
+      }
     })
 
     return () => {
       if (unsub) unsub()
     }
-  }, [])
+  }, [handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled])
 
   // Countdown timer — auto-dismiss after 90s
   useEffect(() => {
@@ -90,92 +254,205 @@ export default function RideRequestNotification({
 
   function handleViewDetails() {
     if (!notification) return
-    const rideId = notification.rideId
+    const { rideId, riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng, isBoardRequest } = notification
     dismiss()
-    navigate(`/ride/suggestion/${rideId}`)
+
+    if (isBoardRequest) {
+      navigate(`/ride/board-review/${rideId}`)
+    } else {
+      navigate(`/ride/suggestion/${rideId}`, {
+        state: { riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng },
+      })
+    }
   }
 
-  return (
-    <BottomSheet
-      isOpen={notification !== null}
-      onClose={dismiss}
-      title="New Ride Request"
+  const portalTarget =
+    (typeof document !== 'undefined' && document.getElementById('portal-root')) ||
+    (typeof document !== 'undefined' ? document.body : null)
+
+  if (!portalTarget) return null
+
+  // Cancelled toast — shown when the other party cancels the ride
+  if (cancelledToast && !notification) {
+    return createPortal(
+      <div className="fixed top-0 left-0 right-0 z-[1200] animate-slide-down">
+        <div className="mx-2 mt-2 rounded-2xl border border-danger/30 bg-white shadow-xl">
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-danger/10 shrink-0">
+                <span className="text-lg">❌</span>
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-text-primary">Ride Cancelled</p>
+                <p className="text-xs text-text-secondary">
+                  The {cancelledToast.cancelledBy} cancelled the ride.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCancelledToast(null)}
+              aria-label="Dismiss"
+              className="rounded-full p-1 text-text-secondary hover:bg-surface shrink-0"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="px-3 pb-3">
+            <button
+              type="button"
+              onClick={() => {
+                setCancelledToast(null)
+                navigate('/rides')
+              }}
+              className="w-full rounded-xl bg-danger py-2.5 text-center text-sm font-semibold text-white active:bg-danger/90"
+              data-testid="cancelled-view-rides"
+            >
+              View My Rides
+            </button>
+          </div>
+        </div>
+      </div>,
+      portalTarget,
+    )
+  }
+
+  // Accepted toast — shown when a board request is accepted
+  if (acceptedToast && !notification) {
+    return createPortal(
+      <div className="fixed top-0 left-0 right-0 z-[1200] animate-slide-down">
+        <div className="mx-2 mt-2 rounded-2xl border border-success/30 bg-white shadow-xl">
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-success/10 shrink-0">
+                <span className="text-lg">✅</span>
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-text-primary">Ride Accepted!</p>
+                <p className="text-xs text-text-secondary">Open chat to coordinate pickup</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAcceptedToast(null)}
+              aria-label="Dismiss"
+              className="rounded-full p-1 text-text-secondary hover:bg-surface shrink-0"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="px-3 pb-3">
+            <button
+              type="button"
+              onClick={() => {
+                navigate(`/ride/messaging/${acceptedToast.rideId}`)
+                setAcceptedToast(null)
+              }}
+              className="w-full rounded-xl bg-success py-2.5 text-center text-sm font-semibold text-white active:bg-success/90"
+              data-testid="accepted-open-chat"
+            >
+              Open Chat
+            </button>
+          </div>
+        </div>
+      </div>,
+      portalTarget,
+    )
+  }
+
+  if (!notification) return null
+
+  return createPortal(
+    <div
       data-testid={testId}
+      className="fixed top-0 left-0 right-0 z-[1200] animate-slide-down"
     >
-      {notification && (
-        <div className="space-y-4" data-testid="ride-request-content">
-          {/* Rider info */}
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary-light">
-              <span className="text-lg">🧑</span>
-            </div>
-            <div>
-              <p
-                className="font-semibold text-text-primary"
-                data-testid="rider-name"
-              >
-                {notification.riderName}
-              </p>
-              <p className="text-sm text-text-secondary">needs a ride</p>
-            </div>
+      {/* Banner card */}
+      <div
+        className="mx-2 mt-2 rounded-2xl border border-border bg-white shadow-xl"
+        data-testid="ride-request-content"
+      >
+        {/* Header row */}
+        <div className="flex items-center justify-between px-4 pt-3 pb-2">
+          <div className="flex items-center gap-2">
+            <span className="text-lg">{notification.isBoardRequest ? '📋' : '🚗'}</span>
+            <h3 className="text-sm font-bold text-primary">
+              {notification.isBoardRequest ? 'Ride Board Match' : 'New Ride Request'}
+            </h3>
           </div>
+          <button
+            type="button"
+            onClick={dismiss}
+            aria-label="Dismiss"
+            className="rounded-full p-1 text-text-secondary hover:bg-surface"
+          >
+            ✕
+          </button>
+        </div>
 
-          {/* Details row */}
-          <div className="grid grid-cols-3 gap-2 rounded-xl bg-surface p-3">
-            <div className="text-center">
-              <p className="text-xs text-text-secondary">Destination</p>
-              <p
-                className="mt-0.5 text-sm font-medium text-text-primary"
-                data-testid="notification-destination"
-              >
-                {notification.destination}
-              </p>
-            </div>
-            <div className="text-center">
-              <p className="text-xs text-text-secondary">Distance</p>
-              <p
-                className="mt-0.5 text-sm font-medium text-text-primary"
-                data-testid="notification-distance"
-              >
-                {notification.distanceKm} km
-              </p>
-            </div>
-            <div className="text-center">
-              <p className="text-xs text-text-secondary">You earn</p>
-              <p
-                className="mt-0.5 text-sm font-medium text-success"
-                data-testid="notification-earnings"
-              >
-                {notification.estimatedEarnings}
-              </p>
-            </div>
+        {/* Rider info */}
+        <div className="flex items-center gap-3 px-4 pb-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-light shrink-0">
+            <span className="text-sm">🧑</span>
           </div>
-
-          {/* Countdown */}
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-text-secondary" data-testid="countdown">
-              Auto-dismiss in {secondsLeft}s
+          <div className="min-w-0">
+            <p className="font-semibold text-text-primary text-sm truncate" data-testid="rider-name">
+              {notification.riderName}
             </p>
-            {/* Progress bar */}
-            <div className="h-1 w-32 overflow-hidden rounded-full bg-border">
+            <p className="text-xs text-text-secondary">
+              {notification.isBoardRequest ? 'wants to coordinate a ride' : 'needs a ride'}
+            </p>
+          </div>
+        </div>
+
+        {/* Details row */}
+        <div className="grid grid-cols-3 gap-1 mx-3 mb-2 rounded-xl bg-surface p-2">
+          <div className="text-center">
+            <p className="text-[10px] text-text-secondary">Destination</p>
+            <p className="text-xs font-medium text-text-primary truncate" data-testid="notification-destination">
+              {notification.destination}
+            </p>
+          </div>
+          <div className="text-center">
+            <p className="text-[10px] text-text-secondary">Distance</p>
+            <p className="text-xs font-medium text-text-primary" data-testid="notification-distance">
+              {isNaN(Number(notification.distanceKm)) ? '–' : `${(Number(notification.distanceKm) * 0.621371).toFixed(1)} mi`}
+            </p>
+          </div>
+          <div className="text-center">
+            <p className="text-[10px] text-text-secondary">You earn</p>
+            <p className="text-xs font-medium text-success" data-testid="notification-earnings">
+              {notification.estimatedEarnings}
+            </p>
+          </div>
+        </div>
+
+        {/* Progress bar + CTA */}
+        <div className="px-3 pb-3">
+          {/* Countdown bar */}
+          <div className="mb-2 flex items-center gap-2">
+            <div className="h-1 flex-1 overflow-hidden rounded-full bg-border">
               <div
                 className="h-full rounded-full bg-primary transition-all duration-1000 ease-linear"
                 style={{ width: `${(secondsLeft / DISMISS_SECONDS) * 100}%` }}
               />
             </div>
+            <span className="text-[10px] text-text-secondary whitespace-nowrap" data-testid="countdown">
+              {secondsLeft}s
+            </span>
           </div>
 
-          {/* CTA */}
           <button
             type="button"
             onClick={handleViewDetails}
-            className="w-full rounded-xl bg-primary py-3 text-center font-semibold text-white active:bg-primary-dark"
+            className="w-full rounded-xl bg-primary py-2.5 text-center text-sm font-semibold text-white active:bg-primary-dark"
             data-testid="view-details-button"
           >
             View Details
           </button>
         </div>
-      )}
-    </BottomSheet>
+      </div>
+    </div>,
+    portalTarget,
   )
 }

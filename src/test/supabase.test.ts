@@ -78,7 +78,7 @@ describe('database types — row aliases', () => {
       make: 'Honda', model: 'Civic', year: 2022, color: 'blue',
       plate: 'ABC123', license_plate_photo_url: 'https://x.com/p.jpg',
       car_photo_url: 'https://x.com/c.jpg', seats_available: 3,
-      is_active: true,
+      fuel_efficiency_mpg: null, is_active: true,
     }
     expect(v.seats_available).toBeGreaterThanOrEqual(1)
   })
@@ -106,10 +106,12 @@ describe('database types — row aliases', () => {
       id: 'r1', rider_id: 'u1', driver_id: null, vehicle_id: null,
       status: 'requested',
       origin: { type: 'Point', coordinates: [-121.74, 38.54] },
+      destination: null, destination_name: null,
       destination_bearing: null, pickup_point: null, pickup_note: null,
-      dropoff_point: null, fare_cents: 350,
+      dropoff_point: null, pickup_confirmed: false, dropoff_confirmed: false, fare_cents: 350,
       started_at: null, ended_at: null,
       created_at: new Date().toISOString(),
+      schedule_id: null, trip_date: null, trip_time: null,
     }
     expect(ride.fare_cents).not.toBeNull()
     expect(Number.isInteger(ride.fare_cents)).toBe(true)
@@ -132,8 +134,8 @@ describe('database types — row aliases', () => {
       destination: { type: 'Point', coordinates: [-121.75, 38.55] },
       destination_bearing: 315, direction_type: 'one_way',
       day_of_week: [1, 3, 5], departure_time: '08:00',
-      arrival_time: '08:30', is_active: true,
-      created_at: new Date().toISOString(),
+      arrival_time: '08:30', origin_address: null, dest_address: null,
+      is_active: true, created_at: new Date().toISOString(),
     }
     expect(Array.isArray(r.day_of_week)).toBe(true)
   })
@@ -141,7 +143,8 @@ describe('database types — row aliases', () => {
   it('Message Row type has ride_id, sender_id, content', () => {
     const msg: Message = {
       id: 'm1', ride_id: 'r1', sender_id: 'u1',
-      content: 'On my way!', created_at: new Date().toISOString(),
+      content: 'On my way!', type: 'text', meta: null,
+      created_at: new Date().toISOString(),
     }
     expect(msg.content).toBe('On my way!')
   })

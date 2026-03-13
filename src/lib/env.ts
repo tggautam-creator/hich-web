@@ -19,6 +19,7 @@ export const env = {
   SUPABASE_URL: import.meta.env['VITE_SUPABASE_URL'] as string,
   SUPABASE_ANON_KEY: import.meta.env['VITE_SUPABASE_ANON_KEY'] as string,
   GOOGLE_PLACES_KEY: import.meta.env['VITE_GOOGLE_PLACES_KEY'] as string | undefined,
+  GOOGLE_MAPS_KEY: import.meta.env['VITE_GOOGLE_MAPS_KEY'] as string | undefined,
   STRIPE_PUBLISHABLE_KEY: import.meta.env['VITE_STRIPE_PUBLISHABLE_KEY'] as string | undefined,
   FIREBASE_API_KEY: import.meta.env['VITE_FIREBASE_API_KEY'] as string | undefined,
   FIREBASE_AUTH_DOMAIN: import.meta.env['VITE_FIREBASE_AUTH_DOMAIN'] as string | undefined,

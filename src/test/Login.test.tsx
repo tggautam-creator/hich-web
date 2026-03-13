@@ -30,10 +30,12 @@ import Login from '@/components/Login'
 
 /* ── Mocks ──────────────────────────────────────────────────────────── */
 
-const { mockSignInWithPassword, mockSignInWithOtp, mockNavigate } = vi.hoisted(() => ({
+const { mockSignInWithPassword, mockSignInWithOtp, mockNavigate, mockGetUser, mockSingle } = vi.hoisted(() => ({
   mockSignInWithPassword: vi.fn(),
   mockSignInWithOtp:      vi.fn(),
   mockNavigate:           vi.fn(),
+  mockGetUser:            vi.fn(),
+  mockSingle:             vi.fn(),
 }))
 
 vi.mock('@/lib/supabase', () => ({
@@ -41,7 +43,15 @@ vi.mock('@/lib/supabase', () => ({
     auth: {
       signInWithPassword: mockSignInWithPassword,
       signInWithOtp:      mockSignInWithOtp,
+      getUser:            mockGetUser,
     },
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          single: mockSingle,
+        }),
+      }),
+    }),
   },
 }))
 
@@ -70,6 +80,11 @@ describe('Login screen', () => {
     mockSignInWithPassword.mockReset()
     mockSignInWithOtp.mockReset()
     mockNavigate.mockReset()
+    mockGetUser.mockReset()
+    mockSingle.mockReset()
+    // Default: completed rider profile
+    mockGetUser.mockResolvedValue({ data: { user: { id: 'user-123' } } })
+    mockSingle.mockResolvedValue({ data: { full_name: 'Maya Test', is_driver: false }, error: null })
   })
 
   // ── Rendering ────────────────────────────────────────────────────────
@@ -160,8 +175,9 @@ describe('Login screen', () => {
     })
   })
 
-  it('navigates to /home/rider on successful login', async () => {
+  it('navigates to /home/rider when user is not a driver', async () => {
     mockSignInWithPassword.mockResolvedValue({ error: null })
+    mockSingle.mockResolvedValue({ data: { full_name: 'Maya Test', is_driver: false }, error: null })
     const user = userEvent.setup()
     renderLogin()
     await user.type(screen.getByTestId('email-input'), EDU_EMAIL)
@@ -172,6 +188,30 @@ describe('Login screen', () => {
     })
   })
 
+  it('navigates to /home/driver when user is a driver', async () => {
+    mockSignInWithPassword.mockResolvedValue({ error: null })
+    mockSingle.mockResolvedValue({ data: { full_name: 'Maya Test', is_driver: true }, error: null })
+    const user = userEvent.setup()
+    renderLogin()
+    await user.type(screen.getByTestId('email-input'), EDU_EMAIL)
+    await user.type(screen.getByTestId('password-input'), PASSWORD)
+    await user.click(screen.getByTestId('submit-button'))
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/home/driver')
+    })
+  })
+  it('navigates to /onboarding/profile when profile is incomplete', async () => {
+    mockSignInWithPassword.mockResolvedValue({ error: null })
+    mockSingle.mockResolvedValue({ data: null, error: { message: 'No rows' } })
+    const user = userEvent.setup()
+    renderLogin()
+    await user.type(screen.getByTestId('email-input'), EDU_EMAIL)
+    await user.type(screen.getByTestId('password-input'), PASSWORD)
+    await user.click(screen.getByTestId('submit-button'))
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/onboarding/profile')
+    })
+  })
   // ── Error handling ───────────────────────────────────────────────────
 
   it('shows "Incorrect email or password" for invalid-credentials error', async () => {
@@ -236,6 +276,7 @@ describe('Login screen', () => {
     await waitFor(() => {
       expect(mockSignInWithOtp).toHaveBeenCalledWith({
         email: 'maya@ucdavis.edu',
+        options: { emailRedirectTo: expect.stringContaining('/auth/callback') },
       })
     })
     expect(mockNavigate).toHaveBeenCalledWith('/check-inbox', {
