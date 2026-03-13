@@ -172,6 +172,24 @@ export default function MyRidesPage({
     }
   }
 
+  async function handleCancelRequestedRide(rideId: string) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) return
+
+      const resp = await fetch(`/api/rides/${rideId}/cancel`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
+
+      if (resp.ok) {
+        await fetchRides()
+      }
+    } catch {
+      // non-fatal
+    }
+  }
+
   return (
     <div
       data-testid={testId}
@@ -316,6 +334,19 @@ export default function MyRidesPage({
                      ride.status === 'coordinating' ? 'Tap to open messaging →' :
                      'Tap to view ride →'}
                   </p>
+
+                  {ride.status === 'requested' && ride.my_role === 'rider' && (
+                    <button
+                      data-testid="cancel-requested-ride-button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void handleCancelRequestedRide(ride.id)
+                      }}
+                      className="mt-2 rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 text-xs font-semibold text-danger"
+                    >
+                      Cancel Request
+                    </button>
+                  )}
                 </button>
               )
             })}

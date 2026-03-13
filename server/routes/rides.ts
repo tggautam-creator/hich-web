@@ -7,6 +7,47 @@ import { generateQrToken, validateQrToken } from '../lib/qrToken.ts'
 
 export const ridesRouter = Router()
 
+async function broadcastWithTimeout(
+  channelName: string,
+  event: string,
+  payload: Record<string, unknown>,
+  timeoutMs = 2000,
+): Promise<boolean> {
+  const channel = supabaseAdmin.channel(channelName)
+
+  return await new Promise<boolean>((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true
+        void supabaseAdmin.removeChannel(channel)
+        console.warn(`[Realtime] Timeout broadcasting event='${event}' to ${channelName}`)
+        resolve(false)
+      }
+    }, timeoutMs)
+
+    channel.subscribe((status) => {
+      if (status !== 'SUBSCRIBED' || settled) return
+
+      channel.send({ type: 'broadcast', event, payload })
+        .then(() => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          void supabaseAdmin.removeChannel(channel)
+          resolve(true)
+        })
+        .catch(() => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          void supabaseAdmin.removeChannel(channel)
+          resolve(false)
+        })
+    })
+  })
+}
+
 async function broadcastRideRequestWithTimeout(
   driverId: string,
   payload: {
@@ -628,23 +669,10 @@ ridesRouter.patch(
       driver_id: driverId,
       offer_count: offerCount ?? 1,
     }
-    for (const ch of [`rider:${ride.rider_id}`, `waiting:${ride.rider_id}`]) {
-      const riderChannel = supabaseAdmin.channel(ch)
-      await new Promise<void>((resolve) => {
-        riderChannel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            riderChannel.send({
-              type: 'broadcast',
-              event: 'ride_accepted',
-              payload: acceptPayload,
-            }).then(() => {
-              supabaseAdmin.removeChannel(riderChannel)
-              resolve()
-            })
-          }
-        })
-      })
-    }
+    const realtimeTargets = [`rider:${ride.rider_id}`, `waiting:${ride.rider_id}`]
+    await Promise.all(
+      realtimeTargets.map((ch) => broadcastWithTimeout(ch, 'ride_accepted', acceptPayload)),
+    )
 
     const { data: riderTokens } = await supabaseAdmin
       .from('push_tokens')
