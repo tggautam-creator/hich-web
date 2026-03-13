@@ -342,6 +342,10 @@ ridesRouter.post(
       data: { type: 'ride_request', ride_id: ride.id },
     })
 
+    const fareCents = typeof body.estimated_fare_cents === 'number' ? body.estimated_fare_cents : 0
+    const platformFee = Math.round(fareCents * 0.15)
+    const driverEarns = fareCents - platformFee
+
     // Persist notifications as a reliable fallback when realtime/push is delayed.
     if (driverIds.length > 0) {
       const notificationRows = driverIds.map((driverId) => ({
@@ -378,10 +382,6 @@ ridesRouter.post(
       .eq('id', riderId)
       .single()
     const riderName = riderProfile.data?.full_name ?? 'A rider'
-
-    const fareCents = typeof body.estimated_fare_cents === 'number' ? body.estimated_fare_cents : 0
-    const platformFee = Math.round(fareCents * 0.15)
-    const driverEarns = fareCents - platformFee
 
     const realtimePayload = {
       type: 'ride_request' as const,
