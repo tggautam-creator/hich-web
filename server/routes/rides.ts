@@ -7,6 +7,64 @@ import { generateQrToken, validateQrToken } from '../lib/qrToken.ts'
 
 export const ridesRouter = Router()
 
+async function broadcastRideRequestWithTimeout(
+  driverId: string,
+  payload: {
+    type: 'ride_request'
+    ride_id: string
+    rider_name: string
+    destination: string
+    distance_km: string
+    estimated_earnings_cents: string
+    origin_lat: string
+    origin_lng: string
+    destination_lat: string
+    destination_lng: string
+  },
+  timeoutMs = 1500,
+): Promise<boolean> {
+  const channel = supabaseAdmin.channel(`driver:${driverId}`)
+
+  return await new Promise<boolean>((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true
+        void supabaseAdmin.removeChannel(channel)
+        console.warn(`[Realtime] Timeout sending ride_request to driver:${driverId}`)
+        resolve(false)
+      }
+    }, timeoutMs)
+
+    channel.subscribe((status) => {
+      if (status !== 'SUBSCRIBED' || settled) return
+
+      channel.send({
+        type: 'broadcast',
+        event: 'ride_request',
+        payload,
+      })
+        .then(() => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          void supabaseAdmin.removeChannel(channel)
+          console.log(`[Realtime] Broadcast sent to driver:${driverId}`)
+          resolve(true)
+        })
+        .catch((err: unknown) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          void supabaseAdmin.removeChannel(channel)
+          const message = err instanceof Error ? err.message : 'Unknown send error'
+          console.error(`[Realtime] Broadcast failed to driver:${driverId}: ${message}`)
+          resolve(false)
+        })
+    })
+  })
+}
+
 // ── Wallet transfer helper ────────────────────────────────────────────────────
 /**
  * Atomically debit rider wallet and credit driver wallet when a ride ends.
@@ -296,37 +354,31 @@ ridesRouter.post(
     const platformFee = Math.round(fareCents * 0.15)
     const driverEarns = fareCents - platformFee
 
-    for (const driverId of driverIds) {
-      const channel = supabaseAdmin.channel(`driver:${driverId}`)
-      await new Promise<void>((resolve) => {
-        channel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            channel.send({
-              type: 'broadcast',
-              event: 'ride_request',
-              payload: {
-                type: 'ride_request',
-                ride_id: ride.id,
-                rider_name: riderName,
-                destination: body.destination_name ?? 'Nearby destination',
-                distance_km: String(body.distance_km ?? '–'),
-                estimated_earnings_cents: String(driverEarns),
-                origin_lat: String(body.origin.coordinates[1]),
-                origin_lng: String(body.origin.coordinates[0]),
-                destination_lat: typeof body.destination_lat === 'number' ? String(body.destination_lat) : '',
-                destination_lng: typeof body.destination_lng === 'number' ? String(body.destination_lng) : '',
-              },
-            }).then(() => {
-              console.log(`[Realtime] Broadcast sent to driver:${driverId}`)
-              supabaseAdmin.removeChannel(channel)
-              resolve()
-            })
-          }
-        })
-      })
+    const realtimePayload = {
+      type: 'ride_request' as const,
+      ride_id: ride.id,
+      rider_name: riderName,
+      destination: body.destination_name ?? 'Nearby destination',
+      distance_km: String(body.distance_km ?? '–'),
+      estimated_earnings_cents: String(driverEarns),
+      origin_lat: String(body.origin.coordinates[1]),
+      origin_lng: String(body.origin.coordinates[0]),
+      destination_lat: typeof body.destination_lat === 'number' ? String(body.destination_lat) : '',
+      destination_lng: typeof body.destination_lng === 'number' ? String(body.destination_lng) : '',
     }
 
-    const logEntry: Record<string, unknown> = { ride_id: ride.id, stage, drivers_notified: notifiedCount, realtime_broadcast: driverIds.length }
+    const realtimeResults = await Promise.all(
+      driverIds.map((driverId) => broadcastRideRequestWithTimeout(driverId, realtimePayload)),
+    )
+    const realtimeSentCount = realtimeResults.filter(Boolean).length
+
+    const logEntry: Record<string, unknown> = {
+      ride_id: ride.id,
+      stage,
+      drivers_notified: notifiedCount,
+      realtime_broadcast_attempted: driverIds.length,
+      realtime_broadcast_sent: realtimeSentCount,
+    }
     if (fallbackTriggered) logEntry['fallback_triggered'] = true
     console.log(JSON.stringify(logEntry))
 
