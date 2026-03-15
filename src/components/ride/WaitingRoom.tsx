@@ -96,24 +96,64 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
     }
   }, [state, navigate])
 
-  // Load existing pending offers from DB (e.g. when returning after a driver cancel)
+  // Poll ride_offers and ride status every 5s as a reliable fallback for Realtime.
+  // This ensures the rider sees driver acceptances even if server Realtime is down.
   useEffect(() => {
     if (!state?.rideId) return
+    let cancelled = false
 
-    void (async () => {
+    const poll = async () => {
+      if (cancelled) return
+
+      // Check ride status first — if coordinating, go to chat; if cancelled, go home
+      const { data: rideData } = await supabase
+        .from('rides')
+        .select('status, driver_id')
+        .eq('id', state.rideId)
+        .single()
+
+      if (cancelled || !rideData) return
+
+      if (rideData.status === 'coordinating') {
+        navigate(`/ride/messaging/${state.rideId}`, {
+          replace: true,
+          state: {
+            destination: state.destination,
+            destinationLat: state.destinationLat,
+            destinationLng: state.destinationLng,
+          },
+        })
+        return
+      }
+
+      if (rideData.status === 'cancelled') {
+        navigate('/home/rider', { replace: true })
+        return
+      }
+
+      // If ride reverted to requested with no driver (driver cancelled), reset state
+      if (rideData.status === 'requested' && !rideData.driver_id && driverChoosingDropoff) {
+        setDriverChoosingDropoff(false)
+        setSelectedDriverName(null)
+        setDriverOffers((prev) => prev.filter(() => false)) // clear all
+      }
+
+      // Check for new driver offers
       const { data: existingOffers } = await supabase
         .from('ride_offers')
         .select('driver_id, driver_destination_name, overlap_pct, status')
         .eq('ride_id', state.rideId)
         .eq('status', 'pending')
 
-      if (!existingOffers || existingOffers.length === 0) return
+      if (cancelled || !existingOffers || existingOffers.length === 0) return
 
       const driverIds = existingOffers.map(o => o.driver_id)
       const { data: drivers } = await supabase
         .from('users')
         .select('id, full_name, avatar_url, rating_avg, rating_count')
         .in('id', driverIds)
+
+      if (cancelled) return
 
       const driverMap: Record<string, { full_name: string | null; avatar_url: string | null; rating_avg: number | null; rating_count: number }> = {}
       for (const d of drivers ?? []) driverMap[d.id] = d
@@ -137,8 +177,8 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
         if (newOffers.length === 0) return prev
         const merged = [...prev, ...newOffers]
 
-        // Start auto-select timer if offers exist and no timer running
-        if (merged.length >= 1 && !selectionTimerRef.current) {
+        // Start auto-select timer if this is the first batch and no timer running
+        if (prev.length === 0 && merged.length >= 1 && !selectionTimerRef.current) {
           selectionTimerRef.current = setTimeout(() => {
             handleSelectOrNavigate(merged)
           }, 15000)
@@ -146,8 +186,17 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
 
         return merged
       })
-    })()
-  }, [state?.rideId, handleSelectOrNavigate])
+    }
+
+    // Run immediately on mount, then every 5 seconds
+    void poll()
+    const interval = setInterval(() => void poll(), 5000)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [state, navigate, handleSelectOrNavigate, driverChoosingDropoff])
 
   // Subscribe to ride acceptance via Supabase Realtime broadcast
   useEffect(() => {
