@@ -30,3 +30,7 @@ Thumbs.db
 coverage/
 
 firebase-service-account.json
+
+# AI tool artifacts
+.claude/
+.claire/
