@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import SecondaryButton from '@/components/ui/SecondaryButton'
+import Logo from '@/components/ui/Logo'
 
 interface LandingProps {
   'data-testid'?: string
@@ -12,11 +13,11 @@ export default function Landing({ 'data-testid': testId }: LandingProps) {
   return (
     <div
       data-testid={testId ?? 'landing-page'}
-      className="min-h-dvh w-full bg-surface flex flex-col font-sans"
+      className="min-h-dvh w-full bg-gradient-to-b from-white to-surface flex flex-col font-sans"
     >
       {/* Header — safe-area aware top padding */}
       <header className="px-6 pt-safe-top pb-4" style={{ paddingTop: 'max(env(safe-area-inset-top), 2rem)' }}>
-        <span className="text-2xl font-bold text-primary tracking-tight">HICH</span>
+        <Logo size="lg" data-testid="landing-logo" />
       </header>
 
       {/* Hero — grows to fill all remaining space */}
@@ -52,12 +53,14 @@ export default function Landing({ 'data-testid': testId }: LandingProps) {
         className="px-6 pt-6 flex justify-center"
         style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 2rem)' }}
       >
-        <p
-          data-testid="trust-strip"
-          className="text-sm text-text-secondary text-center"
-        >
-          .edu verified · QR-confirmed rides · Fare splitting
-        </p>
+        <div className="rounded-2xl bg-white/80 px-5 py-3 shadow-sm backdrop-blur-sm">
+          <p
+            data-testid="trust-strip"
+            className="text-sm text-text-secondary text-center"
+          >
+            .edu verified · QR-confirmed rides · Fare splitting
+          </p>
+        </div>
       </footer>
     </div>
   )

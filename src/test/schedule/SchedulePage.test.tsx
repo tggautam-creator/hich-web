@@ -77,6 +77,12 @@ vi.mock('@/lib/geo', () => ({
   calculateBearing: () => 45.0,
 }))
 
+// ── Mock directions ──────────────────────────────────────────────────────────
+
+vi.mock('@/lib/directions', () => ({
+  getDirectionsByLatLng: () => Promise.resolve({ distance_km: 120, duration_min: 90, polyline: 'encoded_polyline_test', destLat: 38.54, destLng: -121.76 }),
+}))
+
 // ── Mock auth store ───────────────────────────────────────────────────────────
 
 vi.mock('@/stores/authStore', () => ({
@@ -847,6 +853,7 @@ describe('SchedulePage', () => {
           arrival_time:        null,
           origin_address:      'UC Davis, Davis, CA, USA',
           dest_address:        'San Francisco, CA, USA',
+          route_polyline:      'encoded_polyline_test',
         })
       })
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import PrimaryButton from '@/components/ui/PrimaryButton'
+import Logo from '@/components/ui/Logo'
 
 const RESEND_COOLDOWN = 60
 
@@ -82,7 +83,7 @@ export default function CheckInbox({ 'data-testid': testId }: CheckInboxProps) {
       className="min-h-dvh w-full bg-surface flex flex-col font-sans"
     >
       <header
-        className="px-6 pb-4"
+        className="px-6 pb-4 flex items-center justify-between"
         style={{ paddingTop: 'max(env(safe-area-inset-top), 2rem)' }}
       >
         <button
@@ -91,6 +92,7 @@ export default function CheckInbox({ 'data-testid': testId }: CheckInboxProps) {
         >
           ← Back
         </button>
+        <Logo size="sm" />
       </header>
 
       <main className="flex-1 flex flex-col justify-center px-6 gap-6 text-center">

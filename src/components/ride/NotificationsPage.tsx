@@ -138,8 +138,23 @@ export default function NotificationsPage({
   // Handle tapping on accepted/declined notifications
   const handleTap = useCallback((notif: NotificationItem) => {
     const rideId = notif.data['ride_id'] as string | undefined
-    if (notif.type === 'board_accepted' && rideId) {
+    if (!rideId) return
+
+    if (notif.type === 'board_accepted') {
       navigate(`/ride/messaging/${rideId}`)
+    } else if (notif.type === 'ride_request') {
+      navigate(`/ride/suggestion/${rideId}`, {
+        state: {
+          riderName: notif.data['rider_name'] as string | undefined,
+          destination: notif.data['destination'] as string | undefined,
+          distanceKm: notif.data['distance_km'] as string | undefined,
+          estimatedEarnings: notif.data['estimated_earnings_cents'] as string | undefined,
+          originLat: notif.data['origin_lat'] as string | undefined,
+          originLng: notif.data['origin_lng'] as string | undefined,
+          destinationLat: notif.data['destination_lat'] as string | undefined,
+          destinationLng: notif.data['destination_lng'] as string | undefined,
+        },
+      })
     }
   }, [navigate])
 
@@ -253,7 +268,7 @@ export default function NotificationsPage({
                             data-testid="notif-accept-button"
                             disabled={isActioning}
                             onClick={(e) => { e.stopPropagation(); void handleAccept(notif) }}
-                            className="flex-1 rounded-xl bg-success py-2.5 text-sm font-semibold text-white active:opacity-90 disabled:opacity-50"
+                            className="flex-1 rounded-2xl bg-success py-2.5 text-sm font-semibold text-white active:opacity-90 disabled:opacity-50"
                           >
                             {isActioning ? 'Accepting…' : 'Accept'}
                           </button>
@@ -261,7 +276,7 @@ export default function NotificationsPage({
                             data-testid="notif-decline-button"
                             disabled={isActioning}
                             onClick={(e) => { e.stopPropagation(); void handleDecline(notif) }}
-                            className="flex-1 rounded-xl border-2 border-danger/30 bg-danger/5 py-2.5 text-sm font-semibold text-danger active:bg-danger/10 disabled:opacity-50"
+                            className="flex-1 rounded-2xl border-2 border-danger/30 bg-danger/5 py-2.5 text-sm font-semibold text-danger active:bg-danger/10 disabled:opacity-50"
                           >
                             Decline
                           </button>

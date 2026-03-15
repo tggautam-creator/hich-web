@@ -81,7 +81,7 @@ export default function LocationPermissionsPage({
           <div className="space-y-4">
             <div
               data-testid="denied-instructions"
-              className="rounded-xl border border-warning/20 bg-warning/5 px-4 py-4 text-left"
+              className="rounded-2xl border border-warning/20 bg-warning/5 px-4 py-4 text-left"
             >
               <p className="text-sm font-semibold text-text-primary mb-2">
                 Location access was denied

@@ -68,7 +68,7 @@ export default function QrScanner({
   }
 
   return (
-    <div data-testid={testId} className="relative">
+    <div data-testid={testId} className="relative overflow-hidden" style={{ maxHeight: '50dvh' }}>
       <div id="qr-scanner-region" ref={containerRef} className="w-full" />
     </div>
   )

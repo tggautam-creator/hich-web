@@ -402,7 +402,7 @@ export default function VehicleRegistrationPage({
             <p
               data-testid="submit-error"
               role="alert"
-              className="rounded-xl border border-danger/20 bg-danger/5 px-4 py-3 text-sm text-danger"
+              className="rounded-2xl border border-danger/20 bg-danger/5 px-4 py-3 text-sm text-danger"
             >
               {errors.submit}
             </p>

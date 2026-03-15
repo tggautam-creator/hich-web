@@ -25,9 +25,8 @@ import type { PlaceSuggestion } from '@/lib/places'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
-const { mockChannel, mockOn, mockSubscribe, mockRemoveChannel, mockUpdate, mockEq } = vi.hoisted(() => ({
+const { mockChannel, mockSubscribe, mockRemoveChannel, mockUpdate, mockEq } = vi.hoisted(() => ({
   mockChannel:       vi.fn(),
-  mockOn:            vi.fn(),
   mockSubscribe:     vi.fn(),
   mockRemoveChannel: vi.fn(),
   mockUpdate:        vi.fn(),
@@ -38,7 +37,25 @@ vi.mock('@/lib/supabase', () => ({
   supabase: {
     channel: mockChannel,
     removeChannel: mockRemoveChannel,
-    from: () => ({ update: mockUpdate }),
+    from: (table: string) => {
+      if (table === 'ride_offers') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => Promise.resolve({ data: [], error: null }),
+            }),
+          }),
+        }
+      }
+      if (table === 'users') {
+        return {
+          select: () => ({
+            in: () => Promise.resolve({ data: [], error: null }),
+          }),
+        }
+      }
+      return { update: mockUpdate }
+    },
     auth: {
       getSession: vi.fn().mockResolvedValue({
         data: { session: { access_token: 'test-token' } },
@@ -95,12 +112,17 @@ let realtimeCallback: ((payload: Record<string, unknown>) => void) | null = null
 function setupMocks() {
   realtimeCallback = null
 
-  mockOn.mockImplementation((_event: string, _opts: unknown, cb: (payload: Record<string, unknown>) => void) => {
-    realtimeCallback = cb
-    return { subscribe: mockSubscribe }
-  })
+  const channelObj = {
+    on: vi.fn().mockImplementation((_event: string, opts: { event: string }, cb: (payload: Record<string, unknown>) => void) => {
+      if (opts.event === 'ride_accepted') {
+        realtimeCallback = cb
+      }
+      return channelObj
+    }),
+    subscribe: mockSubscribe,
+  }
   mockSubscribe.mockReturnValue({ id: 'chan-1' })
-  mockChannel.mockReturnValue({ on: mockOn })
+  mockChannel.mockReturnValue(channelObj)
   mockRemoveChannel.mockResolvedValue(undefined)
   mockEq.mockResolvedValue({ data: null, error: null })
   mockUpdate.mockReturnValue({ eq: mockEq })
@@ -184,15 +206,10 @@ describe('WaitingRoom', () => {
   it('subscribes to Supabase Realtime broadcast channel on mount', () => {
     renderPage()
     expect(mockChannel).toHaveBeenCalledWith(`waiting:${PROFILE_ID}`)
-    expect(mockOn).toHaveBeenCalledWith(
-      'broadcast',
-      { event: 'ride_accepted' },
-      expect.any(Function),
-    )
     expect(mockSubscribe).toHaveBeenCalled()
   })
 
-  it('navigates to messaging window when ride_accepted broadcast received', async () => {
+  it('shows driver choosing dropoff state when ride_accepted broadcast received', async () => {
     vi.useFakeTimers()
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ ride_id: RIDE_ID, status: 'accepted' }), { status: 200 }),
@@ -200,7 +217,7 @@ describe('WaitingRoom', () => {
     renderPage()
 
     act(() => {
-      realtimeCallback?.({ payload: { ride_id: RIDE_ID, driver_id: 'driver-001' } })
+      realtimeCallback?.({ payload: { ride_id: RIDE_ID, driver_id: 'driver-001', driver_name: 'Jane' } })
     })
 
     // WaitingRoom waits 15s after first acceptance before auto-selecting
@@ -208,10 +225,12 @@ describe('WaitingRoom', () => {
       vi.advanceTimersByTime(15000)
     })
 
-    expect(mockNavigate).toHaveBeenCalledWith(
-      `/ride/messaging/${RIDE_ID}`,
-      expect.objectContaining({ replace: true }),
-    )
+    // After select-driver succeeds, rider stays in WaitingRoom with dropoff-choosing state
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(screen.getByTestId('driver-choosing-dropoff')).toBeInTheDocument()
     fetchSpy.mockRestore()
     vi.useRealTimers()
   })

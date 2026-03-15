@@ -166,7 +166,7 @@ describe('DriverActiveRidePage', () => {
   it('shows rider name', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByText('Jane Doe')).toBeInTheDocument()
+      expect(screen.getAllByText('Jane Doe').length).toBeGreaterThanOrEqual(1)
     })
   })
 

@@ -3,8 +3,15 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
 import type { Ride, User, Vehicle } from '@/types/database'
+import { trackEvent } from '@/lib/analytics'
 import type { PlaceSuggestion } from '@/lib/places'
 import { useAuthStore } from '@/stores/authStore'
+import TransitInfo from '@/components/ride/TransitInfo'
+import DriverDestinationCard from '@/components/ride/DriverDestinationCard'
+import TransitSuggestionCard, { TransitSuggestionPicker } from '@/components/ride/TransitSuggestionCard'
+import type { TransitDropoffSuggestion } from '@/components/ride/TransitSuggestionCard'
+import { MAP_ID } from '@/lib/mapConstants'
+import { MapBoundsFitter, DirectionsRoute } from '@/components/map/RoutePreview'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -16,6 +23,7 @@ interface LocationState {
   destination?: PlaceSuggestion
   destinationLat?: number
   destinationLng?: number
+  driverDestinationSet?: boolean
 }
 
 interface ChatMessage {
@@ -30,7 +38,69 @@ interface ChatMessage {
 
 type PinMode = 'pickup' | 'dropoff'
 
-const MAP_ID = '8cb10228438378796542e8f0'
+/** Small inner component for pickup mini-map with real route directions. */
+function PickupMiniMap({
+  originLat, originLng, pickupLat, pickupLng,
+}: {
+  originLat: number; originLng: number; pickupLat: number; pickupLng: number
+}) {
+  const [walkMin, setWalkMin] = useState<number | null>(null)
+  const [driveMin, setDriveMin] = useState<number | null>(null)
+
+  return (
+    <>
+      <div className="rounded-xl overflow-hidden mb-1.5" style={{ height: '120px' }}>
+        <Map
+          mapId={MAP_ID}
+          defaultCenter={{ lat: pickupLat, lng: pickupLng }}
+          defaultZoom={15}
+          gestureHandling="none"
+          disableDefaultUI
+          className="w-full h-full"
+        >
+          <AdvancedMarker position={{ lat: originLat, lng: originLng }}>
+            <div className="flex items-center justify-center">
+              <span className="h-3 w-3 rounded-full bg-primary border-2 border-white shadow-md" />
+            </div>
+          </AdvancedMarker>
+          <AdvancedMarker position={{ lat: pickupLat, lng: pickupLng }}>
+            <div className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-white shadow-lg bg-success text-white text-xs font-bold">
+              P
+            </div>
+          </AdvancedMarker>
+          <DirectionsRoute
+            from={{ lat: originLat, lng: originLng }}
+            to={{ lat: pickupLat, lng: pickupLng }}
+            mode="WALKING"
+            color="#6366F1"
+            weight={3}
+            onResult={({ durationMin }) => setWalkMin(durationMin)}
+          />
+          <DirectionsRoute
+            from={{ lat: originLat, lng: originLng }}
+            to={{ lat: pickupLat, lng: pickupLng }}
+            mode="DRIVING"
+            color="#22C55E"
+            weight={0}
+            onResult={({ durationMin }) => setDriveMin(durationMin)}
+          />
+          <MapBoundsFitter points={[
+            { lat: originLat, lng: originLng },
+            { lat: pickupLat, lng: pickupLng },
+          ]} />
+        </Map>
+      </div>
+      <div className="flex items-center gap-3 mb-1.5">
+        <span className="text-[10px] text-text-secondary">
+          &#x1F6B6; {walkMin != null ? `${walkMin} min walk` : 'calculating…'}
+        </span>
+        <span className="text-[10px] text-text-secondary">
+          &#x1F697; {driveMin != null ? `${driveMin} min drive` : 'calculating…'}
+        </span>
+      </div>
+    </>
+  )
+}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -43,6 +113,12 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const currentUserId = profile?.id ?? null
 
   const [ride, setRide] = useState<Ride | null>(null)
+
+  // Rider's original destination — captured on first load before a dropoff proposal
+  // could overwrite ride.destination. Falls back to location state.
+  const [riderDestLat, setRiderDestLat] = useState<number | null>(state?.destinationLat ?? null)
+  const [riderDestLng, setRiderDestLng] = useState<number | null>(state?.destinationLng ?? null)
+  const riderDestCapturedRef = useRef(state?.destinationLat != null)
   const [otherUser, setOtherUser] = useState<Pick<User, 'id' | 'full_name' | 'avatar_url' | 'rating_avg' | 'rating_count'> | null>(null)
   const [otherVehicle, setOtherVehicle] = useState<Pick<Vehicle, 'color' | 'plate' | 'make' | 'model'> | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -66,6 +142,10 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   // Location acceptance state
   const [acceptingLocation, setAcceptingLocation] = useState<string | null>(null) // 'pickup' or 'dropoff'
 
+  // Transit dropoff suggestion state (driver side)
+  const [transitSuggestions, setTransitSuggestions] = useState<TransitDropoffSuggestion[]>([])
+  const [transitSuggestionPicked, setTransitSuggestionPicked] = useState(false)
+
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -73,6 +153,18 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const pickupConfirmed = ride?.pickup_confirmed ?? false
   const dropoffConfirmed = ride?.dropoff_confirmed ?? false
   const bothConfirmed = pickupConfirmed && dropoffConfirmed
+
+  // Driver destination flow is active — hide suggest buttons until it's done
+  const driverDestFlowActive = !isRider && !dropoffConfirmed && !state?.driverDestinationSet && (
+    !(ride as Record<string, unknown> | null)?.['driver_destination']
+    || (transitSuggestions.length > 0 && !transitSuggestionPicked)
+  )
+
+  // Rider-side: driver has set a destination but hasn't picked a drop-off station yet
+  const hasTransitDropoffMsg = messages.some(m => m.type === 'transit_dropoff_suggestion')
+  const driverSelectingDropoff = isRider && !dropoffConfirmed && !hasTransitDropoffMsg && (
+    !!(ride as Record<string, unknown> | null)?.['driver_destination']
+  )
 
   // ── Scroll to bottom when messages change ────────────────────────────────
   useEffect(() => {
@@ -109,6 +201,14 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
       }
 
       setRide(rideData)
+
+      // Capture rider's original destination (before dropoff proposals overwrite it)
+      if (!riderDestCapturedRef.current && rideData.destination) {
+        const dest = rideData.destination as { type: string; coordinates: [number, number] }
+        setRiderDestLat(dest.coordinates[1])
+        setRiderDestLng(dest.coordinates[0])
+        riderDestCapturedRef.current = true
+      }
 
       const otherId = session.user.id === rideData.rider_id
         ? rideData.driver_id
@@ -167,7 +267,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           return [...prev, newMsg]
         })
         // Refresh ride data when a location proposal arrives (updates pickup_point/dropoff_point)
-        if (newMsg.type === 'pickup_suggestion' || newMsg.type === 'dropoff_suggestion' || newMsg.type === 'location_accepted') {
+        if (newMsg.type === 'pickup_suggestion' || newMsg.type === 'dropoff_suggestion' || newMsg.type === 'location_accepted' || newMsg.type === 'transit_dropoff_suggestion') {
           supabase.from('rides').select('*').eq('id', rideId).single().then(({ data }) => {
             if (data) setRide(data)
           })
@@ -176,18 +276,44 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
       .on('broadcast', { event: 'ride_cancelled' }, () => {
         setRideCancelled(true)
       })
+      .on('broadcast', { event: 'driver_cancelled' }, () => {
+        // Driver cancelled but ride is re-queued — send rider back to WaitingRoom
+        if (isRider && rideId) {
+          navigate(`/ride/waiting/${rideId}`, {
+            replace: true,
+            state: {
+              rideId,
+              destination: state?.destination,
+              destinationLat: state?.destinationLat,
+              destinationLng: state?.destinationLng,
+            },
+          })
+        }
+      })
       .on('broadcast', { event: 'locations_confirmed' }, () => {
         // Refresh ride data to get updated confirmed flags
         supabase.from('rides').select('*').eq('id', rideId).single().then(({ data }) => {
           if (data) setRide(data)
         })
       })
+      .on('broadcast', { event: 'transit_suggestions' }, (msg) => {
+        const payload = msg.payload as { suggestions?: TransitDropoffSuggestion[]; auto_detected?: boolean }
+        if (payload.suggestions) {
+          setTransitSuggestions(payload.suggestions)
+          // Refresh ride data so driver_destination check updates (especially for auto-detected)
+          if (payload.auto_detected) {
+            void supabase.from('rides').select('*').eq('id', rideId as string).single().then(({ data }) => {
+              if (data) setRide(data)
+            })
+          }
+        }
+      })
       .subscribe()
 
     return () => {
       void supabase.removeChannel(channel)
     }
-  }, [rideId])
+  }, [rideId, isRider, navigate, state?.destination, state?.destinationLat, state?.destinationLng])
 
   // ── Listen for location confirmations on user channels ──────────────────
   useEffect(() => {
@@ -202,7 +328,18 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
       })
       .on('broadcast', { event: 'locations_confirmed' }, () => {
         supabase.from('rides').select('*').eq('id', rideId).single().then(({ data }) => {
-          if (data) setRide(data)
+          if (data) {
+            setRide(data)
+            // Auto-navigate to pickup page for non-scheduled rides
+            if (!data.schedule_id) {
+              navigate(
+                isRider
+                  ? `/ride/pickup-rider/${rideId}`
+                  : `/ride/pickup-driver/${rideId}`,
+                { replace: true },
+              )
+            }
+          }
         })
       })
       .subscribe()
@@ -210,7 +347,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
     return () => {
       void supabase.removeChannel(channel)
     }
-  }, [currentUserId, rideId])
+  }, [currentUserId, isRider, navigate, rideId])
 
   // ── Send text message ──────────────────────────────────────────────────
   const handleSend = useCallback(async () => {
@@ -326,6 +463,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const handleAcceptLocation = useCallback(async (locationType: 'pickup' | 'dropoff') => {
     if (!rideId || acceptingLocation) return
     setAcceptingLocation(locationType)
+    setSendError(null)
 
     try {
       const { data: { session } } = await supabase.auth.getSession()
@@ -341,6 +479,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
       })
 
       if (resp.ok) {
+        trackEvent(locationType === 'dropoff' ? 'dropoff_accepted' : 'dropoff_accepted', { ride_id: rideId })
         const body = (await resp.json()) as { both_confirmed: boolean }
         // Refresh ride data
         const { data: updated } = await supabase.from('rides').select('*').eq('id', rideId).single()
@@ -353,9 +492,17 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             { replace: true },
           )
         }
+      } else {
+        const errBody = await resp.json().catch(() => null) as { error?: { message?: string } } | null
+        const msg = errBody?.error?.message ?? `Failed to accept ${locationType} (${resp.status})`
+        // eslint-disable-next-line no-console
+        console.error('[MessagingWindow] accept-location failed:', resp.status, msg)
+        setSendError(msg)
       }
-    } catch {
-      // non-fatal
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[MessagingWindow] accept-location error:', err)
+      setSendError(`Could not accept ${locationType} — please try again`)
     } finally {
       setAcceptingLocation(null)
     }
@@ -391,7 +538,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
 
   // ── Determine latest proposals per type ─────────────────────────────────
   const latestPickupProposal = [...messages].reverse().find((m) => m.type === 'pickup_suggestion')
-  const latestDropoffProposal = [...messages].reverse().find((m) => m.type === 'dropoff_suggestion')
+  const latestDropoffProposal = [...messages].reverse().find((m) => m.type === 'dropoff_suggestion' || m.type === 'transit_dropoff_suggestion')
 
   const pickupProposedByOther = latestPickupProposal &&
     (latestPickupProposal.meta as Record<string, unknown> | null)?.proposed_by !== currentUserId
@@ -461,7 +608,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
     return (
       <div data-testid={testId ?? 'messaging-window'} className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-surface px-6">
         <p className="text-center text-danger" data-testid="error-message">{error ?? 'Ride not found'}</p>
-        <button type="button" onClick={() => navigate(isRider ? '/home/rider' : '/home/driver', { replace: true })} className="rounded-xl bg-primary px-6 py-3 font-semibold text-white">
+        <button type="button" onClick={() => navigate(isRider ? '/home/rider' : '/home/driver', { replace: true })} className="rounded-2xl bg-primary px-6 py-3 font-semibold text-white">
           Back to Home
         </button>
       </div>
@@ -482,7 +629,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           type="button"
           data-testid="cancelled-go-rides"
           onClick={() => navigate('/rides', { replace: true })}
-          className="mt-2 rounded-xl bg-primary px-8 py-3 font-semibold text-white"
+          className="mt-2 rounded-2xl bg-primary px-8 py-3 font-semibold text-white"
         >
           Back to My Rides
         </button>
@@ -523,7 +670,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             defaultZoom={16}
             gestureHandling="greedy"
             disableDefaultUI
-            className="h-full w-full"
+            className="absolute inset-0"
             onClick={(e) => {
               const latLng = e.detail.latLng
               if (latLng) {
@@ -544,7 +691,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                 }
               }}
             >
-              <div className={`flex h-10 w-10 items-center justify-center rounded-full border-[3px] border-white shadow-lg text-sm font-bold text-white ${pinMode === 'pickup' ? 'bg-green-500' : 'bg-red-500'}`}>
+              <div className={`flex h-10 w-10 items-center justify-center rounded-full border-[3px] border-white shadow-lg text-sm font-bold text-white ${pinMode === 'pickup' ? 'bg-success' : 'bg-danger'}`}>
                 {pinMode === 'pickup' ? 'P' : 'D'}
               </div>
             </AdvancedMarker>
@@ -555,6 +702,19 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             <p className="text-xs font-medium text-text-primary">Tap the map to move the pin</p>
           </div>
         </div>
+
+        {/* Transit info for dropoff mode — helps driver choose a point near transit */}
+        {pinMode === 'dropoff' && riderDestLat != null && riderDestLng != null && (
+          <div className="px-4 pt-2 border-t border-border bg-white shrink-0">
+            <TransitInfo
+              dropoffLat={pinLat}
+              dropoffLng={pinLng}
+              destLat={riderDestLat}
+              destLng={riderDestLng}
+              data-testid="pin-dropper-transit-info"
+            />
+          </div>
+        )}
 
         {/* Bottom panel */}
         <div
@@ -567,7 +727,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             value={pinNote}
             onChange={(e) => setPinNote(e.target.value)}
             placeholder={pinMode === 'pickup' ? 'Add a note (e.g. "By the fountain")' : 'Location name (optional)'}
-            className="w-full rounded-xl border border-border bg-surface px-4 py-2.5 text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
+            className="w-full rounded-2xl border border-border bg-surface px-4 py-2.5 text-base text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
           />
           {pinError && (
             <p className="text-sm text-danger text-center" role="alert">{pinError}</p>
@@ -611,7 +771,8 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             } else if (status === 'coordinating' && !ride?.schedule_id) {
               navigate(isRider ? `/ride/pickup-rider/${rideId as string}` : `/ride/pickup-driver/${rideId as string}`, { replace: true })
             } else {
-              navigate('/rides', { replace: true })
+              // For accepted/requested: go to My Rides (preserving history so user can come back)
+              navigate('/rides')
             }
           }}
           className="p-1 shrink-0 text-text-primary active:opacity-60"
@@ -637,8 +798,11 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           </div>
         </div>
 
-        <span className={`text-xs font-medium px-2.5 py-1 rounded-full shrink-0 ${bothConfirmed ? 'text-success bg-success/10' : 'text-warning bg-warning/10'}`}>
-          {bothConfirmed ? 'Confirmed' : 'Negotiating'}
+        <span className={`text-xs font-medium px-2.5 py-1 rounded-full shrink-0 ${
+          ride.status === 'active' ? 'text-success bg-success/10' :
+          bothConfirmed ? 'text-success bg-success/10' : 'text-warning bg-warning/10'
+        }`}>
+          {ride.status === 'active' ? 'In Progress' : bothConfirmed ? 'Confirmed' : 'Negotiating'}
         </span>
 
         {/* Cancel ride button in header — visible before ride is active */}
@@ -658,7 +822,8 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         )}
       </div>
 
-      {/* ── Location status bar ─────────────────────────────────────────────── */}
+      {/* ── Location status bar (hidden during active ride) ────────────────── */}
+      {ride.status !== 'active' && ride.status !== 'completed' && ride.status !== 'cancelled' && (
       <div className="px-4 py-2 bg-surface border-b border-border flex items-center gap-3 shrink-0">
         <div className="flex items-center gap-1.5">
           <span className={`h-2.5 w-2.5 rounded-full ${pickupConfirmed ? 'bg-success' : 'bg-warning'}`} />
@@ -672,62 +837,126 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           <span className="ml-auto text-xs font-medium text-success">Both locations agreed!</span>
         )}
       </div>
+      )}
 
-      {/* ── Other party info card ────────────────────────────────────────── */}
-      {otherUser && (
-        <div data-testid="other-user-info" className="px-4 py-3 bg-white border-b border-border shrink-0">
-          <div className="flex items-center gap-3">
-            {otherUser.avatar_url ? (
-              <img src={otherUser.avatar_url} alt="" className="h-10 w-10 rounded-full object-cover shrink-0" />
-            ) : (
-              <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-sm shrink-0">
-                {otherUser.full_name?.[0]?.toUpperCase() ?? '?'}
-              </div>
-            )}
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-text-primary truncate">
-                {otherUser.full_name ?? (isRider ? 'Driver' : 'Rider')}
-              </p>
-              <div className="flex items-center gap-2 text-xs text-text-secondary">
-                {otherUser.rating_avg != null && (
-                  <span>&#x2B50; {otherUser.rating_avg.toFixed(1)}</span>
-                )}
-                {otherUser.rating_count > 0 && (
-                  <span>({otherUser.rating_count} {otherUser.rating_count === 1 ? 'ride' : 'rides'})</span>
-                )}
-                {(!otherUser.rating_count || otherUser.rating_count === 0) && (
-                  <span className="text-warning">New user</span>
-                )}
-              </div>
+      {/* ── Ride in progress banner ─────────────────────────────────────────── */}
+      {ride.status === 'active' && (
+        <div className="px-4 py-2 bg-success/10 border-b border-border text-center shrink-0">
+          <span className="text-xs font-semibold text-success tracking-wider">RIDE IN PROGRESS</span>
+        </div>
+      )}
+
+      {/* ── Driver selecting dropoff banner (rider only) ──────────────────── */}
+      {driverSelectingDropoff && ride.status !== 'active' && ride.status !== 'completed' && ride.status !== 'cancelled' && (
+        <div className="px-4 py-2.5 bg-primary/5 border-b border-primary/10 flex items-center gap-2.5 shrink-0" data-testid="driver-selecting-dropoff-banner">
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent shrink-0" />
+          <p className="text-xs text-text-primary">
+            <span className="font-semibold">{otherUser?.full_name ?? 'Driver'}</span>
+            {' '}is choosing a drop-off point&hellip;
+          </p>
+        </div>
+      )}
+
+      {/* ── Pending proposal banner — highly visible accept/counter UI ─── */}
+      {!pickupConfirmed && pickupProposedByOther && latestPickupProposal && (
+        <div data-testid="pickup-proposal-banner" className="px-4 py-3 bg-success/10 border-b border-success/20 shrink-0">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="h-6 w-6 rounded-full bg-success/20 flex items-center justify-center">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-success" aria-hidden="true">
+                <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" />
+              </svg>
             </div>
-
-            {/* Vehicle badge — shown when other party is the driver */}
-            {otherVehicle && (
-              <div data-testid="vehicle-badge" className="shrink-0 text-right">
-                <p className="text-xs font-semibold text-text-primary">
-                  {otherVehicle.color} {otherVehicle.make}
-                </p>
-                <p className="text-sm font-bold text-primary tracking-wide">
-                  {otherVehicle.plate}
-                </p>
-              </div>
-            )}
+            <p className="text-sm font-semibold text-success">
+              {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a pickup point
+            </p>
           </div>
+          {(() => {
+            const meta = latestPickupProposal.meta as Record<string, unknown> | null
+            const note = meta?.note
+            return note ? <p className="text-xs text-text-primary mb-2">Note: {String(note)}</p> : null
+          })()}
+          <div className="flex gap-2">
+            <button
+              data-testid="banner-accept-pickup"
+              onClick={() => { void handleAcceptLocation('pickup') }}
+              disabled={acceptingLocation === 'pickup'}
+              className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-white bg-success active:bg-success/90 disabled:opacity-50 transition-colors"
+            >
+              {acceptingLocation === 'pickup' ? 'Accepting...' : 'Accept Pickup'}
+            </button>
+            <button
+              data-testid="banner-counter-pickup"
+              onClick={() => openPinDropper('pickup')}
+              className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-success bg-success/10 border border-success/30 active:bg-success/20 transition-colors"
+            >
+              Counter Offer
+            </button>
+          </div>
+        </div>
+      )}
 
-          {/* Full vehicle details row */}
-          {otherVehicle && (
-            <div data-testid="vehicle-details" className="mt-2 flex items-center gap-2 rounded-xl bg-surface px-3 py-2">
-              <span className="text-lg">&#x1F697;</span>
-              <div className="min-w-0">
-                <p className="text-xs font-medium text-text-primary">
-                  {otherVehicle.color} {otherVehicle.make} {otherVehicle.model}
-                </p>
-                <p className="text-xs text-text-secondary">
-                  Plate: <span className="font-bold text-primary">{otherVehicle.plate}</span>
-                </p>
-              </div>
+      {!dropoffConfirmed && dropoffProposedByOther && latestDropoffProposal && (
+        <div data-testid="dropoff-proposal-banner" className="px-4 py-3 bg-primary/10 border-b border-primary/20 shrink-0">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="h-6 w-6 rounded-full bg-primary/20 flex items-center justify-center">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-primary" aria-hidden="true">
+                <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" />
+              </svg>
             </div>
-          )}
+            <p className="text-sm font-semibold text-primary">
+              {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a dropoff point
+            </p>
+          </div>
+          {(() => {
+            const meta = latestDropoffProposal.meta as Record<string, unknown> | null
+            const name = meta?.name
+            return name ? <p className="text-xs text-text-primary mb-2">{String(name)}</p> : null
+          })()}
+          {/* Transit options from dropoff to rider's final destination */}
+          {isRider && (() => {
+            const meta = latestDropoffProposal.meta as { lat?: number; lng?: number } | null
+            if (meta?.lat == null || meta?.lng == null) return null
+            if (riderDestLat == null || riderDestLng == null) return null
+            return (
+              <TransitInfo
+                dropoffLat={meta.lat}
+                dropoffLng={meta.lng}
+                destLat={riderDestLat}
+                destLng={riderDestLng}
+                data-testid="banner-transit-info"
+              />
+            )
+          })()}
+          <div className="flex gap-2">
+            <button
+              data-testid="banner-accept-dropoff"
+              onClick={() => { void handleAcceptLocation('dropoff') }}
+              disabled={acceptingLocation === 'dropoff'}
+              className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-white bg-primary active:bg-primary/90 disabled:opacity-50 transition-colors"
+            >
+              {acceptingLocation === 'dropoff' ? 'Accepting...' : 'Accept Dropoff'}
+            </button>
+            <button
+              data-testid="banner-counter-dropoff"
+              onClick={() => openPinDropper('dropoff')}
+              className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-primary bg-primary/10 border border-primary/30 active:bg-primary/20 transition-colors"
+            >
+              Counter Offer
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Vehicle info bar (rider side only — no duplicate name) ──────── */}
+      {otherVehicle && (
+        <div data-testid="vehicle-details" className="px-4 py-2 bg-white border-b border-border flex items-center gap-2.5 shrink-0">
+          <span className="text-base">&#x1F697;</span>
+          <p className="text-xs font-medium text-text-primary">
+            {otherVehicle.color} {otherVehicle.make} {otherVehicle.model}
+          </p>
+          <p data-testid="vehicle-badge" className="ml-auto text-xs font-bold text-primary tracking-wide">
+            {otherVehicle.plate}
+          </p>
         </div>
       )}
 
@@ -766,9 +995,46 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         </div>
       )}
 
+      {/* ── Driver destination + transit suggestion cards (driver only) ─── */}
+      {!isRider && ride && !(ride as Record<string, unknown>)['driver_destination'] && !dropoffConfirmed && !state?.driverDestinationSet && (
+        ride.status === 'accepted' || ride.status === 'coordinating' || ride.status === 'requested'
+      ) && (
+        <DriverDestinationCard
+          rideId={rideId as string}
+          driverId={currentUserId as string}
+          onSuggestionsReceived={(suggestions) => {
+            setTransitSuggestions(suggestions)
+            void supabase.from('rides').select('*').eq('id', rideId as string).single().then(({ data }) => {
+              if (data) setRide(data)
+            })
+          }}
+        />
+      )}
+
+      {/* Transit suggestion picker (driver picks a station) */}
+      {!isRider && transitSuggestions.length > 0 && !transitSuggestionPicked && !dropoffConfirmed && (
+        <TransitSuggestionPicker
+          rideId={rideId as string}
+          suggestions={transitSuggestions}
+          driverRoutePolyline={(ride as Record<string, unknown>)['driver_route_polyline'] as string | null ?? null}
+          pickupLat={ride.origin?.coordinates?.[1] ?? null}
+          pickupLng={ride.origin?.coordinates?.[0] ?? null}
+          riderDestLat={riderDestLat}
+          riderDestLng={riderDestLng}
+          riderDestName={ride.destination_name ?? null}
+          driverDestLat={((ride as Record<string, unknown>)['driver_destination'] as { coordinates?: [number, number] } | null)?.coordinates?.[1] ?? null}
+          driverDestLng={((ride as Record<string, unknown>)['driver_destination'] as { coordinates?: [number, number] } | null)?.coordinates?.[0] ?? null}
+          driverDestName={(ride as Record<string, unknown>)['driver_destination_name'] as string | null ?? null}
+          onPicked={() => {
+            setTransitSuggestionPicked(true)
+            setTransitSuggestions([])
+          }}
+        />
+      )}
+
       {/* ── Messages area ──────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3" data-testid="messages-list">
-        {messages.length === 0 && (
+        {messages.length === 0 && !driverDestFlowActive && (
           <div className="flex flex-col items-center justify-center h-full text-center py-12">
             <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center mb-4">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-8 w-8 text-primary" aria-hidden="true">
@@ -818,7 +1084,16 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                     {meta?.note && (
                       <p className="text-xs text-text-secondary mb-2">&quot;{meta.note}&quot;</p>
                     )}
-                    {hasLocation && (
+                    {/* Mini-map: rider origin → pickup point with actual route */}
+                    {hasLocation && ride?.origin && (
+                      <PickupMiniMap
+                        originLat={(ride.origin as { coordinates: [number, number] }).coordinates[1]}
+                        originLng={(ride.origin as { coordinates: [number, number] }).coordinates[0]}
+                        pickupLat={meta.lat as number}
+                        pickupLng={meta.lng as number}
+                      />
+                    )}
+                    {hasLocation && !ride?.origin && (
                       <p className="text-xs text-success font-medium mb-1">&#x1F4CD; Tap to view on map</p>
                     )}
                     {pickupConfirmed && isLatestPickup && (
@@ -836,14 +1111,14 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                       data-testid="accept-pickup-button"
                       onClick={() => { void handleAcceptLocation('pickup') }}
                       disabled={acceptingLocation === 'pickup'}
-                      className="flex-1 rounded-xl py-2 text-xs font-semibold text-white bg-success active:bg-success/90 disabled:opacity-50"
+                      className="flex-1 rounded-2xl py-2 text-xs font-semibold text-white bg-success active:bg-success/90 disabled:opacity-50"
                     >
                       {acceptingLocation === 'pickup' ? 'Accepting...' : 'Accept Pickup'}
                     </button>
                     <button
                       data-testid="counter-pickup-button"
                       onClick={() => openPinDropper('pickup')}
-                      className="flex-1 rounded-xl py-2 text-xs font-semibold text-success bg-success/10 active:bg-success/20"
+                      className="flex-1 rounded-2xl py-2 text-xs font-semibold text-success bg-success/10 active:bg-success/20"
                     >
                       Counter Offer
                     </button>
@@ -889,6 +1164,16 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                     {!meta?.name && hasLocation && (
                       <p className="text-xs text-primary font-medium mb-1">&#x1F4CD; Tap to view on map</p>
                     )}
+                    {/* Transit options from dropoff (rider only) */}
+                    {isRider && hasLocation && riderDestLat != null && riderDestLng != null && (
+                      <TransitInfo
+                        dropoffLat={meta.lat as number}
+                        dropoffLng={meta.lng as number}
+                        destLat={riderDestLat}
+                        destLng={riderDestLng}
+                        data-testid={`msg-transit-info-${msg.id}`}
+                      />
+                    )}
                     {dropoffConfirmed && isLatestDropoff && (
                       <p className="text-xs text-success font-medium">&#x2713; Accepted</p>
                     )}
@@ -904,19 +1189,95 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                       data-testid="accept-dropoff-button"
                       onClick={() => { void handleAcceptLocation('dropoff') }}
                       disabled={acceptingLocation === 'dropoff'}
-                      className="flex-1 rounded-xl py-2 text-xs font-semibold text-white bg-primary active:bg-primary/90 disabled:opacity-50"
+                      className="flex-1 rounded-2xl py-2 text-xs font-semibold text-white bg-primary active:bg-primary/90 disabled:opacity-50"
                     >
                       {acceptingLocation === 'dropoff' ? 'Accepting...' : 'Accept Dropoff'}
                     </button>
                     <button
                       data-testid="counter-dropoff-button"
                       onClick={() => openPinDropper('dropoff')}
-                      className="flex-1 rounded-xl py-2 text-xs font-semibold text-primary bg-primary/10 active:bg-primary/20"
+                      className="flex-1 rounded-2xl py-2 text-xs font-semibold text-primary bg-primary/10 active:bg-primary/20"
                     >
                       Counter Offer
                     </button>
                   </div>
                 )}
+              </div>
+            )
+          }
+
+          // ── Special message: transit_dropoff_suggestion ──
+          if (msg.type === 'transit_dropoff_suggestion') {
+            const meta = msg.meta as {
+              station_name?: string
+              station_lat?: number
+              station_lng?: number
+              station_address?: string
+              transit_options?: Array<{ type: string; icon: string; line_name: string; departure_stop?: string; arrival_stop?: string; duration_minutes?: number; walk_minutes: number; total_minutes: number }>
+              walk_to_station_minutes?: number
+              transit_to_dest_minutes?: number
+              total_rider_minutes?: number
+              proposed_by?: string
+              transit_polyline?: string | null
+              rider_progress_pct?: number | null
+              pickup_lat?: number | null
+              pickup_lng?: number | null
+              rider_dest_lat?: number | null
+              rider_dest_lng?: number | null
+              rider_dest_name?: string | null
+              driver_dest_lat?: number | null
+              driver_dest_lng?: number | null
+              driver_dest_name?: string | null
+              driver_route_polyline?: string | null
+            } | null
+            const isLatestDropoff = msg.id === latestDropoffProposal?.id
+            const canAcceptTransit = isLatestDropoff && dropoffProposedByOther && !dropoffConfirmed
+            const suggestion = meta ? {
+              station_name: meta.station_name ?? 'Transit Station',
+              station_lat: meta.station_lat ?? 0,
+              station_lng: meta.station_lng ?? 0,
+              station_place_id: '',
+              station_address: meta.station_address ?? '',
+              transit_options: meta.transit_options ?? [],
+              walk_to_station_minutes: meta.walk_to_station_minutes ?? 0,
+              driver_detour_minutes: 0,
+              transit_to_dest_minutes: meta.transit_to_dest_minutes ?? 0,
+              total_rider_minutes: meta.total_rider_minutes ?? 0,
+              rider_progress_pct: meta.rider_progress_pct ?? undefined,
+              transit_polyline: meta.transit_polyline ?? null,
+            } : null
+
+            return (
+              <div key={msg.id} data-testid={`message-${msg.id}`} className="space-y-2">
+                <div className="flex justify-center">
+                  <div className="w-full max-w-[85%]">
+                    {suggestion && (
+                      <TransitSuggestionCard
+                        suggestion={suggestion}
+                        isRider={isRider}
+                        onAccept={canAcceptTransit ? () => { void handleAcceptLocation('dropoff') } : undefined}
+                        onCounter={canAcceptTransit ? () => openPinDropper('dropoff') : undefined}
+                        transitPolyline={meta?.transit_polyline ?? null}
+                        pickupLat={meta?.pickup_lat ?? null}
+                        pickupLng={meta?.pickup_lng ?? null}
+                        riderDestLat={meta?.rider_dest_lat ?? null}
+                        riderDestLng={meta?.rider_dest_lng ?? null}
+                        riderDestName={meta?.rider_dest_name ?? null}
+                        driverDestLat={meta?.driver_dest_lat ?? null}
+                        driverDestLng={meta?.driver_dest_lng ?? null}
+                        driverDestName={meta?.driver_dest_name ?? null}
+                        driverRoutePolyline={meta?.driver_route_polyline ?? null}
+                        data-testid={`transit-suggestion-${msg.id}`}
+                      />
+                    )}
+                    {dropoffConfirmed && isLatestDropoff && (
+                      <p className="text-xs text-success font-medium mt-1">&#x2713; Accepted</p>
+                    )}
+                    <p className="text-[10px] text-text-secondary mt-1">
+                      {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </div>
+                </div>
               </div>
             )
           }
@@ -971,7 +1332,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
       </div>
 
       {/* ── Both confirmed: Navigate or Ride Confirmed ─────────────────────── */}
-      {bothConfirmed && (
+      {bothConfirmed && ride.status !== 'active' && ride.status !== 'completed' && ride.status !== 'cancelled' && (
         <div className="px-4 py-3 border-t border-border bg-success/5 shrink-0">
           {ride.schedule_id ? (
             <>
@@ -1030,8 +1391,10 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
 
       {/* ── Location proposal buttons (when not both confirmed) ────────────── */}
       {/* Only show "Suggest" buttons when no proposal exists yet for that type.
-          Once a proposal exists, inline Accept/Counter buttons handle it. */}
-      {!bothConfirmed && (
+          Once a proposal exists, inline Accept/Counter buttons handle it.
+          Hide while the driver destination / transit suggestion flow is active
+          so the buttons don't overlap — they appear after the driver finishes. */}
+      {!bothConfirmed && !driverDestFlowActive && ride.status !== 'active' && ride.status !== 'completed' && ride.status !== 'cancelled' && (
         <div className="px-4 py-2.5 border-t border-border bg-surface flex gap-2 shrink-0">
           {pickupConfirmed ? (
             <div className="flex-1 rounded-2xl py-2.5 text-center text-xs font-semibold text-success bg-success/10">
@@ -1053,6 +1416,11 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           {dropoffConfirmed ? (
             <div className="flex-1 rounded-2xl py-2.5 text-center text-xs font-semibold text-success bg-success/10">
               &#x2713; Dropoff Set
+            </div>
+          ) : driverSelectingDropoff ? (
+            <div className="flex-1 rounded-2xl py-2.5 text-center text-xs font-semibold text-primary bg-primary/5 flex items-center justify-center gap-1.5">
+              <div className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
+              Driver choosing&hellip;
             </div>
           ) : !latestDropoffProposal ? (
             <button
@@ -1089,7 +1457,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
               <button
                 data-testid="cancel-modal-keep"
                 onClick={() => setCancelModal(false)}
-                className="flex-1 rounded-xl py-3 text-sm font-semibold text-text-primary bg-surface active:bg-border transition-colors"
+                className="flex-1 rounded-2xl py-3 text-sm font-semibold text-text-primary bg-surface active:bg-border transition-colors"
               >
                 Keep Ride
               </button>
@@ -1097,7 +1465,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                 data-testid="cancel-modal-confirm"
                 onClick={() => { void handleCancelRide() }}
                 disabled={cancelling}
-                className="flex-1 rounded-xl py-3 text-sm font-semibold text-white bg-danger active:bg-danger/90 transition-colors disabled:opacity-50"
+                className="flex-1 rounded-2xl py-3 text-sm font-semibold text-white bg-danger active:bg-danger/90 transition-colors disabled:opacity-50"
               >
                 {cancelling ? 'Cancelling...' : 'Yes, Cancel'}
               </button>
@@ -1119,7 +1487,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           onChange={(e) => setInputText(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Type a message..."
-          className="flex-1 rounded-full border border-border bg-surface px-4 py-2.5 text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
+          className="flex-1 rounded-full border border-border bg-surface px-4 py-2.5 text-base text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
         />
         <button
           data-testid="send-button"

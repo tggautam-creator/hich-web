@@ -2,9 +2,13 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { APIProvider, Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { env } from '@/lib/env'
+import { colors } from '@/lib/tokens'
 import { supabase } from '@/lib/supabase'
 import { reverseGeocode } from '@/lib/geocode'
 import BottomNav from '@/components/ui/BottomNav'
+import { MAP_ID, DEFAULT_CENTER, DEFAULT_ZOOM } from '@/lib/mapConstants'
+import SpotlightOverlay from '@/components/onboarding/SpotlightOverlay'
+import { useOnboardingStore } from '@/stores/onboardingStore'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -12,15 +16,11 @@ interface RiderHomePageProps {
   'data-testid'?: string
 }
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-const DEFAULT_CENTER = { lat: 38.5382, lng: -121.7617 }
-const DEFAULT_ZOOM = 15
-
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function RiderHomePage({ 'data-testid': testId }: RiderHomePageProps) {
   const navigate = useNavigate()
+  const hasSeenWalkthrough = useOnboardingStore((s) => s.hasSeenWalkthrough)
 
   const [center,       setCenter]       = useState(DEFAULT_CENTER)
   const [hasGps,       setHasGps]       = useState(false)
@@ -89,7 +89,7 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
       <APIProvider apiKey={apiKey}>
         <Map
           data-testid="map-container"
-          mapId="8cb10228438378796542e8f0"
+          mapId={MAP_ID}
           defaultCenter={DEFAULT_CENTER}
           defaultZoom={DEFAULT_ZOOM}
           center={center}
@@ -104,7 +104,7 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
               <div
                 data-testid="blue-dot-marker"
                 className="h-5 w-5 rounded-full border-[3px] border-white shadow-md"
-                style={{ backgroundColor: '#2563EB' }}
+                style={{ backgroundColor: colors.primary }}
               />
             </AdvancedMarker>
           )}
@@ -230,6 +230,9 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
 
       {/* ── Bottom navigation ──────────────────────────────────────────────── */}
       <BottomNav activeTab="home" />
+
+      {/* ── Spotlight walkthrough for new users ──────────────────────────── */}
+      {!hasSeenWalkthrough && <SpotlightOverlay />}
     </div>
   )
 }

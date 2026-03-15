@@ -336,7 +336,7 @@ export default function RateRidePage({ 'data-testid': testId }: RateRidePageProp
             value={comment}
             onChange={(e) => setComment(e.target.value)}
             placeholder="Tell us more (optional)"
-            className="w-full rounded-xl border border-border bg-white px-4 py-3 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none"
+            className="w-full rounded-2xl border border-border bg-white px-4 py-3 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none"
             rows={3}
             data-testid="comment-input"
           />

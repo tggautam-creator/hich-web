@@ -138,7 +138,7 @@ export default function BoardRequestReview({
         <button
           type="button"
           onClick={() => navigate(isDriver ? '/home/driver' : '/home/rider', { replace: true })}
-          className="rounded-xl bg-primary px-6 py-3 font-semibold text-white"
+          className="rounded-2xl bg-primary px-6 py-3 font-semibold text-white"
         >
           Back to Home
         </button>
@@ -233,7 +233,7 @@ export default function BoardRequestReview({
           type="button"
           onClick={() => void handleAccept()}
           disabled={submitting}
-          className="mb-3 w-full rounded-xl bg-success py-3.5 text-center font-semibold text-white active:opacity-90 disabled:opacity-50"
+          className="mb-3 w-full rounded-2xl bg-success py-3.5 text-center font-semibold text-white active:opacity-90 disabled:opacity-50"
           data-testid="accept-button"
         >
           {submitting ? 'Accepting…' : posterIsDriver ? 'Accept Rider' : 'Accept Ride'}
@@ -242,7 +242,7 @@ export default function BoardRequestReview({
           type="button"
           onClick={() => void handleDecline()}
           disabled={submitting}
-          className="w-full rounded-xl border-2 border-danger py-3 text-center font-semibold text-danger active:bg-danger active:text-white disabled:opacity-50"
+          className="w-full rounded-2xl border-2 border-danger py-3 text-center font-semibold text-danger active:bg-danger active:text-white disabled:opacity-50"
           data-testid="decline-button"
         >
           Decline

@@ -287,7 +287,7 @@ describe('MessagingWindow', () => {
     })
 
     await user.click(screen.getByTestId('back-button'))
-    expect(mockNavigate).toHaveBeenCalledWith('/rides', { replace: true })
+    expect(mockNavigate).toHaveBeenCalledWith('/rides')
   })
 
   // ── Realtime ───────────────────────────────────────────────────────────────

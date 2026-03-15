@@ -7,6 +7,29 @@ import { sendFcmPush } from '../lib/fcm.ts'
 export const messagesRouter = Router()
 
 /**
+ * Check if a user is a participant in a ride — either as rider/driver on the
+ * ride itself, or as a driver with a pending/selected offer (before select-driver
+ * has set driver_id on the ride).
+ */
+async function isRideParticipant(
+  rideId: string,
+  userId: string,
+  ride: { rider_id: string; driver_id: string | null },
+): Promise<boolean> {
+  if (ride.rider_id === userId || ride.driver_id === userId) return true
+
+  // Check ride_offers for drivers who accepted but haven't been formally assigned yet
+  const { count } = await supabaseAdmin
+    .from('ride_offers')
+    .select('id', { count: 'exact', head: true })
+    .eq('ride_id', rideId)
+    .eq('driver_id', userId)
+    .in('status', ['pending', 'selected'])
+
+  return (count ?? 0) > 0
+}
+
+/**
  * GET /api/messages/:rideId — fetch all messages for a ride.
  */
 messagesRouter.get(
@@ -28,7 +51,7 @@ messagesRouter.get(
       return
     }
 
-    if (ride.rider_id !== userId && ride.driver_id !== userId) {
+    if (!(await isRideParticipant(rideId, userId, ride))) {
       res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Not a participant' } })
       return
     }
@@ -76,7 +99,7 @@ messagesRouter.post(
       return
     }
 
-    if (ride.rider_id !== senderId && ride.driver_id !== senderId) {
+    if (!(await isRideParticipant(rideId, senderId, ride))) {
       res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Not a participant' } })
       return
     }

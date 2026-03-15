@@ -2,10 +2,11 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { APIProvider, Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { env } from '@/lib/env'
+import { colors } from '@/lib/tokens'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
+import { MAP_ID, DEFAULT_CENTER, DEFAULT_ZOOM } from '@/lib/mapConstants'
 import BottomNav from '@/components/ui/BottomNav'
-import DriverQrSheet from '@/components/ride/DriverQrSheet'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -15,8 +16,6 @@ interface DriverHomePageProps {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_CENTER = { lat: 38.5382, lng: -121.7617 }
-const DEFAULT_ZOOM = 15
 const GPS_INTERVAL_MS = 10_000
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -28,7 +27,6 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
   const [center, setCenter] = useState(DEFAULT_CENTER)
   const [hasGps, setHasGps] = useState(false)
   const [isOnline, setIsOnline] = useState(true)
-  const [qrOpen, setQrOpen] = useState(false)
   const [activeRideCount, setActiveRideCount] = useState(0)
   const [unreadCount, setUnreadCount] = useState(0)
   const latestCoordsRef = useRef(DEFAULT_CENTER)
@@ -124,7 +122,7 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
       <APIProvider apiKey={apiKey}>
         <Map
           data-testid="map-container"
-          mapId="8cb10228438378796542e8f0"
+          mapId={MAP_ID}
           defaultCenter={DEFAULT_CENTER}
           defaultZoom={DEFAULT_ZOOM}
           center={center}
@@ -139,7 +137,7 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
               <div
                 data-testid="green-dot-marker"
                 className="h-5 w-5 rounded-full border-[3px] border-white shadow-md"
-                style={{ backgroundColor: '#10B981' }}
+                style={{ backgroundColor: colors.success }}
               />
             </AdvancedMarker>
           )}
@@ -149,22 +147,30 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
       {/* ── Slim frosted top bar ──────────────────────────────────────────── */}
       <div
         data-testid="top-bar"
-        className="absolute left-0 right-0 top-0 z-[1000] bg-white/90 backdrop-blur-sm border-b border-border flex items-center px-4"
+        className="absolute left-0 right-0 top-0 z-[1000] bg-white/90 backdrop-blur-sm border-b border-border flex items-center justify-between px-4"
         style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}
       >
+        {/* Online/offline pill toggle */}
         <button
-          data-testid="hamburger-menu"
-          aria-label="Open menu"
-          className="p-1 text-text-primary active:opacity-60 transition-opacity"
+          data-testid="online-toggle"
+          onClick={handleToggleOnline}
+          className={[
+            'flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold transition-colors',
+            isOnline
+              ? 'bg-success/10 text-success'
+              : 'bg-border/50 text-text-secondary',
+          ].join(' ')}
         >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6" aria-hidden="true">
-            <line x1="3" y1="6" x2="21" y2="6" />
-            <line x1="3" y1="12" x2="21" y2="12" />
-            <line x1="3" y1="18" x2="21" y2="18" />
-          </svg>
+          <span
+            className={[
+              'h-2 w-2 rounded-full',
+              isOnline ? 'bg-success' : 'bg-text-secondary',
+            ].join(' ')}
+          />
+          {isOnline ? 'Online' : 'Offline'}
         </button>
 
-        <span className="flex-1 text-center font-bold text-lg text-success tracking-widest select-none">
+        <span className="font-bold text-sm text-text-primary tracking-wider select-none">
           HICH DRIVER
         </span>
 
@@ -209,66 +215,26 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         </button>
       )}
 
-      {/* ── Online/offline toggle + QR button row ────────────────────────── */}
+      {/* ── Ride Board button ──────────────────────────────────────────────── */}
       <div
-        className="absolute left-0 right-0 z-[1000] px-4 flex gap-2 items-center"
+        className="absolute left-0 right-0 z-[1000] px-4 flex justify-center"
         style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 4.5rem)' }}
       >
         <button
-          data-testid="online-toggle"
-          onClick={handleToggleOnline}
-          className={[
-            'flex-1 rounded-2xl py-4 text-center text-lg font-bold shadow-lg transition-colors',
-            isOnline
-              ? 'bg-success text-white'
-              : 'bg-white text-text-secondary border border-border',
-          ].join(' ')}
-        >
-          {isOnline ? '🟢 Online — Receiving Rides' : '⏸ Offline — Tap to go online'}
-        </button>
-
-        {/* QR code button */}
-        <button
-          data-testid="qr-button"
-          onClick={() => { setQrOpen(true) }}
-          aria-label="Show QR code"
-          className="w-14 h-14 rounded-2xl bg-white shadow-lg flex items-center justify-center shrink-0 active:scale-95 transition-transform border border-border"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="h-6 w-6 text-text-primary" aria-hidden="true">
-            <rect x="3" y="3" width="7" height="7" rx="1" />
-            <rect x="14" y="3" width="7" height="7" rx="1" />
-            <rect x="3" y="14" width="7" height="7" rx="1" />
-            <rect x="14" y="14" width="4" height="4" rx="0.5" />
-            <line x1="21" y1="14" x2="21" y2="21" />
-            <line x1="14" y1="21" x2="21" y2="21" />
-          </svg>
-        </button>
-
-        {/* Ride Board button */}
-        <button
           data-testid="ride-board-button"
           onClick={() => { navigate('/rides/board', { state: { fromTab: 'drive' } }) }}
-          aria-label="Browse ride board"
-          className="w-14 h-14 rounded-2xl bg-white shadow-lg border border-border flex items-center justify-center shrink-0 active:scale-95 transition-transform"
+          className="flex items-center gap-2 rounded-full bg-white px-5 py-2.5 shadow-lg border border-border active:scale-95 transition-transform"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6 text-text-primary" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
             <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
             <line x1="16" y1="2" x2="16" y2="6" />
             <line x1="8" y1="2" x2="8" y2="6" />
             <line x1="3" y1="10" x2="21" y2="10" />
             <circle cx="12" cy="16" r="1.5" fill="currentColor" stroke="none" />
           </svg>
+          <span className="text-sm font-semibold text-text-primary">Ride Board</span>
         </button>
-
-
       </div>
-
-      {/* ── QR Sheet ──────────────────────────────────────────────────────── */}
-      <DriverQrSheet
-        isOpen={qrOpen}
-        onClose={() => { setQrOpen(false) }}
-        driverId={profile?.id ?? ''}
-      />
 
       {/* ── Bottom navigation ──────────────────────────────────────────────── */}
       <BottomNav activeTab="drive" />

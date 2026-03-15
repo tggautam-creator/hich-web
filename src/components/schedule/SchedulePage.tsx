@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import InputField from '@/components/ui/InputField'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import SecondaryButton from '@/components/ui/SecondaryButton'
+import { trackEvent } from '@/lib/analytics'
 import DayPill from '@/components/ui/DayPill'
 import type { DayIndex } from '@/components/ui/DayPill'
 import BottomSheet from '@/components/ui/BottomSheet'
@@ -14,6 +15,7 @@ import {
   type PlaceSuggestion,
 } from '@/lib/places'
 import { calculateBearing } from '@/lib/geo'
+import { getDirectionsByLatLng } from '@/lib/directions'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -236,7 +238,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
     setSubmitError(null)
 
     try {
-      const { data: insertResult, error } = await supabase.from('ride_schedules').insert({
+      const { error } = await supabase.from('ride_schedules').insert({
         user_id:          user.id,
         mode,
         route_name:       routeName.trim(),
@@ -251,12 +253,9 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
       }).select('id')
 
       if (error) {
-        console.error('[Schedule] Insert failed:', error.message, error.code)
         setSubmitError(error.message)
         return
       }
-
-      console.log('[Schedule] Inserted schedule:', insertResult)
 
       // Notify matched drivers (fire-and-forget)
       try {
@@ -280,6 +279,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
         // Notification failure is non-blocking
       }
 
+      trackEvent('schedule_saved', { mode, trip_type: 'one-time' })
       setShowConfirmation(true)
     } catch {
       setSubmitError('Something went wrong. Please try again.')
@@ -382,6 +382,13 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
         toCoords.lat, toCoords.lng,
       )
 
+      // Fetch driving polyline for transit auto-detection (non-blocking)
+      const directions = await getDirectionsByLatLng(
+        fromCoords.lat, fromCoords.lng,
+        toCoords.lat, toCoords.lng,
+      )
+      const routePolyline = directions?.polyline ?? null
+
       // Group days by identical time config to minimise records
       const groups = new Map<string, { days: number[]; timeType: TimeType; time: string }>()
       for (const day of selectedDays) {
@@ -409,6 +416,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
           arrival_time:        group.timeType === 'arrival'   ? `${group.time}:00` : null,
           origin_address:      fromLocation.fullAddress,
           dest_address:        toLocation.fullAddress,
+          route_polyline:      routePolyline,
         })
 
         if (error) {
@@ -449,6 +457,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
         // Non-fatal if this fails — the routine is already saved
       }
 
+      trackEvent('schedule_saved', { mode, trip_type: 'routine' })
       setShowConfirmation(true)
     } catch {
       setSubmitError('Something went wrong. Please try again.')
@@ -552,7 +561,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
                 value={tripDate}
                 onChange={(e) => { setTripDate(e.target.value); setErrors({}) }}
                 className={[
-                  'w-full rounded-xl border bg-white px-4 py-3',
+                  'w-full rounded-2xl border bg-white px-4 py-3',
                   'text-base text-text-primary',
                   'transition-colors duration-150',
                   'focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary',
@@ -578,7 +587,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
                   data-testid="time-type-departure"
                   onClick={() => { setTimeType('departure') }}
                   className={[
-                    'px-4 py-3 rounded-xl border transition-all duration-150',
+                    'px-4 py-3 rounded-2xl border transition-all duration-150',
                     'font-medium text-sm',
                     timeType === 'departure'
                       ? 'bg-primary text-white border-primary'
@@ -591,7 +600,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
                   data-testid="time-type-arrival"
                   onClick={() => { setTimeType('arrival') }}
                   className={[
-                    'px-4 py-3 rounded-xl border transition-all duration-150',
+                    'px-4 py-3 rounded-2xl border transition-all duration-150',
                     'font-medium text-sm',
                     timeType === 'arrival'
                       ? 'bg-primary text-white border-primary'
@@ -618,7 +627,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
                 value={tripTime}
                 onChange={(e) => { setTripTime(e.target.value); setErrors({}) }}
                 className={[
-                  'w-full rounded-xl border bg-white px-4 py-3',
+                  'w-full rounded-2xl border bg-white px-4 py-3',
                   'text-base text-text-primary',
                   'transition-colors duration-150',
                   'focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary',
@@ -706,7 +715,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
                       key={day}
                       data-testid={`day-summary-${day}`}
                       onClick={() => { handleDayClick(day) }}
-                      className="w-full flex items-center justify-between rounded-xl border border-border bg-white px-4 py-3 text-left hover:bg-surface transition-colors"
+                      className="w-full flex items-center justify-between rounded-2xl border border-border bg-white px-4 py-3 text-left hover:bg-surface transition-colors"
                     >
                       <span className="text-sm font-medium text-text-primary">
                         {DAY_NAMES[day]}
@@ -752,7 +761,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
                     data-testid="sheet-time-type-departure"
                     onClick={() => { setSheetTimeType('departure') }}
                     className={[
-                      'px-4 py-3 rounded-xl border transition-all duration-150',
+                      'px-4 py-3 rounded-2xl border transition-all duration-150',
                       'font-medium text-sm',
                       sheetTimeType === 'departure'
                         ? 'bg-primary text-white border-primary'
@@ -765,7 +774,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
                     data-testid="sheet-time-type-arrival"
                     onClick={() => { setSheetTimeType('arrival') }}
                     className={[
-                      'px-4 py-3 rounded-xl border transition-all duration-150',
+                      'px-4 py-3 rounded-2xl border transition-all duration-150',
                       'font-medium text-sm',
                       sheetTimeType === 'arrival'
                         ? 'bg-primary text-white border-primary'
@@ -791,7 +800,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
                   type="time"
                   value={sheetTime}
                   onChange={(e) => { setSheetTime(e.target.value) }}
-                  className="w-full rounded-xl border border-border bg-white px-4 py-3 text-base text-text-primary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
+                  className="w-full rounded-2xl border border-border bg-white px-4 py-3 text-base text-text-primary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
                 />
               </div>
 
@@ -872,7 +881,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
               onChange={(e) => { handleFromInputChange(e.target.value) }}
               onFocus={() => { setShowFromDropdown(true) }}
               className={[
-                'w-full rounded-xl border bg-white px-4 py-3',
+                'w-full rounded-2xl border bg-white px-4 py-3',
                 'text-base text-text-primary placeholder:text-text-secondary',
                 'transition-colors duration-150',
                 'focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary',
@@ -897,7 +906,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
           {showFromDropdown && fromSuggestions.length > 0 && (
             <div
               data-testid="from-suggestions"
-              className="absolute z-10 mt-1 w-full bg-white rounded-xl border border-border shadow-lg max-h-64 overflow-y-auto"
+              className="absolute z-10 mt-1 w-full bg-white rounded-2xl border border-border shadow-lg max-h-64 overflow-y-auto"
             >
               {fromSuggestions.map((suggestion) => (
                 <button
@@ -933,7 +942,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
               onChange={(e) => { handleToInputChange(e.target.value) }}
               onFocus={() => { setShowToDropdown(true) }}
               className={[
-                'w-full rounded-xl border bg-white px-4 py-3',
+                'w-full rounded-2xl border bg-white px-4 py-3',
                 'text-base text-text-primary placeholder:text-text-secondary',
                 'transition-colors duration-150',
                 'focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary',
@@ -958,7 +967,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
           {showToDropdown && toSuggestions.length > 0 && (
             <div
               data-testid="to-suggestions"
-              className="absolute z-10 mt-1 w-full bg-white rounded-xl border border-border shadow-lg max-h-64 overflow-y-auto"
+              className="absolute z-10 mt-1 w-full bg-white rounded-2xl border border-border shadow-lg max-h-64 overflow-y-auto"
             >
               {toSuggestions.map((suggestion) => (
                 <button
@@ -989,7 +998,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
               data-testid="direction-one-way"
               onClick={() => { setDirectionType('one-way') }}
               className={[
-                'px-4 py-3 rounded-xl border transition-all duration-150',
+                'px-4 py-3 rounded-2xl border transition-all duration-150',
                 'font-medium text-sm',
                 directionType === 'one-way'
                   ? 'bg-primary text-white border-primary'
@@ -1002,7 +1011,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
               data-testid="direction-roundtrip"
               onClick={() => { setDirectionType('roundtrip') }}
               className={[
-                'px-4 py-3 rounded-xl border transition-all duration-150',
+                'px-4 py-3 rounded-2xl border transition-all duration-150',
                 'font-medium text-sm',
                 directionType === 'roundtrip'
                   ? 'bg-primary text-white border-primary'
@@ -1024,7 +1033,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
               data-testid="trip-type-one-time"
               onClick={() => { setTripType('one-time') }}
               className={[
-                'px-4 py-3 rounded-xl border transition-all duration-150',
+                'px-4 py-3 rounded-2xl border transition-all duration-150',
                 'font-medium text-sm',
                 tripType === 'one-time'
                   ? 'bg-primary text-white border-primary'
@@ -1037,7 +1046,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
               data-testid="trip-type-routine"
               onClick={() => { setTripType('routine') }}
               className={[
-                'px-4 py-3 rounded-xl border transition-all duration-150',
+                'px-4 py-3 rounded-2xl border transition-all duration-150',
                 'font-medium text-sm',
                 tripType === 'routine'
                   ? 'bg-primary text-white border-primary'

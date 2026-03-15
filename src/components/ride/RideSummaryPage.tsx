@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { supabase } from '@/lib/supabase'
 import { formatCents, calculateFare } from '@/lib/fare'
+import { colors as tokenColors } from '@/lib/tokens'
 import { haversineMetres } from '@/lib/geo'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import type { Ride, User, Vehicle } from '@/types/database'
@@ -28,7 +29,7 @@ function Confetti() {
     canvas.width = window.innerWidth
     canvas.height = window.innerHeight
 
-    const colors = ['#2563EB', '#10B981', '#F59E0B', '#EF4444', '#0D9488', '#DBEAFE']
+    const colors = [tokenColors.primary, tokenColors.success, tokenColors.warning, tokenColors.danger, tokenColors.primaryDark, tokenColors.primaryLight]
     const particles: Array<{
       x: number; y: number; w: number; h: number
       color: string; vx: number; vy: number; rot: number; vr: number
@@ -40,7 +41,7 @@ function Confetti() {
         y: Math.random() * canvas.height * -1,
         w: 6 + Math.random() * 6,
         h: 4 + Math.random() * 4,
-        color: colors[Math.floor(Math.random() * colors.length)] ?? '#2563EB',
+        color: colors[Math.floor(Math.random() * colors.length)] ?? tokenColors.primary,
         vx: (Math.random() - 0.5) * 3,
         vy: 2 + Math.random() * 4,
         rot: Math.random() * Math.PI * 2,
@@ -365,7 +366,7 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
 
         <button
           onClick={goHome}
-          className="w-full rounded-xl border border-border py-3 text-sm font-medium text-text-secondary"
+          className="w-full rounded-2xl border border-border py-3 text-sm font-medium text-text-secondary"
           data-testid="done-button"
         >
           Done

@@ -10,6 +10,9 @@ interface TransitOption {
   type: string        // e.g. 'BUS', 'SUBWAY', 'RAIL', 'TRAM', 'WALKING'
   icon: string        // emoji icon
   line_name: string   // e.g. 'Route 32', 'Blue Line'
+  departure_stop?: string
+  arrival_stop?: string
+  duration_minutes?: number
   walk_minutes: number
   total_minutes: number
 }
@@ -19,6 +22,8 @@ interface GoogleStep {
   duration?: { value: number }
   distance?: { value: number }
   transit_details?: {
+    departure_stop?: { name?: string }
+    arrival_stop?: { name?: string }
     line?: {
       short_name?: string
       name?: string
@@ -98,11 +103,15 @@ function parseTransitOptions(data: GoogleDirectionsResponse): TransitOption[] {
       const td = step.transit_details
       const vehicleType = td.line?.vehicle?.type ?? 'BUS'
       const lineName = td.line?.short_name ?? td.line?.name ?? 'Transit'
+      const stepDurationMin = Math.round((step.duration?.value ?? 0) / 60)
 
       options.push({
         type: vehicleType,
         icon: VEHICLE_ICONS[vehicleType] ?? '🚍',
         line_name: lineName,
+        departure_stop: td.departure_stop?.name ?? undefined,
+        arrival_stop: td.arrival_stop?.name ?? undefined,
+        duration_minutes: stepDurationMin > 0 ? stepDurationMin : undefined,
         walk_minutes: Math.round(walkSeconds / 60),
         total_minutes: totalMinutes,
       })

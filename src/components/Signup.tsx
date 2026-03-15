@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { isValidEduEmail } from '@/lib/validation'
+import { trackEvent } from '@/lib/analytics'
 import InputField from '@/components/ui/InputField'
 import PrimaryButton from '@/components/ui/PrimaryButton'
+import Logo from '@/components/ui/Logo'
 
 interface SignupProps {
   'data-testid'?: string
@@ -47,6 +49,7 @@ export default function Signup({ 'data-testid': testId }: SignupProps) {
       if (error) {
         setServerError(error.message)
       } else {
+        trackEvent('signup_started', { edu_domain: email.trim().toLowerCase().split('@')[1] })
         navigate('/check-inbox', { state: { email: email.trim().toLowerCase() } })
       }
     } catch {
@@ -62,7 +65,7 @@ export default function Signup({ 'data-testid': testId }: SignupProps) {
       className="min-h-dvh w-full bg-surface flex flex-col font-sans"
     >
       <header
-        className="px-6 pb-4"
+        className="px-6 pb-4 flex items-center justify-between"
         style={{ paddingTop: 'max(env(safe-area-inset-top), 2rem)' }}
       >
         <button
@@ -71,6 +74,7 @@ export default function Signup({ 'data-testid': testId }: SignupProps) {
         >
           ← Back
         </button>
+        <Logo size="sm" />
       </header>
 
       <main className="flex-1 flex flex-col justify-center px-6 gap-8">
@@ -129,7 +133,7 @@ export default function Signup({ 'data-testid': testId }: SignupProps) {
           {emailExists && (
             <div
               data-testid="email-exists-error"
-              className="rounded-xl bg-primary-light p-4 text-sm text-text-primary"
+              className="rounded-2xl bg-primary-light p-4 text-sm text-text-primary"
               role="alert"
             >
               <p className="font-medium">An account with this email already exists.</p>

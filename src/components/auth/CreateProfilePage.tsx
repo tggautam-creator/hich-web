@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { validateFullName, validatePhone, validatePassword } from '@/lib/validation'
+import { trackEvent } from '@/lib/analytics'
 import InputField from '@/components/ui/InputField'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 
@@ -37,7 +38,7 @@ interface FormErrors {
 
 // Shared input class — matches InputField exactly so the select blends in
 const INPUT_CLASS = [
-  'w-full rounded-xl border border-border bg-white px-4 py-3',
+  'w-full rounded-2xl border border-border bg-white px-4 py-3',
   'text-base text-text-primary placeholder:text-text-secondary',
   'transition-colors duration-150',
   'focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-0 focus:border-primary',
@@ -139,6 +140,7 @@ export default function CreateProfilePage() {
 
       // Refresh the auth store so AuthGuard sees the new full_name
       await refreshProfile()
+      trackEvent('signup_completed')
       navigate('/onboarding/location')
     } catch (err: unknown) {
       // eslint-disable-next-line no-console
@@ -274,7 +276,7 @@ export default function CreateProfilePage() {
             <p
               data-testid="submit-error"
               role="alert"
-              className="rounded-xl border border-danger/20 bg-danger/5 px-4 py-3 text-sm text-danger"
+              className="rounded-2xl border border-danger/20 bg-danger/5 px-4 py-3 text-sm text-danger"
             >
               {errors.submit}
             </p>

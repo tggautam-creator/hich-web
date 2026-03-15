@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import { loadStripe } from '@stripe/stripe-js'
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js'
 import { supabase } from '@/lib/supabase'
+import { trackEvent } from '@/lib/analytics'
 import { env } from '@/lib/env'
+import { colors as tokenColors } from '@/lib/tokens'
 import { useAuthStore } from '@/stores/authStore'
 import { formatCents } from '@/lib/fare'
 import PrimaryButton from '@/components/ui/PrimaryButton'
@@ -111,6 +113,7 @@ function AddFundsForm() {
       })
 
       setSuccess(true)
+      trackEvent('payment_completed', { amount_cents: amountCents })
       await refreshProfile()
 
       // Navigate back to wallet after brief delay
@@ -148,7 +151,7 @@ function AddFundsForm() {
             <button
               key={cents}
               onClick={() => handlePillClick(cents)}
-              className={`rounded-xl py-3 text-center font-semibold transition-colors ${
+              className={`rounded-2xl py-3 text-center font-semibold transition-colors ${
                 selectedAmount === cents && !isCustom
                   ? 'bg-primary text-white'
                   : 'bg-white text-text-primary border border-border hover:border-primary'
@@ -173,7 +176,7 @@ function AddFundsForm() {
             value={customInput}
             onFocus={handleCustomFocus}
             onChange={(e) => handleCustomChange(e.target.value)}
-            className={`w-full rounded-xl border py-3 pl-8 pr-4 text-lg ${
+            className={`w-full rounded-2xl border py-3 pl-8 pr-4 text-lg ${
               isCustom ? 'border-primary ring-1 ring-primary' : 'border-border'
             }`}
             data-testid="custom-amount-input"
@@ -189,14 +192,14 @@ function AddFundsForm() {
       {/* Card element */}
       <div>
         <p className="mb-2 text-sm font-medium text-text-secondary">Card details</p>
-        <div className="rounded-xl border border-border bg-white p-4" data-testid="card-element">
+        <div className="rounded-2xl border border-border bg-white p-4" data-testid="card-element">
           <CardElement
             options={{
               style: {
                 base: {
                   fontSize: '16px',
-                  color: '#1E293B',
-                  '::placeholder': { color: '#64748B' },
+                  color: tokenColors.textPrimary,
+                  '::placeholder': { color: tokenColors.textSecondary },
                 },
               },
             }}
@@ -245,7 +248,7 @@ export default function AddFundsPage() {
             <AddFundsForm />
           </Elements>
         ) : (
-          <div className="rounded-xl bg-white p-6 text-center" data-testid="stripe-unavailable">
+          <div className="rounded-2xl bg-white p-6 text-center" data-testid="stripe-unavailable">
             <p className="text-text-secondary">
               Payment is not configured yet. Please set up Stripe keys.
             </p>

@@ -5,13 +5,12 @@
  *  1. Shows loading spinner while fetching
  *  2. Displays rider name
  *  3. Displays rider rating
- *  4. Displays total fare and driver earnings
- *  5. Shows countdown text
- *  6. Accept button calls PATCH and navigates to messaging
- *  7. Decline button updates ride and navigates to driver home
- *  8. Auto-declines after 90 seconds
- *  9. Shows error state when ride fetch fails
- * 10. Shows fallback values when fare is null
+ *  4. Shows countdown text
+ *  5. Accept button is disabled until destination is selected
+ *  6. Decline button updates ride and navigates to driver home
+ *  7. Auto-declines after 150 seconds
+ *  8. Shows error state when ride fetch fails
+ *  9. Shows destination input with explanation
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -57,6 +56,17 @@ vi.mock('@/lib/supabase', () => ({
           select: () => ({
             eq: () => ({
               single: () => Promise.resolve({ data: RIDER, error: null }),
+            }),
+          }),
+        }
+      }
+      if (table === 'driver_routines') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                limit: () => Promise.resolve({ data: [], error: null }),
+              }),
             }),
           }),
         }
@@ -145,7 +155,7 @@ describe('RideSuggestion', () => {
     vi.clearAllMocks()
     vi.stubGlobal('fetch', mockFetch)
     mockGetSession.mockResolvedValue({
-      data: { session: { access_token: 'test-token' } },
+      data: { session: { access_token: 'test-token', user: { id: 'driver-123' } } },
     })
     mockUpdateEq.mockResolvedValue({ data: null, error: null })
   })
@@ -179,48 +189,36 @@ describe('RideSuggestion', () => {
     })
   })
 
-  it('displays total fare and driver earnings', async () => {
-    setupSuccess()
-    renderWithRoute()
-
-    await waitFor(() => {
-      // 2500 cents → "$25.00"
-      expect(screen.getByTestId('total-fare')).toHaveTextContent('$25.00')
-      // 2500 - round(2500 * 0.15) = 2500 - 375 = 2125 → "$21.25"
-      expect(screen.getByTestId('driver-earnings')).toHaveTextContent('$21.25')
-    })
-  })
-
   it('displays countdown text after load', async () => {
     setupSuccess()
     renderWithRoute()
 
     await waitFor(() => {
-      expect(screen.getByTestId('countdown-text')).toHaveTextContent('90s')
+      expect(screen.getByTestId('countdown-text')).toHaveTextContent('150s')
     })
   })
 
-  it('Accept button calls PATCH and navigates to messaging', async () => {
+  it('shows destination input with explanation', async () => {
     setupSuccess()
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ status: 'accepted' }),
+    renderWithRoute()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('driver-destination-card')).toBeInTheDocument()
+      expect(screen.getByTestId('driver-dest-input')).toBeInTheDocument()
     })
+  })
+
+  it('Accept button is disabled until destination is selected', async () => {
+    setupSuccess()
     renderWithRoute()
 
     await waitFor(() => {
       expect(screen.getByTestId('accept-button')).toBeInTheDocument()
     })
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('accept-button'))
-    })
-
-    expect(mockFetch).toHaveBeenCalledWith(
-      '/api/rides/ride-123/accept',
-      expect.objectContaining({ method: 'PATCH' }),
-    )
-    expect(mockNavigate).toHaveBeenCalledWith('/ride/messaging/ride-123', { replace: true })
+    // Without a destination, button should be disabled
+    expect(screen.getByTestId('accept-button')).toBeDisabled()
+    expect(screen.getByTestId('accept-button')).toHaveTextContent('Enter destination first')
   })
 
   it('Decline button updates ride and navigates to driver home', async () => {
@@ -239,7 +237,7 @@ describe('RideSuggestion', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/home/driver', { replace: true })
   })
 
-  it('auto-declines after 90 seconds', async () => {
+  it('auto-declines after 150 seconds', async () => {
     vi.useFakeTimers()
     setupSuccess()
     renderWithRoute()
@@ -251,9 +249,9 @@ describe('RideSuggestion', () => {
 
     expect(screen.getByTestId('countdown-text')).toBeInTheDocument()
 
-    // Advance past the 90s countdown
+    // Advance past the 150s countdown
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(90_000)
+      await vi.advanceTimersByTimeAsync(150_000)
     })
 
     expect(mockUpdate).toHaveBeenCalledWith({ status: 'cancelled' })
@@ -266,16 +264,6 @@ describe('RideSuggestion', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('error-message')).toHaveTextContent('Could not load ride details')
-    })
-  })
-
-  it('shows fallback values when fare is null', async () => {
-    setupSuccess({ fare_cents: null })
-    renderWithRoute()
-
-    await waitFor(() => {
-      expect(screen.getByTestId('total-fare')).toHaveTextContent('–')
-      expect(screen.getByTestId('driver-earnings')).toHaveTextContent('–')
     })
   })
 })

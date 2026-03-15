@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { calculateFareRange, formatCents, type FareRange } from '@/lib/fare'
 import type { PlaceSuggestion } from '@/lib/places'
 import { supabase } from '@/lib/supabase'
+import { trackEvent } from '@/lib/analytics'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -99,6 +100,7 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
       }
 
       const { ride_id } = (await resp.json()) as { ride_id: string }
+      trackEvent('ride_requested', { ride_id })
       navigate('/ride/waiting', {
         state: {
           destination,
@@ -305,7 +307,7 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
         {/* Actions */}
         <div className="space-y-3">
           {error && (
-            <p data-testid="request-error" className="text-sm text-red-600 text-center">
+            <p data-testid="request-error" className="text-sm text-danger text-center">
               {error}
             </p>
           )}

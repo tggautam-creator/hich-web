@@ -29,5 +29,17 @@ export default defineConfig({
       VITE_GOOGLE_PLACES_KEY: 'test-google-key',
       VITE_STRIPE_PUBLISHABLE_KEY: 'pk_test_stub',
     },
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'text-summary', 'lcov'],
+      reportsDirectory: './coverage',
+      include: [
+        'src/lib/geo.ts',
+        'src/lib/fare.ts',
+        'src/stores/**/*.ts',
+        'server/routes/**/*.ts',
+        'server/lib/**/*.ts',
+      ],
+    },
   },
 })

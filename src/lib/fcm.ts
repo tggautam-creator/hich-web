@@ -10,6 +10,8 @@
  * if the browser doesn't support notifications.
  */
 
+/* eslint-disable no-console */
+
 import { initializeApp, type FirebaseApp } from 'firebase/app'
 import { getMessaging, getToken, onMessage, type Messaging } from 'firebase/messaging'
 import { env } from './env'

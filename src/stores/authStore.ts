@@ -20,6 +20,7 @@ import type { User as SupabaseUser, Session } from '@supabase/supabase-js'
 import type { User } from '@/types/database'
 import { supabase } from '@/lib/supabase'
 import { requestAndSaveFcmToken } from '@/lib/fcm'
+import { identifyUser, resetAnalytics } from '@/lib/analytics'
 
 // ── State & Actions ────────────────────────────────────────────────────────────
 
@@ -91,6 +92,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   signOut: async () => {
     await supabase.auth.signOut()
+    resetAnalytics()
     set({ user: null, session: null, profile: null, isDriver: false, isLoading: false })
   },
 
@@ -117,6 +119,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // shape is always User when the query succeeds and data is truthy.
     const profile = data as unknown as User
     set({ profile, isDriver: profile.is_driver, isLoading: false })
+
+    identifyUser(user.id, {
+      is_driver: profile.is_driver,
+      edu_domain: user.email?.split('@')[1],
+      created_at: profile.created_at,
+    })
 
     // Request FCM push notification permission and save token (fire-and-forget)
     void requestAndSaveFcmToken()

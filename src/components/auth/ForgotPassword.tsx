@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase'
 import { isValidEduEmail } from '@/lib/validation'
 import InputField from '@/components/ui/InputField'
 import PrimaryButton from '@/components/ui/PrimaryButton'
+import Logo from '@/components/ui/Logo'
 
 interface ForgotPasswordProps {
   'data-testid'?: string
@@ -53,7 +54,7 @@ export default function ForgotPassword({ 'data-testid': testId }: ForgotPassword
       className="min-h-dvh w-full bg-surface flex flex-col font-sans"
     >
       <header
-        className="px-6 pb-4"
+        className="px-6 pb-4 flex items-center justify-between"
         style={{ paddingTop: 'max(env(safe-area-inset-top), 2rem)' }}
       >
         <button
@@ -63,6 +64,7 @@ export default function ForgotPassword({ 'data-testid': testId }: ForgotPassword
         >
           ← Back to login
         </button>
+        <Logo size="sm" />
       </header>
 
       <main className="flex-1 flex flex-col justify-center px-6 gap-8">

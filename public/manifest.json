@@ -1,0 +1,16 @@
+{
+  "name": "HICH — Campus Carpooling",
+  "short_name": "HICH",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F8FAFC",
+  "theme_color": "#00A8F3",
+  "description": "Carpooling for university students. .edu verified rides.",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

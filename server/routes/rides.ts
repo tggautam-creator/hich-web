@@ -4,6 +4,7 @@ import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { generateQrToken, validateQrToken } from '../lib/qrToken.ts'
+import { computeTransitDropoffSuggestions, fetchDrivingRoute } from '../lib/transitSuggestions.ts'
 
 export const ridesRouter = Router()
 
@@ -387,6 +388,14 @@ ridesRouter.post(
     const platformFee = Math.round(fareCents * 0.15)
     const driverEarns = fareCents - platformFee
 
+    // Fetch rider name for notifications and broadcasts
+    const riderProfile = await supabaseAdmin
+      .from('users')
+      .select('full_name')
+      .eq('id', riderId)
+      .single()
+    const riderName = riderProfile.data?.full_name ?? 'A rider'
+
     // Persist notifications as a reliable fallback when realtime/push is delayed.
     if (driverIds.length > 0) {
       const notificationRows = driverIds.map((driverId) => ({
@@ -397,6 +406,7 @@ ridesRouter.post(
         data: {
           type: 'ride_request',
           ride_id: ride.id,
+          rider_name: riderName,
           destination: body.destination_name ?? 'Nearby destination',
           distance_km: String(body.distance_km ?? '–'),
           estimated_earnings_cents: String(driverEarns),
@@ -417,12 +427,6 @@ ridesRouter.post(
     }
 
     // Broadcast via Supabase Realtime so in-app listeners receive instantly
-    const riderProfile = await supabaseAdmin
-      .from('users')
-      .select('full_name')
-      .eq('id', riderId)
-      .single()
-    const riderName = riderProfile.data?.full_name ?? 'A rider'
 
     const realtimePayload = {
       type: 'ride_request' as const,
@@ -505,6 +509,126 @@ ridesRouter.patch(
       return
     }
 
+    const isDriverCancel = ride.driver_id === userId
+    const cancellerRole = isDriverCancel ? 'driver' : 'rider'
+
+    // ── DRIVER cancels an accepted/coordinating ride → revert to requested + re-match ──
+    if (isDriverCancel && (originalStatus === 'accepted' || originalStatus === 'coordinating')) {
+      const { error: revertErr } = await supabaseAdmin
+        .from('rides')
+        .update({
+          status: 'requested',
+          driver_id: null,
+          driver_destination: null,
+          driver_destination_name: null,
+          driver_route_polyline: null,
+        })
+        .eq('id', rideId)
+
+      if (revertErr) { next(revertErr); return }
+
+      // Mark the cancelled driver's offer as 'released'
+      await supabaseAdmin
+        .from('ride_offers')
+        .update({ status: 'released' })
+        .eq('ride_id', rideId)
+        .eq('driver_id', userId)
+
+      // Broadcast driver_cancelled (NOT ride_cancelled) to the rider
+      const driverCancelPayload: Record<string, unknown> = {
+        type: 'driver_cancelled',
+        ride_id: rideId,
+        cancelled_driver_id: userId,
+      }
+      await Promise.all([
+        broadcastWithTimeout(`rider:${ride.rider_id}`, 'driver_cancelled', driverCancelPayload),
+        broadcastWithTimeout(`waiting:${ride.rider_id}`, 'driver_cancelled', driverCancelPayload),
+        broadcastWithTimeout(`chat:${rideId}`, 'driver_cancelled', driverCancelPayload),
+        broadcastWithTimeout(`myrides:${ride.rider_id}`, 'ride_status_changed', { ride_id: rideId, status: 'requested' }),
+        broadcastWithTimeout(`myrides:${userId}`, 'ride_status_changed', { ride_id: rideId, status: 'requested' }),
+      ])
+
+      // Send FCM push to the rider
+      const { data: riderTokens } = await supabaseAdmin
+        .from('push_tokens')
+        .select('token')
+        .eq('user_id', ride.rider_id)
+      const riderTokenList = (riderTokens ?? []).map((t: { token: string }) => t.token)
+      if (riderTokenList.length > 0) {
+        await sendFcmPush(riderTokenList, {
+          title: 'Driver cancelled',
+          body: 'Finding you a new driver…',
+          data: { type: 'driver_cancelled', ride_id: rideId },
+        })
+      }
+
+      // Re-broadcast ride_request to all drivers except the cancelled one
+      const { data: allDrivers } = await supabaseAdmin
+        .from('users')
+        .select('id')
+        .eq('is_driver', true)
+
+      const driverIds = (allDrivers ?? [])
+        .map((d: { id: string }) => d.id)
+        .filter((id: string) => id !== userId)
+
+      if (driverIds.length > 0) {
+        const { data: tokenRows } = await supabaseAdmin
+          .from('push_tokens')
+          .select('token')
+          .in('user_id', driverIds)
+
+        const tokens = (tokenRows ?? []).map((t: { token: string }) => t.token)
+        if (tokens.length > 0) {
+          await sendFcmPush(tokens, {
+            title: 'New ride request nearby',
+            body: 'A rider needs a lift — open HICH to view.',
+            data: { type: 'ride_request', ride_id: rideId },
+          })
+        }
+      }
+
+      // Realtime re-broadcast ride_request to in-app drivers
+      const { data: fullRide } = await supabaseAdmin
+        .from('rides')
+        .select('id, origin, destination, destination_name, rider_id')
+        .eq('id', rideId)
+        .single()
+
+      if (fullRide) {
+        const origin = fullRide.origin as unknown as { coordinates: number[] }
+        const dest = fullRide.destination as unknown as { coordinates: number[] } | null
+
+        const { data: riderProfile } = await supabaseAdmin
+          .from('users')
+          .select('full_name')
+          .eq('id', fullRide.rider_id)
+          .single()
+
+        const realtimePayload = {
+          type: 'ride_request' as const,
+          ride_id: rideId,
+          rider_name: riderProfile?.full_name ?? 'A rider',
+          destination: fullRide.destination_name ?? 'Nearby destination',
+          distance_km: '–',
+          estimated_earnings_cents: '0',
+          origin_lat: String(origin.coordinates[1]),
+          origin_lng: String(origin.coordinates[0]),
+          destination_lat: dest ? String(dest.coordinates[1]) : '',
+          destination_lng: dest ? String(dest.coordinates[0]) : '',
+        }
+
+        await Promise.all(
+          driverIds.map((driverId) => broadcastRideRequestWithTimeout(driverId, realtimePayload)),
+        )
+      }
+
+      console.log(`[rides/cancel] rideId=${rideId} driver-cancelled by ${userId}, reverted to requested`)
+      res.status(200).json({ ride_id: rideId, status: 'requested', driver_cancelled: true })
+      return
+    }
+
+    // ── Rider cancel or driver cancel of a 'requested' ride → permanent cancel ──
     const { error: updateErr } = await supabaseAdmin
       .from('rides')
       .update({ status: 'cancelled' })
@@ -517,38 +641,21 @@ ridesRouter.patch(
 
     // Notify the other party
     const otherUserId = userId === ride.rider_id ? ride.driver_id : ride.rider_id
-    const cancellerRole = userId === ride.rider_id ? 'rider' : 'driver'
-
-    // Helper: broadcast a single event to a channel
-    function broadcastEvent(channelName: string, event: string, payload: Record<string, unknown>): void {
-      const ch = supabaseAdmin.channel(channelName)
-      const timer = setTimeout(() => { supabaseAdmin.removeChannel(ch).catch(() => {}) }, 3000)
-      ch.subscribe((s) => {
-        if (s === 'SUBSCRIBED') {
-          ch.send({ type: 'broadcast', event, payload }).then(() => {
-            clearTimeout(timer)
-            supabaseAdmin.removeChannel(ch).catch(() => {})
-          }).catch(() => {
-            clearTimeout(timer)
-            supabaseAdmin.removeChannel(ch).catch(() => {})
-          })
-        }
-      })
-    }
 
     if (otherUserId) {
       // Broadcast to the other party's notification channel
       const channelName = cancellerRole === 'rider'
         ? `driver:${otherUserId}`
         : `rider:${otherUserId}`
-      broadcastEvent(channelName, 'ride_cancelled', {
-        type: 'ride_cancelled', ride_id: rideId, cancelled_by: cancellerRole,
-      })
 
-      // Broadcast to other party's MyRides channel
-      broadcastEvent(`myrides:${otherUserId}`, 'ride_status_changed', {
-        ride_id: rideId, status: 'cancelled',
-      })
+      await Promise.all([
+        broadcastWithTimeout(channelName, 'ride_cancelled', {
+          type: 'ride_cancelled', ride_id: rideId, cancelled_by: cancellerRole,
+        }),
+        broadcastWithTimeout(`myrides:${otherUserId}`, 'ride_status_changed', {
+          ride_id: rideId, status: 'cancelled',
+        }),
+      ])
 
       // Send FCM push
       const { data: otherTokens } = await supabaseAdmin
@@ -567,12 +674,12 @@ ridesRouter.patch(
     }
 
     // Also refresh the canceller's own MyRides
-    broadcastEvent(`myrides:${userId}`, 'ride_status_changed', {
+    await broadcastWithTimeout(`myrides:${userId}`, 'ride_status_changed', {
       ride_id: rideId, status: 'cancelled',
     })
 
     // Broadcast to the chat channel so MessagingWindow updates if open
-    broadcastEvent(`chat:${rideId}`, 'ride_cancelled', {
+    await broadcastWithTimeout(`chat:${rideId}`, 'ride_cancelled', {
       type: 'ride_cancelled', ride_id: rideId, cancelled_by: cancellerRole,
     })
 
@@ -585,7 +692,7 @@ ridesRouter.patch(
         .neq('id', userId)
 
       for (const driver of allDrivers ?? []) {
-        broadcastEvent(`driver:${driver.id}`, 'ride_cancelled', {
+        void broadcastWithTimeout(`driver:${driver.id}`, 'ride_cancelled', {
           type: 'ride_cancelled', ride_id: rideId,
         })
       }
@@ -655,6 +762,26 @@ ridesRouter.patch(
       return
     }
 
+    // If driver included their destination, save it on the offer
+    const body = req.body as Record<string, unknown>
+    const hasDriverDest = typeof body['driver_destination_lat'] === 'number' && typeof body['driver_destination_lng'] === 'number'
+    if (hasDriverDest) {
+      const destGeo: GeoPoint = {
+        type: 'Point',
+        coordinates: [Number(body['driver_destination_lng']), Number(body['driver_destination_lat'])],
+      }
+      await supabaseAdmin
+        .from('ride_offers')
+        .update({
+          driver_destination: destGeo,
+          driver_destination_name: typeof body['driver_destination_name'] === 'string' ? body['driver_destination_name'] : null,
+          driver_route_polyline: typeof body['driver_route_polyline'] === 'string' ? body['driver_route_polyline'] : null,
+          overlap_pct: typeof body['overlap_pct'] === 'number' ? body['overlap_pct'] : null,
+        })
+        .eq('ride_id', rideId)
+        .eq('driver_id', driverId)
+    }
+
     // Count current pending offers for this ride
     const { count: offerCount } = await supabaseAdmin
       .from('ride_offers')
@@ -662,12 +789,25 @@ ridesRouter.patch(
       .eq('ride_id', rideId)
       .eq('status', 'pending')
 
+    // Fetch driver info for enriched broadcast
+    const { data: driverInfo } = await supabaseAdmin
+      .from('users')
+      .select('full_name, avatar_url, rating_avg, rating_count')
+      .eq('id', driverId)
+      .single()
+
     // Broadcast offer to rider via Realtime so WaitingRoom can collect offers
-    const acceptPayload = {
+    const acceptPayload: Record<string, unknown> = {
       type: 'ride_accepted',
       ride_id: rideId,
       driver_id: driverId,
       offer_count: offerCount ?? 1,
+      driver_name: driverInfo?.full_name ?? null,
+      driver_avatar: driverInfo?.avatar_url ?? null,
+      driver_rating: driverInfo?.rating_avg ?? null,
+      driver_rating_count: driverInfo?.rating_count ?? 0,
+      overlap_pct: hasDriverDest && typeof body['overlap_pct'] === 'number' ? body['overlap_pct'] : null,
+      driver_destination_name: hasDriverDest && typeof body['driver_destination_name'] === 'string' ? body['driver_destination_name'] : null,
     }
     const realtimeTargets = [`rider:${ride.rider_id}`, `waiting:${ride.rider_id}`]
     await Promise.all(
@@ -970,8 +1110,138 @@ ridesRouter.patch(
       })
     }
 
+    // ── Copy driver destination from offer to ride (synchronous) ──────────────
+    // Must happen before response so the rider sees driver_destination when they
+    // load MessagingWindow.
+    const { data: offerRow } = await supabaseAdmin
+      .from('ride_offers')
+      .select('driver_destination, driver_destination_name, driver_route_polyline, overlap_pct')
+      .eq('ride_id', rideId)
+      .eq('driver_id', selectedDriverId)
+      .single()
+
+    const driverHasDestination = !!offerRow?.driver_destination
+
+    if (driverHasDestination) {
+      await supabaseAdmin
+        .from('rides')
+        .update({
+          driver_destination: offerRow.driver_destination,
+          driver_destination_name: offerRow.driver_destination_name ?? null,
+          driver_route_polyline: offerRow.driver_route_polyline ?? null,
+        })
+        .eq('id', rideId)
+      console.log(`[rides/select-driver] Copied driver destination from offer for driver=${selectedDriverId}`)
+    }
+
+    // Fetch driver name for the response
+    const { data: driverUser } = await supabaseAdmin
+      .from('users')
+      .select('full_name')
+      .eq('id', selectedDriverId)
+      .single()
+
     console.log(`[rides/select-driver] rideId=${rideId} selected driver=${selectedDriverId}`)
-    res.status(200).json({ ride_id: rideId, status: 'accepted', driver_id: selectedDriverId })
+    res.status(200).json({ ride_id: rideId, status: 'accepted', driver_id: selectedDriverId, driver_has_destination: driverHasDestination, driver_name: driverUser?.full_name ?? null })
+
+    // ── Phase 2: Auto-detect driver destination from routines (fire-and-forget) ──
+    // Only runs if the driver did NOT provide a destination during accept.
+    void (async () => {
+      try {
+        if (driverHasDestination) return
+
+        const apiKey = process.env['GOOGLE_MAPS_KEY']
+        if (!apiKey) return
+
+        // Fetch the ride with origin + destination for transit suggestions
+        const { data: fullRide } = await supabaseAdmin
+          .from('rides')
+          .select('id, origin, destination')
+          .eq('id', rideId)
+          .single()
+        if (!fullRide) return
+
+        const rideOrigin = fullRide.origin as unknown as { type: string; coordinates: number[] } | null
+        const rideDest = fullRide.destination as unknown as { type: string; coordinates: number[] } | null
+        if (!rideOrigin?.coordinates || !rideDest?.coordinates) return
+
+        // Check if the selected driver has a matching routine
+        const now = new Date()
+        const currentDay = now.getDay() // 0 = Sun
+        const currentMinutes = now.getHours() * 60 + now.getMinutes()
+
+        const { data: routines } = await supabaseAdmin
+          .from('driver_routines')
+          .select('id, destination, dest_address, route_polyline, departure_time, arrival_time, day_of_week')
+          .eq('user_id', selectedDriverId)
+          .eq('is_active', true)
+          .contains('day_of_week', [currentDay])
+
+        if (!routines || routines.length === 0) return
+
+        // Find a routine whose time is within ±60 minutes of now
+        let matchedRoutine: typeof routines[0] | null = null
+        for (const routine of routines) {
+          const timeStr = routine.departure_time ?? routine.arrival_time
+          if (!timeStr) continue
+          const [hh, mm] = timeStr.split(':').map(Number)
+          const routineMinutes = (hh ?? 0) * 60 + (mm ?? 0)
+          if (Math.abs(routineMinutes - currentMinutes) <= 60 || Math.abs(routineMinutes - currentMinutes) >= 1380) {
+            matchedRoutine = routine
+            break
+          }
+        }
+
+        if (!matchedRoutine) return
+
+        const routineDest = matchedRoutine.destination as unknown as { type: string; coordinates: number[] } | null
+        if (!routineDest?.coordinates) return
+
+        const driverDestLat = routineDest.coordinates[1]
+        const driverDestLng = routineDest.coordinates[0]
+        const driverLat = rideOrigin.coordinates[1]
+        const driverLng = rideOrigin.coordinates[0]
+        const riderDestLat = rideDest.coordinates[1]
+        const riderDestLng = rideDest.coordinates[0]
+
+        // Compute transit suggestions using existing polyline if available
+        const { suggestions, polyline } = await computeTransitDropoffSuggestions(
+          driverLat, driverLng,
+          driverDestLat, driverDestLng,
+          riderDestLat, riderDestLng,
+          apiKey,
+          matchedRoutine.route_polyline ?? undefined,
+        )
+
+        // Save driver destination on ride
+        const destGeo: GeoPoint = { type: 'Point', coordinates: [driverDestLng, driverDestLat] }
+        await supabaseAdmin
+          .from('rides')
+          .update({
+            driver_destination: destGeo,
+            driver_destination_name: matchedRoutine.dest_address ?? null,
+            driver_route_polyline: polyline || matchedRoutine.route_polyline || null,
+          })
+          .eq('id', rideId)
+
+        // Broadcast suggestions to both driver and rider
+        if (suggestions.length > 0) {
+          void broadcastWithTimeout(`ride:${rideId}`, 'transit_suggestions', {
+            ride_id: rideId,
+            suggestions,
+            driver_destination_name: matchedRoutine.dest_address ?? null,
+            auto_detected: true,
+          })
+        }
+
+        console.log(
+          `[rides/select-driver] Auto-detected destination for driver=${selectedDriverId}`,
+          `routine=${matchedRoutine.id} dest="${matchedRoutine.dest_address}" suggestions=${suggestions.length}`,
+        )
+      } catch (err) {
+        console.error('[rides/select-driver] Auto-detect destination error:', err)
+      }
+    })()
   },
 )
 
@@ -1017,7 +1287,7 @@ ridesRouter.get(
     // Fetch pending offers with driver + vehicle info
     const { data: offers, error: offersErr } = await supabaseAdmin
       .from('ride_offers')
-      .select('id, driver_id, vehicle_id, status, created_at')
+      .select('id, driver_id, vehicle_id, status, created_at, driver_destination_name, overlap_pct')
       .eq('ride_id', rideId)
       .eq('status', 'pending')
       .order('created_at', { ascending: true })
@@ -1065,6 +1335,8 @@ ridesRouter.get(
           location: loc?.location ?? null,
           heading: loc?.heading ?? null,
           created_at: offer.created_at,
+          driver_destination_name: offer.driver_destination_name ?? null,
+          overlap_pct: offer.overlap_pct ?? null,
         }
       }),
     )
@@ -1104,11 +1376,21 @@ ridesRouter.patch(
     }
 
     if (ride.driver_id !== driverId && ride.rider_id !== driverId) {
-      res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only ride participants can set pickup point' } })
-      return
+      // Also allow drivers who have a pending/selected offer (before select-driver assigns driver_id)
+      const { count: offerCount } = await supabaseAdmin
+        .from('ride_offers')
+        .select('id', { count: 'exact', head: true })
+        .eq('ride_id', rideId)
+        .eq('driver_id', driverId)
+        .in('status', ['pending', 'selected'])
+
+      if ((offerCount ?? 0) === 0) {
+        res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only ride participants can set pickup point' } })
+        return
+      }
     }
 
-    if (ride.status !== 'accepted' && ride.status !== 'coordinating') {
+    if (ride.status !== 'requested' && ride.status !== 'accepted' && ride.status !== 'coordinating') {
       res.status(409).json({
         error: { code: 'INVALID_STATUS', message: `Ride status is '${ride.status}', cannot set pickup` },
       })
@@ -1252,11 +1534,21 @@ ridesRouter.patch(
     }
 
     if (ride.driver_id !== driverId && ride.rider_id !== driverId) {
-      res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only ride participants can change dropoff' } })
-      return
+      // Also allow drivers who have a pending/selected offer (before select-driver assigns driver_id)
+      const { count: offerCount } = await supabaseAdmin
+        .from('ride_offers')
+        .select('id', { count: 'exact', head: true })
+        .eq('ride_id', rideId)
+        .eq('driver_id', driverId)
+        .in('status', ['pending', 'selected'])
+
+      if ((offerCount ?? 0) === 0) {
+        res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only ride participants can change dropoff' } })
+        return
+      }
     }
 
-    if (ride.status !== 'accepted' && ride.status !== 'coordinating') {
+    if (ride.status !== 'requested' && ride.status !== 'accepted' && ride.status !== 'coordinating') {
       res.status(409).json({
         error: { code: 'INVALID_STATUS', message: `Ride status is '${ride.status}', cannot change dropoff` },
       })
@@ -1509,11 +1801,21 @@ ridesRouter.post(
     }
 
     if (ride.rider_id !== userId && ride.driver_id !== userId) {
-      res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only ride participants can accept locations' } })
-      return
+      // Also allow drivers who have a pending/selected offer (before select-driver assigns driver_id)
+      const { count: offerCount } = await supabaseAdmin
+        .from('ride_offers')
+        .select('id', { count: 'exact', head: true })
+        .eq('ride_id', rideId)
+        .eq('driver_id', userId)
+        .in('status', ['pending', 'selected'])
+
+      if ((offerCount ?? 0) === 0) {
+        res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only ride participants can accept locations' } })
+        return
+      }
     }
 
-    if (ride.status !== 'accepted' && ride.status !== 'coordinating') {
+    if (ride.status !== 'requested' && ride.status !== 'accepted' && ride.status !== 'coordinating') {
       res.status(409).json({
         error: { code: 'INVALID_STATUS', message: `Ride status is '${ride.status}', cannot accept location` },
       })
@@ -1700,7 +2002,7 @@ ridesRouter.post(
       return
     }
 
-    if (ride.status !== 'coordinating') {
+    if (!['coordinating', 'accepted', 'en_route'].includes(ride.status)) {
       res.status(409).json({
         error: { code: 'INVALID_STATUS', message: `Ride status is '${ride.status}', cannot signal` },
       })
@@ -1866,6 +2168,7 @@ ridesRouter.post(
     const startedChannels = [
       ...[ride.rider_id, ride.driver_id].filter(Boolean).map((uid) => `rider:${uid}`),
       ...(ride.rider_id ? [`rider-pickup:${ride.rider_id}`, `rider-active:${ride.rider_id}`] : []),
+      ...(ride.driver_id ? [`driver-pickup:${ride.driver_id}`, `driver:${ride.driver_id}`] : []),
     ]
     for (const chName of startedChannels) {
       const channel = supabaseAdmin.channel(chName)
@@ -2178,6 +2481,7 @@ ridesRouter.post(
       const scanStartChannels = [
         ...[ride.rider_id, ride.driver_id].filter(Boolean).map((uid) => `rider:${uid}`),
         ...(ride.rider_id ? [`rider-pickup:${ride.rider_id}`, `rider-active:${ride.rider_id}`] : []),
+        ...(ride.driver_id ? [`driver-pickup:${ride.driver_id}`, `driver:${ride.driver_id}`] : []),
       ]
       for (const chName of scanStartChannels) {
         const channel = supabaseAdmin.channel(chName)
@@ -2525,5 +2829,449 @@ ridesRouter.get(
     })
 
     res.status(200).json({ rides: enriched })
+  },
+)
+
+// ── PATCH /api/rides/:id/driver-destination ───────────────────────────────────
+/**
+ * Driver sets where they're headed. System computes transit dropoff suggestions
+ * along the driver's route and returns them.
+ */
+ridesRouter.patch(
+  '/:id/driver-destination',
+  validateJwt,
+  async (req: Request, res: Response, _next: NextFunction) => {
+    const driverId = res.locals['userId'] as string
+    const rideId = req.params['id'] as string
+    const { destination_lat, destination_lng, destination_name } = req.body as {
+      destination_lat?: number
+      destination_lng?: number
+      destination_name?: string
+    }
+
+    if (typeof destination_lat !== 'number' || typeof destination_lng !== 'number') {
+      res.status(400).json({
+        error: { code: 'INVALID_BODY', message: 'destination_lat and destination_lng are required numbers' },
+      })
+      return
+    }
+
+    // Verify ride exists and driver is assigned
+    const { data: ride, error: fetchErr } = await supabaseAdmin
+      .from('rides')
+      .select('id, driver_id, rider_id, status, origin, destination')
+      .eq('id', rideId)
+      .single()
+
+    if (fetchErr ?? !ride) {
+      res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+      return
+    }
+
+    // Check driver is a participant (via driver_id or ride_offers)
+    if (ride.driver_id !== driverId) {
+      const { count: offerCount } = await supabaseAdmin
+        .from('ride_offers')
+        .select('id', { count: 'exact', head: true })
+        .eq('ride_id', rideId)
+        .eq('driver_id', driverId)
+        .in('status', ['pending', 'selected'])
+
+      if ((offerCount ?? 0) === 0) {
+        res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only the assigned driver can set destination' } })
+        return
+      }
+    }
+
+    if (ride.status !== 'accepted' && ride.status !== 'coordinating' && ride.status !== 'requested') {
+      res.status(409).json({
+        error: { code: 'INVALID_STATUS', message: `Ride status is '${ride.status}', cannot set driver destination` },
+      })
+      return
+    }
+
+    const apiKey = process.env['GOOGLE_MAPS_KEY']
+    if (!apiKey) {
+      res.status(500).json({
+        error: { code: 'CONFIG_ERROR', message: 'Google Maps API key not configured' },
+      })
+      return
+    }
+
+    // Get driver's current position from origin
+    const driverOrigin = ride.origin as unknown as GeoPoint | null
+    if (!driverOrigin?.coordinates) {
+      res.status(409).json({
+        error: { code: 'NO_ORIGIN', message: 'Ride origin is not set or has invalid format' },
+      })
+      return
+    }
+    const driverLat = driverOrigin.coordinates[1]
+    const driverLng = driverOrigin.coordinates[0]
+
+    // Get rider's destination
+    const riderDest = ride.destination as unknown as GeoPoint | null
+    if (!riderDest?.coordinates) {
+      res.status(409).json({
+        error: { code: 'NO_RIDER_DESTINATION', message: 'Rider destination is not set on this ride' },
+      })
+      return
+    }
+    const riderDestLat = riderDest.coordinates[1]
+    const riderDestLng = riderDest.coordinates[0]
+
+    try {
+      // Compute suggestions
+      const { suggestions, polyline } = await computeTransitDropoffSuggestions(
+        driverLat, driverLng,
+        destination_lat, destination_lng,
+        riderDestLat, riderDestLng,
+        apiKey,
+      )
+
+      // Save driver destination + polyline on ride
+      const destGeo: GeoPoint = { type: 'Point', coordinates: [destination_lng, destination_lat] }
+      const { error: updateErr } = await supabaseAdmin
+        .from('rides')
+        .update({
+          driver_destination: destGeo,
+          driver_destination_name: destination_name?.trim().slice(0, 200) ?? null,
+          driver_route_polyline: polyline || null,
+        })
+        .eq('id', rideId)
+
+      if (updateErr) {
+        console.error('[rides/driver-destination] DB update error:', updateErr)
+        res.status(500).json({
+          error: { code: 'DB_UPDATE_ERROR', message: `Failed to save driver destination: ${updateErr.message}` },
+        })
+        return
+      }
+
+      // Broadcast transit suggestions to rider via Realtime
+      void broadcastWithTimeout(`ride:${rideId}`, 'transit_suggestions', {
+        ride_id: rideId,
+        suggestions,
+        driver_destination_name: destination_name ?? null,
+      })
+
+      console.log(`[rides/driver-destination] rideId=${rideId} dest=(${destination_lat},${destination_lng}) suggestions=${suggestions.length}`)
+      res.status(200).json({ suggestions, polyline })
+    } catch (err) {
+      console.error('[rides/driver-destination] Error computing suggestions:', err)
+      const errMessage = err instanceof Error ? err.message : 'Unknown error'
+      res.status(500).json({
+        error: { code: 'SUGGESTION_ERROR', message: `Failed to compute transit suggestions: ${errMessage}` },
+      })
+    }
+  },
+)
+
+// ── POST /api/rides/:id/preview-overlap ──────────────────────────────────────
+/**
+ * Read-only endpoint: computes route overlap between driver's destination and
+ * rider's destination. Used on the RideSuggestion page BEFORE the driver accepts
+ * so they can see overlap %, transit stations, and estimated earnings.
+ */
+ridesRouter.post(
+  '/:id/preview-overlap',
+  validateJwt,
+  async (req: Request, res: Response) => {
+    const rideId = req.params['id'] as string
+    const body = req.body as Record<string, unknown>
+
+    const driverDestLat = Number(body['driver_destination_lat'])
+    const driverDestLng = Number(body['driver_destination_lng'])
+    const driverLat = typeof body['driver_lat'] === 'number' ? Number(body['driver_lat']) : null
+    const driverLng = typeof body['driver_lng'] === 'number' ? Number(body['driver_lng']) : null
+
+    if (!rideId || isNaN(driverDestLat) || isNaN(driverDestLng)) {
+      res.status(400).json({
+        error: { code: 'INVALID_BODY', message: 'driver_destination_lat and driver_destination_lng are required' },
+      })
+      return
+    }
+
+    const { data: ride } = await supabaseAdmin
+      .from('rides')
+      .select('id, origin, destination')
+      .eq('id', rideId)
+      .single()
+
+    if (!ride) {
+      res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+      return
+    }
+
+    const rideOrigin = ride.origin as unknown as GeoPoint | null
+    const rideDest = ride.destination as unknown as GeoPoint | null
+    if (!rideOrigin?.coordinates || !rideDest?.coordinates) {
+      res.status(400).json({
+        error: { code: 'MISSING_COORDS', message: 'Ride is missing origin or destination coordinates' },
+      })
+      return
+    }
+
+    const riderOriginLat = rideOrigin.coordinates[1]
+    const riderOriginLng = rideOrigin.coordinates[0]
+    const riderDestLat = rideDest.coordinates[1]
+    const riderDestLng = rideDest.coordinates[0]
+    const originLat = driverLat ?? riderOriginLat
+    const originLng = driverLng ?? riderOriginLng
+
+    const apiKey = process.env['GOOGLE_MAPS_KEY']
+    if (!apiKey) {
+      res.status(500).json({ error: { code: 'CONFIG_ERROR', message: 'Maps API key not configured' } })
+      return
+    }
+
+    try {
+      // Compute transit suggestions (reuses existing heavy lifter)
+      const { suggestions, polyline } = await computeTransitDropoffSuggestions(
+        originLat, originLng,
+        driverDestLat, driverDestLng,
+        riderDestLat, riderDestLng,
+        apiKey,
+      )
+
+      // Compute overlap percentage
+      const totalRiderDistM = haversineMetres(riderOriginLat, riderOriginLng, riderDestLat, riderDestLng)
+      let overlapPct: number
+      if (totalRiderDistM === 0) {
+        overlapPct = 100
+      } else {
+        // Use the best transit suggestion's rider_progress_pct if available
+        const bestProgress = suggestions.length > 0
+          ? Math.max(...suggestions.map(s => s.rider_progress_pct ?? 0))
+          : null
+        if (bestProgress !== null && bestProgress > 0) {
+          overlapPct = Math.min(100, bestProgress)
+        } else {
+          const remainingM = haversineMetres(driverDestLat, driverDestLng, riderDestLat, riderDestLng)
+          overlapPct = Math.max(0, Math.min(100, Math.round((1 - remainingM / totalRiderDistM) * 100)))
+        }
+      }
+
+      // Estimate fare using distance from origin to rider destination
+      const distanceM = haversineMetres(originLat, originLng, riderDestLat, riderDestLng)
+      const distanceMiles = (distanceM / 1000) * KM_TO_MILES
+
+      // Fetch driving route for duration estimate
+      const routeInfo = await fetchDrivingRoute(originLat, originLng, riderDestLat, riderDestLng, apiKey)
+      const durationMin = routeInfo?.durationMin ?? Math.round(distanceMiles * 2) // fallback estimate
+
+      const gallonsUsed = distanceMiles / DEFAULT_MPG
+      const gasCostCents = Math.round(gallonsUsed * DEFAULT_GAS_PRICE_PER_GALLON * 100)
+      const timeCostCents = Math.round(durationMin * PER_MIN_CENTS)
+      const raw = BASE_CENTS + gasCostCents + timeCostCents
+      const fareCents = Math.max(MIN_FARE_CENTS, Math.min(MAX_FARE_CENTS, raw))
+      const platformFeeCents = Math.round(fareCents * PLATFORM_FEE_RATE)
+      const driverEarnsCents = fareCents - platformFeeCents
+
+      res.status(200).json({
+        overlap_pct: overlapPct,
+        transit_suggestions: suggestions,
+        driver_route_polyline: polyline,
+        estimated_fare_cents: fareCents,
+        driver_earns_cents: driverEarnsCents,
+      })
+    } catch (err) {
+      console.error('[rides/preview-overlap] Error:', err)
+      const msg = err instanceof Error ? err.message : 'Unknown error'
+      res.status(500).json({
+        error: { code: 'OVERLAP_ERROR', message: `Failed to compute overlap: ${msg}` },
+      })
+    }
+  },
+)
+
+// ── POST /api/rides/:id/suggest-transit-dropoff ──────────────────────────────
+/**
+ * Driver picks a transit station from the suggestions. Creates a
+ * transit_dropoff_suggestion message in the chat for the rider to accept.
+ */
+ridesRouter.post(
+  '/:id/suggest-transit-dropoff',
+  validateJwt,
+  async (req: Request, res: Response, _next: NextFunction) => {
+    const driverId = res.locals['userId'] as string
+    const rideId = req.params['id'] as string
+    const {
+      station_name,
+      station_lat,
+      station_lng,
+      station_place_id,
+      station_address,
+      transit_options,
+      walk_to_station_minutes,
+      transit_to_dest_minutes,
+      total_rider_minutes,
+      transit_polyline,
+      rider_progress_pct,
+    } = req.body as {
+      station_name?: string
+      station_lat?: number
+      station_lng?: number
+      station_place_id?: string
+      station_address?: string
+      transit_options?: unknown[]
+      walk_to_station_minutes?: number
+      transit_to_dest_minutes?: number
+      total_rider_minutes?: number
+      transit_polyline?: string | null
+      rider_progress_pct?: number | null
+    }
+
+    if (
+      typeof station_name !== 'string' ||
+      typeof station_lat !== 'number' ||
+      typeof station_lng !== 'number'
+    ) {
+      res.status(400).json({
+        error: { code: 'INVALID_BODY', message: 'station_name, station_lat, station_lng are required' },
+      })
+      return
+    }
+
+    // Verify ride and driver
+    const { data: ride, error: fetchErr } = await supabaseAdmin
+      .from('rides')
+      .select('id, driver_id, rider_id, status, origin, destination, destination_name, driver_destination, driver_destination_name, driver_route_polyline')
+      .eq('id', rideId)
+      .single()
+
+    if (fetchErr ?? !ride) {
+      res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+      return
+    }
+
+    if (ride.driver_id !== driverId) {
+      const { count: offerCount } = await supabaseAdmin
+        .from('ride_offers')
+        .select('id', { count: 'exact', head: true })
+        .eq('ride_id', rideId)
+        .eq('driver_id', driverId)
+        .in('status', ['pending', 'selected'])
+
+      if ((offerCount ?? 0) === 0) {
+        res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only the driver can suggest a transit dropoff' } })
+        return
+      }
+    }
+
+    if (ride.status !== 'requested' && ride.status !== 'accepted' && ride.status !== 'coordinating') {
+      res.status(409).json({
+        error: { code: 'INVALID_STATUS', message: `Ride status is '${ride.status}', cannot suggest transit dropoff` },
+      })
+      return
+    }
+
+    // Update dropoff point on the ride
+    const dropoffGeo: GeoPoint = { type: 'Point', coordinates: [station_lng, station_lat] }
+    const { error: updateErr } = await supabaseAdmin
+      .from('rides')
+      .update({
+        dropoff_point: dropoffGeo,
+        destination: dropoffGeo,
+        destination_name: station_name.trim().slice(0, 200),
+        dropoff_confirmed: false,
+      })
+      .eq('id', rideId)
+
+    if (updateErr) {
+      console.error('[rides/suggest-transit-dropoff] DB update error:', updateErr)
+      res.status(500).json({
+        error: { code: 'DB_UPDATE_ERROR', message: `Failed to update ride dropoff: ${updateErr.message}` },
+      })
+      return
+    }
+
+    // Extract coordinates for message meta
+    const rideOrigin = ride.origin as unknown as GeoPoint | null
+    const riderDest = ride.destination as unknown as GeoPoint | null
+    const driverDest = (ride as Record<string, unknown>)['driver_destination'] as unknown as GeoPoint | null
+
+    // Insert transit_dropoff_suggestion message
+    const { data: msg } = await supabaseAdmin
+      .from('messages')
+      .insert({
+        ride_id: rideId,
+        sender_id: driverId,
+        content: `Suggested transit dropoff: ${station_name}`,
+        type: 'transit_dropoff_suggestion',
+        meta: {
+          station_name,
+          station_lat,
+          station_lng,
+          station_place_id: station_place_id ?? null,
+          station_address: station_address ?? null,
+          transit_options: transit_options ?? [],
+          walk_to_station_minutes: walk_to_station_minutes ?? 0,
+          transit_to_dest_minutes: transit_to_dest_minutes ?? 0,
+          total_rider_minutes: total_rider_minutes ?? 0,
+          proposed_by: driverId,
+          transit_polyline: transit_polyline ?? null,
+          rider_progress_pct: rider_progress_pct ?? null,
+          pickup_lat: rideOrigin?.coordinates?.[1] ?? null,
+          pickup_lng: rideOrigin?.coordinates?.[0] ?? null,
+          rider_dest_lat: riderDest?.coordinates?.[1] ?? null,
+          rider_dest_lng: riderDest?.coordinates?.[0] ?? null,
+          rider_dest_name: (ride as Record<string, unknown>)['destination_name'] ?? null,
+          driver_dest_lat: driverDest?.coordinates?.[1] ?? null,
+          driver_dest_lng: driverDest?.coordinates?.[0] ?? null,
+          driver_dest_name: (ride as Record<string, unknown>)['driver_destination_name'] ?? null,
+          driver_route_polyline: (ride as Record<string, unknown>)['driver_route_polyline'] ?? null,
+        },
+      })
+      .select('id, ride_id, sender_id, content, type, meta, created_at')
+      .single()
+
+    // Broadcast the message to chat
+    if (msg) {
+      const chatChannel = supabaseAdmin.channel(`chat:${rideId}`)
+      const broadcastPromise = new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          supabaseAdmin.removeChannel(chatChannel).catch(() => {})
+          resolve()
+        }, 3000)
+        chatChannel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            chatChannel.send({
+              type: 'broadcast',
+              event: 'new_message',
+              payload: msg,
+            }).then(() => {
+              clearTimeout(timer)
+              supabaseAdmin.removeChannel(chatChannel).catch(() => {})
+              resolve()
+            }).catch(() => {
+              clearTimeout(timer)
+              supabaseAdmin.removeChannel(chatChannel).catch(() => {})
+              resolve()
+            })
+          }
+        })
+      })
+      broadcastPromise.catch(() => {})
+    }
+
+    // Notify rider via push
+    if (ride.rider_id) {
+      const { data: riderTokens } = await supabaseAdmin
+        .from('push_tokens')
+        .select('token')
+        .eq('user_id', ride.rider_id)
+      const tokens = (riderTokens ?? []).map((t: { token: string }) => t.token)
+      if (tokens.length > 0) {
+        await sendFcmPush(tokens, {
+          title: 'Transit dropoff suggested!',
+          body: `Driver suggests dropping you at ${station_name} — open HICH to review transit options.`,
+          data: { type: 'transit_dropoff', ride_id: rideId },
+        })
+      }
+    }
+
+    console.log(`[rides/suggest-transit-dropoff] rideId=${rideId} station=${station_name}`)
+    res.status(200).json({ ride_id: rideId, station_name, message: msg ?? null })
   },
 )

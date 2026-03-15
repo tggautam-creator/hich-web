@@ -114,6 +114,7 @@ describe('scaffold — @/ alias and database types', () => {
       arrival_time: '08:30',
       origin_address: null,
       dest_address: null,
+      route_polyline: null,
       is_active: true,
       created_at: new Date().toISOString(),
     }

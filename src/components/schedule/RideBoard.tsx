@@ -348,7 +348,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
   }, [fetchRoutines, fetchRides])
 
   const tabClass = (t: TabFilter) => [
-    'flex-1 py-2.5 text-sm font-semibold rounded-xl transition-colors',
+    'flex-1 py-2.5 text-sm font-semibold rounded-2xl transition-colors',
     tab === t
       ? 'bg-primary text-white'
       : 'bg-white text-text-secondary border border-border',
@@ -391,14 +391,14 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
           <button
             data-testid="post-ride-button"
             onClick={() => navigate(postAsDriver ? '/schedule/driver' : '/schedule/rider')}
-            className="flex-1 py-2.5 bg-primary text-white text-sm font-semibold rounded-xl active:opacity-80"
+            className="flex-1 py-2.5 bg-primary text-white text-sm font-semibold rounded-2xl active:opacity-80"
           >
             + Post Ride
           </button>
           <button
             data-testid="my-routines-button"
             onClick={handleOpenRoutines}
-            className="flex-1 py-2.5 bg-white text-text-primary text-sm font-semibold rounded-xl border border-border active:bg-surface"
+            className="flex-1 py-2.5 bg-white text-text-primary text-sm font-semibold rounded-2xl border border-border active:bg-surface"
           >
             My Routines
           </button>
@@ -461,7 +461,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
             <button
               data-testid="empty-post-button"
               onClick={() => navigate(postAsDriver ? '/schedule/driver' : '/schedule/rider')}
-              className="px-6 py-3 bg-primary text-white font-semibold rounded-xl"
+              className="px-6 py-3 bg-primary text-white font-semibold rounded-2xl"
             >
               Post a Ride
             </button>
@@ -470,13 +470,13 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
 
         {/* Success banner */}
         {successMessage && (
-          <div className="mb-3 rounded-xl bg-success/10 px-4 py-3 text-center" data-testid="success-message">
+          <div className="mb-3 rounded-2xl bg-success/10 px-4 py-3 text-center" data-testid="success-message">
             <p className="text-sm text-success font-medium">{successMessage}</p>
           </div>
         )}
 
         {requestError && (
-          <div className="mb-3 rounded-xl bg-danger/10 px-4 py-3 text-center">
+          <div className="mb-3 rounded-2xl bg-danger/10 px-4 py-3 text-center">
             <p className="text-sm text-danger" data-testid="request-error">{requestError}</p>
           </div>
         )}
@@ -562,7 +562,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                       data-testid="contact-button"
                       onClick={() => { setConfirmRide(ride); setRequestError(null) }}
                       className={[
-                        'mt-3 w-full rounded-xl py-2.5 text-sm font-semibold text-white active:opacity-80',
+                        'mt-3 w-full rounded-2xl py-2.5 text-sm font-semibold text-white active:opacity-80',
                         isDriverPost ? 'bg-success' : 'bg-primary',
                       ].join(' ')}
                     >
@@ -572,7 +572,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
 
                   {!isOwn && ride.already_requested && ride.ride_status === 'coordinating' && ride.ride_id && (
                     <div className="mt-3 space-y-2">
-                      <div className="w-full rounded-xl py-2 text-center text-sm font-semibold bg-success/10 text-success" data-testid="ride-confirmed-badge">
+                      <div className="w-full rounded-2xl py-2 text-center text-sm font-semibold bg-success/10 text-success" data-testid="ride-confirmed-badge">
                         Ride Confirmed
                       </div>
                       <button
@@ -588,7 +588,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                             },
                           })
                         }}
-                        className="w-full rounded-xl py-2.5 text-sm font-semibold text-primary bg-primary/10 active:bg-primary/20"
+                        className="w-full rounded-2xl py-2.5 text-sm font-semibold text-primary bg-primary/10 active:bg-primary/20"
                       >
                         Open Messages
                       </button>
@@ -596,7 +596,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                   )}
 
                   {!isOwn && ride.already_requested && ride.ride_status !== 'coordinating' && (
-                    <div className="mt-3 w-full rounded-xl py-2.5 text-center text-sm font-semibold bg-surface text-text-secondary" data-testid="already-requested-badge">
+                    <div className="mt-3 w-full rounded-2xl py-2.5 text-center text-sm font-semibold bg-surface text-text-secondary" data-testid="already-requested-badge">
                       Request Sent
                     </div>
                   )}
@@ -677,7 +677,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                 </div>
 
                 {/* Route */}
-                <div className="rounded-xl bg-surface p-3 mb-4 space-y-1.5">
+                <div className="rounded-2xl bg-surface p-3 mb-4 space-y-1.5">
                   <div className="flex items-start gap-2">
                     <span className="text-success mt-0.5 text-sm">●</span>
                     <p className="text-sm text-text-primary">{sched.origin_address}</p>
@@ -706,7 +706,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                   disabled={requestingId === sched.id}
                   onClick={() => { void handleConfirmRequest() }}
                   className={[
-                    'mb-3 w-full rounded-xl py-3.5 text-sm font-semibold text-white active:opacity-90 disabled:opacity-50',
+                    'mb-3 w-full rounded-2xl py-3.5 text-sm font-semibold text-white active:opacity-90 disabled:opacity-50',
                     isDriverPost ? 'bg-success' : 'bg-primary',
                   ].join(' ')}
                 >
@@ -717,7 +717,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                 <button
                   data-testid="confirm-cancel-button"
                   onClick={() => setConfirmRide(null)}
-                  className="w-full rounded-xl py-3 text-sm font-semibold text-text-secondary active:bg-surface"
+                  className="w-full rounded-2xl py-3 text-sm font-semibold text-text-secondary active:bg-surface"
                 >
                   Cancel
                 </button>
@@ -761,7 +761,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                 <div
                   key={routine.id}
                   data-testid="routine-card"
-                  className="rounded-xl border border-border bg-white p-3"
+                  className="rounded-2xl border border-border bg-white p-3"
                 >
                   <div className="flex items-start justify-between mb-1">
                     <p className="font-semibold text-sm text-text-primary">{routine.route_name}</p>
@@ -813,7 +813,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                 type="text"
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
-                className="w-full rounded-xl border border-border px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+                className="w-full rounded-2xl border border-border px-3 py-2 text-base text-text-primary focus:border-primary focus:outline-none"
               />
             </div>
 
@@ -845,13 +845,13 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
               <div className="flex gap-2 mb-2">
                 <button
                   onClick={() => setEditTimeType('departure')}
-                  className={`flex-1 py-2 rounded-xl text-xs font-semibold transition-colors ${editTimeType === 'departure' ? 'bg-primary text-white' : 'bg-surface text-text-secondary border border-border'}`}
+                  className={`flex-1 py-2 rounded-2xl text-xs font-semibold transition-colors ${editTimeType === 'departure' ? 'bg-primary text-white' : 'bg-surface text-text-secondary border border-border'}`}
                 >
                   Departure
                 </button>
                 <button
                   onClick={() => setEditTimeType('arrival')}
-                  className={`flex-1 py-2 rounded-xl text-xs font-semibold transition-colors ${editTimeType === 'arrival' ? 'bg-primary text-white' : 'bg-surface text-text-secondary border border-border'}`}
+                  className={`flex-1 py-2 rounded-2xl text-xs font-semibold transition-colors ${editTimeType === 'arrival' ? 'bg-primary text-white' : 'bg-surface text-text-secondary border border-border'}`}
                 >
                   Arrival
                 </button>
@@ -861,7 +861,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                 type="time"
                 value={editTime}
                 onChange={(e) => setEditTime(e.target.value)}
-                className="w-full rounded-xl border border-border px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
+                className="w-full rounded-2xl border border-border px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none"
               />
             </div>
 
@@ -870,7 +870,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
               data-testid="save-routine-button"
               disabled={editSaving || !editName.trim() || !editTime || editDays.length === 0}
               onClick={() => { void handleSaveEdit() }}
-              className="w-full rounded-xl bg-primary py-3 text-sm font-semibold text-white active:opacity-90 disabled:opacity-50"
+              className="w-full rounded-2xl bg-primary py-3 text-sm font-semibold text-white active:opacity-90 disabled:opacity-50"
             >
               {editSaving ? 'Saving…' : 'Save Changes'}
             </button>

@@ -3,13 +3,12 @@
 // Colour values are kept in sync with src/lib/tokens.ts.
 // When you change a token value, update BOTH files.
 const colors = {
-  primary:       '#2563EB',
-  primaryDark:   '#1E40AF',
-  primaryLight:  '#DBEAFE',
+  primary:       '#00A8F3',
+  primaryDark:   '#0077C2',
+  primaryLight:  '#E0F4FF',
   success:       '#10B981',
   warning:       '#F59E0B',
   danger:        '#EF4444',
-  teal:          '#0D9488',
   textPrimary:   '#1E293B',
   textSecondary: '#64748B',
   surface:       '#F8FAFC',
@@ -30,7 +29,6 @@ module.exports = {
         success:          colors.success,
         warning:          colors.warning,
         danger:           colors.danger,
-        teal:             colors.teal,
         'text-primary':   colors.textPrimary,
         'text-secondary': colors.textSecondary,
         surface:          colors.surface,

@@ -3,7 +3,10 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
 import { calculateInterceptPoint, haversineMetres } from '@/lib/geo'
-import { decodePolyline } from '@/components/map/RoutePreview'
+import { reverseGeocode } from '@/lib/geocode'
+import { decodePolyline, RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
+import CarMarker from '@/components/map/CarMarker'
+import { MAP_ID } from '@/lib/mapConstants'
 import { useAuthStore } from '@/stores/authStore'
 import DriverQrSheet from '@/components/ride/DriverQrSheet'
 import EmergencySheet from '@/components/ui/EmergencySheet'
@@ -21,7 +24,6 @@ interface DriverPickupPageProps {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const MAP_ID = '8cb10228438378796542e8f0'
 const WALKING_SPEED_MS = 1.4
 const MAX_WALK_M = 420 // 5 min × 1.4 m/s
 
@@ -45,6 +47,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
   // QR sheet state (en-route mode)
   const [showQr, setShowQr] = useState(false)
   const [emergencyOpen, setEmergencyOpen] = useState(false)
+  const [unreadChat, setUnreadChat] = useState(false)
 
   // Pickup pin position (driver can drag)
   const [pinLat, setPinLat] = useState<number | null>(null)
@@ -52,6 +55,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
   const [walkEta, setWalkEta] = useState<number | null>(null) // seconds
   const [walkDist, setWalkDist] = useState<number | null>(null) // metres
   const [toastMsg, setToastMsg] = useState<string | null>(null)
+  const [toastType, setToastType] = useState<'error' | 'success'>('error')
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Rider position (from ride origin)
@@ -71,6 +75,12 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
   const pickupPos = useMemo(() => ride?.pickup_point
     ? { lat: (ride.pickup_point as GeoPoint).coordinates[1], lng: (ride.pickup_point as GeoPoint).coordinates[0] }
     : null, [ride?.pickup_point])
+
+  // Live driver GPS (for en-route view)
+  const [liveDriverLat, setLiveDriverLat] = useState<number | null>(null)
+  const [liveDriverLng, setLiveDriverLng] = useState<number | null>(null)
+  const [enRoutePolyline, setEnRoutePolyline] = useState<string | null>(null)
+  const [pickupAddress, setPickupAddress] = useState<string | null>(null)
 
   // ── Fetch ride + rider info ──────────────────────────────────────────────
   useEffect(() => {
@@ -175,19 +185,92 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
     void fetchData()
   }, [rideId, navigate, profile, isDropoffMode])
 
-  // ── Realtime: listen for ride_started (en-route mode) ──────────────────
+  // ── Reverse geocode pickup point for address display ────────────────────
   useEffect(() => {
-    if (!profile?.id || !rideId || !isEnRoute) return
+    if (!pickupPos) return
+    void reverseGeocode(pickupPos.lat, pickupPos.lng).then(setPickupAddress)
+  }, [pickupPos])
 
-    const channel = supabase
+  // ── Realtime: listen for ride_started and rider_signal ──────────────────
+  useEffect(() => {
+    if (!profile?.id || !rideId) return
+
+    const pickupChannel = supabase
       .channel(`driver-pickup:${profile.id}`)
       .on('broadcast', { event: 'ride_started' }, () => {
         navigate(`/ride/active-driver/${rideId}`, { replace: true })
       })
       .subscribe()
 
-    return () => { void supabase.removeChannel(channel) }
-  }, [profile?.id, rideId, isEnRoute, navigate])
+    // Listen on the rider:{driverId} channel for signal events from the rider
+    const riderChannel = supabase
+      .channel(`rider:${profile.id}`)
+      .on('broadcast', { event: 'rider_signal' }, () => {
+        setToastMsg('Your rider is at the pickup point!')
+        setToastType('success')
+        if (toastTimer.current) clearTimeout(toastTimer.current)
+        toastTimer.current = setTimeout(() => setToastMsg(null), 5000)
+      })
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(pickupChannel)
+      void supabase.removeChannel(riderChannel)
+    }
+  }, [profile?.id, rideId, navigate])
+
+  // ── Listen for new chat messages (unread badge) ────────────────────────
+  useEffect(() => {
+    if (!rideId) return
+    const ch = supabase
+      .channel(`chat-badge:${rideId}`)
+      .on('broadcast', { event: 'new_message' }, () => setUnreadChat(true))
+      .subscribe()
+    return () => { void supabase.removeChannel(ch) }
+  }, [rideId])
+
+  // ── Live GPS tracking for en-route view ──────────────────────────────────
+  useEffect(() => {
+    if (!isEnRoute || !('geolocation' in navigator)) return
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        setLiveDriverLat(pos.coords.latitude)
+        setLiveDriverLng(pos.coords.longitude)
+      },
+      () => { /* silently fail */ },
+      { enableHighAccuracy: true, maximumAge: 5000 },
+    )
+
+    return () => navigator.geolocation.clearWatch(watchId)
+  }, [isEnRoute])
+
+  // ── Fetch route polyline from driver to pickup ───────────────────────────
+  useEffect(() => {
+    if (!isEnRoute || liveDriverLat === null || liveDriverLng === null || !pickupPos) return
+
+    async function fetchRoute() {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) return
+
+        const resp = await fetch(
+          `/api/directions?originLat=${liveDriverLat}&originLng=${liveDriverLng}&destLat=${pickupPos!.lat}&destLng=${pickupPos!.lng}`,
+          { headers: { Authorization: `Bearer ${session.access_token}` } },
+        )
+        if (resp.ok) {
+          const data = (await resp.json()) as { polyline?: string }
+          if (data.polyline) setEnRoutePolyline(data.polyline)
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+
+    void fetchRoute()
+    // Only fetch once when GPS first locks, not on every tick
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEnRoute, liveDriverLat !== null, pickupPos?.lat, pickupPos?.lng])
 
   // ── Handle pin drag ──────────────────────────────────────────────────────
   const handleDragEnd = useCallback((e: google.maps.MapMouseEvent) => {
@@ -203,6 +286,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
 
       if (dist > MAX_WALK_M) {
         setToastMsg("Rider can't walk that far")
+        setToastType('error')
         if (toastTimer.current) clearTimeout(toastTimer.current)
         toastTimer.current = setTimeout(() => setToastMsg(null), 3000)
         return
@@ -299,7 +383,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
     return (
       <div data-testid={testId ?? 'driver-pickup-page'} className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-surface px-6">
         <p className="text-center text-danger" data-testid="error-message">{error ?? 'Ride not found'}</p>
-        <button type="button" onClick={() => navigate('/home/driver', { replace: true })} className="rounded-xl bg-primary px-6 py-3 font-semibold text-white">
+        <button type="button" onClick={() => navigate('/home/driver', { replace: true })} className="rounded-2xl bg-primary px-6 py-3 font-semibold text-white">
           Back to Home
         </button>
       </div>
@@ -327,10 +411,20 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
             </svg>
           </button>
           <h1 className="text-base font-semibold text-text-primary flex-1">Drive to Pickup</h1>
+          <button
+            data-testid="emergency-button"
+            onClick={() => setEmergencyOpen(true)}
+            aria-label="Emergency"
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-danger/30 bg-danger/10 text-danger active:bg-danger/20 transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4.5 w-4.5" aria-hidden="true">
+              <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 6h2v2h-2V7zm0 4h2v6h-2v-6z" />
+            </svg>
+          </button>
         </div>
 
         {/* Map */}
-        <div className="relative" style={{ height: '45dvh' }}>
+        <div className="flex-1 relative" style={{ minHeight: '40dvh' }}>
           <Map
             data-testid="pickup-map"
             mapId={MAP_ID}
@@ -338,7 +432,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
             defaultZoom={15}
             gestureHandling="greedy"
             disableDefaultUI
-            className="h-full w-full"
+            className="absolute inset-0"
           >
             {/* Pickup pin */}
             {pickupPos && (
@@ -363,93 +457,102 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
                 </div>
               </AdvancedMarker>
             )}
+
+            {/* Live driver marker */}
+            {liveDriverLat !== null && liveDriverLng !== null && (
+              <AdvancedMarker position={{ lat: liveDriverLat, lng: liveDriverLng }} title="You">
+                <div data-testid="driver-live-marker">
+                  <CarMarker size={32} color="#FFFFFF" />
+                </div>
+              </AdvancedMarker>
+            )}
+
+            {/* Route polyline: driver → pickup */}
+            {enRoutePolyline && (
+              <RoutePolyline
+                encodedPath={enRoutePolyline}
+                color="#22C55E"
+                weight={5}
+                fitBounds={false}
+              />
+            )}
+
+            {/* Fit map to driver + pickup */}
+            {liveDriverLat !== null && liveDriverLng !== null && pickupPos && (
+              <MapBoundsFitter points={[
+                { lat: liveDriverLat, lng: liveDriverLng },
+                pickupPos,
+              ]} />
+            )}
           </Map>
+
+          {/* Toast notification (rider signal, errors, etc.) */}
+          {toastMsg && (
+            <div
+              data-testid="toast"
+              className={`absolute bottom-3 left-3 right-3 text-white rounded-2xl px-4 py-3 text-sm font-medium text-center shadow-lg z-10 ${toastType === 'success' ? 'bg-success' : 'bg-danger'}`}
+            >
+              {toastMsg}
+            </div>
+          )}
         </div>
 
         {/* Bottom info */}
-        <div className="flex-1 flex flex-col overflow-y-auto">
+        <div className="shrink-0">
 
-          {/* Pickup note */}
-          {ride.pickup_note && (
-            <div className="px-5 pt-4 pb-3 border-b border-border">
-              <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-1">
-                Pickup Note
-              </p>
-              <p data-testid="pickup-note" className="text-sm font-medium text-text-primary">
-                {ride.pickup_note}
-              </p>
-            </div>
-          )}
-
-          {/* Rider info */}
-          {rider && (
-            <div className="px-5 pt-4 pb-3 border-b border-border">
-              <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
-                Your Rider
-              </p>
-              <div className="flex items-center gap-3">
-                {rider.avatar_url ? (
-                  <img src={rider.avatar_url} alt="" className="h-11 w-11 rounded-full object-cover shrink-0" />
+          {/* Compact rider info + route */}
+          <div className="px-4 pt-3 pb-2 border-t border-border">
+            <div className="flex items-center gap-3 mb-2">
+              {rider ? (
+                rider.avatar_url ? (
+                  <img src={rider.avatar_url} alt="" className="h-9 w-9 rounded-full object-cover shrink-0" />
                 ) : (
-                  <div className="h-11 w-11 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-sm shrink-0">
+                  <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-xs shrink-0">
                     {rider.full_name?.[0]?.toUpperCase() ?? '?'}
                   </div>
-                )}
-                <div>
-                  <p data-testid="rider-name" className="text-sm font-semibold text-text-primary">
-                    {rider.full_name ?? 'Rider'}
-                  </p>
-                  <div className="flex items-center gap-2 text-xs text-text-secondary">
-                    {rider.rating_avg != null && (
-                      <span>⭐ {rider.rating_avg.toFixed(1)}</span>
-                    )}
-                    {rider.rating_count > 0 && (
-                      <span>({rider.rating_count} {rider.rating_count === 1 ? 'ride' : 'rides'})</span>
-                    )}
-                    {(!rider.rating_count || rider.rating_count === 0) && (
-                      <span className="text-warning">New user</span>
-                    )}
-                  </div>
+                )
+              ) : null}
+              <div className="flex-1 min-w-0">
+                <p data-testid="rider-name" className="text-sm font-semibold text-text-primary truncate">
+                  {rider?.full_name ?? 'Rider'}
+                </p>
+                <div className="flex items-center gap-1.5 text-xs text-text-secondary">
+                  {rider?.rating_avg != null && <span>⭐ {rider.rating_avg.toFixed(1)}</span>}
+                  {(!rider?.rating_count || rider.rating_count === 0) && <span className="text-warning">New</span>}
                 </div>
               </div>
             </div>
-          )}
 
-          <div className="flex-1" />
-
-          {/* Navigate + Message row */}
-          <div className="px-5 pt-3 space-y-2">
-            <div className="flex gap-2">
-              <button
-                data-testid="navigate-button"
-                onClick={openNavigation}
-                className="flex-1 flex items-center justify-center gap-2 rounded-2xl bg-surface py-3 active:bg-border transition-colors"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-                  <polygon points="3 11 22 2 13 21 11 13 3 11" />
-                </svg>
-                <span className="text-sm font-medium text-text-primary">Navigate</span>
-              </button>
-
-              <button
-                data-testid="message-rider-button"
-                onClick={() => navigate(`/ride/messaging/${rideId as string}`)}
-                className="flex-1 flex items-center justify-center gap-2 rounded-2xl bg-primary/10 py-3 active:bg-primary/20 transition-colors"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-                <span className="text-sm font-medium text-primary">Message</span>
-              </button>
+            {/* Compact route summary */}
+            <div className="space-y-1 text-xs">
+              {pickupPos && (
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-success shrink-0" />
+                  <span className="text-text-primary truncate" data-testid="pickup-address">
+                    {ride.pickup_note ?? pickupAddress ?? 'Pickup point'}
+                  </span>
+                </div>
+              )}
+              {(ride.driver_destination_name ?? ride.destination_name) && (
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-2 rounded-full bg-primary shrink-0" />
+                  <span className="text-text-primary truncate">
+                    {ride.driver_destination_name ?? ride.destination_name}
+                  </span>
+                </div>
+              )}
             </div>
+          </div>
 
-            {/* Show QR Code button */}
+          {/* Action buttons */}
+          <div className="px-4 pt-2 pb-3 space-y-2" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}>
+            {/* Show QR — prominent full-width button */}
             <button
               data-testid="show-qr-button"
               onClick={() => setShowQr(true)}
-              className="w-full rounded-2xl bg-success py-4 text-base font-bold text-white shadow-lg active:bg-success/90 transition-colors flex items-center justify-center gap-2"
+              className="w-full flex items-center justify-center gap-2.5 rounded-2xl bg-primary py-4 text-base font-semibold text-white active:bg-primary/90 transition-colors shadow-sm"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
                 <rect x="3" y="3" width="7" height="7" rx="1" />
                 <rect x="14" y="3" width="7" height="7" rx="1" />
                 <rect x="3" y="14" width="7" height="7" rx="1" />
@@ -460,13 +563,34 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
               Show QR to Start Ride
             </button>
 
-            <p className="text-xs text-text-secondary text-center pb-1">
-              Show your QR code to the rider to start the ride
-            </p>
-          </div>
+            {/* Navigate + Chat grid */}
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                data-testid="navigate-button"
+                onClick={openNavigation}
+                className="flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3 active:bg-border transition-colors"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
+                  <polygon points="3 11 22 2 13 21 11 13 3 11" />
+                </svg>
+                <span className="text-xs font-medium text-text-primary">Navigate to Pickup</span>
+              </button>
 
-          {/* Spacer for safe area */}
-          <div style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 1rem)' }} />
+              <button
+                data-testid="message-rider-button"
+                onClick={() => { setUnreadChat(false); navigate(`/ride/messaging/${rideId as string}`) }}
+                className="relative flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3 active:bg-border transition-colors"
+              >
+                {unreadChat && (
+                  <span className="absolute top-2 right-2 h-2.5 w-2.5 rounded-full bg-danger" />
+                )}
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                </svg>
+                <span className="text-xs font-medium text-text-primary">Chat</span>
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* QR Sheet */}
@@ -478,18 +602,6 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
             rideId={rideId}
           />
         )}
-
-        {/* Emergency FAB */}
-        <button
-          data-testid="emergency-button"
-          onClick={() => setEmergencyOpen(true)}
-          aria-label="Emergency"
-          className="fixed bottom-24 right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-danger text-white shadow-lg active:bg-danger/80 transition-colors"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-7 w-7" aria-hidden="true">
-            <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
-          </svg>
-        </button>
 
         <EmergencySheet
           isOpen={emergencyOpen}
@@ -531,7 +643,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
           defaultZoom={15}
           gestureHandling="greedy"
           disableDefaultUI
-          className="h-full w-full"
+          className="absolute inset-0"
         >
           {/* Rider position — blue dot */}
           {riderPos && (
@@ -546,7 +658,9 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
           {/* Driver position — car */}
           {driverPos && (
             <AdvancedMarker position={driverPos} title="Driver location">
-              <div data-testid="driver-marker" className="text-xl">🚗</div>
+              <div data-testid="driver-marker">
+                <CarMarker size={32} color="#FFFFFF" />
+              </div>
             </AdvancedMarker>
           )}
 
@@ -574,7 +688,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
         {!isDropoffMode && walkMinutes !== null && (
           <div
             data-testid="walk-eta-overlay"
-            className="absolute top-3 left-3 bg-white/90 backdrop-blur-sm rounded-xl px-3 py-2 shadow-lg"
+            className="absolute top-3 left-3 bg-white/90 backdrop-blur-sm rounded-2xl px-3 py-2 shadow-lg"
           >
             <p className="text-xs text-text-secondary">Rider walk</p>
             <p className="text-sm font-bold text-text-primary">
@@ -587,7 +701,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
         {toastMsg && (
           <div
             data-testid="toast"
-            className="absolute bottom-3 left-3 right-3 bg-danger text-white rounded-xl px-4 py-3 text-sm font-medium text-center shadow-lg"
+            className={`absolute bottom-3 left-3 right-3 text-white rounded-2xl px-4 py-3 text-sm font-medium text-center shadow-lg ${toastType === 'success' ? 'bg-success' : 'bg-danger'}`}
           >
             {toastMsg}
           </div>
@@ -597,7 +711,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
         {rider && (
           <div
             data-testid="rider-info-overlay"
-            className="absolute bottom-3 right-3 flex items-center gap-2 rounded-xl bg-white/90 backdrop-blur-sm px-3 py-2 shadow-lg"
+            className="absolute bottom-3 right-3 flex items-center gap-2 rounded-2xl bg-white/90 backdrop-blur-sm px-3 py-2 shadow-lg"
           >
             <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-xs shrink-0">
               {rider.full_name?.[0]?.toUpperCase() ?? '?'}
@@ -633,7 +747,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
             onChange={(e) => setNote(e.target.value)}
             placeholder={isDropoffMode ? 'e.g. Target on 2nd Ave' : "e.g. I'll be by the gas station"}
             maxLength={200}
-            className="w-full rounded-xl border border-border bg-surface px-4 py-3 text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
+            className="w-full rounded-2xl border border-border bg-surface px-4 py-3 text-base text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
           />
         </div>
 

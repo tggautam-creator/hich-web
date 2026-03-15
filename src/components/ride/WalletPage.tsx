@@ -108,7 +108,7 @@ export default function WalletPage() {
         )}
 
         {!loading && transactions.length === 0 && (
-          <div className="rounded-xl bg-white p-8 text-center" data-testid="empty-state">
+          <div className="rounded-2xl bg-white p-8 text-center" data-testid="empty-state">
             <p className="text-3xl">💳</p>
             <p className="mt-2 font-semibold text-text-primary">No transactions yet</p>
             <p className="mt-1 text-sm text-text-secondary">
@@ -122,7 +122,7 @@ export default function WalletPage() {
             {transactions.map((tx) => (
               <div
                 key={tx.id}
-                className="flex items-center justify-between rounded-xl bg-white px-4 py-3"
+                className="flex items-center justify-between rounded-2xl bg-white px-4 py-3"
                 data-testid="transaction-item"
               >
                 <div>

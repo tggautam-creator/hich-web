@@ -47,7 +47,7 @@ export default function BottomSheet({
     >
       {/* Backdrop */}
       <div
-        className="fixed inset-0 z-[1100] bg-black/40"
+        className="fixed inset-0 z-[1100] bg-black/50 backdrop-blur-sm"
         aria-hidden="true"
         onClick={onClose}
       />

@@ -12,17 +12,14 @@
 
 export const colors = {
   /** Brand / interactive */
-  primary:       '#2563EB',   // Tailwind: bg-primary, text-primary, border-primary
-  primaryDark:   '#1E40AF',   // Tailwind: bg-primary-dark
-  primaryLight:  '#DBEAFE',   // Tailwind: bg-primary-light
+  primary:       '#00A8F3',   // Tailwind: bg-primary, text-primary, border-primary
+  primaryDark:   '#0077C2',   // Tailwind: bg-primary-dark
+  primaryLight:  '#E0F4FF',   // Tailwind: bg-primary-light
 
   /** Status */
   success: '#10B981',         // Tailwind: bg-success, text-success
   warning: '#F59E0B',         // Tailwind: bg-warning, text-warning
   danger:  '#EF4444',         // Tailwind: bg-danger, text-danger
-
-  /** Accent */
-  teal: '#0D9488',            // Tailwind: bg-teal, text-teal
 
   /** Text */
   textPrimary:   '#1E293B',   // Tailwind: text-text-primary

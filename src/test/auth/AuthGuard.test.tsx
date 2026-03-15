@@ -30,6 +30,17 @@ vi.mock('@/components/ride/RideRequestNotification', () => ({
   default: () => null,
 }))
 
+// Mock onboarding store — pretend intro has been seen so AuthGuard renders Outlet
+vi.mock('@/stores/onboardingStore', () => ({
+  useOnboardingStore: (selector: (s: { hasSeenIntro: boolean }) => unknown) =>
+    selector({ hasSeenIntro: true }),
+}))
+
+// Mock IntroCarousel to avoid importing the full component tree
+vi.mock('@/components/onboarding/IntroCarousel', () => ({
+  default: () => <div data-testid="intro-carousel">Intro Carousel</div>,
+}))
+
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 const fakeUser    = { id: 'user-1', email: 'maya@ucdavis.edu' }

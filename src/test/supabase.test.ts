@@ -112,6 +112,7 @@ describe('database types — row aliases', () => {
       started_at: null, ended_at: null,
       created_at: new Date().toISOString(),
       schedule_id: null, trip_date: null, trip_time: null,
+      driver_destination: null, driver_destination_name: null, driver_route_polyline: null,
     }
     expect(ride.fare_cents).not.toBeNull()
     expect(Number.isInteger(ride.fare_cents)).toBe(true)
@@ -135,7 +136,7 @@ describe('database types — row aliases', () => {
       destination_bearing: 315, direction_type: 'one_way',
       day_of_week: [1, 3, 5], departure_time: '08:00',
       arrival_time: '08:30', origin_address: null, dest_address: null,
-      is_active: true, created_at: new Date().toISOString(),
+      route_polyline: null, is_active: true, created_at: new Date().toISOString(),
     }
     expect(Array.isArray(r.day_of_week)).toBe(true)
   })

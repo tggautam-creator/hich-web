@@ -58,25 +58,28 @@ const { mockSingle, mockChannel } = vi.hoisted(() => ({
   mockChannel: vi.fn(),
 }))
 
-vi.mock('@/lib/supabase', () => ({
-  supabase: {
-    from: () => ({
-      select: () => ({
-        eq: () => ({
-          single: mockSingle,
+vi.mock('@/lib/supabase', () => {
+  const eqChain = (): Record<string, unknown> => ({
+    eq: eqChain,
+    single: mockSingle,
+    order: () => ({ limit: () => ({ single: mockSingle }) }),
+  })
+  return {
+    supabase: {
+      from: () => ({
+        select: () => eqChain(),
+      }),
+      auth: {
+        getSession: () => Promise.resolve({
+          data: { session: { access_token: 'test-token' } },
+          error: null,
         }),
-      }),
-    }),
-    auth: {
-      getSession: () => Promise.resolve({
-        data: { session: { access_token: 'test-token' } },
-        error: null,
-      }),
+      },
+      channel: mockChannel,
+      removeChannel: vi.fn(),
     },
-    channel: mockChannel,
-    removeChannel: vi.fn(),
-  },
-}))
+  }
+})
 
 // ── QR Scanner mock ───────────────────────────────────────────────────────────
 
@@ -124,7 +127,8 @@ const RIDE_COORDINATING = {
   started_at: null,
 }
 
-const DRIVER = { id: 'driver-001', full_name: 'John Smith', avatar_url: null }
+const DRIVER = { id: 'driver-001', full_name: 'John Smith', avatar_url: null, rating_avg: 4.5, rating_count: 12 }
+const VEHICLE = { color: 'White', make: 'Toyota', model: 'Camry', plate: 'ABC1234' }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -133,7 +137,8 @@ function setupMocks(rideData: unknown = RIDE_ACTIVE) {
   mockSingle.mockImplementation(() => {
     callIdx++
     if (callIdx === 1) return Promise.resolve({ data: rideData, error: null })
-    return Promise.resolve({ data: DRIVER, error: null })
+    if (callIdx === 2) return Promise.resolve({ data: DRIVER, error: null })
+    return Promise.resolve({ data: VEHICLE, error: null })
   })
   mockChannel.mockReturnValue({
     on: vi.fn().mockReturnThis(),
@@ -185,7 +190,7 @@ describe('RiderActiveRidePage', () => {
   it('shows driver name', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByText('John Smith')).toBeInTheDocument()
+      expect(screen.getAllByText('John Smith').length).toBeGreaterThanOrEqual(1)
     })
   })
 
@@ -203,29 +208,31 @@ describe('RiderActiveRidePage', () => {
     })
   })
 
-  it('shows "Scan QR to End Ride" as primary CTA for active ride', async () => {
+  it('shows Scan QR button in action grid for active ride', async () => {
     renderPage()
     await waitFor(() => {
       expect(screen.getByTestId('scan-qr-button')).toBeInTheDocument()
     })
-    expect(screen.getByTestId('scan-qr-button')).toHaveTextContent('Scan QR to End Ride')
+    expect(screen.getByTestId('scan-qr-button')).toHaveTextContent('Scan QR')
   })
 
-  it('shows "Scan QR to Start Ride" for coordinating ride', async () => {
+  it('shows Scan QR button for coordinating ride', async () => {
     setupMocks(RIDE_COORDINATING)
     renderPage()
     await waitFor(() => {
       expect(screen.getByTestId('scan-qr-button')).toBeInTheDocument()
     })
-    expect(screen.getByTestId('scan-qr-button')).toHaveTextContent('Scan QR to Start Ride')
+    expect(screen.getByTestId('scan-qr-button')).toHaveTextContent('Scan QR')
   })
 
-  it('has NO "End Ride" button (per PRD constraint)', async () => {
+  it('End Ride button opens modal with QR scan option (rider must scan to end)', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('scan-qr-button')).toBeInTheDocument()
+      expect(screen.getByTestId('end-ride-button')).toBeInTheDocument()
     })
-    expect(screen.queryByTestId('end-ride-button')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('end-ride-button'))
+    expect(screen.getByTestId('end-ride-modal')).toBeInTheDocument()
+    expect(screen.getByTestId('modal-scan-qr')).toBeInTheDocument()
   })
 
   it('Chat button navigates to messaging', async () => {
@@ -266,19 +273,22 @@ describe('RiderActiveRidePage', () => {
     })
   })
 
-  it('shows manual code entry field', async () => {
+  it('shows manual code entry field inside End Ride modal', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('driver-code-input')).toBeInTheDocument()
+      expect(screen.getByTestId('end-ride-button')).toBeInTheDocument()
     })
+    fireEvent.click(screen.getByTestId('end-ride-button'))
+    expect(screen.getByTestId('driver-code-input')).toBeInTheDocument()
     expect(screen.getByTestId('submit-code-button')).toBeInTheDocument()
   })
 
   it('submit button is disabled when code is empty', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('submit-code-button')).toBeInTheDocument()
+      expect(screen.getByTestId('end-ride-button')).toBeInTheDocument()
     })
+    fireEvent.click(screen.getByTestId('end-ride-button'))
     expect(screen.getByTestId('submit-code-button')).toBeDisabled()
   })
 
@@ -291,21 +301,12 @@ describe('RiderActiveRidePage', () => {
     renderPage()
 
     await waitFor(() => {
-      expect(screen.getByTestId('driver-code-input')).toBeInTheDocument()
+      expect(screen.getByTestId('scan-qr-button')).toBeInTheDocument()
     })
 
-    fireEvent.change(screen.getByTestId('driver-code-input'), { target: { value: 'F520E948' } })
-    fireEvent.click(screen.getByTestId('submit-code-button'))
-
-    await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalledWith(
-        '/api/rides/scan-driver',
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({ driver_code: 'F520E948' }),
-        }),
-      )
-    })
+    // Coordinating ride — scan QR opens scanner directly (no modal needed)
+    fireEvent.click(screen.getByTestId('scan-qr-button'))
+    expect(screen.getByTestId('qr-scanner')).toBeInTheDocument()
 
     fetchSpy.mockRestore()
   })

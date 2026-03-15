@@ -39,7 +39,8 @@ describe('Landing page', () => {
 
   it('renders the HICH brand name', () => {
     renderLanding()
-    expect(screen.getByText('HICH')).toBeInTheDocument()
+    expect(screen.getByTestId('landing-logo')).toBeInTheDocument()
+    expect(screen.getByTestId('landing-logo').textContent).toContain('HICH')
   })
 
   it('renders "Sign up" CTA button', () => {

@@ -3,11 +3,20 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
 import { haversineMetres } from '@/lib/geo'
+import { trackEvent } from '@/lib/analytics'
 import { useAuthStore } from '@/stores/authStore'
 import QrScanner from '@/components/ride/QrScanner'
 import EmergencySheet from '@/components/ui/EmergencySheet'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
+import { MAP_ID } from '@/lib/mapConstants'
 import type { Ride, User, Vehicle, GeoPoint } from '@/types/database'
+
+// Transit info from a transit_dropoff_suggestion message
+interface TransitBannerData {
+  station_name: string
+  transit_options: Array<{ icon: string; line_name: string; departure_stop?: string; arrival_stop?: string; duration_minutes?: number; total_minutes: number }>
+  total_rider_minutes: number
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -17,7 +26,6 @@ interface RiderPickupPageProps {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const MAP_ID = '8cb10228438378796542e8f0'
 const WALKING_SPEED_MS = 1.4
 const CLOSE_THRESHOLD_M = 100
 
@@ -35,6 +43,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   const [error, setError] = useState<string | null>(null)
   const [signalling, setSignalling] = useState(false)
   const [signalled, setSignalled] = useState(false)
+  const [unreadChat, setUnreadChat] = useState(false)
 
   // QR scanning / manual code entry state
   const [scanning, setScanning] = useState(false)
@@ -53,6 +62,9 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   // Rider's current GPS position
   const [riderLat, setRiderLat] = useState<number | null>(null)
   const [riderLng, setRiderLng] = useState<number | null>(null)
+
+  // Transit banner data (from transit_dropoff_suggestion message)
+  const [transitBanner, setTransitBanner] = useState<TransitBannerData | null>(null)
 
   const isNearby = (riderLat !== null && riderLng !== null && pickupLat !== null && pickupLng !== null)
     ? haversineMetres(riderLat, riderLng, pickupLat, pickupLng) <= CLOSE_THRESHOLD_M
@@ -126,6 +138,29 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
         if (vehicleData) setVehicle(vehicleData)
       }
 
+      // Check for transit dropoff suggestion in messages (non-fatal)
+      try {
+        const { data: transitMsg } = await supabase
+          .from('messages')
+          .select('meta')
+          .eq('ride_id', rideId as string)
+          .eq('type', 'transit_dropoff_suggestion')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .single()
+
+        if (transitMsg?.meta) {
+          const m = transitMsg.meta as Record<string, unknown>
+          setTransitBanner({
+            station_name: (m['station_name'] as string) ?? 'Transit Station',
+            transit_options: (m['transit_options'] as Array<{ icon: string; line_name: string; departure_stop?: string; arrival_stop?: string; duration_minutes?: number; total_minutes: number }>) ?? [],
+            total_rider_minutes: (m['total_rider_minutes'] as number) ?? 0,
+          })
+        }
+      } catch {
+        // Non-fatal — transit banner is optional
+      }
+
       setLoading(false)
     }
 
@@ -169,6 +204,16 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
 
     return () => navigator.geolocation.clearWatch(watchId)
   }, [])
+
+  // ── Listen for new chat messages (unread badge) ────────────────────────
+  useEffect(() => {
+    if (!rideId) return
+    const ch = supabase
+      .channel(`chat-badge:${rideId}`)
+      .on('broadcast', { event: 'new_message' }, () => setUnreadChat(true))
+      .subscribe()
+    return () => { void supabase.removeChannel(ch) }
+  }, [rideId])
 
   // ── Fetch walking route polyline ─────────────────────────────────────────
   useEffect(() => {
@@ -217,6 +262,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
       }
 
       if (body.action === 'started') {
+        trackEvent('ride_started', { ride_id: rideId })
         navigate(`/ride/active-rider/${rideId}`, { replace: true })
       }
       setSubmitting(false)
@@ -261,9 +307,11 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
 
       if (resp.ok) {
         setSignalled(true)
+      } else {
+        setError('Could not signal driver — try again')
       }
     } catch {
-      // non-fatal
+      setError('Network error — could not signal driver')
     } finally {
       setSignalling(false)
     }
@@ -289,7 +337,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
     return (
       <div data-testid={testId ?? 'rider-pickup-page'} className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-surface px-6">
         <p className="text-center text-danger" data-testid="error-message">{error ?? 'Ride not found'}</p>
-        <button type="button" onClick={() => navigate('/home/rider', { replace: true })} className="rounded-xl bg-primary px-6 py-3 font-semibold text-white">
+        <button type="button" onClick={() => navigate('/home/rider', { replace: true })} className="rounded-2xl bg-primary px-6 py-3 font-semibold text-white">
           Back to Home
         </button>
       </div>
@@ -301,9 +349,9 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   // ── QR Scanner Overlay ───────────────────────────────────────────────────
   if (scanning) {
     return (
-      <div data-testid={testId ?? 'rider-pickup-page'} className="flex min-h-dvh flex-col bg-black font-sans">
+      <div data-testid={testId ?? 'rider-pickup-page'} className="flex h-dvh flex-col bg-black font-sans overflow-hidden">
         <div
-          className="flex items-center gap-3 px-4 bg-black z-10"
+          className="flex items-center gap-3 px-4 bg-black z-10 shrink-0"
           style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}
         >
           <button
@@ -319,22 +367,48 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
           <h1 className="text-base font-semibold text-white">Scan Driver&apos;s QR Code</h1>
         </div>
 
-        <div className="flex-1 flex items-center justify-center px-4">
+        <div className="flex-1 flex items-center justify-center px-4 min-h-0 overflow-hidden">
           <div className="w-full max-w-sm">
             <QrScanner onScan={handleScan} onError={(msg) => setError(msg)} />
           </div>
         </div>
 
-        <div className="px-6 py-4 bg-black" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 1rem)' }}>
+        <div className="px-6 py-3 bg-black shrink-0" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}>
           {submitting && (
             <div className="flex items-center justify-center gap-2">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
               <p className="text-sm text-white">Verifying code…</p>
             </div>
           )}
-          {error && <p data-testid="scan-error" className="text-sm text-danger text-center">{error}</p>}
+          {error && <p data-testid="scan-error" className="text-sm text-danger text-center mb-2">{error}</p>}
           {!submitting && !error && (
-            <p className="text-sm text-white/70 text-center">Point your camera at the driver&apos;s QR code</p>
+            <p className="text-sm text-white/70 text-center mb-3">Point your camera at the driver&apos;s QR code</p>
+          )}
+
+          {/* Manual code entry — inside scanner */}
+          {!submitting && (
+            <div className="mt-2">
+              <p className="text-xs text-white/50 text-center mb-2">Or enter the code manually</p>
+              <div className="flex gap-2">
+                <input
+                  data-testid="driver-code-input"
+                  type="text"
+                  value={manualCode}
+                  onChange={(e) => setManualCode(e.target.value.toUpperCase())}
+                  placeholder="Driver's code"
+                  maxLength={8}
+                  className="flex-1 rounded-2xl border border-white/20 bg-white/10 px-4 py-3 text-center font-mono text-base font-bold tracking-widest text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+                <button
+                  data-testid="submit-code-button"
+                  onClick={handleManualSubmit}
+                  disabled={submitting || manualCode.trim().length === 0}
+                  className="rounded-2xl bg-primary px-5 py-3 font-semibold text-white disabled:opacity-50 active:bg-primary/90 transition-colors"
+                >
+                  {submitting ? '…' : 'Go'}
+                </button>
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -342,7 +416,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   }
 
   return (
-    <div data-testid={testId ?? 'rider-pickup-page'} className="flex min-h-dvh flex-col bg-white font-sans">
+    <div data-testid={testId ?? 'rider-pickup-page'} className="flex h-dvh flex-col bg-white font-sans overflow-hidden">
 
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div
@@ -360,11 +434,20 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
           </svg>
         </button>
         <h1 className="text-base font-semibold text-text-primary flex-1">Walk to Pickup</h1>
-
+        <button
+          data-testid="emergency-button"
+          onClick={() => setEmergencyOpen(true)}
+          aria-label="Emergency"
+          className="flex h-9 w-9 items-center justify-center rounded-full border border-danger/30 bg-danger/10 text-danger active:bg-danger/20 transition-colors"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4.5 w-4.5" aria-hidden="true">
+            <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 6h2v2h-2V7zm0 4h2v6h-2v-6z" />
+          </svg>
+        </button>
       </div>
 
       {/* ── Map ─────────────────────────────────────────────────────────────── */}
-      <div className="relative" style={{ height: '45dvh' }}>
+      <div className="relative shrink-0" style={{ height: '35dvh' }}>
         <Map
           data-testid="pickup-map"
           mapId={MAP_ID}
@@ -372,7 +455,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
           defaultZoom={16}
           gestureHandling="greedy"
           disableDefaultUI
-          className="h-full w-full"
+          className="absolute inset-0"
         >
           {/* Rider GPS dot */}
           {riderLat !== null && riderLng !== null && (
@@ -414,14 +497,14 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
 
         {/* Nearby pulse */}
         {isNearby && (
-          <div data-testid="nearby-alert" className="absolute top-3 left-3 right-3 bg-success text-white rounded-xl px-4 py-3 text-sm font-semibold text-center shadow-lg animate-pulse">
+          <div data-testid="nearby-alert" className="absolute top-3 left-3 right-3 bg-success text-white rounded-2xl px-4 py-3 text-sm font-semibold text-center shadow-lg animate-pulse">
             🟢 You&apos;re almost there!
           </div>
         )}
 
         {/* Walk ETA */}
         {walkMinutes !== null && !isNearby && hasPickup && (
-          <div data-testid="walk-eta" className="absolute top-3 left-3 bg-white/90 backdrop-blur-sm rounded-xl px-3 py-2 shadow-lg">
+          <div data-testid="walk-eta" className="absolute top-3 left-3 bg-white/90 backdrop-blur-sm rounded-2xl px-3 py-2 shadow-lg">
             <p className="text-xs text-text-secondary">Walk to pickup</p>
             <p className="text-sm font-bold text-text-primary">
               {walkMinutes} min · {Math.round((walkDistM ?? 0) * 3.28084)} ft
@@ -431,7 +514,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
       </div>
 
       {/* ── Bottom info ─────────────────────────────────────────────────────── */}
-      <div className="flex-1 flex flex-col overflow-y-auto">
+      <div className="flex-1 flex flex-col overflow-y-auto min-h-0">
 
         {/* Waiting for pickup */}
         {!hasPickup && (
@@ -519,90 +602,67 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
           </>
         )}
 
+        {/* Transit info banner */}
+        {transitBanner && (
+          <div data-testid="transit-banner" className="px-5 pt-3 pb-3 border-b border-border">
+            <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1.5">
+              After dropoff — continue via transit
+            </p>
+            <p className="text-sm font-semibold text-text-primary mb-1">
+              {transitBanner.station_name}
+            </p>
+            <div className="space-y-1 mt-1">
+              {transitBanner.transit_options.slice(0, 3).map((opt, idx) => (
+                <div key={`${opt.line_name}-${idx}`} className="flex items-center gap-1.5 text-[10px]">
+                  <span className="shrink-0">{opt.icon}</span>
+                  <span className="font-semibold text-text-primary shrink-0">{opt.line_name}</span>
+                  {opt.departure_stop && opt.arrival_stop ? (
+                    <>
+                      <span className="text-text-secondary truncate">{opt.departure_stop} → {opt.arrival_stop}</span>
+                      {opt.duration_minutes != null && (
+                        <span className="shrink-0 text-text-secondary">· {opt.duration_minutes} min</span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-text-secondary">{opt.total_minutes} min</span>
+                  )}
+                </div>
+              ))}
+            </div>
+            {transitBanner.total_rider_minutes > 0 && (
+              <p className="text-[10px] text-text-secondary mt-1">
+                ~{transitBanner.total_rider_minutes} min to your destination
+              </p>
+            )}
+          </div>
+        )}
+
         <div className="flex-1" />
 
-        {/* Navigate + Message + Signal buttons */}
+        {/* Action buttons */}
         {hasPickup && (
-          <div className="px-5 pt-3 space-y-2">
-            {/* Navigate + Message row */}
-            <div className="flex gap-2">
-              <button
-                data-testid="navigate-button"
-                onClick={openNavigation}
-                className="flex-1 flex items-center justify-center gap-2 rounded-2xl bg-surface py-3 active:bg-border transition-colors"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-                  <polygon points="3 11 22 2 13 21 11 13 3 11" />
-                </svg>
-                <span className="text-sm font-medium text-text-primary">Navigate</span>
-              </button>
-
-              <button
-                data-testid="message-driver-button"
-                onClick={() => navigate(`/ride/messaging/${rideId as string}`)}
-                className="flex-1 flex items-center justify-center gap-2 rounded-2xl bg-primary/10 py-3 active:bg-primary/20 transition-colors"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-                <span className="text-sm font-medium text-primary">Message</span>
-              </button>
-            </div>
-
-            {/* Signal button */}
+          <div className="px-5 pt-3 space-y-3" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 1rem)' }}>
+            {/* Signal button — above the grid */}
             <button
               data-testid="signal-button"
               onClick={() => { void handleSignal() }}
               disabled={signalling || signalled}
-              className={`w-full rounded-2xl py-3 text-sm font-semibold transition-colors disabled:opacity-50 ${
+              className={`w-full flex items-center justify-center gap-2 rounded-2xl py-3 text-sm font-medium transition-colors disabled:opacity-50 ${
                 signalled
-                  ? 'bg-success/10 text-success border-2 border-success/30'
-                  : 'bg-surface text-text-primary active:bg-border'
+                  ? 'bg-success/10 text-success'
+                  : 'bg-warning/10 text-warning active:bg-warning/20'
               }`}
             >
               {signalled ? '✓ Driver notified' : signalling ? 'Signalling…' : 'Signal Driver — I\'m Close'}
             </button>
-          </div>
-        )}
 
-        {/* Manual code entry */}
-        {hasPickup && (
-          <div className="px-5 pt-2">
-            <p className="text-xs text-text-secondary text-center mb-2">Enter driver&apos;s code or scan QR to start ride</p>
-            <div className="flex gap-2">
-              <input
-                data-testid="driver-code-input"
-                type="text"
-                value={manualCode}
-                onChange={(e) => setManualCode(e.target.value.toUpperCase())}
-                placeholder="e.g. F520E948"
-                maxLength={8}
-                className="flex-1 rounded-xl border border-border bg-surface px-4 py-3 text-center font-mono text-base font-bold tracking-widest text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:ring-2 focus:ring-primary"
-              />
-              <button
-                data-testid="submit-code-button"
-                onClick={handleManualSubmit}
-                disabled={submitting || manualCode.trim().length === 0}
-                className="rounded-xl bg-primary px-5 py-3 font-semibold text-white disabled:opacity-50 active:bg-primary/90 transition-colors"
-              >
-                {submitting ? '…' : 'Go'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Scan QR button */}
-        {hasPickup && (
-          <div className="px-5 pt-2" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 1rem)' }}>
-            {error && (
-              <p data-testid="ride-error" className="text-sm text-danger text-center mb-2">{error}</p>
-            )}
+            {/* Scan QR — prominent full-width button */}
             <button
               data-testid="scan-qr-button"
               onClick={() => { setScanning(true); setError(null) }}
-              className="w-full rounded-2xl bg-success py-4 text-base font-bold text-white shadow-lg active:bg-success/90 transition-colors flex items-center justify-center gap-2"
+              className="w-full flex items-center justify-center gap-2.5 rounded-2xl bg-primary py-4 text-base font-semibold text-white active:bg-primary/90 transition-colors shadow-sm"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
                 <rect x="3" y="3" width="7" height="7" rx="1" />
                 <rect x="14" y="3" width="7" height="7" rx="1" />
                 <rect x="3" y="14" width="7" height="7" rx="1" />
@@ -612,21 +672,41 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
               </svg>
               Scan QR to Start Ride
             </button>
+
+            {/* Navigate + Chat grid */}
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                data-testid="navigate-button"
+                onClick={openNavigation}
+                className="flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3.5 active:bg-border transition-colors"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
+                  <polygon points="3 11 22 2 13 21 11 13 3 11" />
+                </svg>
+                <span className="text-xs font-medium text-text-primary">Navigate</span>
+              </button>
+
+              <button
+                data-testid="message-driver-button"
+                onClick={() => { setUnreadChat(false); navigate(`/ride/messaging/${rideId as string}`) }}
+                className="relative flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3.5 active:bg-border transition-colors"
+              >
+                {unreadChat && (
+                  <span className="absolute top-2 right-2 h-2.5 w-2.5 rounded-full bg-danger" />
+                )}
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                </svg>
+                <span className="text-xs font-medium text-text-primary">Chat</span>
+              </button>
+            </div>
+
+            {error && (
+              <p data-testid="ride-error" className="text-sm text-danger text-center">{error}</p>
+            )}
           </div>
         )}
       </div>
-
-      {/* ── Emergency FAB ───────────────────────────────────────────── */}
-      <button
-        data-testid="emergency-button"
-        onClick={() => setEmergencyOpen(true)}
-        aria-label="Emergency"
-        className="fixed bottom-24 right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-danger text-white shadow-lg active:bg-danger/80 transition-colors"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-7 w-7" aria-hidden="true">
-          <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
-        </svg>
-      </button>
 
       <EmergencySheet
         isOpen={emergencyOpen}

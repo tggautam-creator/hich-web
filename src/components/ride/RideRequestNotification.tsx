@@ -63,6 +63,7 @@ interface InboxNotification {
   id: string
   type: string
   data: Record<string, unknown>
+  created_at?: string
 }
 
 const DISMISS_SECONDS = 90
@@ -87,7 +88,11 @@ export default function RideRequestNotification({
   }, [])
 
   const profile = useAuthStore((s) => s.profile)
+  const isDriver = useAuthStore((s) => s.isDriver)
   const seenInboxNotifIdsRef = useRef<Set<string>>(new Set())
+  // Track ride IDs already shown to prevent duplicate notifications from
+  // Realtime, FCM, and polling all firing for the same ride.
+  const seenRideIdsRef = useRef<Set<string>>(new Set())
 
   // Ref to track current rideId so the Realtime channel callback
   // always sees the latest value without re-creating the channel.
@@ -98,6 +103,10 @@ export default function RideRequestNotification({
 
   // Handle incoming ride request data from any source
   const handleRideRequest = useCallback((data: RideRequestData) => {
+    // Deduplicate: skip if we've already shown a notification for this ride
+    if (seenRideIdsRef.current.has(data.ride_id)) return
+    seenRideIdsRef.current.add(data.ride_id)
+
     const earningsCents = parseInt(data.estimated_earnings_cents ?? '0', 10)
     setNotification({
       rideId: data.ride_id,
@@ -115,6 +124,9 @@ export default function RideRequestNotification({
 
   // Handle incoming board request (from ride board)
   const handleBoardRequest = useCallback((data: BoardRequestData) => {
+    if (seenRideIdsRef.current.has(data.ride_id)) return
+    seenRideIdsRef.current.add(data.ride_id)
+
     // Build a subtitle from route + trip info when available
     const routeLabel = data.route ?? ''
     const timeLabel = [data.trip_date, data.trip_time].filter(Boolean).join(' at ')
@@ -140,7 +152,6 @@ export default function RideRequestNotification({
   const acceptedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const handleBoardAccepted = useCallback((data: BoardAcceptedData) => {
-    console.log('[Realtime] Board accepted received:', data)
     setAcceptedToast({ rideId: data.ride_id })
     // Auto-dismiss after 10s
     if (acceptedTimerRef.current) clearTimeout(acceptedTimerRef.current)
@@ -152,7 +163,6 @@ export default function RideRequestNotification({
   const cancelledTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const handleRideCancelled = useCallback((data: RideCancelledData) => {
-    console.log('[Realtime] Ride cancelled received:', data)
     // If we're showing a notification for this ride, dismiss it
     if (rideIdRef.current && rideIdRef.current === data.ride_id) {
       dismiss()
@@ -167,32 +177,30 @@ export default function RideRequestNotification({
   useEffect(() => {
     if (!profile?.id) return
 
-    const channel = supabase.channel(`driver:${profile.id}`)
-    channel.on('broadcast', { event: 'ride_request' }, (msg) => {
-      console.log('[Realtime] Ride request received:', msg.payload)
-      const data = msg.payload as unknown as RideRequestData
-      if (data.type === 'ride_request') handleRideRequest(data)
-    })
-    channel.on('broadcast', { event: 'ride_cancelled' }, (msg) => {
-      console.log('[Realtime] Ride cancelled:', msg.payload)
-      const data = msg.payload as { ride_id?: string }
-      if (rideIdRef.current && rideIdRef.current === data.ride_id) {
-        dismiss()
-      }
-    })
-    channel.subscribe((status) => {
-      console.log('[Realtime] Channel status:', status)
-    })
+    // Driver channel — only subscribe if user is a driver
+    let channel: ReturnType<typeof supabase.channel> | null = null
+    if (isDriver) {
+      channel = supabase.channel(`driver:${profile.id}`)
+      channel.on('broadcast', { event: 'ride_request' }, (msg) => {
+        const data = msg.payload as unknown as RideRequestData
+        if (data.type === 'ride_request') handleRideRequest(data)
+      })
+      channel.on('broadcast', { event: 'ride_cancelled' }, (msg) => {
+        const data = msg.payload as { ride_id?: string }
+        if (rideIdRef.current && rideIdRef.current === data.ride_id) {
+          dismiss()
+        }
+      })
+      channel.subscribe()
+    }
 
     // Board channel — listens for ride board requests and acceptances
     const boardChannel = supabase.channel(`board:${profile.id}`)
     boardChannel.on('broadcast', { event: 'board_request' }, (msg) => {
-      console.log('[Realtime] Board request received:', msg.payload)
       const data = msg.payload as unknown as BoardRequestData
       if (data.type === 'board_request') handleBoardRequest(data)
     })
     boardChannel.on('broadcast', { event: 'board_accepted' }, (msg) => {
-      console.log('[Realtime] Board accepted received:', msg.payload)
       const data = msg.payload as unknown as BoardAcceptedData
       if (data.type === 'board_accepted') handleBoardAccepted(data)
     })
@@ -201,23 +209,31 @@ export default function RideRequestNotification({
     // Rider channel — listens for ride cancellations (when driver cancels)
     const riderChannel = supabase.channel(`rider:${profile.id}`)
     riderChannel.on('broadcast', { event: 'ride_cancelled' }, (msg) => {
-      console.log('[Realtime] Ride cancelled (rider channel):', msg.payload)
       const data = msg.payload as unknown as RideCancelledData
       if (data.type === 'ride_cancelled') handleRideCancelled(data)
+    })
+    riderChannel.on('broadcast', { event: 'driver_cancelled' }, (msg) => {
+      const data = msg.payload as Record<string, unknown>
+      // driver_cancelled means re-match — don't show "Ride Cancelled" toast
+      // Just dismiss any active notification for this ride
+      if (rideIdRef.current && rideIdRef.current === data['ride_id']) {
+        dismiss()
+      }
     })
     riderChannel.subscribe()
 
     return () => {
-      supabase.removeChannel(channel)
+      if (channel) supabase.removeChannel(channel)
       supabase.removeChannel(boardChannel)
       supabase.removeChannel(riderChannel)
     }
-  }, [profile?.id, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled, dismiss])
+  }, [profile?.id, isDriver, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled, dismiss])
 
   // Fallback: FCM foreground messages
   useEffect(() => {
     const unsub = onForegroundMessage((payload) => {
       if (payload.data?.type === 'ride_request') {
+        if (!isDriver) return
         const data = payload.data as unknown as RideRequestData
         handleRideRequest(data)
       } else if (payload.data?.type === 'board_request') {
@@ -229,21 +245,35 @@ export default function RideRequestNotification({
       } else if (payload.data?.type === 'ride_cancelled') {
         const data = payload.data as unknown as RideCancelledData
         handleRideCancelled(data)
+      } else if (payload.data?.type === 'driver_cancelled') {
+        // driver_cancelled means re-match — don't show cancelled toast
+        // The WaitingRoom handler will take care of navigation
       }
     })
 
     return () => {
       if (unsub) unsub()
     }
-  }, [handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled])
+  }, [isDriver, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled])
+
+  // Ref to track current notification so the polling callback can skip when
+  // a notification is already being displayed without re-creating the effect.
+  const notificationRef = useRef<NotificationState | null>(null)
+  useEffect(() => {
+    notificationRef.current = notification
+  }, [notification])
 
   // Last-resort fallback: poll unread notifications for ride_request entries.
+  // Only poll for drivers — riders should never see ride request notifications.
   useEffect(() => {
-    if (!profile?.id) return
+    if (!profile?.id || !isDriver) return
 
     let cancelled = false
 
     const poll = async () => {
+      // Don't poll when a notification is already showing
+      if (notificationRef.current) return
+
       try {
         const { data: { session } } = await supabase.auth.getSession()
         if (!session) return
@@ -260,7 +290,19 @@ export default function RideRequestNotification({
           if (seenInboxNotifIdsRef.current.has(notif.id)) continue
           seenInboxNotifIdsRef.current.add(notif.id)
 
+          // Mark this notification as read so it won't appear in future polls
+          void fetch(`/api/notifications/${notif.id}/read`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bearer ${session.access_token}` },
+          }).catch(() => {})
+
           if (notif.type !== 'ride_request') continue
+
+          // Skip stale ride requests (older than 5 minutes)
+          if (notif.created_at) {
+            const ageMs = Date.now() - new Date(notif.created_at).getTime()
+            if (ageMs > 5 * 60 * 1000) continue
+          }
 
           const data = notif.data as unknown as RideRequestData
           if (data.type === 'ride_request' && data.ride_id) {
@@ -280,7 +322,7 @@ export default function RideRequestNotification({
       cancelled = true
       clearInterval(intervalId)
     }
-  }, [profile?.id, handleRideRequest])
+  }, [profile?.id, isDriver, handleRideRequest])
 
   // Countdown timer — auto-dismiss after 90s
   useEffect(() => {
@@ -357,7 +399,7 @@ export default function RideRequestNotification({
                 setCancelledToast(null)
                 navigate('/rides')
               }}
-              className="w-full rounded-xl bg-danger py-2.5 text-center text-sm font-semibold text-white active:bg-danger/90"
+              className="w-full rounded-2xl bg-danger py-2.5 text-center text-sm font-semibold text-white active:bg-danger/90"
               data-testid="cancelled-view-rides"
             >
               View My Rides
@@ -400,7 +442,7 @@ export default function RideRequestNotification({
                 navigate(`/ride/messaging/${acceptedToast.rideId}`)
                 setAcceptedToast(null)
               }}
-              className="w-full rounded-xl bg-success py-2.5 text-center text-sm font-semibold text-white active:bg-success/90"
+              className="w-full rounded-2xl bg-success py-2.5 text-center text-sm font-semibold text-white active:bg-success/90"
               data-testid="accepted-open-chat"
             >
               Open Chat
@@ -458,7 +500,7 @@ export default function RideRequestNotification({
         </div>
 
         {/* Details row */}
-        <div className="grid grid-cols-3 gap-1 mx-3 mb-2 rounded-xl bg-surface p-2">
+        <div className="grid grid-cols-3 gap-1 mx-3 mb-2 rounded-2xl bg-surface p-2">
           <div className="text-center">
             <p className="text-[10px] text-text-secondary">Destination</p>
             <p className="text-xs font-medium text-text-primary truncate" data-testid="notification-destination">
@@ -497,7 +539,7 @@ export default function RideRequestNotification({
           <button
             type="button"
             onClick={handleViewDetails}
-            className="w-full rounded-xl bg-primary py-2.5 text-center text-sm font-semibold text-white active:bg-primary-dark"
+            className="w-full rounded-2xl bg-primary py-2.5 text-center text-sm font-semibold text-white active:bg-primary-dark"
             data-testid="view-details-button"
           >
             View Details

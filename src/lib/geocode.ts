@@ -15,7 +15,7 @@ interface GeocodeResponse {
 }
 
 export async function reverseGeocode(lat: number, lng: number): Promise<string> {
-  const key = env.GOOGLE_MAPS_KEY
+  const key = env.GOOGLE_MAPS_KEY ?? env.GOOGLE_PLACES_KEY
   if (!key) return 'Current Location'
 
   try {

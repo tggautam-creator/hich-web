@@ -3,7 +3,9 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
 import { MapBoundsFitter } from '@/components/map/RoutePreview'
+import { MAP_ID } from '@/lib/mapConstants'
 import { formatCents, calculateFare } from '@/lib/fare'
+import { colors as tokenColors } from '@/lib/tokens'
 import type { GeoPoint } from '@/types/database'
 import type { PlaceSuggestion } from '@/lib/places'
 
@@ -44,10 +46,8 @@ interface DriverOffer {
   created_at: string
 }
 
-const MAP_ID = '8cb10228438378796542e8f0'
-
 // Driver marker colors for differentiation
-const DRIVER_COLORS = ['#2563EB', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899']
+const DRIVER_COLORS = [tokenColors.primary, tokenColors.success, tokenColors.warning, tokenColors.danger, '#8B5CF6', '#EC4899']
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -160,7 +160,7 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
         <button
           type="button"
           onClick={() => navigate('/home/rider', { replace: true })}
-          className="rounded-xl bg-primary px-6 py-3 font-semibold text-white"
+          className="rounded-2xl bg-primary px-6 py-3 font-semibold text-white"
         >
           Back to Home
         </button>
@@ -236,7 +236,7 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
               position={{ lat: rideOrigin.coordinates[1], lng: rideOrigin.coordinates[0] }}
               title="Your location"
             >
-              <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-blue-500 shadow-lg">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-primary shadow-lg">
                 <div className="h-3 w-3 rounded-full bg-white" />
               </div>
             </AdvancedMarker>
@@ -248,7 +248,7 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
               position={{ lat: rideDestination.coordinates[1], lng: rideDestination.coordinates[0] }}
               title="Destination"
             >
-              <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-red-500 shadow-lg text-xs font-bold text-white">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-danger shadow-lg text-xs font-bold text-white">
                 D
               </div>
             </AdvancedMarker>
@@ -340,7 +340,7 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
 
                   {/* Vehicle info */}
                   {vehicle && (
-                    <div className="bg-surface rounded-xl px-3 py-2 mb-3 space-y-1">
+                    <div className="bg-surface rounded-2xl px-3 py-2 mb-3 space-y-1">
                       <p className="text-xs font-medium text-text-primary">
                         {vehicle.year} {vehicle.make} {vehicle.model}
                       </p>

@@ -2,8 +2,10 @@ import { useEffect } from 'react'
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import { APIProvider } from '@vis.gl/react-google-maps'
 import { useAuthStore } from '@/stores/authStore'
+import { useOnboardingStore } from '@/stores/onboardingStore'
 import { env } from '@/lib/env'
 import RideRequestNotification from '@/components/ride/RideRequestNotification'
+import IntroCarousel from '@/components/onboarding/IntroCarousel'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -31,6 +33,7 @@ interface AuthGuardProps {
  */
 export default function AuthGuard({ 'data-testid': testId }: AuthGuardProps) {
   const { session, profile, isLoading, initialize } = useAuthStore()
+  const hasSeenIntro = useOnboardingStore((s) => s.hasSeenIntro)
   const location = useLocation()
 
   // Initialize the Supabase auth subscription once on mount; clean up on unmount.
@@ -67,6 +70,11 @@ export default function AuthGuard({ 'data-testid': testId }: AuthGuardProps) {
   }
 
   // ── 4. Authenticated + sufficient profile ────────────────────────────────────
+  // Show intro carousel for users who haven't seen it yet (and aren't on onboarding)
+  if (!hasSeenIntro && !isOnboardingPath && profile?.full_name) {
+    return <IntroCarousel />
+  }
+
   return (
     <APIProvider apiKey={env.GOOGLE_MAPS_KEY ?? ''}>
       <Outlet />

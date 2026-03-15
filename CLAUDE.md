@@ -4,7 +4,7 @@
 Carpooling PWA for university students. `.edu` email is the trust layer. Riders request rides, drivers get push notifications and accept. A QR code scan starts the ride and a second QR scan ends it and triggers payment. No driver needs to manually post anything.
 
 ## Current State
-Week 1 — not started. Starting from scratch.
+Week 8 — MVP feature-complete. Analytics, CI, code splitting done.
 
 ---
 
@@ -16,9 +16,11 @@ Week 1 — not started. Starting from scratch.
 - **Backend:** Node.js + Express in `/server`
 - **Payments:** Stripe (test mode for entire MVP)
 - **Push notifications:** Firebase Cloud Messaging (FCM)
-- **Maps:** react-leaflet + Leaflet
+- **Maps:** @vis.gl/react-google-maps (Google Maps JS API)
 - **Testing:** Vitest
 - **Linting:** ESLint with typescript-eslint
+- **Analytics:** PostHog (posthog-js)
+- **CI:** GitHub Actions (`.github/workflows/ci.yml`)
 
 ## Folder Structure
 ```
@@ -27,20 +29,26 @@ src/
     ui/         — base components: PrimaryButton, SecondaryButton, InputField, Card, DayPill, BottomSheet
     map/        — map-related components
     ride/       — ride flow screens
+    schedule/   — scheduling and routine screens
+    auth/       — authentication screens
   lib/
-    supabase.ts — typed Supabase client
-    env.ts      — validates all env vars exist at startup, throws if missing
-    tokens.ts   — design tokens (single source of truth for all colours)
-    geo.ts      — calculateInterceptPoint and bearing utilities
-    fare.ts     — fare calculation
+    supabase.ts    — typed Supabase client
+    env.ts         — validates all env vars exist at startup, throws if missing
+    tokens.ts      — design tokens (single source of truth for all colours)
+    geo.ts         — calculateInterceptPoint and bearing utilities
+    fare.ts        — fare calculation
+    analytics.ts   — PostHog analytics wrapper
   stores/
     authStore.ts
     rideStore.ts
   types/
     database.ts — TypeScript types for all Supabase tables
+  test/
+    e2e/        — end-to-end tests
 server/
   routes/       — Express route handlers
   middleware/   — auth validation, error handling
+  lib/          — server-side utility modules
 ```
 
 ## Environment Variables
@@ -50,6 +58,8 @@ VITE_SUPABASE_URL
 VITE_SUPABASE_ANON_KEY
 VITE_GOOGLE_PLACES_KEY
 VITE_STRIPE_PUBLISHABLE_KEY
+VITE_POSTHOG_KEY          (optional)
+VITE_POSTHOG_HOST         (optional)
 FCM_SERVER_KEY
 QR_HMAC_SECRET
 STRIPE_SECRET_KEY
@@ -64,6 +74,9 @@ STRIPE_WEBHOOK_SECRET
 - **API errors:** every endpoint returns `{ error: { code: string, message: string } }` on failure.
 - **TypeScript:** strict mode. Never `any`. Use `unknown` and narrow it.
 - **Every component** accepts a `data-testid` prop.
+- **Code splitting:** use `React.lazy` for route-level components. Keep initial bundle small.
+- **Analytics:** track events via `src/lib/analytics.ts`. Never import posthog-js directly in components.
+- **CI:** all PRs must pass `.github/workflows/ci.yml` (lint, test, build) before merge.
 
 ## Fare Formula
 ```

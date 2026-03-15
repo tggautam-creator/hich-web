@@ -1,10 +1,10 @@
 /**
  * DriverHomePage tests
  *
- * Layout: frosted top bar (hamburger + HICH DRIVER wordmark)
+ * Layout: frosted top bar (online/offline pill + HICH DRIVER + bell)
  *         full-screen map with GPS green dot
- *         online/offline toggle
- *         bottom nav: Rides (active) | Ride | Wallet | Profile
+ *         ride board button
+ *         bottom nav
  *
  * GPS polling: posts to driver_locations every 10s when online
  */
@@ -53,6 +53,9 @@ vi.mock('@/lib/supabase', () => ({
     from: () => ({
       upsert: mockUpsert,
     }),
+    auth: {
+      getSession: vi.fn().mockResolvedValue({ data: { session: { access_token: 'tok' } } }),
+    },
   },
 }))
 
@@ -220,6 +223,16 @@ describe('DriverHomePage', () => {
     renderPage()
     expect(screen.getByTestId('top-bar')).toBeInTheDocument()
     expect(screen.getByTestId('top-bar').textContent).toContain('HICH DRIVER')
+  })
+
+  it('does not have a hamburger menu', () => {
+    renderPage()
+    expect(screen.queryByTestId('hamburger-menu')).not.toBeInTheDocument()
+  })
+
+  it('does not have a QR button', () => {
+    renderPage()
+    expect(screen.queryByTestId('qr-button')).not.toBeInTheDocument()
   })
 
   // ── Bottom nav ─────────────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react'
+/* eslint-disable react-refresh/only-export-components */
+import { useEffect, useRef, useState } from 'react'
 import { useMap } from '@vis.gl/react-google-maps'
 
 /** Decode a Google encoded polyline string into LatLng pairs.
@@ -87,6 +88,83 @@ export function MapBoundsFitter({ points }: { points: Array<{ lat: number; lng: 
     for (const pt of points) bounds.extend(pt)
     map.fitBounds(bounds, { top: 40, right: 40, bottom: 40, left: 40 })
   }, [map, points])
+
+  return null
+}
+
+/** Fetches a real route from Google Directions Service and renders it on the map.
+ *  Fires `onResult` with walking and driving durations (minutes) once resolved. */
+export function DirectionsRoute({
+  from,
+  to,
+  mode = 'WALKING',
+  color = '#6366F1',
+  weight = 3,
+  onResult,
+}: {
+  from: { lat: number; lng: number }
+  to: { lat: number; lng: number }
+  mode?: 'WALKING' | 'DRIVING'
+  color?: string
+  weight?: number
+  onResult?: (info: { durationMin: number; distanceM: number }) => void
+}) {
+  const map = useMap()
+  const polylineRef = useRef<google.maps.Polyline | null>(null)
+  const fetchedRef = useRef(false)
+  const [path, setPath] = useState<google.maps.LatLng[]>([])
+
+  // Fetch directions once
+  useEffect(() => {
+    if (fetchedRef.current) return
+    fetchedRef.current = true
+
+    const svc = new google.maps.DirectionsService()
+    svc.route(
+      {
+        origin: from,
+        destination: to,
+        travelMode: mode === 'DRIVING'
+          ? google.maps.TravelMode.DRIVING
+          : google.maps.TravelMode.WALKING,
+      },
+      (result, status) => {
+        if (status === google.maps.DirectionsStatus.OK && result) {
+          const leg = result.routes[0]?.legs[0]
+          if (leg) {
+            const pts = result.routes[0].overview_path
+            setPath(pts)
+            if (onResult) {
+              onResult({
+                durationMin: Math.max(1, Math.round((leg.duration?.value ?? 0) / 60)),
+                distanceM: leg.distance?.value ?? 0,
+              })
+            }
+          }
+        }
+      },
+    )
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Draw polyline when path + map are ready
+  useEffect(() => {
+    if (!map || path.length === 0) return
+
+    const polyline = new google.maps.Polyline({
+      path,
+      strokeColor: color,
+      strokeOpacity: 0.85,
+      strokeWeight: weight,
+      map,
+    })
+    polylineRef.current = polyline
+
+    return () => {
+      polyline.setMap(null)
+      polylineRef.current = null
+    }
+  }, [map, path, color, weight])
 
   return null
 }

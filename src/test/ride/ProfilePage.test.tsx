@@ -36,6 +36,12 @@ vi.mock('@/lib/supabase', () => ({
     auth: {
       getSession: vi.fn().mockResolvedValue({ data: { session: { access_token: 'tok' } } }),
     },
+    storage: {
+      from: () => ({
+        upload: vi.fn().mockResolvedValue({ error: null }),
+        getPublicUrl: () => ({ data: { publicUrl: 'https://example.com/avatar.jpg' } }),
+      }),
+    },
   },
 }))
 
@@ -146,6 +152,19 @@ function setupMocks(opts: { routines?: typeof MOCK_ROUTINES; rides?: unknown[] }
       return {
         update: vi.fn().mockReturnValue({
           eq: vi.fn().mockResolvedValue({ data: null, error: null }),
+        }),
+      }
+    }
+    if (table === 'vehicles') {
+      return {
+        select: vi.fn().mockReturnValue({
+          eq: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                single: vi.fn().mockResolvedValue({ data: null, error: null }),
+              }),
+            }),
+          }),
         }),
       }
     }

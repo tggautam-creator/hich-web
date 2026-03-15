@@ -247,7 +247,7 @@ export default function MyRidesPage({
             <button
               data-testid="browse-board-button"
               onClick={() => navigate('/rides/board')}
-              className="mt-4 px-6 py-3 bg-primary text-white font-semibold rounded-xl text-sm"
+              className="mt-4 px-6 py-3 bg-primary text-white font-semibold rounded-2xl text-sm"
             >
               Browse Ride Board
             </button>

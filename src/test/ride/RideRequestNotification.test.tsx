@@ -59,8 +59,8 @@ vi.mock('@/lib/supabase', () => ({
 
 // ── Auth store mock ───────────────────────────────────────────────────────────
 vi.mock('@/stores/authStore', () => ({
-  useAuthStore: (selector: (s: { profile: { id: string } }) => unknown) =>
-    selector({ profile: { id: 'driver-123' } }),
+  useAuthStore: (selector: (s: { profile: { id: string }; isDriver: boolean }) => unknown) =>
+    selector({ profile: { id: 'driver-123' }, isDriver: true }),
 }))
 
 // ── Navigate mock ─────────────────────────────────────────────────────────────

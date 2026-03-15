@@ -34,7 +34,7 @@ export default function InputField({
         id={id}
         data-testid={testId}
         className={[
-          'w-full rounded-xl border border-border bg-white px-4 py-3',
+          'w-full rounded-2xl border border-border bg-white px-4 py-3',
           'text-base text-text-primary placeholder:text-text-secondary',
           'transition-colors duration-150',
           'focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-0 focus:border-primary',

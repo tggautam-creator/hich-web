@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase'
 import { isValidEduEmail } from '@/lib/validation'
 import InputField from '@/components/ui/InputField'
 import PrimaryButton from '@/components/ui/PrimaryButton'
+import Logo from '@/components/ui/Logo'
 
 interface LoginProps {
   'data-testid'?: string
@@ -95,7 +96,7 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
       className="min-h-dvh w-full bg-surface flex flex-col font-sans"
     >
       <header
-        className="px-6 pb-4"
+        className="px-6 pb-4 flex items-center justify-between"
         style={{ paddingTop: 'max(env(safe-area-inset-top), 2rem)' }}
       >
         <button
@@ -104,6 +105,7 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
         >
           ← Back
         </button>
+        <Logo size="sm" />
       </header>
 
       <main className="flex-1 flex flex-col justify-center px-6 gap-8">

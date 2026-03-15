@@ -20,9 +20,9 @@ export default function SecondaryButton({
       data-testid={testId}
       disabled={isDisabled}
       className={[
-        'w-full rounded-xl border-2 border-primary px-6 py-3 text-base font-semibold text-primary',
-        'bg-transparent hover:bg-primary-light active:bg-primary-light',
-        'transition-colors duration-150',
+        'w-full rounded-2xl border border-primary px-6 py-3 text-base font-semibold text-primary',
+        'bg-transparent hover:bg-primary-light active:bg-primary-light active:scale-[0.98]',
+        'transition-all duration-150',
         'disabled:cursor-not-allowed disabled:opacity-50',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2',
         className,

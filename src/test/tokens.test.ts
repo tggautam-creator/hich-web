@@ -17,16 +17,16 @@ const isHex = (v: string) => /^#[0-9A-Fa-f]{6}$/.test(v)
 
 // ── Colour token values (exact hex from PRD) ──────────────────────────────────
 describe('design tokens — colours', () => {
-  it('primary blue is #2563EB', () => {
-    expect(colors.primary).toBe('#2563EB')
+  it('primary blue is #00A8F3', () => {
+    expect(colors.primary).toBe('#00A8F3')
   })
 
-  it('dark blue is #1E40AF', () => {
-    expect(colors.primaryDark).toBe('#1E40AF')
+  it('dark blue is #0077C2', () => {
+    expect(colors.primaryDark).toBe('#0077C2')
   })
 
-  it('light blue is #DBEAFE', () => {
-    expect(colors.primaryLight).toBe('#DBEAFE')
+  it('light blue is #E0F4FF', () => {
+    expect(colors.primaryLight).toBe('#E0F4FF')
   })
 
   it('success is #10B981', () => {
@@ -41,8 +41,8 @@ describe('design tokens — colours', () => {
     expect(colors.danger).toBe('#EF4444')
   })
 
-  it('teal is #0D9488', () => {
-    expect(colors.teal).toBe('#0D9488')
+  it('blue is now primary — no standalone teal token', () => {
+    expect(colors.primary).toBe('#00A8F3')
   })
 
   it('text-primary is #1E293B', () => {
@@ -70,8 +70,8 @@ describe('design tokens — hex format', () => {
     }
   })
 
-  it('exports exactly 11 colour tokens', () => {
-    expect(Object.keys(colors)).toHaveLength(11)
+  it('exports exactly 10 colour tokens', () => {
+    expect(Object.keys(colors)).toHaveLength(10)
   })
 })
 
@@ -91,14 +91,14 @@ describe('design tokens — types', () => {
   it('ColorToken type accepts all valid keys', () => {
     const keys: ColorToken[] = [
       'primary', 'primaryDark', 'primaryLight',
-      'success', 'warning', 'danger', 'teal',
+      'success', 'warning', 'danger',
       'textPrimary', 'textSecondary', 'surface', 'border',
     ]
-    expect(keys).toHaveLength(11)
+    expect(keys).toHaveLength(10)
   })
 
   it('ColorValue type accepts a valid hex string', () => {
-    const val: ColorValue = '#2563EB'
+    const val: ColorValue = '#00A8F3'
     expect(val).toBe(colors.primary)
   })
 })

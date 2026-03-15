@@ -185,6 +185,9 @@ export type Database = {
           schedule_id: string | null
           trip_date: string | null      // ISO date YYYY-MM-DD
           trip_time: string | null      // HH:MM:SS
+          driver_destination: GeoPoint | null
+          driver_destination_name: string | null
+          driver_route_polyline: string | null  // encoded polyline, driver origin → driver destination
         }
         Insert: {
           id?: string
@@ -208,6 +211,9 @@ export type Database = {
           schedule_id?: string | null
           trip_date?: string | null
           trip_time?: string | null
+          driver_destination?: GeoPoint | null
+          driver_destination_name?: string | null
+          driver_route_polyline?: string | null
         }
         Update: {
           id?: string
@@ -231,6 +237,9 @@ export type Database = {
           schedule_id?: string | null
           trip_date?: string | null
           trip_time?: string | null
+          driver_destination?: GeoPoint | null
+          driver_destination_name?: string | null
+          driver_route_polyline?: string | null
         }
         Relationships: never[]
       }
@@ -285,6 +294,7 @@ export type Database = {
           arrival_time: string | null
           origin_address: string | null
           dest_address: string | null
+          route_polyline: string | null
           is_active: boolean
           created_at: string
         }
@@ -301,6 +311,7 @@ export type Database = {
           arrival_time?: string | null
           origin_address?: string | null
           dest_address?: string | null
+          route_polyline?: string | null
           is_active?: boolean
           created_at?: string
         }
@@ -317,6 +328,7 @@ export type Database = {
           arrival_time?: string | null
           origin_address?: string | null
           dest_address?: string | null
+          route_polyline?: string | null
           is_active?: boolean
           created_at?: string
         }
@@ -475,6 +487,10 @@ export type Database = {
           vehicle_id: string | null
           status: 'pending' | 'selected' | 'released'
           created_at: string
+          driver_destination: GeoPoint | null
+          driver_destination_name: string | null
+          driver_route_polyline: string | null
+          overlap_pct: number | null
         }
         Insert: {
           id?: string
@@ -483,6 +499,10 @@ export type Database = {
           vehicle_id?: string | null
           status?: 'pending' | 'selected' | 'released'
           created_at?: string
+          driver_destination?: GeoPoint | null
+          driver_destination_name?: string | null
+          driver_route_polyline?: string | null
+          overlap_pct?: number | null
         }
         Update: {
           id?: string
@@ -491,6 +511,10 @@ export type Database = {
           vehicle_id?: string | null
           status?: 'pending' | 'selected' | 'released'
           created_at?: string
+          driver_destination?: GeoPoint | null
+          driver_destination_name?: string | null
+          driver_route_polyline?: string | null
+          overlap_pct?: number | null
         }
         Relationships: never[]
       }

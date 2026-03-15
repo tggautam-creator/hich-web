@@ -521,27 +521,35 @@ scheduleRouter.post(
       }
     }
 
-    // Build destination GeoPoint from poster's routine (has actual coords)
+    // Build destination GeoPoint from poster's routine when available.
+    // If this lookup fails, continue with geocode fallbacks instead of failing the request.
     let destGeo: { type: 'Point'; coordinates: [number, number] } | null = null
+    let posterRoutine: { origin?: { coordinates: [number, number] }; destination?: { coordinates: [number, number] } } | null = null
 
-    const { data: posterRoutine } = await supabaseAdmin
-      .from('driver_routines')
-      .select('origin, destination')
-      .eq('user_id', schedule.user_id)
-      .eq('route_name', schedule.route_name)
-      .eq('is_active', true)
-      .limit(1)
-      .single()
+    try {
+      const routineResp = await supabaseAdmin
+        .from('driver_routines')
+        .select('origin, destination')
+        .eq('user_id', schedule.user_id)
+        .eq('route_name', schedule.route_name)
+        .eq('is_active', true)
+        .limit(1)
+        .single()
+
+      posterRoutine = (routineResp.data as { origin?: { coordinates: [number, number] }; destination?: { coordinates: [number, number] } } | null) ?? null
+    } catch {
+      posterRoutine = null
+    }
 
     if (posterRoutine?.destination) {
-      const dest = posterRoutine.destination as { coordinates: [number, number] }
+      const dest = posterRoutine.destination
       destGeo = { type: 'Point', coordinates: dest.coordinates }
     }
 
     // If still no origin, use poster's routine origin or forward-geocode the schedule address
     if (!originGeo) {
       if (posterRoutine?.origin) {
-        const orig = posterRoutine.origin as { coordinates: [number, number] }
+        const orig = posterRoutine.origin
         originGeo = { type: 'Point', coordinates: orig.coordinates }
       } else {
         const resolved = await forwardGeocode(schedule.origin_address as string)
