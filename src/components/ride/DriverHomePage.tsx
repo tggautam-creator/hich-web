@@ -16,7 +16,7 @@ interface DriverHomePageProps {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const GPS_INTERVAL_MS = 10_000
+const GPS_INTERVAL_MS = 30_000
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -66,10 +66,11 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         user_id: profile.id,
         location: { type: 'Point', coordinates: [lng, lat] },
         recorded_at: new Date().toISOString(),
+        is_online: isOnline,
       },
       { onConflict: 'user_id' },
     )
-  }, [profile?.id])
+  }, [profile?.id, isOnline])
 
   // ── Watch GPS + poll location to server ───────────────────────────────────
   useEffect(() => {
@@ -107,8 +108,22 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
     void ev
   }, [])
 
-  function handleToggleOnline() {
-    setIsOnline((prev) => !prev)
+  async function handleToggleOnline() {
+    const next = !isOnline
+    setIsOnline(next)
+
+    // Persist to driver_locations so the server filters offline drivers
+    if (profile?.id) {
+      await supabase.from('driver_locations').upsert(
+        {
+          user_id: profile.id,
+          is_online: next,
+          location: { type: 'Point', coordinates: [latestCoordsRef.current.lng, latestCoordsRef.current.lat] },
+          recorded_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' },
+      )
+    }
   }
 
   const apiKey = env.GOOGLE_MAPS_KEY ?? ''
@@ -215,24 +230,32 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         </button>
       )}
 
-      {/* ── Ride Board button ──────────────────────────────────────────────── */}
+      {/* ── Ride Board card ──────────────────────────────────────────────── */}
       <div
-        className="absolute left-0 right-0 z-[1000] px-4 flex justify-center"
+        className="absolute left-0 right-0 z-[1000] px-4"
         style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 4.5rem)' }}
       >
         <button
           data-testid="ride-board-button"
           onClick={() => { navigate('/rides/board', { state: { fromTab: 'drive' } }) }}
-          className="flex items-center gap-2 rounded-full bg-white px-5 py-2.5 shadow-lg border border-border active:scale-95 transition-transform"
+          aria-label="Browse ride board"
+          className="w-full bg-white rounded-2xl shadow-lg px-4 py-3 flex items-center gap-3 active:scale-[0.99] transition-transform"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-            <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
-            <line x1="16" y1="2" x2="16" y2="6" />
-            <line x1="8" y1="2" x2="8" y2="6" />
-            <line x1="3" y1="10" x2="21" y2="10" />
-            <circle cx="12" cy="16" r="1.5" fill="currentColor" stroke="none" />
+          <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+              <line x1="16" y1="2" x2="16" y2="6" />
+              <line x1="8" y1="2" x2="8" y2="6" />
+              <line x1="3" y1="10" x2="21" y2="10" />
+              <circle cx="12" cy="16" r="1.5" fill="currentColor" stroke="none" />
+            </svg>
+          </div>
+          <span className="flex-1 text-sm font-semibold text-text-primary text-left">
+            Browse Ride Board
+          </span>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
+            <path d="M9 18l6-6-6-6" />
           </svg>
-          <span className="text-sm font-semibold text-text-primary">Ride Board</span>
         </button>
       </div>
 

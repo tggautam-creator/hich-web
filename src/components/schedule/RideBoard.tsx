@@ -570,7 +570,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                     </button>
                   )}
 
-                  {!isOwn && ride.already_requested && ride.ride_status === 'coordinating' && ride.ride_id && (
+                  {!isOwn && ride.already_requested && (ride.ride_status === 'coordinating' || ride.ride_status === 'accepted') && ride.ride_id && (
                     <div className="mt-3 space-y-2">
                       <div className="w-full rounded-2xl py-2 text-center text-sm font-semibold bg-success/10 text-success" data-testid="ride-confirmed-badge">
                         Ride Confirmed
@@ -595,7 +595,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                     </div>
                   )}
 
-                  {!isOwn && ride.already_requested && ride.ride_status !== 'coordinating' && (
+                  {!isOwn && ride.already_requested && ride.ride_status !== 'coordinating' && ride.ride_status !== 'accepted' && (
                     <div className="mt-3 w-full rounded-2xl py-2.5 text-center text-sm font-semibold bg-surface text-text-secondary" data-testid="already-requested-badge">
                       Request Sent
                     </div>

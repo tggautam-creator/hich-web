@@ -163,7 +163,13 @@ export default function CreateProfilePage() {
   }
 
   function handlePhotoChange(e: ChangeEvent<HTMLInputElement>) {
-    setPhoto(e.target.files?.[0] ?? null)
+    const file = e.target.files?.[0] ?? null
+    if (file && file.size > 5 * 1024 * 1024) {
+      setErrors(prev => ({ ...prev, submit: 'Photo must be under 5 MB' }))
+      e.target.value = ''
+      return
+    }
+    setPhoto(file)
   }
 
   return (
@@ -203,7 +209,7 @@ export default function CreateProfilePage() {
                 onChange={(e) => { setCountryKey(e.target.value) }}
                 className={[
                   INPUT_CLASS,
-                  'w-[5.5rem] shrink-0 cursor-pointer',
+                  'w-[5.5rem] !min-w-[5.5rem] shrink-0 cursor-pointer',
                   errors.phone ? 'border-danger focus:ring-danger' : '',
                 ].join(' ')}
                 aria-label="Country code"
@@ -225,7 +231,7 @@ export default function CreateProfilePage() {
                 aria-invalid={errors.phone ? true : undefined}
                 className={[
                   INPUT_CLASS,
-                  'flex-1',
+                  'flex-1 min-w-0',
                   errors.phone ? 'border-danger focus:ring-danger' : '',
                 ].join(' ')}
               />

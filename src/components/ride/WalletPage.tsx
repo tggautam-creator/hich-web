@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { useAuthStore } from '@/stores/authStore'
 import { supabase } from '@/lib/supabase'
 import { formatCents } from '@/lib/fare'
@@ -15,36 +16,30 @@ interface Transaction {
   created_at: string
 }
 
+async function fetchTransactions(): Promise<Transaction[]> {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) throw new Error('Not authenticated')
+  const res = await fetch('/api/wallet/transactions', {
+    headers: { Authorization: `Bearer ${session.access_token}` },
+  })
+  if (!res.ok) throw new Error('Failed to fetch transactions')
+  const json = await res.json() as { transactions: Transaction[] }
+  return json.transactions
+}
+
 export default function WalletPage() {
   const navigate = useNavigate()
   const { profile, refreshProfile } = useAuthStore()
-  const [transactions, setTransactions] = useState<Transaction[]>([])
-  const [loading, setLoading] = useState(true)
+
+  // Refresh profile once on mount to get latest wallet_balance from DB
+  useEffect(() => { void refreshProfile() }, [refreshProfile])
 
   const balance = profile?.wallet_balance ?? 0
 
-  // Refresh profile to get latest wallet_balance from DB
-  useEffect(() => { void refreshProfile() }, [refreshProfile])
-
-  useEffect(() => {
-    async function fetchTransactions() {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) return
-
-      try {
-        const res = await fetch('/api/wallet/transactions', {
-          headers: { Authorization: `Bearer ${session.access_token}` },
-        })
-        if (res.ok) {
-          const json = await res.json() as { transactions: Transaction[] }
-          setTransactions(json.transactions)
-        }
-      } finally {
-        setLoading(false)
-      }
-    }
-    fetchTransactions()
-  }, [])
+  const { data: transactions = [], isLoading: loading } = useQuery({
+    queryKey: ['wallet-transactions'],
+    queryFn: fetchTransactions,
+  })
 
   function formatDate(iso: string): string {
     const d = new Date(iso)

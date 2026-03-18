@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
 import { validateJwt } from '../middleware/auth.ts'
+import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
 
 export const scheduleRouter = Router()
 
@@ -499,6 +500,20 @@ scheduleRouter.post(
       driverId = schedule.user_id
     } else {
       // Poster needs a ride → requester is offering to drive
+      // BUG-050: Verify requester is actually a driver
+      const { data: reqUser } = await supabaseAdmin
+        .from('users')
+        .select('is_driver')
+        .eq('id', userId)
+        .single()
+
+      if (!reqUser?.is_driver) {
+        res.status(403).json({
+          error: { code: 'NOT_A_DRIVER', message: 'You must be a registered driver to offer rides' },
+        })
+        return
+      }
+
       riderId = schedule.user_id
       driverId = userId
     }
@@ -602,44 +617,17 @@ scheduleRouter.post(
       ? `${requesterName} wants to join your ride`
       : `${requesterName} offered to drive you`
 
-    // Broadcast via Realtime to poster (non-blocking — don't crash the request)
-    try {
-      const posterChannel = supabaseAdmin.channel(`board:${schedule.user_id}`)
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          supabaseAdmin.removeChannel(posterChannel).catch(() => {})
-          resolve()
-        }, 3000)
-        posterChannel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            posterChannel.send({
-              type: 'broadcast',
-              event: 'board_request',
-              payload: {
-                type: 'board_request',
-                ride_id: ride.id,
-                schedule_id: schedule.id,
-                requester_name: requesterName,
-                message: actionLabel,
-                route: `${schedule.origin_address} → ${schedule.dest_address}`,
-                trip_date: schedule.trip_date,
-                trip_time: schedule.trip_time,
-              },
-            }).then(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(posterChannel).catch(() => {})
-              resolve()
-            }).catch(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(posterChannel).catch(() => {})
-              resolve()
-            })
-          }
-        })
-      })
-    } catch (err) {
-      console.error('Realtime broadcast failed (non-fatal):', err)
-    }
+    // Broadcast via Realtime to poster (non-blocking)
+    void realtimeBroadcast(`board:${schedule.user_id}`, 'board_request', {
+      type: 'board_request',
+      ride_id: ride.id,
+      schedule_id: schedule.id,
+      requester_name: requesterName,
+      message: actionLabel,
+      route: `${schedule.origin_address} → ${schedule.dest_address}`,
+      trip_date: schedule.trip_date,
+      trip_time: schedule.trip_time,
+    })
 
     // Persist notification in the notifications table (non-blocking)
     const notifTitle = 'Ride Board Request'
@@ -727,12 +715,12 @@ scheduleRouter.delete(
       return
     }
 
-    // Cancel any 'requested' rides linked to this schedule
+    // BUG-054: Cancel ALL non-completed, non-cancelled rides linked to this schedule
     const { data: linkedRides } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, driver_id')
+      .select('id, rider_id, driver_id, status')
       .eq('schedule_id', scheduleId)
-      .eq('status', 'requested')
+      .not('status', 'in', '("cancelled","completed")')
 
     if (linkedRides && linkedRides.length > 0) {
       const rideIds = linkedRides.map((r: { id: string }) => r.id)
@@ -741,8 +729,8 @@ scheduleRouter.delete(
         .update({ status: 'cancelled' })
         .in('id', rideIds)
 
-      // Notify requesters that the schedule was deleted
-      for (const ride of linkedRides as Array<{ id: string; rider_id: string; driver_id: string }>) {
+      // Notify the other party for each cancelled ride
+      for (const ride of linkedRides as Array<{ id: string; rider_id: string; driver_id: string; status: string }>) {
         const requesterId = ride.rider_id === userId ? ride.driver_id : ride.rider_id
         if (requesterId) {
           supabaseAdmin.from('notifications').insert({
@@ -754,6 +742,8 @@ scheduleRouter.delete(
           }).then(({ error: notifErr }) => {
             if (notifErr) console.error('Failed to persist cancel notification:', notifErr.message)
           })
+          void realtimeBroadcast(`board:${requesterId}`, 'board_declined', { type: 'board_declined', ride_id: ride.id })
+          void realtimeBroadcast(`myrides:${requesterId}`, 'ride_status_changed', { ride_id: ride.id, status: 'cancelled' })
         }
       }
     }
@@ -802,7 +792,7 @@ scheduleRouter.patch(
 
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, driver_id, status, destination_name')
+      .select('id, rider_id, driver_id, status, destination_name, schedule_id')
       .eq('id', rideId)
       .single()
 
@@ -813,7 +803,7 @@ scheduleRouter.patch(
       return
     }
 
-    // Verify caller is the poster (one of the participants)
+    // Verify caller is a participant
     if (ride.rider_id !== userId && ride.driver_id !== userId) {
       res.status(403).json({
         error: { code: 'FORBIDDEN', message: 'You are not a participant in this ride' },
@@ -821,22 +811,78 @@ scheduleRouter.patch(
       return
     }
 
-    if (ride.status !== 'requested') {
+    // BUG-022: Verify caller is the original poster, not the requester.
+    // The poster is the person who created the schedule. The requester is the
+    // other party who sent the board request. Only the poster should accept.
+    if (ride.schedule_id) {
+      const { data: sched } = await supabaseAdmin
+        .from('ride_schedules')
+        .select('user_id')
+        .eq('id', ride.schedule_id)
+        .single()
+
+      if (sched && sched.user_id !== userId) {
+        res.status(403).json({
+          error: { code: 'FORBIDDEN', message: 'Only the poster can accept board requests' },
+        })
+        return
+      }
+    }
+
+    // BUG-052: Atomic update — only update if status is still 'requested'
+    const { data: updated, error: updateErr } = await supabaseAdmin
+      .from('rides')
+      .update({ status: 'coordinating' })
+      .eq('id', rideId)
+      .eq('status', 'requested')
+      .select('id')
+
+    if (updateErr) {
+      next(updateErr)
+      return
+    }
+
+    if (!updated || updated.length === 0) {
       res.status(409).json({
         error: { code: 'INVALID_STATUS', message: `Ride status is '${ride.status}', expected 'requested'` },
       })
       return
     }
 
-    // Set status to accepted (rider_id and driver_id remain unchanged)
-    const { error: updateErr } = await supabaseAdmin
-      .from('rides')
-      .update({ status: 'accepted' })
-      .eq('id', rideId)
+    // BUG-049: Auto-decline all other requested rides for the same schedule
+    if (ride.schedule_id) {
+      const { data: otherRides } = await supabaseAdmin
+        .from('rides')
+        .select('id, rider_id, driver_id')
+        .eq('schedule_id', ride.schedule_id)
+        .eq('status', 'requested')
+        .neq('id', rideId)
 
-    if (updateErr) {
-      next(updateErr)
-      return
+      if (otherRides && otherRides.length > 0) {
+        const otherIds = otherRides.map((r: { id: string }) => r.id)
+        await supabaseAdmin
+          .from('rides')
+          .update({ status: 'cancelled' })
+          .in('id', otherIds)
+
+        // Notify each declined requester
+        for (const other of otherRides as Array<{ id: string; rider_id: string; driver_id: string }>) {
+          const declinedId = other.rider_id === userId ? other.driver_id : other.rider_id
+          if (declinedId) {
+            void realtimeBroadcast(`board:${declinedId}`, 'board_declined', { type: 'board_declined', ride_id: other.id })
+            void realtimeBroadcast(`myrides:${declinedId}`, 'ride_status_changed', { ride_id: other.id, status: 'cancelled' })
+            supabaseAdmin.from('notifications').insert({
+              user_id: declinedId,
+              type: 'board_declined',
+              title: 'Request Declined',
+              body: 'The poster accepted another request. Try another ride on the board!',
+              data: { ride_id: other.id },
+            }).then(({ error: notifErr }) => {
+              if (notifErr) console.error('Failed to persist auto-decline notification:', notifErr.message)
+            })
+          }
+        }
+      }
     }
 
     // Mark the board_request notification as actioned so it doesn't show buttons again
@@ -852,36 +898,12 @@ scheduleRouter.patch(
     // Determine the requester (other party) to notify
     const requesterId = userId === ride.rider_id ? ride.driver_id : ride.rider_id
     if (!requesterId) {
-      res.status(200).json({ ride_id: rideId, status: 'accepted' })
+      res.status(200).json({ ride_id: rideId, status: 'coordinating' })
       return
     }
 
     // Broadcast ride_accepted to requester via Realtime
-    const requesterChannel = supabaseAdmin.channel(`board:${requesterId}`)
-    const broadcastPromise = new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        supabaseAdmin.removeChannel(requesterChannel).catch(() => {})
-        resolve()
-      }, 3000)
-      requesterChannel.subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          requesterChannel.send({
-            type: 'broadcast',
-            event: 'board_accepted',
-            payload: { type: 'board_accepted', ride_id: rideId },
-          }).then(() => {
-            clearTimeout(timer)
-            supabaseAdmin.removeChannel(requesterChannel).catch(() => {})
-            resolve()
-          }).catch(() => {
-            clearTimeout(timer)
-            supabaseAdmin.removeChannel(requesterChannel).catch(() => {})
-            resolve()
-          })
-        }
-      })
-    })
-    broadcastPromise.catch(() => {})
+    void realtimeBroadcast(`board:${requesterId}`, 'board_accepted', { type: 'board_accepted', ride_id: rideId })
 
     // Send FCM push + persistent notification to requester
     const { data: poster } = await supabaseAdmin
@@ -922,28 +944,12 @@ scheduleRouter.patch(
 
     // Refresh both parties' MyRides pages
     if (requesterId) {
-      const reqMyrides = supabaseAdmin.channel(`myrides:${requesterId}`)
-      reqMyrides.subscribe((s) => {
-        if (s === 'SUBSCRIBED') {
-          reqMyrides.send({
-            type: 'broadcast', event: 'ride_status_changed',
-            payload: { ride_id: rideId, status: 'accepted' },
-          }).finally(() => { supabaseAdmin.removeChannel(reqMyrides).catch(() => {}) })
-        }
-      })
+      void realtimeBroadcast(`myrides:${requesterId}`, 'ride_status_changed', { ride_id: rideId, status: 'coordinating' })
     }
-    const posterMyrides = supabaseAdmin.channel(`myrides:${userId}`)
-    posterMyrides.subscribe((s) => {
-      if (s === 'SUBSCRIBED') {
-        posterMyrides.send({
-          type: 'broadcast', event: 'ride_status_changed',
-          payload: { ride_id: rideId, status: 'accepted' },
-        }).finally(() => { supabaseAdmin.removeChannel(posterMyrides).catch(() => {}) })
-      }
-    })
+    void realtimeBroadcast(`myrides:${userId}`, 'ride_status_changed', { ride_id: rideId, status: 'coordinating' })
 
     console.log(JSON.stringify({ type: 'board_accept', ride_id: rideId, accepted_by: userId }))
-    res.status(200).json({ ride_id: rideId, status: 'accepted' })
+    res.status(200).json({ ride_id: rideId, status: 'coordinating' })
   },
 )
 
@@ -986,20 +992,23 @@ scheduleRouter.patch(
       return
     }
 
-    if (ride.status !== 'requested') {
-      res.status(409).json({
-        error: { code: 'INVALID_STATUS', message: `Ride status is '${ride.status}', expected 'requested'` },
-      })
-      return
-    }
-
-    const { error: updateErr } = await supabaseAdmin
+    // BUG-052: Atomic update — only cancel if status is still 'requested'
+    const { data: updated, error: updateErr } = await supabaseAdmin
       .from('rides')
       .update({ status: 'cancelled' })
       .eq('id', rideId)
+      .eq('status', 'requested')
+      .select('id')
 
     if (updateErr) {
       next(updateErr)
+      return
+    }
+
+    if (!updated || updated.length === 0) {
+      res.status(409).json({
+        error: { code: 'INVALID_STATUS', message: `Ride status is '${ride.status}', expected 'requested'` },
+      })
       return
     }
 
@@ -1027,54 +1036,14 @@ scheduleRouter.patch(
         if (notifErr) console.error('Failed to persist decline notification:', notifErr.message)
       })
 
-      const requesterChannel = supabaseAdmin.channel(`board:${requesterId}`)
-      const broadcastPromise = new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          supabaseAdmin.removeChannel(requesterChannel).catch(() => {})
-          resolve()
-        }, 3000)
-        requesterChannel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            requesterChannel.send({
-              type: 'broadcast',
-              event: 'board_declined',
-              payload: { type: 'board_declined', ride_id: rideId },
-            }).then(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(requesterChannel).catch(() => {})
-              resolve()
-            }).catch(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(requesterChannel).catch(() => {})
-              resolve()
-            })
-          }
-        })
-      })
-      broadcastPromise.catch(() => {})
+      void realtimeBroadcast(`board:${requesterId}`, 'board_declined', { type: 'board_declined', ride_id: rideId })
 
       // Refresh requester's MyRides page
-      const myridesChannel = supabaseAdmin.channel(`myrides:${requesterId}`)
-      myridesChannel.subscribe((s) => {
-        if (s === 'SUBSCRIBED') {
-          myridesChannel.send({
-            type: 'broadcast', event: 'ride_status_changed',
-            payload: { ride_id: rideId, status: 'cancelled' },
-          }).finally(() => { supabaseAdmin.removeChannel(myridesChannel).catch(() => {}) })
-        }
-      })
+      void realtimeBroadcast(`myrides:${requesterId}`, 'ride_status_changed', { ride_id: rideId, status: 'cancelled' })
     }
 
     // Refresh poster's own MyRides page
-    const posterMyrides = supabaseAdmin.channel(`myrides:${userId}`)
-    posterMyrides.subscribe((s) => {
-      if (s === 'SUBSCRIBED') {
-        posterMyrides.send({
-          type: 'broadcast', event: 'ride_status_changed',
-          payload: { ride_id: rideId, status: 'cancelled' },
-        }).finally(() => { supabaseAdmin.removeChannel(posterMyrides).catch(() => {}) })
-      }
-    })
+    void realtimeBroadcast(`myrides:${userId}`, 'ride_status_changed', { ride_id: rideId, status: 'cancelled' })
 
     console.log(JSON.stringify({ type: 'board_decline', ride_id: rideId, declined_by: userId }))
     res.status(200).json({ ride_id: rideId, status: 'cancelled' })

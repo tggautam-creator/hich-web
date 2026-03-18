@@ -1,5 +1,6 @@
 import express from 'express'
 import cors from 'cors'
+import rateLimit from 'express-rate-limit'
 import { ridesRouter } from './routes/rides.ts'
 import { notificationsRouter } from './routes/notifications.ts'
 import { scheduleRouter } from './routes/schedule.ts'
@@ -13,10 +14,37 @@ import { errorHandler } from './middleware/errorHandler.ts'
 
 export const app = express()
 
-app.use(cors())
+// CORS — allow Vercel production, preview deploys, and localhost dev
+const ALLOWED_ORIGINS = [
+  /^https:\/\/.*\.vercel\.app$/,
+  /^http:\/\/localhost(:\d+)?$/,
+  /^http:\/\/127\.0\.0\.1(:\d+)?$/,
+]
 
-// Stripe webhook needs raw body for signature verification — mount BEFORE json parser
+app.use(cors({
+  origin(origin, callback) {
+    // Allow requests with no origin (mobile apps, server-to-server, curl)
+    if (!origin) return callback(null, true)
+    if (ALLOWED_ORIGINS.some((pattern) => pattern.test(origin))) {
+      return callback(null, true)
+    }
+    callback(new Error('Not allowed by CORS'))
+  },
+  credentials: true,
+}))
+
+// Stripe webhook needs raw body for signature verification — mount BEFORE json parser and rate limiter
 app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }), stripeWebhookRouter)
+
+// Rate limiting — 100 requests per 15s per IP
+const limiter = rateLimit({
+  windowMs: 15 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } },
+})
+app.use('/api/', limiter)
 
 app.use(express.json())
 

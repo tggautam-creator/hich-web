@@ -46,27 +46,90 @@ export default function DropoffSelection({
   const cardRefs = useRef<globalThis.Map<number, HTMLDivElement>>(new globalThis.Map())
   const fetchedRef = useRef(false)
 
-  // Redirect if missing required state
+  // Recovered destination — populated from DB when navigation state is missing.
+  // This handles the race where handleDriverSelected() navigates here without
+  // state because the offer's driver_destination wasn't written to DB yet.
+  const [recoveredDest, setRecoveredDest] = useState<{
+    lat: number; lng: number; name: string
+  } | null>(null)
+
+  // Effective destination: prefer navigation state, fall back to DB recovery
+  const effLat = state?.driverDestLat ?? recoveredDest?.lat ?? null
+  const effLng = state?.driverDestLng ?? recoveredDest?.lng ?? null
+  const effName = state?.driverDestName ?? recoveredDest?.name ?? ''
+
+  // Guard: if no destination coords, try recovering from the ride / offer rows
+  // before redirecting home. This handles the case where we arrived via a
+  // navigation that didn't carry state (e.g. handleDriverSelected fallback).
+  const [recovering, setRecovering] = useState(!state?.driverDestLat && !!rideId)
   useEffect(() => {
-    if (!state?.driverDestLat || !rideId) {
+    if (effLat || !rideId) { setRecovering(false); return }
+
+    void (async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) { navigate('/home/driver', { replace: true }); return }
+
+      // Try ride row first — /select-driver copies destination here
+      const { data: rideRow } = await supabase
+        .from('rides')
+        .select('driver_destination, driver_destination_name, driver_id, status')
+        .eq('id', rideId as string)
+        .single()
+
+      if (rideRow?.driver_destination && rideRow.driver_id === session.user.id) {
+        const geo = rideRow.driver_destination as { coordinates: [number, number] }
+        setRecoveredDest({
+          lat: geo.coordinates[1],
+          lng: geo.coordinates[0],
+          name: (rideRow.driver_destination_name as string | null) ?? '',
+        })
+        setRecovering(false)
+        return
+      }
+
+      // Selected driver with no destination yet — send to suggestion form to enter one
+      if (rideRow?.driver_id === session.user.id && !rideRow?.driver_destination) {
+        navigate(`/ride/suggestion/${rideId}`, { replace: true })
+        return
+      }
+
+      // Fall back to offer row — only trust if this driver's offer is 'selected'
+      const { data: offer } = await supabase
+        .from('ride_offers')
+        .select('driver_destination, driver_destination_name, status')
+        .eq('ride_id', rideId as string)
+        .eq('driver_id', session.user.id)
+        .maybeSingle()
+
+      if (offer?.driver_destination && offer.status === 'selected') {
+        const geo = offer.driver_destination as { coordinates: [number, number] }
+        setRecoveredDest({
+          lat: geo.coordinates[1],
+          lng: geo.coordinates[0],
+          name: (offer.driver_destination_name as string | null) ?? '',
+        })
+        setRecovering(false)
+        return
+      }
+
       navigate('/home/driver', { replace: true })
-    }
-  }, [state, rideId, navigate])
+    })()
+  }, [effLat, rideId, navigate])
 
-  // Fetch transit suggestions on mount
+  // Fetch transit suggestions once destination is known
   useEffect(() => {
-    if (!state?.driverDestLat || !rideId || fetchedRef.current) return
+    if (!effLat || !effLng || !rideId || fetchedRef.current) return
     fetchedRef.current = true
-    void fetchSuggestions()
+    void fetchSuggestions(effLat, effLng, effName)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rideId, state])
+  }, [rideId, effLat])
 
-  async function fetchSuggestions() {
+  async function fetchSuggestions(lat: number, lng: number, name: string) {
     setLoading(true)
     setError(null)
     try {
       const token = (await supabase.auth.getSession()).data.session?.access_token
-      if (!token || !state) return
+      if (!token) return
 
       const resp = await fetch(`/api/rides/${rideId}/driver-destination`, {
         method: 'PATCH',
@@ -75,9 +138,9 @@ export default function DropoffSelection({
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          destination_lat: state.driverDestLat,
-          destination_lng: state.driverDestLng,
-          destination_name: state.driverDestName,
+          destination_lat: lat,
+          destination_lng: lng,
+          destination_name: name,
         }),
       })
 
@@ -105,8 +168,9 @@ export default function DropoffSelection({
   }
 
   function handleRetry() {
+    if (!effLat || !effLng) return
     fetchedRef.current = false
-    void fetchSuggestions()
+    void fetchSuggestions(effLat, effLng, effName)
   }
 
   // Cancel ride from dropoff selection
@@ -116,29 +180,26 @@ export default function DropoffSelection({
     try {
       const token = (await supabase.auth.getSession()).data.session?.access_token
       if (!token) return
-      await fetch(`/api/rides/${rideId}/cancel`, {
+      const resp = await fetch(`/api/rides/${rideId}/cancel`, {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${token}` },
       })
+      await resp.json().catch(() => ({}))
     } finally {
       navigate('/home/driver', { replace: true })
     }
   }, [rideId, cancelling, navigate])
 
-  // Broadcast to rider's WaitingRoom that the driver is done choosing
+  // Notify server that driver is done choosing dropoff → sets ride to 'coordinating'
+  // and broadcasts to rider via REST (reliable, no ephemeral WebSocket)
   const broadcastDropoffDone = useCallback(async () => {
     if (!rideId) return
     try {
-      const ch = supabase.channel(`chat:${rideId}`)
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => { void supabase.removeChannel(ch); resolve() }, 2000)
-        ch.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            ch.send({ type: 'broadcast', event: 'dropoff_done', payload: { ride_id: rideId } })
-              .then(() => { clearTimeout(timer); void supabase.removeChannel(ch); resolve() })
-              .catch(() => { clearTimeout(timer); void supabase.removeChannel(ch); resolve() })
-          }
-        })
+      const token = (await supabase.auth.getSession()).data.session?.access_token
+      if (!token) return
+      await fetch(`/api/rides/${rideId}/dropoff-done`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` },
       })
     } catch { /* non-fatal */ }
   }, [rideId])
@@ -230,16 +291,24 @@ export default function DropoffSelection({
     if (state?.riderDestLat != null && state.riderDestLng != null) {
       pts.push({ lat: state.riderDestLat, lng: state.riderDestLng })
     }
-    if (state?.driverDestLat != null && state.driverDestLng != null) {
-      pts.push({ lat: state.driverDestLat, lng: state.driverDestLng })
+    if (effLat != null && effLng != null) {
+      pts.push({ lat: effLat, lng: effLng })
     }
     return pts
-  }, [suggestions, state])
+  }, [suggestions, state, effLat, effLng])
 
-  if (!state?.driverDestLat || !rideId) return null
+  if (recovering) {
+    return (
+      <div data-testid={testId} className="flex h-dvh items-center justify-center bg-surface">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+      </div>
+    )
+  }
 
-  const riderName = state.riderName ?? 'the rider'
-  const riderDestName = state.riderDestName ?? 'their destination'
+  if (!effLat || !effLng || !rideId) return null
+
+  const riderName = state?.riderName ?? 'the rider'
+  const riderDestName = state?.riderDestName ?? 'their destination'
 
   return (
     <div
@@ -248,7 +317,7 @@ export default function DropoffSelection({
     >
       {/* ── Route map ───────────────────────────────────────────────────────── */}
       <div className="relative w-full shrink-0" style={{ height: '30dvh' }}>
-        {boundsPoints.length >= 2 ? (
+        {boundsPoints.length >= 1 ? (
           <Map
             mapId={MAP_ID}
             defaultCenter={boundsPoints[0]}
@@ -263,27 +332,27 @@ export default function DropoffSelection({
             )}
 
             {/* Pickup marker */}
-            {state.pickupLat != null && state.pickupLng != null && (
+            {state?.pickupLat != null && state.pickupLng != null && (
               <AdvancedMarker position={{ lat: state.pickupLat, lng: state.pickupLng }}>
-                <div className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-success shadow-md text-[10px] font-bold text-white">
-                  P
+                <div className="flex h-6 items-center justify-center rounded-full border-2 border-white bg-success px-2 shadow-md text-[10px] font-bold text-white whitespace-nowrap">
+                  PICKUP
                 </div>
               </AdvancedMarker>
             )}
 
             {/* Rider destination marker */}
-            {state.riderDestLat != null && state.riderDestLng != null && (
+            {state?.riderDestLat != null && state.riderDestLng != null && (
               <AdvancedMarker position={{ lat: state.riderDestLat, lng: state.riderDestLng }} zIndex={2}>
-                <div className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-danger shadow-md text-[10px] font-bold text-white">
-                  D
+                <div className="flex h-6 items-center justify-center rounded-full border-2 border-white bg-danger px-2 shadow-md text-[10px] font-bold text-white whitespace-nowrap">
+                  DROP-OFF
                 </div>
               </AdvancedMarker>
             )}
 
             {/* Driver destination marker */}
-            <AdvancedMarker position={{ lat: state.driverDestLat, lng: state.driverDestLng }} zIndex={0}>
-              <div className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-warning shadow-md text-[10px] font-bold text-white">
-                Y
+            <AdvancedMarker position={{ lat: effLat, lng: effLng }} zIndex={0}>
+              <div className="flex h-6 items-center justify-center rounded-full border-2 border-white bg-warning px-2 shadow-md text-[10px] font-bold text-white whitespace-nowrap">
+                YOUR DEST
               </div>
             </AdvancedMarker>
 
@@ -315,7 +384,7 @@ export default function DropoffSelection({
               />
             )}
 
-            <MapBoundsFitter points={boundsPoints} />
+            {boundsPoints.length >= 2 && <MapBoundsFitter points={boundsPoints} />}
           </Map>
         ) : (
           <div className="flex h-full items-center justify-center bg-primary-light">
@@ -403,7 +472,7 @@ export default function DropoffSelection({
               </button>
               <button
                 type="button"
-                onClick={() => navigate(`/ride/messaging/${rideId}`, { replace: true, state: { driverDestinationSet: true } })}
+                onClick={() => { void broadcastDropoffDone(); navigate(`/ride/messaging/${rideId}`, { replace: true, state: { driverDestinationSet: true } }) }}
                 className="text-xs font-semibold text-text-secondary active:opacity-70"
               >
                 Skip to chat
@@ -420,7 +489,7 @@ export default function DropoffSelection({
             </p>
             <button
               type="button"
-              onClick={() => navigate(`/ride/messaging/${rideId}`, { replace: true, state: { driverDestinationSet: true } })}
+              onClick={() => { void broadcastDropoffDone(); navigate(`/ride/messaging/${rideId}`, { replace: true, state: { driverDestinationSet: true } }) }}
               className="mt-3 text-xs font-semibold text-primary active:opacity-70"
             >
               Continue to chat

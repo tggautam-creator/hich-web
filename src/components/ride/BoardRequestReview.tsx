@@ -4,8 +4,32 @@ import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import type { Ride, User } from '@/types/database'
 
+interface ScheduleInfo {
+  origin_address: string
+  dest_address: string
+  route_name: string
+  trip_date: string
+  trip_time: string
+  time_type: 'departure' | 'arrival'
+}
+
 interface BoardRequestReviewProps {
   'data-testid'?: string
+}
+
+/** Format "2026-03-15" → "Mar 15" */
+function formatDate(dateStr: string): string {
+  const d = new Date(dateStr + 'T00:00:00')
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+/** Format "14:30:00" → "2:30 PM" */
+function formatTime(timeStr: string): string {
+  const [h, m] = timeStr.split(':').map(Number)
+  if (h === undefined || m === undefined) return timeStr
+  const ampm = h >= 12 ? 'PM' : 'AM'
+  const h12 = h % 12 || 12
+  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`
 }
 
 export default function BoardRequestReview({
@@ -18,6 +42,7 @@ export default function BoardRequestReview({
 
   const [ride, setRide] = useState<Ride | null>(null)
   const [otherUser, setOtherUser] = useState<Pick<User, 'id' | 'full_name' | 'avatar_url' | 'rating_avg' | 'rating_count'> | null>(null)
+  const [scheduleInfo, setScheduleInfo] = useState<ScheduleInfo | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -48,6 +73,17 @@ export default function BoardRequestReview({
       }
 
       setRide(rideData)
+
+      // Fetch linked schedule for full route/date/time info
+      if (rideData.schedule_id) {
+        const { data: schedData } = await supabase
+          .from('ride_schedules')
+          .select('origin_address, dest_address, route_name, trip_date, trip_time, time_type')
+          .eq('id', rideData.schedule_id)
+          .single()
+
+        if (schedData) setScheduleInfo(schedData as ScheduleInfo)
+      }
 
       // Determine the other party (the requester)
       const otherId = profile?.id === rideData.rider_id
@@ -217,14 +253,36 @@ export default function BoardRequestReview({
       </div>
 
       {/* ── Route info ──────────────────────────────────────────────────────── */}
-      <div className="mx-4 mt-3 rounded-2xl bg-white p-4 shadow-sm">
+      <div className="mx-4 mt-3 rounded-2xl bg-white p-4 shadow-sm" data-testid="ride-details">
         <p className="text-xs text-text-secondary font-semibold uppercase tracking-wider mb-3">Ride Details</p>
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-text-secondary">📍</span>
-            <p className="text-sm text-text-primary">{ride.destination_name ?? 'Destination TBD'}</p>
+
+        {scheduleInfo?.route_name && (
+          <p className="text-sm font-semibold text-text-primary mb-3">{scheduleInfo.route_name}</p>
+        )}
+
+        <div className="space-y-1.5 mb-3">
+          <div className="flex items-start gap-2">
+            <span className="text-success mt-0.5 text-sm">●</span>
+            <p className="text-sm text-text-primary">{scheduleInfo?.origin_address ?? 'Origin TBD'}</p>
+          </div>
+          <div className="ml-[5px] h-3 border-l border-dashed border-text-secondary/30" />
+          <div className="flex items-start gap-2">
+            <span className="text-danger mt-0.5 text-sm">●</span>
+            <p className="text-sm text-text-primary">{scheduleInfo?.dest_address ?? ride.destination_name ?? 'Destination TBD'}</p>
           </div>
         </div>
+
+        {(scheduleInfo?.trip_date ?? ride.trip_date) && (
+          <div className="flex items-center gap-3 text-xs text-text-secondary">
+            <span>{formatDate(scheduleInfo?.trip_date ?? ride.trip_date ?? '')}</span>
+            {(scheduleInfo?.trip_time ?? ride.trip_time) && (
+              <span>
+                {scheduleInfo?.time_type === 'arrival' ? 'Arrives' : 'Departs'}{' '}
+                {formatTime(scheduleInfo?.trip_time ?? ride.trip_time ?? '')}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── Actions ─────────────────────────────────────────────────────────── */}

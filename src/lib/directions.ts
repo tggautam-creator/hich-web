@@ -6,6 +6,8 @@
  * (computeRoutes). This avoids CORS issues and deprecation warnings.
  */
 
+import { supabase } from '@/lib/supabase'
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface DirectionsResult {
@@ -28,13 +30,19 @@ export async function getDirections(
   destPlaceId: string,
 ): Promise<DirectionsResult | null> {
   try {
+    const { data: { session } } = await supabase.auth.getSession()
+    const token = session?.access_token
+    if (!token) return null
+
     const params = new URLSearchParams({
       originLat: String(originLat),
       originLng: String(originLng),
       destPlaceId,
     })
 
-    const resp = await fetch(`/api/directions?${params.toString()}`)
+    const resp = await fetch(`/api/directions?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
     if (!resp.ok) return null
 
     const data = (await resp.json()) as DirectionsResult
@@ -57,6 +65,10 @@ export async function getDirectionsByLatLng(
   destLng: number,
 ): Promise<DirectionsResult | null> {
   try {
+    const { data: { session } } = await supabase.auth.getSession()
+    const token = session?.access_token
+    if (!token) return null
+
     const params = new URLSearchParams({
       originLat: String(originLat),
       originLng: String(originLng),
@@ -64,7 +76,9 @@ export async function getDirectionsByLatLng(
       destLng: String(destLng),
     })
 
-    const resp = await fetch(`/api/directions?${params.toString()}`)
+    const resp = await fetch(`/api/directions?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
     if (!resp.ok) return null
 
     const data = (await resp.json()) as DirectionsResult

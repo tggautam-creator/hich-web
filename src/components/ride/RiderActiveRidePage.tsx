@@ -4,6 +4,7 @@ import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { trackEvent } from '@/lib/analytics'
+import { getDirectionsByLatLng } from '@/lib/directions'
 import QrScanner from '@/components/ride/QrScanner'
 import EmergencySheet from '@/components/ui/EmergencySheet'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
@@ -147,31 +148,25 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
       const dLat = dest.coordinates[1]
       const dLng = dest.coordinates[0]
 
-      fetch(`/api/directions?originLat=${pLat}&originLng=${pLng}&destLat=${dLat}&destLng=${dLng}`)
-        .then((r) => r.json())
-        .then((data: { polyline?: string; distance_km?: number }) => {
-          if (data.polyline) setRoutePolyline(data.polyline)
-          // Store total distance once for progress calculation
-          if (data.distance_km != null && !totalDistanceFetched.current) {
-            setTotalDistanceKm(data.distance_km)
-            totalDistanceFetched.current = true
-          }
-        })
-        .catch(() => { /* ignore */ })
+      async function fetchActive() {
+        const result = await getDirectionsByLatLng(pLat, pLng, dLat, dLng)
+        if (result?.polyline) setRoutePolyline(result.polyline)
+        if (result?.distance_km != null && !totalDistanceFetched.current) {
+          setTotalDistanceKm(result.distance_km)
+          totalDistanceFetched.current = true
+        }
 
-      // Live ETA: rider GPS → destination
-      if (riderPos) {
-        fetch(`/api/directions?originLat=${riderPos.lat}&originLng=${riderPos.lng}&destLat=${dLat}&destLng=${dLng}`)
-          .then((r) => r.json())
-          .then((data: { duration_min?: number; distance_km?: number }) => {
-            if (data.duration_min != null) {
-              const mins = Math.round(data.duration_min)
-              setRouteEta(mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)}h ${mins % 60}m`)
-            }
-            if (data.distance_km != null) setRouteDistanceKm(data.distance_km)
-          })
-          .catch(() => { /* ignore */ })
+        // Live ETA: rider GPS → destination
+        if (riderPos) {
+          const eta = await getDirectionsByLatLng(riderPos.lat, riderPos.lng, dLat, dLng)
+          if (eta?.duration_min != null) {
+            const mins = Math.round(eta.duration_min)
+            setRouteEta(mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)}h ${mins % 60}m`)
+          }
+          if (eta?.distance_km != null) setRouteDistanceKm(eta.distance_km)
+        }
       }
+      void fetchActive()
       return
     }
 
@@ -180,12 +175,8 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
       const pLat = pickup.coordinates[1]
       const pLng = pickup.coordinates[0]
 
-      fetch(`/api/directions?originLat=${riderPos.lat}&originLng=${riderPos.lng}&destLat=${pLat}&destLng=${pLng}`)
-        .then((r) => r.json())
-        .then((data: { polyline?: string }) => {
-          if (data.polyline) setRoutePolyline(data.polyline)
-        })
-        .catch(() => { /* ignore */ })
+      void getDirectionsByLatLng(riderPos.lat, riderPos.lng, pLat, pLng)
+        .then((result) => { if (result?.polyline) setRoutePolyline(result.polyline) })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ride?.status, ride?.pickup_point, ride?.destination, riderPos !== null])
@@ -217,6 +208,32 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
 
     return () => { void supabase.removeChannel(channel) }
   }, [profile?.id, rideId, navigate])
+
+  // ── Polling fallback — catch missed Realtime events ────────────────────
+  useEffect(() => {
+    if (!rideId) return
+
+    const poll = setInterval(async () => {
+      const { data } = await supabase
+        .from('rides')
+        .select('status, started_at')
+        .eq('id', rideId)
+        .single()
+
+      if (!data) return
+
+      if (data.status === 'completed' || data.status === 'cancelled') {
+        navigate(data.status === 'completed' ? `/ride/summary/${rideId}` : '/home/rider', { replace: true })
+      } else if (data.status === 'active' && data.started_at) {
+        setRide((prev) => prev && prev.status !== 'active'
+          ? { ...prev, status: 'active', started_at: data.started_at }
+          : prev,
+        )
+      }
+    }, 15_000)
+
+    return () => clearInterval(poll)
+  }, [rideId, navigate])
 
   // ── Listen for new chat messages (unread badge) ────────────────────────
   useEffect(() => {
@@ -637,7 +654,7 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
               <line x1="9" y1="9" x2="15" y2="15" />
               <line x1="15" y1="9" x2="9" y2="15" />
             </svg>
-            <span className="text-sm font-medium text-danger">End Ride</span>
+            <span className="text-sm font-medium text-danger">Scan QR to End Ride</span>
           </button>
         )}
       </div>

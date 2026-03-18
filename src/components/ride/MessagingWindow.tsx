@@ -64,8 +64,8 @@ function PickupMiniMap({
             </div>
           </AdvancedMarker>
           <AdvancedMarker position={{ lat: pickupLat, lng: pickupLng }}>
-            <div className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-white shadow-lg bg-success text-white text-xs font-bold">
-              P
+            <div className="flex h-6 items-center justify-center rounded-full border-2 border-white shadow-lg bg-success px-2 text-white text-[10px] font-bold whitespace-nowrap">
+              PICKUP
             </div>
           </AdvancedMarker>
           <DirectionsRoute
@@ -113,6 +113,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const currentUserId = profile?.id ?? null
 
   const [ride, setRide] = useState<Ride | null>(null)
+  const rideRef = useRef<Ride | null>(null)
 
   // Rider's original destination — captured on first load before a dropoff proposal
   // could overwrite ride.destination. Falls back to location state.
@@ -130,6 +131,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const [rideCancelled, setRideCancelled] = useState(false)
   const [cancelModal, setCancelModal] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const [driverCancelledModal, setDriverCancelledModal] = useState(false)
 
   // Map pin dropper state
   const [pinMode, setPinMode] = useState<PinMode | null>(null)
@@ -150,6 +152,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const inputRef = useRef<HTMLInputElement>(null)
 
   const isRider = currentUserId === ride?.rider_id
+  rideRef.current = ride
   const pickupConfirmed = ride?.pickup_confirmed ?? false
   const dropoffConfirmed = ride?.dropoff_confirmed ?? false
   const bothConfirmed = pickupConfirmed && dropoffConfirmed
@@ -277,17 +280,9 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         setRideCancelled(true)
       })
       .on('broadcast', { event: 'driver_cancelled' }, () => {
-        // Driver cancelled but ride is re-queued — send rider back to WaitingRoom
+        // Driver cancelled but ride is re-queued — show modal with options
         if (isRider && rideId) {
-          navigate(`/ride/waiting/${rideId}`, {
-            replace: true,
-            state: {
-              rideId,
-              destination: state?.destination,
-              destinationLat: state?.destinationLat,
-              destinationLng: state?.destinationLng,
-            },
-          })
+          setDriverCancelledModal(true)
         }
       })
       .on('broadcast', { event: 'locations_confirmed' }, () => {
@@ -348,6 +343,58 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
       void supabase.removeChannel(channel)
     }
   }, [currentUserId, isRider, navigate, rideId])
+
+  // ── Polling fallback for ride status + missed messages ──────────────
+  useEffect(() => {
+    if (!rideId) return
+
+    const interval = setInterval(() => {
+      // 1. Poll ride status
+      void supabase
+        .from('rides')
+        .select('status, driver_id')
+        .eq('id', rideId)
+        .single()
+        .then(({ data }) => {
+          if (!data) return
+
+          if (data.status === 'cancelled') {
+            setRideCancelled(true)
+            clearInterval(interval)
+            return
+          }
+
+          // Driver cancelled & ride re-queued — show modal
+          if (data.status === 'requested' && isRider) {
+            setDriverCancelledModal(true)
+            clearInterval(interval)
+          }
+        })
+
+      // 2. Re-fetch messages to catch any missed by Realtime
+      void (async () => {
+        try {
+          const { data: { session } } = await supabase.auth.getSession()
+          if (!session) return
+          const resp = await fetch(`/api/messages/${rideId}`, {
+            headers: { Authorization: `Bearer ${session.access_token}` },
+          })
+          if (resp.ok) {
+            const body = (await resp.json()) as { messages: ChatMessage[] }
+            const fresh = body.messages ?? []
+            setMessages((prev) => {
+              if (fresh.length > prev.length) return fresh
+              return prev
+            })
+          }
+        } catch {
+          // non-fatal
+        }
+      })()
+    }, 12_000)
+
+    return () => clearInterval(interval)
+  }, [rideId, isRider, navigate, state?.destination, state?.destinationLat, state?.destinationLng])
 
   // ── Send text message ──────────────────────────────────────────────────
   const handleSend = useCallback(async () => {
@@ -691,8 +738,8 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                 }
               }}
             >
-              <div className={`flex h-10 w-10 items-center justify-center rounded-full border-[3px] border-white shadow-lg text-sm font-bold text-white ${pinMode === 'pickup' ? 'bg-success' : 'bg-danger'}`}>
-                {pinMode === 'pickup' ? 'P' : 'D'}
+              <div className={`flex h-8 items-center justify-center rounded-full border-[3px] border-white shadow-lg px-3 text-xs font-bold text-white whitespace-nowrap ${pinMode === 'pickup' ? 'bg-success' : 'bg-danger'}`}>
+                {pinMode === 'pickup' ? 'PICKUP' : 'DROP-OFF'}
               </div>
             </AdvancedMarker>
           </Map>
@@ -1470,6 +1517,61 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                 {cancelling ? 'Cancelling...' : 'Yes, Cancel'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Driver cancelled modal — rider chooses to find another or cancel ── */}
+      {driverCancelledModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="mx-6 w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl space-y-4">
+            <div className="flex justify-center">
+              <div className="h-14 w-14 rounded-full bg-warning/10 flex items-center justify-center">
+                <span className="text-2xl">&#x26A0;&#xFE0F;</span>
+              </div>
+            </div>
+            <h3 className="text-lg font-bold text-text-primary text-center">Driver Cancelled</h3>
+            <p className="text-sm text-text-secondary text-center">
+              Your driver has cancelled. Other drivers may still be available.
+            </p>
+            <button
+              data-testid="back-to-waiting"
+              onClick={() => {
+                const origin = rideRef.current?.origin as { coordinates: number[] } | null | undefined
+                navigate('/ride/waiting', {
+                  replace: true,
+                  state: {
+                    rideId,
+                    destination: state?.destination,
+                    destinationLat: state?.destinationLat,
+                    destinationLng: state?.destinationLng,
+                    originLat: origin?.coordinates?.[1],
+                    originLng: origin?.coordinates?.[0],
+                  },
+                })
+              }}
+              className="w-full rounded-2xl py-3 text-sm font-semibold text-white bg-primary active:bg-primary/90 transition-colors"
+            >
+              Find Another Driver
+            </button>
+            <button
+              data-testid="cancel-ride-from-modal"
+              onClick={() => {
+                void (async () => {
+                  const { data: { session } } = await supabase.auth.getSession()
+                  if (session) {
+                    await fetch(`/api/rides/${rideId}/cancel`, {
+                      method: 'PATCH',
+                      headers: { Authorization: `Bearer ${session.access_token}` },
+                    })
+                  }
+                  navigate('/home/rider', { replace: true })
+                })()
+              }}
+              className="w-full rounded-2xl py-3 text-sm font-semibold text-danger border-2 border-danger/30 active:bg-danger/5 transition-colors"
+            >
+              Cancel Ride
+            </button>
           </div>
         </div>
       )}

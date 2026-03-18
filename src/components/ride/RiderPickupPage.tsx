@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
+import { getDirectionsByLatLng } from '@/lib/directions'
 import { haversineMetres } from '@/lib/geo'
 import { trackEvent } from '@/lib/analytics'
 import { useAuthStore } from '@/stores/authStore'
@@ -219,12 +220,9 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   useEffect(() => {
     if (riderLat === null || riderLng === null || pickupLat === null || pickupLng === null) return
 
-    fetch(`/api/directions?originLat=${riderLat}&originLng=${riderLng}&destLat=${pickupLat}&destLng=${pickupLng}`)
-      .then((r) => r.json())
-      .then((data: { polyline?: string }) => {
-        if (data.polyline) setWalkPolyline(data.polyline)
-      })
-      .catch(() => { /* ignore */ })
+    void getDirectionsByLatLng(riderLat, riderLng, pickupLat, pickupLng).then((result) => {
+      if (result?.polyline) setWalkPolyline(result.polyline)
+    })
     // Only re-fetch when pickup changes, not every GPS tick
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pickupLat, pickupLng, riderLat !== null])

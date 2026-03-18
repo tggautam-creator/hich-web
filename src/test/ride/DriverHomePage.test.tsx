@@ -180,14 +180,14 @@ describe('DriverHomePage', () => {
     )
   })
 
-  it('posts GPS every 10 seconds while online', () => {
+  it('posts GPS every 30 seconds while online', () => {
     renderPage()
     mockUpsert.mockClear()
 
-    act(() => { vi.advanceTimersByTime(10_000) })
+    act(() => { vi.advanceTimersByTime(30_000) })
     expect(mockUpsert).toHaveBeenCalledTimes(1)
 
-    act(() => { vi.advanceTimersByTime(10_000) })
+    act(() => { vi.advanceTimersByTime(30_000) })
     expect(mockUpsert).toHaveBeenCalledTimes(2)
   })
 

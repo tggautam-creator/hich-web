@@ -1,4 +1,5 @@
-import { Router, type Request, type Response } from 'express'
+import { Router, type Request, type Response, type NextFunction } from 'express'
+import { validateJwt } from '../middleware/auth.ts'
 
 export const directionsRouter = Router()
 
@@ -21,7 +22,8 @@ interface RoutesApiResponse {
  */
 directionsRouter.get(
   '/',
-  async (req: Request, res: Response) => {
+  validateJwt,
+  async (req: Request, res: Response, _next: NextFunction) => {
     const originLat = parseFloat(req.query['originLat'] as string)
     const originLng = parseFloat(req.query['originLng'] as string)
     const destPlaceId = req.query['destPlaceId'] as string | undefined

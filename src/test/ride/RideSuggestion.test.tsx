@@ -7,10 +7,12 @@
  *  3. Displays rider rating
  *  4. Shows countdown text
  *  5. Accept button is disabled until destination is selected
- *  6. Decline button updates ride and navigates to driver home
+ *  6. Decline button navigates to driver home without cancelling ride
  *  7. Auto-declines after 150 seconds
  *  8. Shows error state when ride fetch fails
  *  9. Shows destination input with explanation
+ * 10. Shows standby screen immediately when driver already has a standby offer
+ * 11. Shows standby screen immediately when driver has a pending offer with destination (renewal case)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -20,11 +22,12 @@ import RideSuggestion from '@/components/ride/RideSuggestion'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
-const { mockSingle, mockUpdate, mockUpdateEq, mockGetSession } = vi.hoisted(() => ({
+const { mockSingle, mockUpdate, mockUpdateEq, mockGetSession, mockMaybySingle } = vi.hoisted(() => ({
   mockSingle: vi.fn(),
   mockUpdate: vi.fn(),
   mockUpdateEq: vi.fn(),
   mockGetSession: vi.fn(),
+  mockMaybySingle: vi.fn(),
 }))
 
 const RIDER = {
@@ -66,6 +69,17 @@ vi.mock('@/lib/supabase', () => ({
             eq: () => ({
               eq: () => ({
                 limit: () => Promise.resolve({ data: [], error: null }),
+              }),
+            }),
+          }),
+        }
+      }
+      if (table === 'ride_offers') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                maybeSingle: mockMaybySingle,
               }),
             }),
           }),
@@ -158,6 +172,8 @@ describe('RideSuggestion', () => {
       data: { session: { access_token: 'test-token', user: { id: 'driver-123' } } },
     })
     mockUpdateEq.mockResolvedValue({ data: null, error: null })
+    // Default: no existing offer → show form normally
+    mockMaybySingle.mockResolvedValue({ data: null, error: null })
   })
 
   afterEach(() => {
@@ -221,7 +237,7 @@ describe('RideSuggestion', () => {
     expect(screen.getByTestId('accept-button')).toHaveTextContent('Enter destination first')
   })
 
-  it('Decline button updates ride and navigates to driver home', async () => {
+  it('Decline button navigates to driver home without cancelling ride', async () => {
     setupSuccess()
     renderWithRoute()
 
@@ -233,7 +249,8 @@ describe('RideSuggestion', () => {
       fireEvent.click(screen.getByTestId('decline-button'))
     })
 
-    expect(mockUpdate).toHaveBeenCalledWith({ status: 'cancelled' })
+    // Decline should NOT update ride status — just navigate away
+    expect(mockUpdate).not.toHaveBeenCalled()
     expect(mockNavigate).toHaveBeenCalledWith('/home/driver', { replace: true })
   })
 
@@ -254,7 +271,7 @@ describe('RideSuggestion', () => {
       await vi.advanceTimersByTimeAsync(150_000)
     })
 
-    expect(mockUpdate).toHaveBeenCalledWith({ status: 'cancelled' })
+    // Auto-decline should also not cancel the ride, just navigate away
     expect(mockNavigate).toHaveBeenCalledWith('/home/driver', { replace: true })
   })
 
@@ -265,5 +282,41 @@ describe('RideSuggestion', () => {
     await waitFor(() => {
       expect(screen.getByTestId('error-message')).toHaveTextContent('Could not load ride details')
     })
+  })
+
+  it('shows standby screen immediately when driver already has a standby offer', async () => {
+    setupSuccess()
+    // Simulate driver already being on standby (rider selected another driver)
+    mockMaybySingle.mockResolvedValue({
+      data: { status: 'standby', driver_destination: { type: 'Point', coordinates: [-121.9, 38.5] } },
+      error: null,
+    })
+    renderWithRoute()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('standby-home-button')).toBeInTheDocument()
+    })
+    // Form should not be shown
+    expect(screen.queryByTestId('driver-destination-card')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('accept-button')).not.toBeInTheDocument()
+  })
+
+  it('shows standby screen immediately when driver has a pending offer with destination set (renewal case)', async () => {
+    setupSuccess()
+    // Simulate renewal: offer reverted from standby → pending, destination already submitted
+    mockMaybySingle.mockResolvedValue({
+      data: { status: 'pending', driver_destination: { type: 'Point', coordinates: [-121.9, 38.5] } },
+      error: null,
+    })
+    renderWithRoute()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('standby-home-button')).toBeInTheDocument()
+    })
+    // Form and accept button should not be shown
+    expect(screen.queryByTestId('driver-destination-card')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('accept-button')).not.toBeInTheDocument()
+    // Renewal message should be shown
+    expect(screen.getByText(/previous driver cancelled.*Your offer is active/i)).toBeInTheDocument()
   })
 })

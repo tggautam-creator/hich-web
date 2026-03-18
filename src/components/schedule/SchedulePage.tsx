@@ -6,7 +6,7 @@ import SecondaryButton from '@/components/ui/SecondaryButton'
 import { trackEvent } from '@/lib/analytics'
 import DayPill from '@/components/ui/DayPill'
 import type { DayIndex } from '@/components/ui/DayPill'
-import BottomSheet from '@/components/ui/BottomSheet'
+
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import {
@@ -30,15 +30,9 @@ type TimeType = 'departure' | 'arrival'
 type Step = 'details' | 'one-time-schedule' | 'routine-schedule'
 
 const ALL_DAYS: DayIndex[] = [0, 1, 2, 3, 4, 5, 6]
-
 const DAY_NAMES: Record<DayIndex, string> = {
-  0: 'Sunday',
-  1: 'Monday',
-  2: 'Tuesday',
-  3: 'Wednesday',
-  4: 'Thursday',
-  5: 'Friday',
-  6: 'Saturday',
+  0: 'Sunday', 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday',
+  4: 'Thursday', 5: 'Friday', 6: 'Saturday',
 }
 
 interface DayTimeConfig {
@@ -80,10 +74,10 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
 
   // Routine schedule state
   const [selectedDays, setSelectedDays] = useState<Set<DayIndex>>(new Set())
-  const [dayTimes, setDayTimes] = useState<Map<DayIndex, DayTimeConfig>>(new Map())
-  const [bottomSheetDay, setBottomSheetDay] = useState<DayIndex | null>(null)
   const [sheetTimeType, setSheetTimeType] = useState<TimeType>('departure')
   const [sheetTime, setSheetTime] = useState('')
+  const [perDayMode, setPerDayMode] = useState(false)
+  const [dayTimes, setDayTimes] = useState<Map<DayIndex, DayTimeConfig>>(new Map())
 
   const user = useAuthStore((s) => s.user)
 
@@ -260,6 +254,11 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
       // Notify matched drivers (fire-and-forget)
       try {
         const { data: { session } } = await supabase.auth.getSession()
+        // BUG-051: Geocode places to get coordinates for proximity/bearing matching
+        const [fromCoords, toCoords] = await Promise.all([
+          getPlaceCoordinates(fromLocation.placeId),
+          getPlaceCoordinates(toLocation.placeId),
+        ])
         await fetch('/api/schedule/notify', {
           method: 'POST',
           headers: {
@@ -273,6 +272,8 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
             trip_time:       `${tripTime}:00`,
             time_type:       timeType,
             mode,
+            ...(fromCoords ? { origin_lat: fromCoords.lat, origin_lng: fromCoords.lng } : {}),
+            ...(toCoords ? { dest_lat: toCoords.lat, dest_lng: toCoords.lng } : {}),
           }),
         })
       } catch {
@@ -293,50 +294,11 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
   function handleDayClick(day: DayIndex) {
     const next = new Set(selectedDays)
     if (next.has(day)) {
-      // Already selected — check if it has a time configured
-      const existing = dayTimes.get(day)
-      if (existing?.time) {
-        // Has time set → open sheet to edit
-        setSheetTimeType(existing.timeType)
-        setSheetTime(existing.time)
-        setBottomSheetDay(day)
-      } else {
-        // No time set yet → deselect (toggle off)
-        next.delete(day)
-        setSelectedDays(next)
-        const nextTimes = new Map(dayTimes)
-        nextTimes.delete(day)
-        setDayTimes(nextTimes)
-        return
-      }
+      next.delete(day)
     } else {
-      // Not selected → select + open sheet
       next.add(day)
-      setSelectedDays(next)
-      setSheetTimeType('departure')
-      setSheetTime('')
-      setBottomSheetDay(day)
     }
-  }
-
-  function handleSheetSave() {
-    if (bottomSheetDay === null) return
-    const next = new Map(dayTimes)
-    next.set(bottomSheetDay, { timeType: sheetTimeType, time: sheetTime })
-    setDayTimes(next)
-    setBottomSheetDay(null)
-    setErrors({})
-  }
-
-  function handleSheetRemove() {
-    if (bottomSheetDay === null) return
-    const nextDays = new Set(selectedDays)
-    nextDays.delete(bottomSheetDay)
-    setSelectedDays(nextDays)
-    const nextTimes = new Map(dayTimes)
-    nextTimes.delete(bottomSheetDay)
-    setDayTimes(nextTimes)
-    setBottomSheetDay(null)
+    setSelectedDays(next)
   }
 
   function validateRoutine(): boolean {
@@ -346,11 +308,20 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
       newErrors.days = 'Please select at least one day'
     }
 
-    for (const day of selectedDays) {
-      const cfg = dayTimes.get(day)
-      if (!cfg || !cfg.time) {
-        newErrors.days = 'Please set a time for each selected day'
-        break
+    if (perDayMode) {
+      // Every selected day must have a time set
+      for (const day of selectedDays) {
+        const cfg = dayTimes.get(day)
+        if (!cfg?.time) {
+          newErrors[`dayTime_${day}`] = `Please set a time for ${DAY_NAMES[day]}`
+          if (!newErrors.routineTime) {
+            newErrors.routineTime = 'Please set a time for each day'
+          }
+        }
+      }
+    } else {
+      if (!sheetTime) {
+        newErrors.routineTime = 'Please set a time'
       }
     }
 
@@ -389,20 +360,33 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
       )
       const routePolyline = directions?.polyline ?? null
 
-      // Group days by identical time config to minimise records
-      const groups = new Map<string, { days: number[]; timeType: TimeType; time: string }>()
+      // Build per-day configs: in shared mode all days use the same time,
+      // in per-day mode each day has its own time config
+      const dayConfigs: { day: DayIndex; tType: TimeType; time: string }[] = []
       for (const day of selectedDays) {
-        const cfg = dayTimes.get(day)
-        if (!cfg) continue
-        const key = `${cfg.timeType}|${cfg.time}`
+        if (perDayMode) {
+          const cfg = dayTimes.get(day)
+          if (cfg?.time) {
+            dayConfigs.push({ day, tType: cfg.timeType, time: cfg.time })
+          }
+        } else {
+          dayConfigs.push({ day, tType: sheetTimeType, time: sheetTime })
+        }
+      }
+
+      // Group days by identical time config for minimal DB records
+      const groups = new Map<string, { tType: TimeType; time: string; days: DayIndex[] }>()
+      for (const { day, tType, time } of dayConfigs) {
+        const key = `${tType}:${time}`
         const existing = groups.get(key)
         if (existing) {
           existing.days.push(day)
         } else {
-          groups.set(key, { days: [day], timeType: cfg.timeType, time: cfg.time })
+          groups.set(key, { tType, time, days: [day] })
         }
       }
 
+      // Insert one driver_routine record per unique time config
       for (const group of groups.values()) {
         const { error } = await supabase.from('driver_routines').insert({
           user_id:             user.id,
@@ -412,8 +396,8 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
           destination_bearing: bearing,
           direction_type:      directionType === 'one-way' ? 'one_way' as const : 'roundtrip' as const,
           day_of_week:         group.days,
-          departure_time:      group.timeType === 'departure' ? `${group.time}:00` : null,
-          arrival_time:        group.timeType === 'arrival'   ? `${group.time}:00` : null,
+          departure_time:      group.tType === 'departure' ? `${group.time}:00` : null,
+          arrival_time:        group.tType === 'arrival'   ? `${group.time}:00` : null,
           origin_address:      fromLocation.fullAddress,
           dest_address:        toLocation.fullAddress,
           route_polyline:      routePolyline,
@@ -430,10 +414,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
       const today = new Date()
       const todayDow = today.getDay() // 0=Sun
 
-      for (const day of selectedDays) {
-        const cfg = dayTimes.get(day)
-        if (!cfg) continue
-
+      for (const { day, tType, time } of dayConfigs) {
         // Calculate next occurrence of this day-of-week
         let daysUntil = day - todayDow
         if (daysUntil <= 0) daysUntil += 7 // always next week if today or past
@@ -451,13 +432,47 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
           dest_address:     toLocation.fullAddress,
           direction_type:   directionType === 'one-way' ? 'one_way' : 'roundtrip',
           trip_date:        dateStr,
-          time_type:        cfg.timeType,
-          trip_time:        `${cfg.time}:00`,
+          time_type:        tType,
+          trip_time:        `${time}:00`,
         })
         // Non-fatal if this fails — the routine is already saved
       }
 
       trackEvent('schedule_saved', { mode, trip_type: 'routine' })
+
+      // BUG-021: Notify matching drivers about the new routine rides (fire-and-forget)
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session) {
+          // Use the first group's time for the notification
+          const firstGroup = groups.values().next().value
+          const notifyTime = firstGroup ? `${firstGroup.time}:00` : `${sheetTime}:00`
+          const notifyTimeType = firstGroup ? firstGroup.tType : sheetTimeType
+
+          await fetch('/api/schedule/notify', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify({
+              origin_place_id: fromLocation.placeId,
+              dest_place_id:   toLocation.placeId,
+              trip_date:       new Date().toISOString().split('T')[0],
+              trip_time:       notifyTime,
+              time_type:       notifyTimeType,
+              mode,
+              origin_lat: fromCoords.lat,
+              origin_lng: fromCoords.lng,
+              dest_lat:   toCoords.lat,
+              dest_lng:   toCoords.lng,
+            }),
+          })
+        }
+      } catch {
+        // Notification failure is non-blocking
+      }
+
       setShowConfirmation(true)
     } catch {
       setSubmitError('Something went wrong. Please try again.')
@@ -536,7 +551,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
           {step === 'one-time-schedule'
             ? 'When do you want to travel?'
             : step === 'routine-schedule'
-              ? 'Select the days you travel and set a time for each'
+              ? 'Select the days you travel and set your times'
               : 'Where do you usually travel?'}
         </p>
       </div>
@@ -702,32 +717,169 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
               )}
             </div>
 
-            {/* Configured days summary */}
+            {/* Inline time picker — visible when at least one day is selected */}
             {selectedDays.size > 0 && (
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-text-primary">
-                  Scheduled times
-                </label>
-                {Array.from(selectedDays).sort().map((day) => {
-                  const cfg = dayTimes.get(day)
-                  return (
-                    <button
-                      key={day}
-                      data-testid={`day-summary-${day}`}
-                      onClick={() => { handleDayClick(day) }}
-                      className="w-full flex items-center justify-between rounded-2xl border border-border bg-white px-4 py-3 text-left hover:bg-surface transition-colors"
-                    >
-                      <span className="text-sm font-medium text-text-primary">
-                        {DAY_NAMES[day]}
-                      </span>
-                      <span className="text-sm text-text-secondary">
-                        {cfg?.time
-                          ? `${cfg.timeType === 'departure' ? 'Dep' : 'Arr'} ${cfg.time}`
-                          : 'Tap to set time'}
-                      </span>
-                    </button>
-                  )
-                })}
+              <div className="space-y-4">
+                {/* Mode toggle: same time vs per-day */}
+                {selectedDays.size > 1 && (
+                  <button
+                    type="button"
+                    data-testid="per-day-toggle"
+                    onClick={() => {
+                      if (!perDayMode && sheetTime) {
+                        // Pre-fill every selected day with the current shared time
+                        const prefilled = new Map(dayTimes)
+                        for (const d of selectedDays) {
+                          if (!prefilled.has(d) || !prefilled.get(d)?.time) {
+                            prefilled.set(d, { timeType: sheetTimeType, time: sheetTime })
+                          }
+                        }
+                        setDayTimes(prefilled)
+                      }
+                      setPerDayMode(!perDayMode)
+                    }}
+                    className="text-sm font-medium text-primary hover:text-primary/80 transition-colors"
+                  >
+                    {perDayMode ? 'Use same time for all days' : 'Set different time per day'}
+                  </button>
+                )}
+
+                {perDayMode ? (
+                  /* ── Per-day time pickers ─────────────────────────────── */
+                  <div className="space-y-3">
+                    {Array.from(selectedDays).sort((a, b) => a - b).map((day) => {
+                      const cfg = dayTimes.get(day) ?? { timeType: 'departure' as TimeType, time: '' }
+                      return (
+                        <div
+                          key={day}
+                          data-testid={`day-time-row-${day}`}
+                          className="rounded-2xl border border-border bg-white p-4 space-y-3"
+                        >
+                          <p className="text-sm font-semibold text-text-primary">{DAY_NAMES[day]}</p>
+
+                          {/* Departure / Arrival Toggle */}
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              data-testid={`day-${day}-time-type-departure`}
+                              onClick={() => {
+                                const next = new Map(dayTimes)
+                                next.set(day, { ...cfg, timeType: 'departure' })
+                                setDayTimes(next)
+                              }}
+                              className={[
+                                'px-3 py-2 rounded-xl border transition-all duration-150',
+                                'font-medium text-xs',
+                                cfg.timeType === 'departure'
+                                  ? 'bg-primary text-white border-primary'
+                                  : 'bg-white text-text-primary border-border hover:border-primary',
+                              ].join(' ')}
+                            >
+                              Departure
+                            </button>
+                            <button
+                              data-testid={`day-${day}-time-type-arrival`}
+                              onClick={() => {
+                                const next = new Map(dayTimes)
+                                next.set(day, { ...cfg, timeType: 'arrival' })
+                                setDayTimes(next)
+                              }}
+                              className={[
+                                'px-3 py-2 rounded-xl border transition-all duration-150',
+                                'font-medium text-xs',
+                                cfg.timeType === 'arrival'
+                                  ? 'bg-primary text-white border-primary'
+                                  : 'bg-white text-text-primary border-border hover:border-primary',
+                              ].join(' ')}
+                            >
+                              Arrival
+                            </button>
+                          </div>
+
+                          {/* Time Input */}
+                          <input
+                            data-testid={`day-${day}-time-input`}
+                            type="time"
+                            value={cfg.time}
+                            onChange={(e) => {
+                              const next = new Map(dayTimes)
+                              next.set(day, { ...cfg, time: e.target.value })
+                              setDayTimes(next)
+                            }}
+                            className={[
+                              'w-full rounded-xl border bg-white px-3 py-2 text-sm text-text-primary',
+                              'transition-colors duration-150',
+                              'focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary',
+                              errors[`dayTime_${day}`] ? 'border-danger' : 'border-border',
+                            ].join(' ')}
+                          />
+                          {errors[`dayTime_${day}`] && (
+                            <p className="text-xs text-danger">{errors[`dayTime_${day}`]}</p>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  /* ── Shared time picker (same for all days) ──────────── */
+                  <div className="space-y-4 rounded-2xl border border-border bg-white p-4">
+                    <p className="text-sm font-medium text-text-primary">
+                      Set time for {selectedDays.size === 1 ? '1 day' : `${selectedDays.size} days`}
+                    </p>
+
+                    {/* Departure / Arrival Toggle */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        data-testid="sheet-time-type-departure"
+                        onClick={() => { setSheetTimeType('departure') }}
+                        className={[
+                          'px-4 py-3 rounded-2xl border transition-all duration-150',
+                          'font-medium text-sm',
+                          sheetTimeType === 'departure'
+                            ? 'bg-primary text-white border-primary'
+                            : 'bg-white text-text-primary border-border hover:border-primary',
+                        ].join(' ')}
+                      >
+                        Departure
+                      </button>
+                      <button
+                        data-testid="sheet-time-type-arrival"
+                        onClick={() => { setSheetTimeType('arrival') }}
+                        className={[
+                          'px-4 py-3 rounded-2xl border transition-all duration-150',
+                          'font-medium text-sm',
+                          sheetTimeType === 'arrival'
+                            ? 'bg-primary text-white border-primary'
+                            : 'bg-white text-text-primary border-border hover:border-primary',
+                        ].join(' ')}
+                      >
+                        Arrival
+                      </button>
+                    </div>
+
+                    {/* Time Picker */}
+                    <div>
+                      <label
+                        htmlFor="routine-time"
+                        className="block text-sm font-medium text-text-primary mb-1"
+                      >
+                        {sheetTimeType === 'departure' ? 'Departure Time' : 'Arrival Time'}
+                      </label>
+                      <input
+                        id="routine-time"
+                        data-testid="sheet-time-input"
+                        type="time"
+                        value={sheetTime}
+                        onChange={(e) => { setSheetTime(e.target.value) }}
+                        className="w-full rounded-2xl border border-border bg-white px-4 py-3 text-base text-text-primary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
+                      />
+                      {errors.routineTime && (
+                        <p data-testid="time-error" className="text-xs text-danger mt-2">
+                          {errors.routineTime}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -742,89 +894,6 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
               </p>
             )}
           </div>
-
-          {/* BottomSheet for per-day time config */}
-          <BottomSheet
-            isOpen={bottomSheetDay !== null}
-            onClose={() => { setBottomSheetDay(null) }}
-            title={bottomSheetDay !== null ? `Set Time — ${DAY_NAMES[bottomSheetDay]}` : ''}
-            data-testid="day-time-sheet"
-          >
-            <div className="space-y-5">
-              {/* Departure / Arrival Toggle */}
-              <div>
-                <label className="block text-sm font-medium text-text-primary mb-2">
-                  Time is for
-                </label>
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    data-testid="sheet-time-type-departure"
-                    onClick={() => { setSheetTimeType('departure') }}
-                    className={[
-                      'px-4 py-3 rounded-2xl border transition-all duration-150',
-                      'font-medium text-sm',
-                      sheetTimeType === 'departure'
-                        ? 'bg-primary text-white border-primary'
-                        : 'bg-white text-text-primary border-border hover:border-primary',
-                    ].join(' ')}
-                  >
-                    Departure
-                  </button>
-                  <button
-                    data-testid="sheet-time-type-arrival"
-                    onClick={() => { setSheetTimeType('arrival') }}
-                    className={[
-                      'px-4 py-3 rounded-2xl border transition-all duration-150',
-                      'font-medium text-sm',
-                      sheetTimeType === 'arrival'
-                        ? 'bg-primary text-white border-primary'
-                        : 'bg-white text-text-primary border-border hover:border-primary',
-                    ].join(' ')}
-                  >
-                    Arrival
-                  </button>
-                </div>
-              </div>
-
-              {/* Time Picker */}
-              <div>
-                <label
-                  htmlFor="sheet-time"
-                  className="block text-sm font-medium text-text-primary mb-1"
-                >
-                  {sheetTimeType === 'departure' ? 'Departure Time' : 'Arrival Time'}
-                </label>
-                <input
-                  id="sheet-time"
-                  data-testid="sheet-time-input"
-                  type="time"
-                  value={sheetTime}
-                  onChange={(e) => { setSheetTime(e.target.value) }}
-                  className="w-full rounded-2xl border border-border bg-white px-4 py-3 text-base text-text-primary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
-                />
-              </div>
-
-              {/* Actions */}
-              <div className="space-y-3">
-                <PrimaryButton
-                  data-testid="sheet-save-button"
-                  onClick={handleSheetSave}
-                  disabled={!sheetTime}
-                >
-                  Save
-                </PrimaryButton>
-                {bottomSheetDay !== null && selectedDays.has(bottomSheetDay) && dayTimes.has(bottomSheetDay) && (
-                  <button
-                    data-testid="sheet-remove-button"
-                    onClick={handleSheetRemove}
-                    className="w-full py-3 text-sm font-medium text-danger hover:text-danger/80 transition-colors"
-                  >
-                    Remove Day
-                  </button>
-                )}
-              </div>
-            </div>
-          </BottomSheet>
 
           {/* Footer */}
           <div

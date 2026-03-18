@@ -45,6 +45,19 @@ stripeWebhookRouter.post('/', async (req: Request, res: Response) => {
       return
     }
 
+    // Idempotency guard: reject duplicate Stripe events
+    const { data: existingTx } = await supabaseAdmin
+      .from('transactions')
+      .select('id')
+      .eq('stripe_event_id', event.id)
+      .maybeSingle()
+
+    if (existingTx) {
+      console.log(`[Webhook] Duplicate event ${event.id}, skipping`)
+      res.json({ received: true })
+      return
+    }
+
     // Get current balance
     const { data: user, error: userErr } = await supabaseAdmin
       .from('users')
@@ -61,9 +74,6 @@ stripeWebhookRouter.post('/', async (req: Request, res: Response) => {
     const currentBalance = user.wallet_balance as number
     const newBalance = currentBalance + amountCents
 
-    // Update balance and insert transaction atomically via supabase rpc
-    // Since we can't do DB transactions through REST, we do update + insert
-    // The webhook is idempotent — Stripe sends each event at most once in normal operation
     const { error: updateErr } = await supabaseAdmin
       .from('users')
       .update({ wallet_balance: newBalance })
@@ -83,11 +93,12 @@ stripeWebhookRouter.post('/', async (req: Request, res: Response) => {
         amount_cents: amountCents,
         balance_after_cents: newBalance,
         description: `Added $${(amountCents / 100).toFixed(2)} to wallet`,
+        stripe_event_id: event.id,
+        payment_intent_id: paymentIntent.id,
       })
 
     if (txErr) {
       console.error('Failed to insert transaction record:', txErr)
-      // Balance already updated — log but don't fail the webhook
     }
   }
 

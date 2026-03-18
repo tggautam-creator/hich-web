@@ -1,117 +1,20 @@
 import { Router } from 'express'
 import type { Request, Response, NextFunction } from 'express'
+import rateLimit from 'express-rate-limit'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { generateQrToken, validateQrToken } from '../lib/qrToken.ts'
-import { computeTransitDropoffSuggestions, fetchDrivingRoute } from '../lib/transitSuggestions.ts'
+import { computeTransitDropoffSuggestions, fetchDrivingRoute, type TransitDropoffSuggestion } from '../lib/transitSuggestions.ts'
+import { realtimeBroadcast, realtimeBroadcastMany } from '../lib/realtimeBroadcast.ts'
 
 export const ridesRouter = Router()
-
-async function broadcastWithTimeout(
-  channelName: string,
-  event: string,
-  payload: Record<string, unknown>,
-  timeoutMs = 2000,
-): Promise<boolean> {
-  const channel = supabaseAdmin.channel(channelName)
-
-  return await new Promise<boolean>((resolve) => {
-    let settled = false
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true
-        void supabaseAdmin.removeChannel(channel)
-        console.warn(`[Realtime] Timeout broadcasting event='${event}' to ${channelName}`)
-        resolve(false)
-      }
-    }, timeoutMs)
-
-    channel.subscribe((status) => {
-      if (status !== 'SUBSCRIBED' || settled) return
-
-      channel.send({ type: 'broadcast', event, payload })
-        .then(() => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          void supabaseAdmin.removeChannel(channel)
-          resolve(true)
-        })
-        .catch(() => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          void supabaseAdmin.removeChannel(channel)
-          resolve(false)
-        })
-    })
-  })
-}
-
-async function broadcastRideRequestWithTimeout(
-  driverId: string,
-  payload: {
-    type: 'ride_request'
-    ride_id: string
-    rider_name: string
-    destination: string
-    distance_km: string
-    estimated_earnings_cents: string
-    origin_lat: string
-    origin_lng: string
-    destination_lat: string
-    destination_lng: string
-  },
-  timeoutMs = 1500,
-): Promise<boolean> {
-  const channel = supabaseAdmin.channel(`driver:${driverId}`)
-
-  return await new Promise<boolean>((resolve) => {
-    let settled = false
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true
-        void supabaseAdmin.removeChannel(channel)
-        console.warn(`[Realtime] Timeout sending ride_request to driver:${driverId}`)
-        resolve(false)
-      }
-    }, timeoutMs)
-
-    channel.subscribe((status) => {
-      if (status !== 'SUBSCRIBED' || settled) return
-
-      channel.send({
-        type: 'broadcast',
-        event: 'ride_request',
-        payload,
-      })
-        .then(() => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          void supabaseAdmin.removeChannel(channel)
-          console.log(`[Realtime] Broadcast sent to driver:${driverId}`)
-          resolve(true)
-        })
-        .catch((err: unknown) => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          void supabaseAdmin.removeChannel(channel)
-          const message = err instanceof Error ? err.message : 'Unknown send error'
-          console.error(`[Realtime] Broadcast failed to driver:${driverId}: ${message}`)
-          resolve(false)
-        })
-    })
-  })
-}
 
 // ── Wallet transfer helper ────────────────────────────────────────────────────
 /**
  * Atomically debit rider wallet and credit driver wallet when a ride ends.
- * Uses supabase rpc to run in a single Postgres transaction.
- * If the rider has insufficient balance, the transfer is skipped (ride still ends).
+ * Uses Supabase RPC to run debit+credit+insert in a single Postgres transaction.
+ * SELECT ... FOR UPDATE prevents TOCTOU race conditions.
  */
 async function transferFare(
   rideId: string,
@@ -124,95 +27,28 @@ async function transferFare(
 
   console.log(`[transferFare] rideId=${rideId} fare=${fareCents} platform=${platformFeeCents} driverEarns=${driverEarnsCents}`)
 
-  // Fetch current balances
-  const { data: rider, error: riderFetchErr } = await supabaseAdmin
-    .from('users')
-    .select('wallet_balance')
-    .eq('id', riderId)
-    .single()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- RPC not in generated types until migration runs
+  const { data, error } = await (supabaseAdmin.rpc as any)('transfer_ride_fare', {
+    p_ride_id: rideId,
+    p_rider_id: riderId,
+    p_driver_id: driverId,
+    p_fare_cents: fareCents,
+    p_platform_fee_cents: platformFeeCents,
+  })
 
-  const { data: driver, error: driverFetchErr } = await supabaseAdmin
-    .from('users')
-    .select('wallet_balance')
-    .eq('id', driverId)
-    .single()
-
-  if (riderFetchErr || driverFetchErr || !rider || !driver) {
-    console.error(`[transferFare] Failed to fetch balances. riderErr=${riderFetchErr?.message} driverErr=${driverFetchErr?.message}`)
-    return { transferred: false, error: 'Could not fetch user balances' }
+  if (error) {
+    console.error(`[transferFare] RPC failed: ${(error as { message: string }).message}`)
+    return { transferred: false, error: (error as { message: string }).message }
   }
 
-  const riderBalance = rider.wallet_balance ?? 0
-  const driverBalance = driver.wallet_balance ?? 0
-  console.log(`[transferFare] riderBalance=${riderBalance} driverBalance=${driverBalance}`)
+  const result = data as unknown as { transferred: boolean; error?: string; rider_balance?: number; driver_balance?: number }
 
-  if (riderBalance < fareCents) {
-    console.warn(`[transferFare] Insufficient rider balance: ${riderBalance} < ${fareCents}`)
-    // Still transfer what we can — deduct the full fare regardless (rider owes the platform)
-    // For MVP, allow the ride to still complete
+  if (!result.transferred) {
+    console.error(`[transferFare] Transfer failed: ${result.error}`)
+    return { transferred: false, error: result.error }
   }
 
-  const newRiderBalance = riderBalance - fareCents
-  const newDriverBalance = driverBalance + driverEarnsCents
-
-  // Debit rider
-  const { data: debitData, error: debitErr } = await supabaseAdmin
-    .from('users')
-    .update({ wallet_balance: newRiderBalance })
-    .eq('id', riderId)
-    .select('wallet_balance')
-    .single()
-
-  if (debitErr) {
-    console.error(`[transferFare] Debit rider failed: ${debitErr.message}`)
-    return { transferred: false, error: `Failed to debit rider: ${debitErr.message}` }
-  }
-  console.log(`[transferFare] Rider debited: ${riderBalance} → ${debitData?.wallet_balance}`)
-
-  // Credit driver
-  const { data: creditData, error: creditErr } = await supabaseAdmin
-    .from('users')
-    .update({ wallet_balance: newDriverBalance })
-    .eq('id', driverId)
-    .select('wallet_balance')
-    .single()
-
-  if (creditErr) {
-    console.error(`[transferFare] Credit driver failed: ${creditErr.message}, rolling back rider`)
-    // Rollback rider debit
-    await supabaseAdmin
-      .from('users')
-      .update({ wallet_balance: riderBalance })
-      .eq('id', riderId)
-    return { transferred: false, error: `Failed to credit driver: ${creditErr.message}` }
-  }
-  console.log(`[transferFare] Driver credited: ${driverBalance} → ${creditData?.wallet_balance}`)
-
-  // Insert transaction records
-  const { error: txnErr } = await supabaseAdmin.from('transactions').insert([
-    {
-      user_id: riderId,
-      ride_id: rideId,
-      type: 'fare_debit',
-      amount_cents: -fareCents,
-      balance_after_cents: newRiderBalance,
-      description: `Ride fare charged`,
-    },
-    {
-      user_id: driverId,
-      ride_id: rideId,
-      type: 'fare_credit',
-      amount_cents: driverEarnsCents,
-      balance_after_cents: newDriverBalance,
-      description: `Ride fare earned`,
-    },
-  ])
-
-  if (txnErr) {
-    console.error(`[transferFare] Transaction insert failed: ${txnErr.message}`)
-  }
-
-  console.log(`[transferFare] SUCCESS rideId=${rideId} rider=${newRiderBalance} driver=${newDriverBalance}`)
+  console.log(`[transferFare] SUCCESS rideId=${rideId} rider=${result.rider_balance} driver=${result.driver_balance}`)
   return { transferred: true }
 }
 
@@ -313,6 +149,25 @@ ridesRouter.post(
       return
     }
 
+    // Guard: block duplicate ride requests from the same rider (BUG-036)
+    // Exclude scheduled rides for future dates — they shouldn't block on-demand requests
+    const today = new Date().toISOString().split('T')[0]
+    const { data: existingRide } = await supabaseAdmin
+      .from('rides')
+      .select('id')
+      .eq('rider_id', riderId)
+      .in('status', ['requested', 'accepted', 'coordinating', 'active'])
+      .or(`schedule_id.is.null,trip_date.is.null,trip_date.eq.${today}`)
+      .limit(1)
+      .maybeSingle()
+
+    if (existingRide) {
+      res.status(409).json({
+        error: { code: 'ACTIVE_RIDE_EXISTS', message: 'You already have an active ride. Cancel it first.' },
+      })
+      return
+    }
+
     const destinationGeo = (typeof body.destination_lat === 'number' && typeof body.destination_lng === 'number')
       ? { type: 'Point' as const, coordinates: [body.destination_lng, body.destination_lat] as [number, number] }
       : null
@@ -354,6 +209,14 @@ ridesRouter.post(
         .filter((id) => id !== riderId)
       stage = 2
     } else {
+      // Stage 1 fallback — notify all online drivers
+      const { data: onlineRows } = await supabaseAdmin
+        .from('driver_locations')
+        .select('user_id')
+        .eq('is_online', true)
+
+      const onlineIds = new Set((onlineRows ?? []).map((r: { user_id: string }) => r.user_id))
+
       const { data: allDrivers, error: allErr } = await supabaseAdmin
         .from('users')
         .select('id')
@@ -366,6 +229,7 @@ ridesRouter.post(
       }
 
       driverIds = (allDrivers ?? []).map((d: { id: string }) => d.id)
+        .filter((id: string) => onlineIds.has(id))
       stage = 1
     }
 
@@ -442,7 +306,7 @@ ridesRouter.post(
     }
 
     const realtimeResults = await Promise.all(
-      driverIds.map((driverId) => broadcastRideRequestWithTimeout(driverId, realtimePayload)),
+      driverIds.map((driverId) => realtimeBroadcast(`driver:${driverId}`, 'ride_request', realtimePayload)),
     )
     const realtimeSentCount = realtimeResults.filter(Boolean).length
 
@@ -493,10 +357,75 @@ ridesRouter.patch(
     }
 
     // Either rider or driver can cancel
+    console.log(`[rides/cancel:DEBUG] ENTRY rideId=${rideId} callerId=${userId} ride.status=${ride.status} ride.driver_id=${ride.driver_id} ride.rider_id=${ride.rider_id}`)
     if (ride.rider_id !== userId && ride.driver_id !== userId) {
-      res.status(403).json({
-        error: { code: 'FORBIDDEN', message: 'Only a ride participant can cancel' },
-      })
+      // ── Path C: driver cancels BEFORE select-driver was called (driver_id is null) ──
+      // Check if the caller has a pending/selected ride_offer for this ride
+      const { data: callerOffer } = await supabaseAdmin
+        .from('ride_offers')
+        .select('id, status')
+        .eq('ride_id', rideId)
+        .eq('driver_id', userId)
+        .in('status', ['pending', 'selected'])
+        .maybeSingle()
+
+      if (!callerOffer) {
+        console.log(`[rides/cancel:DEBUG] Path C REJECTED — no pending/selected offer for driver ${userId} on ride ${rideId}`)
+        res.status(403).json({
+          error: { code: 'FORBIDDEN', message: 'Only a ride participant can cancel' },
+        })
+        return
+      }
+
+      // Release this driver's offer
+      await supabaseAdmin
+        .from('ride_offers')
+        .update({ status: 'released' })
+        .eq('id', callerOffer.id)
+
+      // If this was the 'selected' offer, revert ride state and standby offers
+      if (callerOffer.status === 'selected') {
+        await supabaseAdmin
+          .from('rides')
+          .update({
+            status: 'requested',
+            driver_id: null,
+            driver_destination: null,
+            driver_destination_name: null,
+            driver_route_polyline: null,
+          })
+          .eq('id', rideId)
+
+        await supabaseAdmin
+          .from('ride_offers')
+          .update({ status: 'pending' })
+          .eq('ride_id', rideId)
+          .eq('status', 'standby')
+      }
+
+      // Fetch remaining pending offers for standby count
+      const { data: remainingOffers } = await supabaseAdmin
+        .from('ride_offers')
+        .select('driver_id')
+        .eq('ride_id', rideId)
+        .eq('status', 'pending')
+
+      const standbyCount = (remainingOffers ?? []).length
+
+      // Broadcast driver_cancelled to rider channels
+      const pathCPayload: Record<string, unknown> = {
+        type: 'driver_cancelled',
+        ride_id: rideId,
+        cancelled_driver_id: userId,
+        standby_count: standbyCount,
+      }
+      await Promise.all([
+        realtimeBroadcast(`waiting:${ride.rider_id}`, 'driver_cancelled', pathCPayload),
+        realtimeBroadcast(`multi-driver:${rideId}`, 'driver_cancelled', pathCPayload),
+      ])
+
+      console.log(`[rides/cancel] Path C: driver ${userId} cancelled offer for ride ${rideId} (pre-selection)`)
+      res.status(200).json({ ride_id: rideId, status: ride.status, driver_cancelled: true, standby_count: standbyCount })
       return
     }
 
@@ -512,8 +441,13 @@ ridesRouter.patch(
     const isDriverCancel = ride.driver_id === userId
     const cancellerRole = isDriverCancel ? 'driver' : 'rider'
 
-    // ── DRIVER cancels an accepted/coordinating ride → revert to requested + re-match ──
-    if (isDriverCancel && (originalStatus === 'accepted' || originalStatus === 'coordinating')) {
+    // ── DRIVER cancels an accepted/coordinating/requested ride → revert to requested + re-match ──
+    // Note: 'requested' is included because select-driver may have set driver_id
+    // before status transitions to 'accepted' (race condition), or the ride was
+    // left in an inconsistent state. A driver cancel should NEVER permanently
+    // cancel the ride — only the rider can do that.
+    if (isDriverCancel && (originalStatus === 'accepted' || originalStatus === 'coordinating' || originalStatus === 'requested')) {
+      console.log(`[rides/cancel:DEBUG] Path A: driver ${userId} cancelling ${originalStatus} ride ${rideId}`)
       const { error: revertErr } = await supabaseAdmin
         .from('rides')
         .update({
@@ -522,10 +456,20 @@ ridesRouter.patch(
           driver_destination: null,
           driver_destination_name: null,
           driver_route_polyline: null,
+          pickup_point: null,
+          pickup_confirmed: false,
+          dropoff_point: null,
+          dropoff_confirmed: false,
         })
         .eq('id', rideId)
 
       if (revertErr) { next(revertErr); return }
+
+      // Clean up all chat messages so the next driver starts with a clean slate
+      await supabaseAdmin
+        .from('messages')
+        .delete()
+        .eq('ride_id', rideId)
 
       // Mark the cancelled driver's offer as 'released'
       await supabaseAdmin
@@ -534,18 +478,36 @@ ridesRouter.patch(
         .eq('ride_id', rideId)
         .eq('driver_id', userId)
 
-      // Broadcast driver_cancelled (NOT ride_cancelled) to the rider
+      // Revert standby offers back to 'pending' — these drivers are back in the running
+      await supabaseAdmin
+        .from('ride_offers')
+        .update({ status: 'pending' })
+        .eq('ride_id', rideId)
+        .eq('status', 'standby')
+
+      // Fetch remaining pending offers (standby drivers that were reverted)
+      const { data: pendingOffers } = await supabaseAdmin
+        .from('ride_offers')
+        .select('driver_id')
+        .eq('ride_id', rideId)
+        .eq('status', 'pending')
+
+      const pendingDriverIds = (pendingOffers ?? []).map((o: { driver_id: string }) => o.driver_id)
+
+      // Broadcast driver_cancelled to the rider with standby info
       const driverCancelPayload: Record<string, unknown> = {
         type: 'driver_cancelled',
         ride_id: rideId,
         cancelled_driver_id: userId,
+        standby_count: pendingDriverIds.length,
       }
       await Promise.all([
-        broadcastWithTimeout(`rider:${ride.rider_id}`, 'driver_cancelled', driverCancelPayload),
-        broadcastWithTimeout(`waiting:${ride.rider_id}`, 'driver_cancelled', driverCancelPayload),
-        broadcastWithTimeout(`chat:${rideId}`, 'driver_cancelled', driverCancelPayload),
-        broadcastWithTimeout(`myrides:${ride.rider_id}`, 'ride_status_changed', { ride_id: rideId, status: 'requested' }),
-        broadcastWithTimeout(`myrides:${userId}`, 'ride_status_changed', { ride_id: rideId, status: 'requested' }),
+        realtimeBroadcast(`rider:${ride.rider_id}`, 'driver_cancelled', driverCancelPayload),
+        realtimeBroadcast(`waiting:${ride.rider_id}`, 'driver_cancelled', driverCancelPayload),
+        realtimeBroadcast(`chat:${rideId}`, 'driver_cancelled', driverCancelPayload),
+        realtimeBroadcast(`multi-driver:${rideId}`, 'driver_cancelled', driverCancelPayload),
+        realtimeBroadcast(`myrides:${ride.rider_id}`, 'ride_status_changed', { ride_id: rideId, status: 'requested' }),
+        realtimeBroadcast(`myrides:${userId}`, 'ride_status_changed', { ride_id: rideId, status: 'requested' }),
       ])
 
       // Send FCM push to the rider
@@ -557,78 +519,149 @@ ridesRouter.patch(
       if (riderTokenList.length > 0) {
         await sendFcmPush(riderTokenList, {
           title: 'Driver cancelled',
-          body: 'Finding you a new driver…',
+          body: pendingDriverIds.length > 0
+            ? `Finding you a new driver… ${pendingDriverIds.length} driver${pendingDriverIds.length > 1 ? 's' : ''} still available.`
+            : 'Finding you a new driver…',
           data: { type: 'driver_cancelled', ride_id: rideId },
         })
       }
 
-      // Re-broadcast ride_request to all drivers except the cancelled one
-      const { data: allDrivers } = await supabaseAdmin
-        .from('users')
-        .select('id')
-        .eq('is_driver', true)
-
-      const driverIds = (allDrivers ?? [])
-        .map((d: { id: string }) => d.id)
-        .filter((id: string) => id !== userId)
-
-      if (driverIds.length > 0) {
+      if (pendingDriverIds.length > 0) {
+        // ── Standby drivers exist → notify only them (they're already aware of the ride) ──
         const { data: tokenRows } = await supabaseAdmin
           .from('push_tokens')
           .select('token')
-          .in('user_id', driverIds)
+          .in('user_id', pendingDriverIds)
 
         const tokens = (tokenRows ?? []).map((t: { token: string }) => t.token)
         if (tokens.length > 0) {
           await sendFcmPush(tokens, {
-            title: 'New ride request nearby',
-            body: 'A rider needs a lift — open HICH to view.',
-            data: { type: 'ride_request', ride_id: rideId },
+            title: 'Rider needs a new driver',
+            body: 'The selected driver cancelled — your offer is still active!',
+            data: { type: 'ride_request_renewed', ride_id: rideId },
           })
         }
-      }
 
-      // Realtime re-broadcast ride_request to in-app drivers
-      const { data: fullRide } = await supabaseAdmin
-        .from('rides')
-        .select('id, origin, destination, destination_name, rider_id')
-        .eq('id', rideId)
-        .single()
-
-      if (fullRide) {
-        const origin = fullRide.origin as unknown as { coordinates: number[] }
-        const dest = fullRide.destination as unknown as { coordinates: number[] } | null
-
-        const { data: riderProfile } = await supabaseAdmin
-          .from('users')
-          .select('full_name')
-          .eq('id', fullRide.rider_id)
+        // Fetch full ride details so renewed notification has all fields needed by RideRequestNotification
+        const { data: fullRideForStandby } = await supabaseAdmin
+          .from('rides')
+          .select('id, origin, destination, destination_name, rider_id')
+          .eq('id', rideId)
           .single()
 
-        const realtimePayload = {
-          type: 'ride_request' as const,
-          ride_id: rideId,
-          rider_name: riderProfile?.full_name ?? 'A rider',
-          destination: fullRide.destination_name ?? 'Nearby destination',
-          distance_km: '–',
-          estimated_earnings_cents: '0',
-          origin_lat: String(origin.coordinates[1]),
-          origin_lng: String(origin.coordinates[0]),
-          destination_lat: dest ? String(dest.coordinates[1]) : '',
-          destination_lng: dest ? String(dest.coordinates[0]) : '',
+        let renewedPayload: Record<string, unknown> = {
+          type: 'ride_request_renewed', ride_id: rideId,
         }
 
-        await Promise.all(
-          driverIds.map((driverId) => broadcastRideRequestWithTimeout(driverId, realtimePayload)),
-        )
+        if (fullRideForStandby) {
+          const origin = fullRideForStandby.origin as unknown as { coordinates: number[] }
+          const dest = fullRideForStandby.destination as unknown as { coordinates: number[] } | null
+
+          const { data: riderProfile } = await supabaseAdmin
+            .from('users')
+            .select('full_name')
+            .eq('id', fullRideForStandby.rider_id)
+            .single()
+
+          renewedPayload = {
+            type: 'ride_request_renewed',
+            ride_id: rideId,
+            rider_name: riderProfile?.full_name ?? 'A rider',
+            destination: fullRideForStandby.destination_name ?? 'Nearby destination',
+            distance_km: '–',
+            estimated_earnings_cents: '0',
+            origin_lat: String(origin.coordinates[1]),
+            origin_lng: String(origin.coordinates[0]),
+            destination_lat: dest ? String(dest.coordinates[1]) : '',
+            destination_lng: dest ? String(dest.coordinates[0]) : '',
+          }
+        }
+
+        // Realtime: notify standby drivers their offer is active again (with full ride details)
+        for (const driverId of pendingDriverIds) {
+          void realtimeBroadcast(`driver:${driverId}`, 'ride_request_renewed', renewedPayload)
+        }
+      } else {
+        // ── No standby drivers → re-broadcast to all drivers (existing behavior) ──
+        const { data: allOnlineDrivers } = await supabaseAdmin
+          .from('driver_locations')
+          .select('user_id')
+          .eq('is_online', true)
+
+        const onlineIds = (allOnlineDrivers ?? []).map((d: { user_id: string }) => d.user_id)
+
+        const { data: allDrivers } = await supabaseAdmin
+          .from('users')
+          .select('id')
+          .eq('is_driver', true)
+
+        const driverIds = (allDrivers ?? [])
+          .map((d: { id: string }) => d.id)
+          .filter((id: string) => id !== userId && id !== ride.rider_id && onlineIds.includes(id))
+
+        if (driverIds.length > 0) {
+          const { data: tokenRows } = await supabaseAdmin
+            .from('push_tokens')
+            .select('token')
+            .in('user_id', driverIds)
+
+          const tokens = (tokenRows ?? []).map((t: { token: string }) => t.token)
+          if (tokens.length > 0) {
+            await sendFcmPush(tokens, {
+              title: 'New ride request nearby',
+              body: 'A rider needs a lift — open HICH to view.',
+              data: { type: 'ride_request', ride_id: rideId },
+            })
+          }
+        }
+
+        // Realtime re-broadcast ride_request to in-app drivers
+        const { data: fullRide } = await supabaseAdmin
+          .from('rides')
+          .select('id, origin, destination, destination_name, rider_id')
+          .eq('id', rideId)
+          .single()
+
+        if (fullRide) {
+          const origin = fullRide.origin as unknown as { coordinates: number[] }
+          const dest = fullRide.destination as unknown as { coordinates: number[] } | null
+
+          const { data: riderProfile } = await supabaseAdmin
+            .from('users')
+            .select('full_name')
+            .eq('id', fullRide.rider_id)
+            .single()
+
+          const realtimePayload = {
+            type: 'ride_request' as const,
+            ride_id: rideId,
+            rider_name: riderProfile?.full_name ?? 'A rider',
+            destination: fullRide.destination_name ?? 'Nearby destination',
+            distance_km: '–',
+            estimated_earnings_cents: '0',
+            origin_lat: String(origin.coordinates[1]),
+            origin_lng: String(origin.coordinates[0]),
+            destination_lat: dest ? String(dest.coordinates[1]) : '',
+            destination_lng: dest ? String(dest.coordinates[0]) : '',
+          }
+
+          const broadcastDriverIds = (allDrivers ?? [])
+            .map((d: { id: string }) => d.id)
+            .filter((id: string) => id !== userId && id !== ride.rider_id)
+
+          await Promise.all(
+            broadcastDriverIds.map((driverId) => realtimeBroadcast(`driver:${driverId}`, 'ride_request', realtimePayload)),
+          )
+        }
       }
 
-      console.log(`[rides/cancel] rideId=${rideId} driver-cancelled by ${userId}, reverted to requested`)
-      res.status(200).json({ ride_id: rideId, status: 'requested', driver_cancelled: true })
+      console.log(`[rides/cancel] rideId=${rideId} driver-cancelled by ${userId}, reverted to requested, standby_count=${pendingDriverIds.length}`)
+      res.status(200).json({ ride_id: rideId, status: 'requested', driver_cancelled: true, standby_count: pendingDriverIds.length })
       return
     }
 
     // ── Rider cancel or driver cancel of a 'requested' ride → permanent cancel ──
+    console.log(`[rides/cancel:DEBUG] Path B: permanent cancel by ${cancellerRole} ${userId} for ride ${rideId} (was ${originalStatus})`)
     const { error: updateErr } = await supabaseAdmin
       .from('rides')
       .update({ status: 'cancelled' })
@@ -638,6 +671,13 @@ ridesRouter.patch(
       next(updateErr)
       return
     }
+
+    // Release any pending ride_offers for this ride
+    await supabaseAdmin
+      .from('ride_offers')
+      .update({ status: 'released' })
+      .eq('ride_id', rideId)
+      .in('status', ['pending', 'selected'])
 
     // Notify the other party
     const otherUserId = userId === ride.rider_id ? ride.driver_id : ride.rider_id
@@ -649,10 +689,10 @@ ridesRouter.patch(
         : `rider:${otherUserId}`
 
       await Promise.all([
-        broadcastWithTimeout(channelName, 'ride_cancelled', {
+        realtimeBroadcast(channelName, 'ride_cancelled', {
           type: 'ride_cancelled', ride_id: rideId, cancelled_by: cancellerRole,
         }),
-        broadcastWithTimeout(`myrides:${otherUserId}`, 'ride_status_changed', {
+        realtimeBroadcast(`myrides:${otherUserId}`, 'ride_status_changed', {
           ride_id: rideId, status: 'cancelled',
         }),
       ])
@@ -674,12 +714,12 @@ ridesRouter.patch(
     }
 
     // Also refresh the canceller's own MyRides
-    await broadcastWithTimeout(`myrides:${userId}`, 'ride_status_changed', {
+    await realtimeBroadcast(`myrides:${userId}`, 'ride_status_changed', {
       ride_id: rideId, status: 'cancelled',
     })
 
     // Broadcast to the chat channel so MessagingWindow updates if open
-    await broadcastWithTimeout(`chat:${rideId}`, 'ride_cancelled', {
+    await realtimeBroadcast(`chat:${rideId}`, 'ride_cancelled', {
       type: 'ride_cancelled', ride_id: rideId, cancelled_by: cancellerRole,
     })
 
@@ -692,7 +732,7 @@ ridesRouter.patch(
         .neq('id', userId)
 
       for (const driver of allDrivers ?? []) {
-        void broadcastWithTimeout(`driver:${driver.id}`, 'ride_cancelled', {
+        void realtimeBroadcast(`driver:${driver.id}`, 'ride_cancelled', {
           type: 'ride_cancelled', ride_id: rideId,
         })
       }
@@ -700,6 +740,41 @@ ridesRouter.patch(
 
     console.log(`[rides/cancel] rideId=${rideId} cancelled by ${cancellerRole} (${userId})`)
     res.status(200).json({ ride_id: rideId, status: 'cancelled' })
+
+    // Clean up stale ride_request notifications for this ride (fire-and-forget)
+    void supabaseAdmin
+      .from('notifications')
+      .update({ is_read: true })
+      .eq('type', 'ride_request')
+      .eq('is_read', false)
+      .contains('data', { ride_id: rideId })
+      .then(({ error: cleanupErr }) => {
+        if (cleanupErr) console.warn(`[rides/cancel] notification cleanup error: ${cleanupErr.message}`)
+      })
+  },
+)
+
+/**
+ * GET /api/rides/:id/status — lightweight status check for notification staleness.
+ */
+ridesRouter.get(
+  '/:id/status',
+  validateJwt,
+  async (req: Request, res: Response, _next: NextFunction) => {
+    const rideId = req.params['id'] as string
+
+    const { data, error } = await supabaseAdmin
+      .from('rides')
+      .select('status')
+      .eq('id', rideId)
+      .single()
+
+    if (error ?? !data) {
+      res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+      return
+    }
+
+    res.status(200).json({ ride_id: rideId, status: data.status })
   },
 )
 
@@ -720,9 +795,23 @@ ridesRouter.patch(
       return
     }
 
+    // Verify caller is a driver (BUG-038)
+    const { data: driverProfile } = await supabaseAdmin
+      .from('users')
+      .select('is_driver')
+      .eq('id', driverId)
+      .single()
+
+    if (!driverProfile?.is_driver) {
+      res.status(403).json({
+        error: { code: 'NOT_A_DRIVER', message: 'Only drivers can accept rides' },
+      })
+      return
+    }
+
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, status')
+      .select('id, rider_id, driver_id, status')
       .eq('id', rideId)
       .single()
 
@@ -733,7 +822,42 @@ ridesRouter.patch(
       return
     }
 
-    if (ride.status !== 'requested') {
+    // Prevent self-accept (BUG-038)
+    if (ride.rider_id === driverId) {
+      res.status(409).json({
+        error: { code: 'SELF_ACCEPT', message: 'Cannot accept your own ride' },
+      })
+      return
+    }
+
+    // If this driver is already the ride's selected driver (e.g. auto-selected
+    // by WaitingRoom polling before the driver tapped Accept), just return success.
+    // Still save their destination if provided so DropoffSelection has it.
+    if (ride.driver_id === driverId) {
+      const earlyBody = req.body as Record<string, unknown>
+      const earlyHasDest = typeof earlyBody['driver_destination_lat'] === 'number' && typeof earlyBody['driver_destination_lng'] === 'number'
+      if (earlyHasDest) {
+        const destGeo: GeoPoint = {
+          type: 'Point',
+          coordinates: [Number(earlyBody['driver_destination_lng']), Number(earlyBody['driver_destination_lat'])],
+        }
+        await supabaseAdmin
+          .from('ride_offers')
+          .update({
+            driver_destination: destGeo,
+            driver_destination_name: typeof earlyBody['driver_destination_name'] === 'string' ? earlyBody['driver_destination_name'] : null,
+            driver_route_polyline: typeof earlyBody['driver_route_polyline'] === 'string' ? earlyBody['driver_route_polyline'] : null,
+            overlap_pct: typeof earlyBody['overlap_pct'] === 'number' ? earlyBody['overlap_pct'] : null,
+          })
+          .eq('ride_id', rideId)
+          .eq('driver_id', driverId)
+      }
+      console.log(`[rides/accept] rideId=${rideId} driver=${driverId} already selected, returning success`)
+      res.status(200).json({ ride_id: rideId, status: ride.status, offer_status: 'selected' })
+      return
+    }
+
+    if (ride.status !== 'requested' && ride.status !== 'accepted' && ride.status !== 'coordinating') {
       res.status(409).json({
         error: { code: 'RIDE_NOT_AVAILABLE', message: `Ride status is '${ride.status}', cannot accept` },
       })
@@ -749,16 +873,89 @@ ridesRouter.patch(
       .limit(1)
       .single()
 
-    // Insert offer into ride_offers (upsert to handle duplicate accepts)
+    // Insert offer into ride_offers (upsert to handle duplicate accepts).
+    // If a driver has already been selected (status 'accepted' or 'coordinating'),
+    // join as 'standby' so they can take over if the selected driver cancels.
+    //
+    // Race-condition guard: WaitingRoom may have auto-selected this driver via
+    // select-driver between our initial ride fetch and now. Check the existing
+    // offer before deciding on standby.
+    let offerStatus: 'pending' | 'standby' = (ride.status === 'accepted' || ride.status === 'coordinating') ? 'standby' : 'pending'
+
+    console.log(`[rides/accept:DEBUG] rideId=${rideId} driver=${driverId} ride.status=${ride.status} ride.driver_id=${ride.driver_id} initial offerStatus=${offerStatus}`)
+
+    if (offerStatus === 'standby') {
+      // Fetch this driver's existing offer to resolve race conditions
+      const { data: existingOffer } = await supabaseAdmin
+        .from('ride_offers')
+        .select('status')
+        .eq('ride_id', rideId)
+        .eq('driver_id', driverId)
+        .single()
+
+      console.log(`[rides/accept:DEBUG] existingOffer=${JSON.stringify(existingOffer)}`)
+
+      if (existingOffer?.status === 'selected') {
+        // select-driver already chose this driver — return success
+        console.log(`[rides/accept] rideId=${rideId} driver=${driverId} already selected (offer), returning success`)
+        res.status(200).json({ ride_id: rideId, status: ride.status, offer_status: 'selected' })
+        return
+      }
+
+      if (existingOffer?.status === 'pending') {
+        // Driver was reverted from standby by a cancel (their offer is already
+        // 'pending'). Don't put them back on standby — keep as pending so the
+        // normal accept flow proceeds and WaitingRoom can select them.
+        console.log(`[rides/accept] rideId=${rideId} driver=${driverId} has existing pending offer, keeping as pending (not standby)`)
+        offerStatus = 'pending'
+      }
+
+      // If still standby (new driver joining for the first time while ride is
+      // accepted), double-check the ride hasn't changed since our initial fetch
+      if (offerStatus === 'standby') {
+        const { data: freshRide } = await supabaseAdmin
+          .from('rides')
+          .select('driver_id, status')
+          .eq('id', rideId)
+          .single()
+
+        console.log(`[rides/accept:DEBUG] freshRide=${JSON.stringify(freshRide)}`)
+
+        if (freshRide?.driver_id === driverId) {
+          console.log(`[rides/accept] rideId=${rideId} driver=${driverId} already selected (ride re-fetch), returning success`)
+          res.status(200).json({ ride_id: rideId, status: freshRide.status, offer_status: 'selected' })
+          return
+        }
+
+        if (freshRide && freshRide.status === 'requested') {
+          offerStatus = 'pending'
+        }
+      }
+    }
+
+    console.log(`[rides/accept:DEBUG] final offerStatus=${offerStatus}`)
+
     const { error: offerErr } = await supabaseAdmin
       .from('ride_offers')
       .upsert(
-        { ride_id: rideId, driver_id: driverId, vehicle_id: vehicle?.id ?? null, status: 'pending' },
+        { ride_id: rideId, driver_id: driverId, vehicle_id: vehicle?.id ?? null, status: offerStatus },
         { onConflict: 'ride_id,driver_id' },
       )
 
     if (offerErr) {
       next(offerErr)
+      return
+    }
+
+    // If driver joined as standby (ride already has a selected driver),
+    // notify them immediately and skip the rider-facing broadcast.
+    if (offerStatus === 'standby') {
+      void realtimeBroadcast(`driver:${driverId}`, 'ride_standby', {
+        type: 'ride_standby',
+        ride_id: rideId,
+      })
+      console.log(`[rides/accept] rideId=${rideId} driver=${driverId} joined as standby`)
+      res.status(200).json({ ride_id: rideId, status: ride.status, offer_status: 'standby' })
       return
     }
 
@@ -811,7 +1008,7 @@ ridesRouter.patch(
     }
     const realtimeTargets = [`rider:${ride.rider_id}`, `waiting:${ride.rider_id}`]
     await Promise.all(
-      realtimeTargets.map((ch) => broadcastWithTimeout(ch, 'ride_accepted', acceptPayload)),
+      realtimeTargets.map((ch) => realtimeBroadcast(ch, 'ride_accepted', acceptPayload)),
     )
 
     const { data: riderTokens } = await supabaseAdmin
@@ -829,7 +1026,7 @@ ridesRouter.patch(
     }
 
     console.log(`[rides/accept] rideId=${rideId} driver=${driverId} offerCount=${offerCount}`)
-    res.status(200).json({ ride_id: rideId, status: 'requested', offer_count: offerCount })
+    res.status(200).json({ ride_id: rideId, status: 'requested', offer_status: 'pending', offer_count: offerCount })
   },
 )
 
@@ -965,7 +1162,14 @@ ridesRouter.patch(
       return
     }
 
-    // Re-notify drivers (Stage 1 fallback — notify all)
+    // Re-notify online drivers (Stage 1 fallback — notify all online)
+    const { data: onlineRows } = await supabaseAdmin
+      .from('driver_locations')
+      .select('user_id')
+      .eq('is_online', true)
+
+    const onlineIds = new Set((onlineRows ?? []).map((r: { user_id: string }) => r.user_id))
+
     const { data: allDrivers } = await supabaseAdmin
       .from('users')
       .select('id')
@@ -973,7 +1177,7 @@ ridesRouter.patch(
 
     const driverIds = (allDrivers ?? [])
       .map((d: { id: string }) => d.id)
-      .filter((id: string) => id !== ride.driver_id) // exclude the declined driver
+      .filter((id: string) => id !== ride.driver_id && id !== ride.rider_id && onlineIds.has(id))
 
     if (driverIds.length > 0) {
       const { data: tokenRows } = await supabaseAdmin
@@ -1039,16 +1243,36 @@ ridesRouter.patch(
       return
     }
 
-    if (ride.status !== 'requested' && ride.status !== 'accepted') {
+    if (ride.status !== 'requested' && ride.status !== 'accepted' && ride.status !== 'coordinating') {
       res.status(409).json({
         error: { code: 'INVALID_STATUS', message: `Ride status is '${ride.status}', cannot select driver` },
       })
       return
     }
 
+    // Verify the selected driver's offer is still valid (pending)
+    // Guards against race condition: if driver already cancelled (offer released),
+    // we should not assign them to the ride.
+    const { data: selectedOffer } = await supabaseAdmin
+      .from('ride_offers')
+      .select('id, status')
+      .eq('ride_id', rideId)
+      .eq('driver_id', selectedDriverId)
+      .single()
+
+    if (!selectedOffer || selectedOffer.status === 'released') {
+      console.log(`[rides/select-driver] Rejected: driver ${selectedDriverId} offer is ${selectedOffer?.status ?? 'missing'} for ride ${rideId}`)
+      res.status(409).json({
+        error: { code: 'OFFER_NOT_AVAILABLE', message: 'This driver is no longer available' },
+      })
+      return
+    }
+
+    // Preserve 'coordinating' if already there (dropoff-done may have fired first)
+    const newStatus = ride.status === 'coordinating' ? 'coordinating' : 'accepted'
     const { error: updateErr } = await supabaseAdmin
       .from('rides')
-      .update({ status: 'accepted', driver_id: selectedDriverId })
+      .update({ status: newStatus, driver_id: selectedDriverId })
       .eq('id', rideId)
 
     if (updateErr) {
@@ -1056,7 +1280,7 @@ ridesRouter.patch(
       return
     }
 
-    // Mark selected offer as 'selected', release all others
+    // Mark selected offer as 'selected', put all others on 'standby'
     await supabaseAdmin
       .from('ride_offers')
       .update({ status: 'selected' })
@@ -1065,9 +1289,19 @@ ridesRouter.patch(
 
     await supabaseAdmin
       .from('ride_offers')
-      .update({ status: 'released' })
+      .update({ status: 'standby' })
       .eq('ride_id', rideId)
       .neq('driver_id', selectedDriverId)
+      .in('status', ['pending'])
+
+    // Fetch standby driver IDs for targeted notifications
+    const { data: standbyOffers } = await supabaseAdmin
+      .from('ride_offers')
+      .select('driver_id')
+      .eq('ride_id', rideId)
+      .eq('status', 'standby')
+
+    const standbyDriverIds = (standbyOffers ?? []).map((o: { driver_id: string }) => o.driver_id)
 
     // Notify the selected driver
     const { data: selectedTokens } = await supabaseAdmin
@@ -1084,7 +1318,37 @@ ridesRouter.patch(
       })
     }
 
-    // Send release notification to all other online drivers
+    // Notify standby drivers with a polite message (not ride_cancelled)
+    if (standbyDriverIds.length > 0) {
+      for (const driverId of standbyDriverIds) {
+        void realtimeBroadcast(`driver:${driverId}`, 'ride_standby', {
+          type: 'ride_standby', ride_id: rideId,
+        })
+      }
+
+      // FCM push to standby drivers (fire-and-forget)
+      void (async () => {
+        try {
+          const { data: standbyTokenRows } = await supabaseAdmin
+            .from('push_tokens')
+            .select('token')
+            .in('user_id', standbyDriverIds)
+          const standbyTokens = (standbyTokenRows ?? []).map((t: { token: string }) => t.token)
+          if (standbyTokens.length > 0) {
+            await sendFcmPush(standbyTokens, {
+              title: 'Rider coordinating with another driver',
+              body: "We'll notify you if they cancel.",
+              data: { type: 'ride_standby', ride_id: rideId },
+            })
+          }
+        } catch {
+          // non-fatal
+        }
+      })()
+    }
+
+    // Dismiss notifications for drivers who didn't have offers (were just notified)
+    // Only broadcast ride_cancelled to non-standby, non-selected drivers
     const { data: allDrivers } = await supabaseAdmin
       .from('users')
       .select('id')
@@ -1092,22 +1356,11 @@ ridesRouter.patch(
       .neq('id', selectedDriverId)
       .neq('id', userId)
 
-    for (const driver of allDrivers ?? []) {
-      const channel = supabaseAdmin.channel(`driver:${driver.id}`)
-      await new Promise<void>((resolve) => {
-        channel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            channel.send({
-              type: 'broadcast',
-              event: 'ride_cancelled',
-              payload: { type: 'ride_cancelled', ride_id: rideId },
-            }).then(() => {
-              supabaseAdmin.removeChannel(channel)
-              resolve()
-            })
-          }
-        })
-      })
+    const nonStandbyDrivers = (allDrivers ?? []).filter(
+      (d: { id: string }) => !standbyDriverIds.includes(d.id),
+    )
+    for (const driver of nonStandbyDrivers) {
+      void realtimeBroadcast(`driver:${driver.id}`, 'ride_cancelled', { type: 'ride_cancelled', ride_id: rideId })
     }
 
     // ── Copy driver destination from offer to ride (synchronous) ──────────────
@@ -1121,6 +1374,18 @@ ridesRouter.patch(
       .single()
 
     const driverHasDestination = !!offerRow?.driver_destination
+
+    // Notify the selected driver via Realtime so they can navigate to DropoffSelection
+    // without needing to call /accept again (avoids the race with WaitingRoom auto-select).
+    const selectionGeo = offerRow?.driver_destination as { coordinates: [number, number] } | null | undefined
+    void realtimeBroadcast(`driver:${selectedDriverId}`, 'driver_selected', {
+      type: 'driver_selected',
+      ride_id: rideId,
+      driver_has_destination: driverHasDestination,
+      driver_dest_lat: selectionGeo ? selectionGeo.coordinates[1] : null,
+      driver_dest_lng: selectionGeo ? selectionGeo.coordinates[0] : null,
+      driver_dest_name: offerRow?.driver_destination_name ?? null,
+    })
 
     if (driverHasDestination) {
       await supabaseAdmin
@@ -1143,6 +1408,17 @@ ridesRouter.patch(
 
     console.log(`[rides/select-driver] rideId=${rideId} selected driver=${selectedDriverId}`)
     res.status(200).json({ ride_id: rideId, status: 'accepted', driver_id: selectedDriverId, driver_has_destination: driverHasDestination, driver_name: driverUser?.full_name ?? null })
+
+    // Clean up stale ride_request notifications for this ride (fire-and-forget)
+    void supabaseAdmin
+      .from('notifications')
+      .update({ is_read: true })
+      .eq('type', 'ride_request')
+      .eq('is_read', false)
+      .contains('data', { ride_id: rideId })
+      .then(({ error: cleanupErr }) => {
+        if (cleanupErr) console.warn(`[rides/select-driver] notification cleanup error: ${cleanupErr.message}`)
+      })
 
     // ── Phase 2: Auto-detect driver destination from routines (fire-and-forget) ──
     // Only runs if the driver did NOT provide a destination during accept.
@@ -1226,7 +1502,7 @@ ridesRouter.patch(
 
         // Broadcast suggestions to both driver and rider
         if (suggestions.length > 0) {
-          void broadcastWithTimeout(`ride:${rideId}`, 'transit_suggestions', {
+          void realtimeBroadcast(`ride:${rideId}`, 'transit_suggestions', {
             ride_id: rideId,
             suggestions,
             driver_destination_name: matchedRoutine.dest_address ?? null,
@@ -1429,31 +1705,7 @@ ridesRouter.patch(
 
     // Broadcast the suggestion message to the ride chat channel
     if (suggestionMsg) {
-      const chatChannel = supabaseAdmin.channel(`chat:${rideId}`)
-      const broadcastPromise = new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-          resolve()
-        }, 3000)
-        chatChannel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            chatChannel.send({
-              type: 'broadcast',
-              event: 'new_message',
-              payload: suggestionMsg,
-            }).then(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-              resolve()
-            }).catch(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-              resolve()
-            })
-          }
-        })
-      })
-      broadcastPromise.catch(() => {})
+      void realtimeBroadcast(`chat:${rideId}`, 'new_message', suggestionMsg as Record<string, unknown>)
     }
 
     // Determine who to notify — the other party
@@ -1464,23 +1716,7 @@ ridesRouter.patch(
     // Broadcast pickup_set to the other party
     if (otherId) {
       const pickupPayload = { type: 'pickup_set', ride_id: rideId, lat, lng, note: note ?? null, proposed_by: proposerId }
-      for (const chName of [`rider:${otherId}`, `rider-pickup:${otherId}`]) {
-        const notifyChannel = supabaseAdmin.channel(chName)
-        await new Promise<void>((resolve) => {
-          notifyChannel.subscribe((status) => {
-            if (status === 'SUBSCRIBED') {
-              notifyChannel.send({
-                type: 'broadcast',
-                event: 'pickup_set',
-                payload: pickupPayload,
-              }).then(() => {
-                supabaseAdmin.removeChannel(notifyChannel)
-                resolve()
-              })
-            }
-          })
-        })
-      }
+      await realtimeBroadcastMany([`rider:${otherId}`, `rider-pickup:${otherId}`], 'pickup_set', pickupPayload)
 
       // Send FCM push to the other party
       const { data: otherTokens } = await supabaseAdmin
@@ -1587,31 +1823,7 @@ ridesRouter.patch(
 
     // Broadcast the suggestion to chat
     if (suggestionMsg) {
-      const chatChannel = supabaseAdmin.channel(`chat:${rideId}`)
-      const broadcastPromise = new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-          resolve()
-        }, 3000)
-        chatChannel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            chatChannel.send({
-              type: 'broadcast',
-              event: 'new_message',
-              payload: suggestionMsg,
-            }).then(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-              resolve()
-            }).catch(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-              resolve()
-            })
-          }
-        })
-      })
-      broadcastPromise.catch(() => {})
+      void realtimeBroadcast(`chat:${rideId}`, 'new_message', suggestionMsg as Record<string, unknown>)
     }
 
     // Notify the other party
@@ -1697,53 +1909,13 @@ ridesRouter.post(
 
     // Broadcast acceptance to chat
     if (acceptMsg) {
-      const chatChannel = supabaseAdmin.channel(`chat:${rideId}`)
-      const broadcastPromise = new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-          resolve()
-        }, 3000)
-        chatChannel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            chatChannel.send({
-              type: 'broadcast',
-              event: 'new_message',
-              payload: acceptMsg,
-            }).then(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-              resolve()
-            }).catch(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-              resolve()
-            })
-          }
-        })
-      })
-      broadcastPromise.catch(() => {})
+      void realtimeBroadcast(`chat:${rideId}`, 'new_message', acceptMsg as Record<string, unknown>)
     }
 
     // Broadcast details_accepted to driver — both rider:{id} and msg-driver:{id}
     if (ride.driver_id) {
       const detailsPayload = { type: 'details_accepted', ride_id: rideId }
-      for (const chName of [`rider:${ride.driver_id}`, `msg-driver:${ride.driver_id}`]) {
-        const driverChannel = supabaseAdmin.channel(chName)
-        await new Promise<void>((resolve) => {
-          driverChannel.subscribe((status) => {
-            if (status === 'SUBSCRIBED') {
-              driverChannel.send({
-                type: 'broadcast',
-                event: 'details_accepted',
-                payload: detailsPayload,
-              }).then(() => {
-                supabaseAdmin.removeChannel(driverChannel)
-                resolve()
-              })
-            }
-          })
-        })
-      }
+      await realtimeBroadcastMany([`rider:${ride.driver_id}`, `msg-driver:${ride.driver_id}`], 'details_accepted', detailsPayload)
 
       // FCM push to driver
       const { data: driverTokens } = await supabaseAdmin
@@ -1862,31 +2034,7 @@ ridesRouter.post(
 
     // Broadcast acceptance to chat
     if (acceptMsg) {
-      const chatChannel = supabaseAdmin.channel(`chat:${rideId}`)
-      const broadcastPromise = new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-          resolve()
-        }, 3000)
-        chatChannel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            chatChannel.send({
-              type: 'broadcast',
-              event: 'new_message',
-              payload: acceptMsg,
-            }).then(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-              resolve()
-            }).catch(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-              resolve()
-            })
-          }
-        })
-      })
-      broadcastPromise.catch(() => {})
+      void realtimeBroadcast(`chat:${rideId}`, 'new_message', acceptMsg as Record<string, unknown>)
     }
 
     // If both locations are now confirmed, broadcast to both parties
@@ -1895,39 +2043,15 @@ ridesRouter.post(
       const confirmPayload = { type: 'locations_confirmed', ride_id: rideId, is_scheduled: !!ride.schedule_id }
 
       // Broadcast to both parties' channels
+      const confirmChannels: string[] = []
       for (const targetId of [userId, otherId]) {
         if (!targetId) continue
-        for (const chName of [`rider:${targetId}`, `msg-driver:${targetId}`]) {
-          const ch = supabaseAdmin.channel(chName)
-          const timer = setTimeout(() => { supabaseAdmin.removeChannel(ch).catch(() => {}) }, 3000)
-          ch.subscribe((s) => {
-            if (s === 'SUBSCRIBED') {
-              ch.send({ type: 'broadcast', event: 'locations_confirmed', payload: confirmPayload }).then(() => {
-                clearTimeout(timer)
-                supabaseAdmin.removeChannel(ch).catch(() => {})
-              }).catch(() => {
-                clearTimeout(timer)
-                supabaseAdmin.removeChannel(ch).catch(() => {})
-              })
-            }
-          })
-        }
+        confirmChannels.push(`rider:${targetId}`, `msg-driver:${targetId}`)
       }
+      await realtimeBroadcastMany(confirmChannels, 'locations_confirmed', confirmPayload)
 
       // Also broadcast to chat channel
-      const chatCh2 = supabaseAdmin.channel(`chat-confirm:${rideId}`)
-      const timer2 = setTimeout(() => { supabaseAdmin.removeChannel(chatCh2).catch(() => {}) }, 3000)
-      chatCh2.subscribe((s) => {
-        if (s === 'SUBSCRIBED') {
-          chatCh2.send({ type: 'broadcast', event: 'locations_confirmed', payload: confirmPayload }).then(() => {
-            clearTimeout(timer2)
-            supabaseAdmin.removeChannel(chatCh2).catch(() => {})
-          }).catch(() => {
-            clearTimeout(timer2)
-            supabaseAdmin.removeChannel(chatCh2).catch(() => {})
-          })
-        }
-      })
+      void realtimeBroadcast(`chat-confirm:${rideId}`, 'locations_confirmed', confirmPayload)
 
       // FCM push to the other party
       if (otherId) {
@@ -2011,21 +2135,7 @@ ridesRouter.post(
 
     // Broadcast to driver via Realtime
     if (ride.driver_id) {
-      const driverChannel = supabaseAdmin.channel(`rider:${ride.driver_id}`)
-      await new Promise<void>((resolve) => {
-        driverChannel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            driverChannel.send({
-              type: 'broadcast',
-              event: 'rider_signal',
-              payload: { type: 'rider_signal', ride_id: rideId },
-            }).then(() => {
-              supabaseAdmin.removeChannel(driverChannel)
-              resolve()
-            })
-          }
-        })
-      })
+      await realtimeBroadcast(`rider:${ride.driver_id}`, 'rider_signal', { type: 'rider_signal', ride_id: rideId })
 
       // Send FCM push to driver
       const { data: driverTokens } = await supabaseAdmin
@@ -2164,29 +2274,33 @@ ridesRouter.post(
       return
     }
 
+    // Release standby offers now that the ride has started
+    const { data: standbyOffers } = await supabaseAdmin
+      .from('ride_offers')
+      .select('driver_id')
+      .eq('ride_id', rideId)
+      .eq('status', 'standby')
+
+    const standbyDriverIds = (standbyOffers ?? []).map((o: { driver_id: string }) => o.driver_id)
+
+    await supabaseAdmin
+      .from('ride_offers')
+      .update({ status: 'released' })
+      .eq('ride_id', rideId)
+      .eq('status', 'standby')
+
+    // Notify standby drivers that the ride has started (dismiss their notifications)
+    for (const driverId of standbyDriverIds) {
+      void realtimeBroadcast(`driver:${driverId}`, 'ride_cancelled', { type: 'ride_cancelled', ride_id: rideId })
+    }
+
     // Broadcast ride_started to both parties + component-specific channels
     const startedChannels = [
       ...[ride.rider_id, ride.driver_id].filter(Boolean).map((uid) => `rider:${uid}`),
       ...(ride.rider_id ? [`rider-pickup:${ride.rider_id}`, `rider-active:${ride.rider_id}`] : []),
       ...(ride.driver_id ? [`driver-pickup:${ride.driver_id}`, `driver:${ride.driver_id}`] : []),
     ]
-    for (const chName of startedChannels) {
-      const channel = supabaseAdmin.channel(chName)
-      await new Promise<void>((resolve) => {
-        channel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            channel.send({
-              type: 'broadcast',
-              event: 'ride_started',
-              payload: { type: 'ride_started', ride_id: rideId },
-            }).then(() => {
-              supabaseAdmin.removeChannel(channel)
-              resolve()
-            })
-          }
-        })
-      })
-    }
+    await realtimeBroadcastMany(startedChannels, 'ride_started', { type: 'ride_started', ride_id: rideId })
 
     // FCM push to driver
     if (ride.driver_id) {
@@ -2274,6 +2388,17 @@ ridesRouter.post(
       return
     }
 
+    // Minimum ride duration: 60 seconds
+    if (ride.started_at) {
+      const elapsedSec = (Date.now() - new Date(ride.started_at as string).getTime()) / 1000
+      if (elapsedSec < 60) {
+        res.status(400).json({
+          error: { code: 'TOO_SHORT', message: 'Ride must be active for at least 60 seconds before ending' },
+        })
+        return
+      }
+    }
+
     // Calculate fare from actual ride distance and duration
     // Build dropoff point from rider's current GPS if provided
     const dropoffGeo: GeoPoint | null =
@@ -2323,28 +2448,12 @@ ridesRouter.post(
       ...[ride.rider_id, ride.driver_id].filter(Boolean).map((uid) => `rider:${uid}`),
       ...(ride.rider_id ? [`rider-active:${ride.rider_id}`] : []),
     ]
-    for (const chName of endedChannels) {
-      const channel = supabaseAdmin.channel(chName)
-      await new Promise<void>((resolve) => {
-        channel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            channel.send({
-              type: 'broadcast',
-              event: 'ride_ended',
-              payload: {
-                type: 'ride_ended',
-                ride_id: rideId,
-                fare_cents: fareCents,
-                driver_earns_cents: driverEarnsCents,
-              },
-            }).then(() => {
-              supabaseAdmin.removeChannel(channel)
-              resolve()
-            })
-          }
-        })
-      })
-    }
+    await realtimeBroadcastMany(endedChannels, 'ride_ended', {
+      type: 'ride_ended',
+      ride_id: rideId,
+      fare_cents: fareCents,
+      driver_earns_cents: driverEarnsCents,
+    })
 
     // FCM push to driver
     if (ride.driver_id) {
@@ -2387,8 +2496,18 @@ ridesRouter.post(
  *  3. If coordinating → start ride (set active + started_at)
  *  4. If active → end ride (set completed + ended_at + fare)
  */
+// Tight rate limit for scan-driver to prevent brute-forcing 8-char driver codes
+const scanDriverLimiter = rateLimit({
+  windowMs: 30 * 1000,  // 30 seconds
+  max: 5,                // 5 attempts per 30s per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many scan attempts, please wait' } },
+})
+
 ridesRouter.post(
   '/scan-driver',
+  scanDriverLimiter,
   validateJwt,
   async (req: Request, res: Response, next: NextFunction) => {
     const riderId = res.locals['userId'] as string
@@ -2477,29 +2596,32 @@ ridesRouter.post(
 
       if (updateErr) { next(updateErr); return }
 
+      // Release standby offers now that the ride has started
+      const { data: scanStandbyOffers } = await supabaseAdmin
+        .from('ride_offers')
+        .select('driver_id')
+        .eq('ride_id', ride.id)
+        .eq('status', 'standby')
+
+      const scanStandbyIds = (scanStandbyOffers ?? []).map((o: { driver_id: string }) => o.driver_id)
+
+      await supabaseAdmin
+        .from('ride_offers')
+        .update({ status: 'released' })
+        .eq('ride_id', ride.id)
+        .eq('status', 'standby')
+
+      for (const sid of scanStandbyIds) {
+        void realtimeBroadcast(`driver:${sid}`, 'ride_cancelled', { type: 'ride_cancelled', ride_id: ride.id })
+      }
+
       // Broadcast ride_started to both parties + component-specific channels
       const scanStartChannels = [
         ...[ride.rider_id, ride.driver_id].filter(Boolean).map((uid) => `rider:${uid}`),
         ...(ride.rider_id ? [`rider-pickup:${ride.rider_id}`, `rider-active:${ride.rider_id}`] : []),
         ...(ride.driver_id ? [`driver-pickup:${ride.driver_id}`, `driver:${ride.driver_id}`] : []),
       ]
-      for (const chName of scanStartChannels) {
-        const channel = supabaseAdmin.channel(chName)
-        await new Promise<void>((resolve) => {
-          channel.subscribe((status) => {
-            if (status === 'SUBSCRIBED') {
-              channel.send({
-                type: 'broadcast',
-                event: 'ride_started',
-                payload: { type: 'ride_started', ride_id: ride.id },
-              }).then(() => {
-                supabaseAdmin.removeChannel(channel)
-                resolve()
-              })
-            }
-          })
-        })
-      }
+      await realtimeBroadcastMany(scanStartChannels, 'ride_started', { type: 'ride_started', ride_id: ride.id })
 
       // FCM push to driver
       const { data: driverTokens } = await supabaseAdmin
@@ -2521,6 +2643,17 @@ ridesRouter.post(
     }
 
     // ── Active → end ride ──────────────────────────────────────────────────
+    // Minimum ride duration: 60 seconds
+    if (ride.started_at) {
+      const elapsedSec = (Date.now() - new Date(ride.started_at as string).getTime()) / 1000
+      if (elapsedSec < 60) {
+        res.status(400).json({
+          error: { code: 'TOO_SHORT', message: 'Ride must be active for at least 60 seconds before ending' },
+        })
+        return
+      }
+    }
+
     // Build dropoff point from rider's current GPS if provided
     const dropoffGeo: GeoPoint | null =
       typeof lat === 'number' && typeof lng === 'number'
@@ -2566,28 +2699,12 @@ ridesRouter.post(
       ...[ride.rider_id, ride.driver_id].filter(Boolean).map((uid) => `rider:${uid}`),
       ...(ride.rider_id ? [`rider-active:${ride.rider_id}`] : []),
     ]
-    for (const chName of scanEndChannels) {
-      const channel = supabaseAdmin.channel(chName)
-      await new Promise<void>((resolve) => {
-        channel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            channel.send({
-              type: 'broadcast',
-              event: 'ride_ended',
-              payload: {
-                type: 'ride_ended',
-                ride_id: ride.id,
-                fare_cents: fareCents,
-                driver_earns_cents: driverEarnsCents,
-              },
-            }).then(() => {
-              supabaseAdmin.removeChannel(channel)
-              resolve()
-            })
-          }
-        })
-      })
-    }
+    await realtimeBroadcastMany(scanEndChannels, 'ride_ended', {
+      type: 'ride_ended',
+      ride_id: ride.id,
+      fare_cents: fareCents,
+      driver_earns_cents: driverEarnsCents,
+    })
 
     // FCM push to driver
     const { data: driverTokens2 } = await supabaseAdmin
@@ -2843,6 +2960,7 @@ ridesRouter.patch(
   async (req: Request, res: Response, _next: NextFunction) => {
     const driverId = res.locals['userId'] as string
     const rideId = req.params['id'] as string
+    console.log(`[rides/driver-destination:DEBUG] ENTRY rideId=${rideId} driverId=${driverId}`)
     const { destination_lat, destination_lng, destination_name } = req.body as {
       destination_lat?: number
       destination_lng?: number
@@ -2909,28 +3027,30 @@ ridesRouter.patch(
     const driverLat = driverOrigin.coordinates[1]
     const driverLng = driverOrigin.coordinates[0]
 
-    // Get rider's destination
+    // Get rider's destination (may be null for bearing-only rides)
     const riderDest = ride.destination as unknown as GeoPoint | null
-    if (!riderDest?.coordinates) {
-      res.status(409).json({
-        error: { code: 'NO_RIDER_DESTINATION', message: 'Rider destination is not set on this ride' },
-      })
-      return
-    }
-    const riderDestLat = riderDest.coordinates[1]
-    const riderDestLng = riderDest.coordinates[0]
+    const riderDestLat = riderDest?.coordinates?.[1] ?? null
+    const riderDestLng = riderDest?.coordinates?.[0] ?? null
 
     try {
-      // Compute suggestions
-      const { suggestions, polyline } = await computeTransitDropoffSuggestions(
-        driverLat, driverLng,
-        destination_lat, destination_lng,
-        riderDestLat, riderDestLng,
-        apiKey,
-      )
-
-      // Save driver destination + polyline on ride
+      // Save driver destination on ride
       const destGeo: GeoPoint = { type: 'Point', coordinates: [destination_lng, destination_lat] }
+
+      let suggestions: TransitDropoffSuggestion[] = []
+      let polyline: string | null = null
+
+      // Only compute transit suggestions if rider has a destination set
+      if (riderDestLat != null && riderDestLng != null) {
+        const result = await computeTransitDropoffSuggestions(
+          driverLat, driverLng,
+          destination_lat, destination_lng,
+          riderDestLat, riderDestLng,
+          apiKey,
+        )
+        suggestions = result.suggestions
+        polyline = result.polyline
+      }
+
       const { error: updateErr } = await supabaseAdmin
         .from('rides')
         .update({
@@ -2949,7 +3069,7 @@ ridesRouter.patch(
       }
 
       // Broadcast transit suggestions to rider via Realtime
-      void broadcastWithTimeout(`ride:${rideId}`, 'transit_suggestions', {
+      void realtimeBroadcast(`ride:${rideId}`, 'transit_suggestions', {
         ride_id: rideId,
         suggestions,
         driver_destination_name: destination_name ?? null,
@@ -3228,31 +3348,7 @@ ridesRouter.post(
 
     // Broadcast the message to chat
     if (msg) {
-      const chatChannel = supabaseAdmin.channel(`chat:${rideId}`)
-      const broadcastPromise = new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-          resolve()
-        }, 3000)
-        chatChannel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            chatChannel.send({
-              type: 'broadcast',
-              event: 'new_message',
-              payload: msg,
-            }).then(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-              resolve()
-            }).catch(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(chatChannel).catch(() => {})
-              resolve()
-            })
-          }
-        })
-      })
-      broadcastPromise.catch(() => {})
+      void realtimeBroadcast(`chat:${rideId}`, 'new_message', msg as Record<string, unknown>)
     }
 
     // Notify rider via push
@@ -3271,7 +3367,135 @@ ridesRouter.post(
       }
     }
 
+    // Broadcast dropoff_done to WaitingRoom so rider navigates to chat
+    void realtimeBroadcast(`waiting:${ride.rider_id}`, 'dropoff_done', { ride_id: rideId })
+    void realtimeBroadcast(`chat:${rideId}`, 'dropoff_done', { ride_id: rideId })
+
     console.log(`[rides/suggest-transit-dropoff] rideId=${rideId} station=${station_name}`)
     res.status(200).json({ ride_id: rideId, station_name, message: msg ?? null })
+  },
+)
+
+/**
+ * PATCH /api/rides/:id/dropoff-done — driver signals they're done choosing a
+ * dropoff. Sets status → 'coordinating' and broadcasts to rider's WaitingRoom.
+ */
+ridesRouter.patch(
+  '/:id/dropoff-done',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const driverId = res.locals['userId'] as string
+    const rideId = req.params['id'] as string
+    console.log(`[rides/dropoff-done:DEBUG] ENTRY rideId=${rideId} driverId=${driverId}`)
+
+    if (!rideId) {
+      res.status(400).json({ error: { code: 'INVALID_PARAMS', message: 'Ride ID is required' } })
+      return
+    }
+
+    const { data: ride, error: fetchErr } = await supabaseAdmin
+      .from('rides')
+      .select('id, rider_id, driver_id, status')
+      .eq('id', rideId)
+      .single()
+
+    if (fetchErr ?? !ride) {
+      res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+      return
+    }
+
+    // Verify driver is participant
+    if (ride.driver_id !== driverId) {
+      const { count: offerCount } = await supabaseAdmin
+        .from('ride_offers')
+        .select('id', { count: 'exact', head: true })
+        .eq('ride_id', rideId)
+        .eq('driver_id', driverId)
+        .in('status', ['pending', 'selected'])
+
+      if ((offerCount ?? 0) === 0) {
+        res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Not the driver for this ride' } })
+        return
+      }
+    }
+
+    if (ride.status !== 'accepted' && ride.status !== 'requested' && ride.status !== 'coordinating') {
+      res.status(409).json({
+        error: { code: 'INVALID_STATUS', message: `Ride status is '${ride.status}', cannot mark dropoff done` },
+      })
+      return
+    }
+
+    // Transition to coordinating and set driver_id if not already set
+    const updateFields: Record<string, unknown> = {}
+    if (ride.status !== 'coordinating') updateFields.status = 'coordinating'
+    if (!ride.driver_id) updateFields.driver_id = driverId
+
+    console.log(`[rides/dropoff-done:DEBUG] ride.status=${ride.status} ride.driver_id=${ride.driver_id} updateFields=${JSON.stringify(updateFields)}`)
+
+    if (Object.keys(updateFields).length > 0) {
+      const { error: updateErr } = await supabaseAdmin
+        .from('rides')
+        .update(updateFields)
+        .eq('id', rideId)
+
+      if (updateErr) { next(updateErr); return }
+    }
+
+    // Broadcast to rider's WaitingRoom + chat channel
+    await Promise.all([
+      realtimeBroadcast(`waiting:${ride.rider_id}`, 'dropoff_done', { ride_id: rideId }),
+      realtimeBroadcast(`chat:${rideId}`, 'dropoff_done', { ride_id: rideId }),
+      realtimeBroadcast(`rider:${ride.rider_id}`, 'dropoff_done', { ride_id: rideId }),
+    ])
+
+    console.log(`[rides/dropoff-done] rideId=${rideId} driver=${driverId} → coordinating`)
+    res.status(200).json({ ride_id: rideId, status: 'coordinating' })
+  },
+)
+
+// ─── Ride timeout cleanup ─────────────────────────────────────────────────────
+/**
+ * POST /api/rides/cleanup-stale
+ *
+ * Marks rides that have been active for > 4 hours as 'cancelled'.
+ * Also cancels rides stuck in 'requested' for > 1 hour with no driver.
+ * Intended to be called by a cron job (e.g., every 30 minutes).
+ */
+ridesRouter.post(
+  '/cleanup-stale',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+
+      // Cancel rides active for > 4 hours
+      const { data: timedOut } = await supabaseAdmin
+        .from('rides')
+        .update({ status: 'cancelled', ended_at: new Date().toISOString() })
+        .eq('status', 'active')
+        .lt('started_at', fourHoursAgo)
+        .select('id')
+
+      // Cancel rides stuck in requested for > 1 hour
+      const { data: staleRequested } = await supabaseAdmin
+        .from('rides')
+        .update({ status: 'cancelled', ended_at: new Date().toISOString() })
+        .eq('status', 'requested')
+        .is('driver_id', null)
+        .lt('created_at', oneHourAgo)
+        .select('id')
+
+      const timedOutCount = timedOut?.length ?? 0
+      const staleCount = staleRequested?.length ?? 0
+
+      if (timedOutCount > 0 || staleCount > 0) {
+        console.log(`[rides/cleanup-stale] timed_out=${timedOutCount} stale_requested=${staleCount}`)
+      }
+
+      res.status(200).json({ timed_out: timedOutCount, stale_requested: staleCount })
+    } catch (err) {
+      next(err)
+    }
   },
 )

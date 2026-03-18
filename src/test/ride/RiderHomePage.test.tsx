@@ -1,9 +1,9 @@
 /**
  * RiderHomePage tests
  *
- * Layout: frosted top bar (hamburger + HICH wordmark)
+ * Layout: frosted top bar (HICH wordmark + notifications bell)
  *         full-screen map with GPS blue dot
- *         floating "From / Where to?" card + schedule button above bottom nav
+ *         stacked search card + ride board button above bottom nav
  *         bottom nav: Home (active) | Drive | Wallet | Profile
  */
 
@@ -155,9 +155,9 @@ describe('RiderHomePage', () => {
     expect(screen.getByTestId('top-bar')).toBeInTheDocument()
   })
 
-  it('renders the hamburger menu button', () => {
+  it('renders the notifications bell in the top bar', () => {
     renderPage()
-    expect(screen.getByTestId('hamburger-menu')).toBeInTheDocument()
+    expect(screen.getByTestId('notifications-bell')).toBeInTheDocument()
   })
 
   // ── Search card (From + Where to?) ─────────────────────────────────────────

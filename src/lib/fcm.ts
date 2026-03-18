@@ -53,6 +53,12 @@ function init(): Messaging | null {
 // ── Dedup guard ──────────────────────────────────────────────────────────────
 
 let _pendingToken: Promise<string | null> | null = null
+let _lastToken: string | null = null
+
+/** Returns the last obtained FCM token without triggering a new request. */
+export function getLastFcmToken(): string | null {
+  return _lastToken
+}
 
 /**
  * Request notification permission, get FCM token, and save it to push_tokens.
@@ -92,11 +98,13 @@ async function _doRequestAndSaveToken(): Promise<string | null> {
     }
 
     console.log('[FCM] Token obtained, saving...')
+    _lastToken = token
 
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return null
 
-    // Upsert: one token per user. Uses onConflict on user_id.
+    // Upsert: one token per user. Migration 009 enforces UNIQUE(user_id),
+    // so onConflict: 'user_id' replaces any stale token on new login.
     const { error } = await supabase
       .from('push_tokens')
       .upsert(

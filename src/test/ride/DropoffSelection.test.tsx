@@ -19,14 +19,35 @@ import DropoffSelection from '@/components/ride/DropoffSelection'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
-const { mockGetSession } = vi.hoisted(() => ({
+const { mockGetSession, mockRideSingle, mockOfferMaybeSingle } = vi.hoisted(() => ({
   mockGetSession: vi.fn(),
+  mockRideSingle: vi.fn(),
+  mockOfferMaybeSingle: vi.fn(),
 }))
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
     auth: {
       getSession: mockGetSession,
+    },
+    from: (table: string) => {
+      if (table === 'rides') {
+        return {
+          select: () => ({
+            eq: () => ({ single: mockRideSingle }),
+          }),
+        }
+      }
+      if (table === 'ride_offers') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({ maybeSingle: mockOfferMaybeSingle }),
+            }),
+          }),
+        }
+      }
+      return {}
     },
   },
 }))
@@ -113,17 +134,23 @@ describe('DropoffSelection', () => {
     vi.clearAllMocks()
     vi.stubGlobal('fetch', mockFetch)
     mockGetSession.mockResolvedValue({
-      data: { session: { access_token: 'test-token' } },
+      data: { session: { access_token: 'test-token', user: { id: 'driver-123' } } },
     })
+    // Default: no recovery data — redirect to home for missing-state tests
+    mockRideSingle.mockResolvedValue({ data: null, error: null })
+    mockOfferMaybeSingle.mockResolvedValue({ data: null, error: null })
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
   })
 
-  it('redirects to driver home if missing location state', () => {
+  it('redirects to driver home if missing location state and no DB recovery', async () => {
+    // mockRideSingle and mockOfferMaybeSingle return null (set in beforeEach)
     renderWithState(null)
-    expect(mockNavigate).toHaveBeenCalledWith('/home/driver', { replace: true })
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/home/driver', { replace: true })
+    })
   })
 
   it('shows loading skeleton on mount', () => {

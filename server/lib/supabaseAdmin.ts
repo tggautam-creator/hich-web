@@ -7,5 +7,11 @@ const env = getServerEnv()
 export const supabaseAdmin = createClient<Database>(
   env.SUPABASE_URL,
   env.SUPABASE_SERVICE_ROLE_KEY,
-  { auth: { persistSession: false, autoRefreshToken: false } },
+  {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: {
+      fetch: (url, init) =>
+        fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(10_000) }),
+    },
+  },
 )

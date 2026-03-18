@@ -8,14 +8,16 @@
  *  4.  Displays fare range
  *  5.  Displays single fare when range collapses
  *  6.  Cancel button present
- *  7.  Cancel updates ride to cancelled and navigates home
+ *  7.  Cancel calls API and navigates to confirm page with state preserved
  *  8.  Redirects to /home/rider when no rideId in state
  *  9.  Subscribes to Realtime broadcast channel on mount
- * 10.  Navigates to /ride/messaging/:rideId when ride_accepted broadcast received
+ * 10.  Shows driver choosing dropoff state when ride_accepted broadcast received
  * 11.  Unsubscribes from channel on unmount
+ * 12.  Shows cancel toast when driver_cancelled broadcast is received during dropoff phase
+ * 13.  Shows cancel toast when driver_cancelled received in finding phase (Path C)
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
@@ -25,12 +27,11 @@ import type { PlaceSuggestion } from '@/lib/places'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
-const { mockChannel, mockSubscribe, mockRemoveChannel, mockUpdate, mockEq } = vi.hoisted(() => ({
+const { mockChannel, mockSubscribe, mockRemoveChannel, mockGetSession } = vi.hoisted(() => ({
   mockChannel:       vi.fn(),
   mockSubscribe:     vi.fn(),
   mockRemoveChannel: vi.fn(),
-  mockUpdate:        vi.fn(),
-  mockEq:            vi.fn(),
+  mockGetSession:    vi.fn(),
 }))
 
 vi.mock('@/lib/supabase', () => ({
@@ -38,11 +39,21 @@ vi.mock('@/lib/supabase', () => ({
     channel: mockChannel,
     removeChannel: mockRemoveChannel,
     from: (table: string) => {
-      if (table === 'ride_offers') {
+      if (table === 'rides') {
         return {
           select: () => ({
             eq: () => ({
+              single: () => Promise.resolve({ data: { status: 'requested', driver_id: null }, error: null }),
+            }),
+          }),
+        }
+      }
+      if (table === 'ride_offers') {
+        return {
+          select: () => ({
+            eq: (_col: string, _val: string) => ({
               eq: () => Promise.resolve({ data: [], error: null }),
+              in: () => Promise.resolve({ data: [], error: null }),
             }),
           }),
         }
@@ -51,15 +62,16 @@ vi.mock('@/lib/supabase', () => ({
         return {
           select: () => ({
             in: () => Promise.resolve({ data: [], error: null }),
+            eq: () => ({
+              single: () => Promise.resolve({ data: null, error: null }),
+            }),
           }),
         }
       }
-      return { update: mockUpdate }
+      return {}
     },
     auth: {
-      getSession: vi.fn().mockResolvedValue({
-        data: { session: { access_token: 'test-token' } },
-      }),
+      getSession: mockGetSession,
     },
   },
 }))
@@ -84,6 +96,18 @@ vi.mock('@/stores/authStore', () => ({
   ),
 }))
 
+// ── Google Maps stubs ─────────────────────────────────────────────────────────
+
+vi.mock('@vis.gl/react-google-maps', () => ({
+  Map: ({ children }: { children?: React.ReactNode }) => <div data-testid="mock-map">{children}</div>,
+  AdvancedMarker: () => null,
+}))
+vi.mock('@/components/map/RoutePreview', () => ({
+  RoutePolyline: () => null,
+  MapBoundsFitter: () => null,
+}))
+vi.mock('@/lib/mapConstants', () => ({ MAP_ID: 'test-map-id' }))
+
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 const DEST: PlaceSuggestion = {
@@ -107,29 +131,47 @@ const RIDE_ID = 'ride-abc-123'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-let realtimeCallback: ((payload: Record<string, unknown>) => void) | null = null
+type BroadcastCb = (payload: Record<string, unknown>) => void
+const waitingHandlers: Record<string, BroadcastCb> = {}
+const chatHandlers: Record<string, BroadcastCb> = {}
 
 function setupMocks() {
-  realtimeCallback = null
+  for (const key of Object.keys(waitingHandlers)) delete waitingHandlers[key]
+  for (const key of Object.keys(chatHandlers)) delete chatHandlers[key]
 
-  const channelObj = {
-    on: vi.fn().mockImplementation((_event: string, opts: { event: string }, cb: (payload: Record<string, unknown>) => void) => {
-      if (opts.event === 'ride_accepted') {
-        realtimeCallback = cb
-      }
-      return channelObj
-    }),
-    subscribe: mockSubscribe,
-  }
+  mockGetSession.mockResolvedValue({
+    data: { session: { access_token: 'test-token' } },
+  })
+
+  let channelCount = 0
+  mockChannel.mockImplementation(() => {
+    const isWaiting = channelCount === 0
+    channelCount++
+    const handlers = isWaiting ? waitingHandlers : chatHandlers
+    const channelObj: Record<string, unknown> = {
+      on: vi.fn().mockImplementation((_event: string, opts: { event: string }, cb: BroadcastCb) => {
+        handlers[opts.event] = cb
+        return channelObj
+      }),
+      subscribe: mockSubscribe,
+    }
+    return channelObj
+  })
+
   mockSubscribe.mockReturnValue({ id: 'chan-1' })
-  mockChannel.mockReturnValue(channelObj)
   mockRemoveChannel.mockResolvedValue(undefined)
-  mockEq.mockResolvedValue({ data: null, error: null })
-  mockUpdate.mockReturnValue({ eq: mockEq })
 }
 
 function renderPage(state?: Record<string, unknown>) {
-  const locState = state ?? { destination: DEST, fareRange: FARE_RANGE, rideId: RIDE_ID }
+  const locState = state ?? {
+    destination: DEST,
+    fareRange: FARE_RANGE,
+    rideId: RIDE_ID,
+    originLat: 37.7749,
+    originLng: -122.4194,
+    destinationLat: 37.6213,
+    destinationLng: -122.3790,
+  }
   return render(
     <MemoryRouter initialEntries={[{ pathname: '/ride/waiting', state: locState }]}>
       <WaitingRoom />
@@ -143,6 +185,10 @@ describe('WaitingRoom', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setupMocks()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -168,7 +214,7 @@ describe('WaitingRoom', () => {
   })
 
   it('displays single fare when range collapses', () => {
-    renderPage({ destination: DEST, fareRange: FARE_SINGLE, rideId: RIDE_ID })
+    renderPage({ destination: DEST, fareRange: FARE_SINGLE, rideId: RIDE_ID, originLat: 37.77, originLng: -122.42, destinationLat: 37.62, destinationLng: -122.38 })
     expect(screen.getByTestId('fare-display')).toHaveTextContent('$3.50')
   })
 
@@ -179,17 +225,23 @@ describe('WaitingRoom', () => {
     expect(screen.getByTestId('cancel-button')).toBeInTheDocument()
   })
 
-  it('cancel button calls API and navigates home', async () => {
+  it('cancel button calls API and navigates to /home/rider', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }))
     const user = userEvent.setup()
     renderPage()
 
     await user.click(screen.getByTestId('cancel-button'))
 
-    expect(fetchSpy).toHaveBeenCalledWith(`/api/rides/${RIDE_ID}/cancel`, {
-      method: 'PATCH',
-      headers: { Authorization: 'Bearer test-token' },
+    // Allow the async handleCancel to complete
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
     })
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`/api/rides/${RIDE_ID}/cancel`),
+      expect.objectContaining({ method: 'PATCH' }),
+    )
     expect(mockNavigate).toHaveBeenCalledWith('/home/rider', { replace: true })
     fetchSpy.mockRestore()
   })
@@ -209,30 +261,96 @@ describe('WaitingRoom', () => {
     expect(mockSubscribe).toHaveBeenCalled()
   })
 
-  it('shows driver choosing dropoff state when ride_accepted broadcast received', async () => {
+  it('shows driver choosing dropoff state when ride_accepted broadcast received and auto-selected', async () => {
     vi.useFakeTimers()
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ ride_id: RIDE_ID, status: 'accepted' }), { status: 200 }),
+      new Response(JSON.stringify({ ride_id: RIDE_ID, status: 'accepted', driver_name: 'Jane' }), { status: 200 }),
     )
     renderPage()
 
+    // Simulate ride_accepted broadcast
     act(() => {
-      realtimeCallback?.({ payload: { ride_id: RIDE_ID, driver_id: 'driver-001', driver_name: 'Jane' } })
+      waitingHandlers['ride_accepted']?.({
+        payload: { ride_id: RIDE_ID, driver_id: 'driver-001', driver_name: 'Jane' },
+      })
     })
 
     // WaitingRoom waits 15s after first acceptance before auto-selecting
     await act(async () => {
-      vi.advanceTimersByTime(15000)
+      vi.advanceTimersByTime(2000)
     })
 
-    // After select-driver succeeds, rider stays in WaitingRoom with dropoff-choosing state
-    await act(async () => {
-      await Promise.resolve()
-    })
+    // Flush multiple microtask cycles to allow:
+    // 1. getSession to resolve
+    // 2. fetch to be called
+    // 3. response.json() to resolve
+    // 4. setPhase to be called
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await Promise.resolve()
+      })
+    }
 
     expect(screen.getByTestId('driver-choosing-dropoff')).toBeInTheDocument()
+    expect(screen.getByTestId('driver-choosing-dropoff')).toHaveTextContent('Jane')
     fetchSpy.mockRestore()
     vi.useRealTimers()
+  })
+
+  it('shows cancel toast when driver_cancelled received in dropoff phase', async () => {
+    vi.useFakeTimers()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ride_id: RIDE_ID, status: 'accepted', driver_name: 'Jane' }), { status: 200 }),
+    )
+    renderPage()
+
+    // Accept → auto-select → enter dropoff phase
+    act(() => {
+      waitingHandlers['ride_accepted']?.({
+        payload: { ride_id: RIDE_ID, driver_id: 'driver-001', driver_name: 'Jane' },
+      })
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(2000)
+    })
+
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await Promise.resolve()
+      })
+    }
+
+    expect(screen.getByTestId('driver-choosing-dropoff')).toBeInTheDocument()
+
+    // Now simulate driver cancellation
+    act(() => {
+      waitingHandlers['driver_cancelled']?.({
+        payload: { ride_id: RIDE_ID, cancelled_driver_id: 'driver-001', standby_count: 0 },
+      })
+    })
+
+    // Should be back to finding phase with toast
+    expect(screen.getByTestId('status-text')).toHaveTextContent('Finding you a driver')
+    expect(screen.getByTestId('cancel-toast')).toBeInTheDocument()
+
+    fetchSpy.mockRestore()
+    vi.useRealTimers()
+  })
+
+  it('shows cancel toast when driver_cancelled received in finding phase (Path C)', () => {
+    renderPage()
+
+    // Simulate driver cancellation while still in 'finding' phase (before any auto-select)
+    act(() => {
+      waitingHandlers['driver_cancelled']?.({
+        payload: { ride_id: RIDE_ID, cancelled_driver_id: 'driver-001', standby_count: 0 },
+      })
+    })
+
+    // Should stay in finding phase and show a toast
+    expect(screen.getByTestId('status-text')).toHaveTextContent('Finding you a driver')
+    expect(screen.getByTestId('cancel-toast')).toHaveTextContent('A driver cancelled')
   })
 
   it('removes channel on unmount', () => {

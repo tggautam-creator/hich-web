@@ -250,6 +250,7 @@ async function fetchTransitFromStation(
   url.searchParams.set('destination', `${destLat},${destLng}`)
   url.searchParams.set('mode', 'transit')
   url.searchParams.set('key', apiKey)
+  url.searchParams.set('departure_time', String(Math.floor(Date.now() / 1000)))
 
   const resp = await fetch(url.toString())
   if (!resp.ok) return { options: [], transitPolyline: null }
@@ -349,8 +350,6 @@ export async function computeTransitDropoffSuggestions(
           apiKey,
         )
 
-        if (transitOptions.length === 0) return null
-
         // Compute walk distance from nearest point on route to station
         const walkToStationM = haversineMetres(
           station.lat, station.lng,
@@ -369,7 +368,7 @@ export async function computeTransitDropoffSuggestions(
           ? Math.max(0, detourRoute.durationMin - driverDirectDurationMin)
           : 0
 
-        const transitToDestMin = transitOptions[0].total_minutes
+        const transitToDestMin = transitOptions.length > 0 ? transitOptions[0].total_minutes : 0
 
         // Compute rider progress: how much closer does this station get the rider?
         const progressRatio = pickupToDestM > 0

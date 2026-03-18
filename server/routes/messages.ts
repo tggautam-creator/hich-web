@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
+import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
 
 export const messagesRouter = Router()
 
@@ -87,15 +88,26 @@ messagesRouter.post(
       return
     }
 
+    if (content.length > 2000) {
+      res.status(400).json({ error: { code: 'MESSAGE_TOO_LONG', message: 'Message must be 2000 characters or fewer' } })
+      return
+    }
+
     // Verify the user is a participant
     const { data: ride, error: rideErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, driver_id')
+      .select('id, rider_id, driver_id, status')
       .eq('id', rideId)
       .single()
 
     if (rideErr || !ride) {
       res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+      return
+    }
+
+    // Reject messages on cancelled/completed rides
+    if (ride.status === 'cancelled' || ride.status === 'completed') {
+      res.status(409).json({ error: { code: 'RIDE_ENDED', message: 'Cannot send messages on a cancelled or completed ride' } })
       return
     }
 
@@ -116,35 +128,10 @@ messagesRouter.post(
       return
     }
 
-    // Broadcast the new message to the ride chat channel (fire-and-forget with timeout)
+    // Broadcast + push to recipient (fire-and-forget)
     const recipientId = senderId === ride.rider_id ? ride.driver_id : ride.rider_id
     if (recipientId) {
-      const channel = supabaseAdmin.channel(`chat:${rideId}`)
-      const broadcastPromise = new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          supabaseAdmin.removeChannel(channel).catch(() => {})
-          resolve()
-        }, 3000)
-        channel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            channel.send({
-              type: 'broadcast',
-              event: 'new_message',
-              payload: msg,
-            }).then(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(channel).catch(() => {})
-              resolve()
-            }).catch(() => {
-              clearTimeout(timer)
-              supabaseAdmin.removeChannel(channel).catch(() => {})
-              resolve()
-            })
-          }
-        })
-      })
-      // Don't block the response on broadcast
-      broadcastPromise.catch(() => {})
+      void realtimeBroadcast(`chat:${rideId}`, 'new_message', msg)
 
       // Send FCM push notification to recipient (fire-and-forget)
       void (async () => {

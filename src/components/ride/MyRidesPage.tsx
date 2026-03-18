@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import BottomNav from '@/components/ui/BottomNav'
@@ -73,120 +74,107 @@ function getStatusBadge(status: string, myRole: 'rider' | 'driver', isScheduled?
   }
 }
 
+// ── Query functions ────────────────────────────────────────────────────────────
+
+async function fetchActiveRides(): Promise<ActiveRide[]> {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) throw new Error('Not authenticated')
+  const resp = await fetch('/api/rides/active', {
+    headers: { Authorization: `Bearer ${session.access_token}` },
+  })
+  if (!resp.ok) throw new Error('Failed to fetch rides')
+  const body = await resp.json() as { rides: ActiveRide[] }
+  return body.rides
+}
+
+async function fetchUnreadCount(): Promise<number> {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) return 0
+  const resp = await fetch('/api/notifications/unread-count', {
+    headers: { Authorization: `Bearer ${session.access_token}` },
+  })
+  if (!resp.ok) return 0
+  const body = await resp.json() as { count: number }
+  return body.count
+}
+
+async function cancelRide(rideId: string): Promise<void> {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) throw new Error('Not authenticated')
+  const resp = await fetch(`/api/rides/${rideId}/cancel`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${session.access_token}` },
+  })
+  if (!resp.ok) throw new Error('Failed to cancel ride')
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function MyRidesPage({
   'data-testid': testId = 'my-rides-page',
 }: MyRidesPageProps) {
   const navigate = useNavigate()
-  const [rides, setRides] = useState<ActiveRide[]>([])
-  const [loading, setLoading] = useState(true)
-  const [unreadCount, setUnreadCount] = useState(0)
-
-  const fetchRides = useCallback(async () => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) return
-
-      const resp = await fetch('/api/rides/active', {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      })
-      if (resp.ok) {
-        const body = (await resp.json()) as { rides: ActiveRide[] }
-        setRides(body.rides)
-      }
-    } catch {
-      // non-fatal
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  // Fetch unread notification count for bell badge
-  const fetchUnread = useCallback(async () => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) return
-      const resp = await fetch('/api/notifications/unread-count', {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      })
-      if (resp.ok) {
-        const body = (await resp.json()) as { count: number }
-        setUnreadCount(body.count)
-      }
-    } catch {
-      // non-fatal
-    }
-  }, [])
-
-  useEffect(() => {
-    void fetchRides()
-    void fetchUnread()
-  }, [fetchRides, fetchUnread])
-
-  // Realtime: refresh rides when status changes (cancellation, acceptance, etc.)
+  const queryClient = useQueryClient()
   const profile = useAuthStore((s) => s.profile)
+
+  const { data: rides = [], isLoading: loading } = useQuery({
+    queryKey: ['active-rides'],
+    queryFn: fetchActiveRides,
+  })
+
+  const { data: unreadCount = 0 } = useQuery({
+    queryKey: ['unread-count'],
+    queryFn: fetchUnreadCount,
+  })
+
+  const cancelMutation = useMutation({
+    mutationFn: cancelRide,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['active-rides'] })
+    },
+  })
+
+  // Realtime + visibility: invalidate queries when ride status changes
   useEffect(() => {
     if (!profile?.id) return
 
-    // Refresh when page becomes visible (covers navigating back after cancel)
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible') void fetchRides()
+      if (document.visibilityState === 'visible') {
+        void queryClient.invalidateQueries({ queryKey: ['active-rides'] })
+      }
     }
+    const handleFocus = () => void queryClient.invalidateQueries({ queryKey: ['active-rides'] })
     document.addEventListener('visibilitychange', handleVisibility)
-    window.addEventListener('focus', () => void fetchRides())
+    window.addEventListener('focus', handleFocus)
 
-    // Realtime: listen on dedicated MyRides channels
-    // Server broadcasts to rider:/driver:/board: channels — we use separate names
-    // and also have the server broadcast ride_status_changed to these.
     const ridesChannel = supabase.channel(`myrides:${profile.id}`)
     ridesChannel.on('broadcast', { event: 'ride_status_changed' }, () => {
-      void fetchRides()
+      void queryClient.invalidateQueries({ queryKey: ['active-rides'] })
     })
     ridesChannel.subscribe()
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility)
+      window.removeEventListener('focus', handleFocus)
       supabase.removeChannel(ridesChannel)
     }
-  }, [profile?.id, fetchRides])
+  }, [profile?.id, queryClient])
 
   function handleTapRide(ride: ActiveRide) {
     const isRider = ride.my_role === 'rider'
     switch (ride.status) {
       case 'requested':
-        // Poster sees notification page; requester just waits
         if (!isRider) navigate('/notifications')
         break
       case 'accepted':
         navigate(`/ride/messaging/${ride.id}`)
         break
       case 'coordinating':
-        // Both locations confirmed — always go to messaging first
-        // (messaging has "Navigate to Pickup" button for both roles)
         navigate(`/ride/messaging/${ride.id}`)
         break
       case 'active':
         navigate(isRider ? `/ride/active-rider/${ride.id}` : `/ride/active-driver/${ride.id}`)
         break
-    }
-  }
-
-  async function handleCancelRequestedRide(rideId: string) {
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) return
-
-      const resp = await fetch(`/api/rides/${rideId}/cancel`, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      })
-
-      if (resp.ok) {
-        await fetchRides()
-      }
-    } catch {
-      // non-fatal
     }
   }
 
@@ -340,7 +328,7 @@ export default function MyRidesPage({
                       data-testid="cancel-requested-ride-button"
                       onClick={(e) => {
                         e.stopPropagation()
-                        void handleCancelRequestedRide(ride.id)
+                        cancelMutation.mutate(ride.id)
                       }}
                       className="mt-2 rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 text-xs font-semibold text-danger"
                     >

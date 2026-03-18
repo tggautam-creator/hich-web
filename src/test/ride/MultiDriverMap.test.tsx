@@ -8,10 +8,11 @@
  *  4. Renders driver cards for each offer
  *  5. Shows driver name, rating, vehicle info on cards
  *  6. Shows "Choose [name]" button on each card
- *  7. Choose button calls select-driver API and navigates to messaging
+ *  7. Choose button calls select-driver API and navigates to waiting room
  *  8. Redirects to home when no rideId
  *  9. Shows correct header with offer count
  * 10. Displays numbered driver markers on map
+ * 11. Shows cancel toast in finding phase when driver_cancelled received (Path C)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -81,29 +82,39 @@ const MOCK_OFFERS = {
 
 // ── Supabase mock (hoisted to avoid reference issues) ────────────────────────
 
-const { mockRideData } = vi.hoisted(() => ({
+const { mockRideData, mockRemoveChannel } = vi.hoisted(() => ({
   mockRideData: {
     origin: { type: 'Point', coordinates: [-121.75, 38.53] },
     destination: { type: 'Point', coordinates: [-121.80, 38.56] },
   },
+  mockRemoveChannel: vi.fn(),
 }))
 
-vi.mock('@/lib/supabase', () => ({
-  supabase: {
-    auth: {
-      getSession: vi.fn().mockResolvedValue({
-        data: { session: { access_token: 'test-token' } },
-      }),
-    },
-    from: vi.fn().mockReturnValue({
-      select: vi.fn().mockReturnValue({
-        eq: vi.fn().mockReturnValue({
-          single: vi.fn().mockResolvedValue({ data: mockRideData, error: null }),
+vi.mock('@/lib/supabase', () => {
+  const channelObj = {
+    on: vi.fn().mockReturnThis(),
+    subscribe: vi.fn().mockReturnValue({ id: 'chan-1' }),
+  }
+
+  return {
+    supabase: {
+      auth: {
+        getSession: vi.fn().mockResolvedValue({
+          data: { session: { access_token: 'test-token' } },
+        }),
+      },
+      from: vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({
+          eq: vi.fn().mockReturnValue({
+            single: vi.fn().mockResolvedValue({ data: mockRideData, error: null }),
+          }),
         }),
       }),
-    }),
-  },
-}))
+      channel: vi.fn().mockReturnValue(channelObj),
+      removeChannel: mockRemoveChannel,
+    },
+  }
+})
 
 // ── Navigate mock ────────────────────────────────────────────────────────────
 
@@ -227,7 +238,7 @@ describe('MultiDriverMap', () => {
     })
   })
 
-  it('Choose button calls select-driver API and navigates to messaging', async () => {
+  it('Choose button calls select-driver API and navigates to waiting room', async () => {
     const user = userEvent.setup()
     renderPage()
 
@@ -248,8 +259,11 @@ describe('MultiDriverMap', () => {
         }),
       )
       expect(mockNavigate).toHaveBeenCalledWith(
-        `/ride/messaging/${RIDE_ID}`,
-        expect.objectContaining({ replace: true }),
+        '/ride/waiting',
+        expect.objectContaining({
+          replace: true,
+          state: expect.objectContaining({ rideId: RIDE_ID, selectedDriverId: DRIVER_A }),
+        }),
       )
     })
   })

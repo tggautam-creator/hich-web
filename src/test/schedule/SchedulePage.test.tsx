@@ -697,7 +697,7 @@ describe('SchedulePage', () => {
       }
     })
 
-    it('clicking a day pill selects it and opens bottom sheet', async () => {
+    it('clicking a day pill selects it and shows inline time picker', async () => {
       const user = await goToRoutineStep()
       const mondayPill = screen.getByTestId('day-pill-1')
       expect(mondayPill).toHaveAttribute('aria-pressed', 'false')
@@ -705,29 +705,24 @@ describe('SchedulePage', () => {
       await user.click(mondayPill)
 
       expect(mondayPill).toHaveAttribute('aria-pressed', 'true')
-      expect(screen.getByTestId('day-time-sheet')).toBeInTheDocument()
-      expect(screen.getByText('Set Time — Monday')).toBeInTheDocument()
+      // Inline time picker now appears (no more BottomSheet)
+      expect(screen.getByTestId('sheet-time-input')).toBeInTheDocument()
+      expect(screen.getByText('Set time for 1 day')).toBeInTheDocument()
     })
 
     it('supports multi-day selection', async () => {
       const user = await goToRoutineStep()
 
-      // Select Monday → opens sheet → close
+      // Select Monday, Wednesday, Friday
       await user.click(screen.getByTestId('day-pill-1'))
-      await user.click(screen.getByLabelText('Close'))
-
-      // Select Wednesday → opens sheet → close
       await user.click(screen.getByTestId('day-pill-3'))
-      await user.click(screen.getByLabelText('Close'))
-
-      // Select Friday → opens sheet → close
       await user.click(screen.getByTestId('day-pill-5'))
-      await user.click(screen.getByLabelText('Close'))
 
       expect(screen.getByTestId('day-pill-1')).toHaveAttribute('aria-pressed', 'true')
       expect(screen.getByTestId('day-pill-3')).toHaveAttribute('aria-pressed', 'true')
       expect(screen.getByTestId('day-pill-5')).toHaveAttribute('aria-pressed', 'true')
       expect(screen.getByTestId('day-pill-0')).toHaveAttribute('aria-pressed', 'false')
+      expect(screen.getByText('Set time for 3 days')).toBeInTheDocument()
     })
 
     it('bottom sheet has departure/arrival toggle defaulting to departure', async () => {
@@ -744,67 +739,53 @@ describe('SchedulePage', () => {
       expect(screen.getByText('Arrival Time')).toBeInTheDocument()
     })
 
-    it('saves per-day time config when Save clicked', async () => {
+    it('inline time picker sets shared time for all days', async () => {
       const user = await goToRoutineStep()
 
-      // Select Monday and set time
+      // Select Monday
       await user.click(screen.getByTestId('day-pill-1'))
       const timeInput = screen.getByTestId('sheet-time-input')
       Object.getOwnPropertyDescriptor(
         HTMLInputElement.prototype, 'value',
       )?.set?.call(timeInput, '08:30')
       timeInput.dispatchEvent(new Event('change', { bubbles: true }))
-      await user.click(screen.getByTestId('sheet-save-button'))
 
-      // Summary should show the saved time
-      expect(screen.getByTestId('day-summary-1')).toBeInTheDocument()
-      expect(screen.getByText('Dep 08:30')).toBeInTheDocument()
+      // Time input should now have value
+      expect(timeInput).toHaveValue('08:30')
     })
 
-    it('stores different times for different days', async () => {
+    it('time applies to all selected days (single shared time)', async () => {
       const user = await goToRoutineStep()
 
-      // Monday: departure 08:30
+      // Select Monday and Wednesday
       await user.click(screen.getByTestId('day-pill-1'))
-      const timeInput1 = screen.getByTestId('sheet-time-input')
-      Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype, 'value',
-      )?.set?.call(timeInput1, '08:30')
-      timeInput1.dispatchEvent(new Event('change', { bubbles: true }))
-      await user.click(screen.getByTestId('sheet-save-button'))
-
-      // Wednesday: arrival 09:00
       await user.click(screen.getByTestId('day-pill-3'))
-      await user.click(screen.getByTestId('sheet-time-type-arrival'))
-      const timeInput2 = screen.getByTestId('sheet-time-input')
-      Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype, 'value',
-      )?.set?.call(timeInput2, '09:00')
-      timeInput2.dispatchEvent(new Event('change', { bubbles: true }))
-      await user.click(screen.getByTestId('sheet-save-button'))
 
-      expect(screen.getByText('Dep 08:30')).toBeInTheDocument()
-      expect(screen.getByText('Arr 09:00')).toBeInTheDocument()
-    })
-
-    it('removes a day via Remove Day button in bottom sheet', async () => {
-      const user = await goToRoutineStep()
-
-      // Select and configure Monday
-      await user.click(screen.getByTestId('day-pill-1'))
+      // Set single shared time
       const timeInput = screen.getByTestId('sheet-time-input')
       Object.getOwnPropertyDescriptor(
         HTMLInputElement.prototype, 'value',
-      )?.set?.call(timeInput, '08:00')
+      )?.set?.call(timeInput, '08:30')
       timeInput.dispatchEvent(new Event('change', { bubbles: true }))
-      await user.click(screen.getByTestId('sheet-save-button'))
 
-      // Re-open sheet for Monday
+      // Both days should be selected with the same time picker visible
+      expect(screen.getByTestId('day-pill-1')).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByTestId('day-pill-3')).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByText('Set time for 2 days')).toBeInTheDocument()
+    })
+
+    it('toggling a selected day deselects it', async () => {
+      const user = await goToRoutineStep()
+
+      // Select then deselect Monday
       await user.click(screen.getByTestId('day-pill-1'))
-      await user.click(screen.getByTestId('sheet-remove-button'))
+      expect(screen.getByTestId('day-pill-1')).toHaveAttribute('aria-pressed', 'true')
 
+      await user.click(screen.getByTestId('day-pill-1'))
       expect(screen.getByTestId('day-pill-1')).toHaveAttribute('aria-pressed', 'false')
-      expect(screen.queryByTestId('day-summary-1')).not.toBeInTheDocument()
+
+      // Time picker should no longer be visible
+      expect(screen.queryByTestId('sheet-time-input')).not.toBeInTheDocument()
     })
 
     it('shows validation error when submitting with no days selected', async () => {
@@ -814,29 +795,27 @@ describe('SchedulePage', () => {
       expect(screen.getByText('Please select at least one day')).toBeInTheDocument()
     })
 
-    it('shows validation error when a selected day has no time set', async () => {
+    it('shows validation error when days selected but no time set', async () => {
       const user = await goToRoutineStep()
 
-      // Select Monday but close sheet without saving time
+      // Select Monday but don't set a time
       await user.click(screen.getByTestId('day-pill-1'))
-      await user.click(screen.getByLabelText('Close'))
 
       await user.click(screen.getByTestId('submit-routine-button'))
-      expect(screen.getByTestId('days-error')).toBeInTheDocument()
-      expect(screen.getByText('Please set a time for each selected day')).toBeInTheDocument()
+      expect(screen.getByTestId('time-error')).toBeInTheDocument()
+      expect(screen.getByText('Please set a time')).toBeInTheDocument()
     })
 
     it('calls supabase insert with correct driver_routines data on submit', async () => {
       const user = await goToRoutineStep()
 
-      // Select Monday and set departure 08:30
+      // Select Monday and set departure 08:30 inline
       await user.click(screen.getByTestId('day-pill-1'))
       const timeInput = screen.getByTestId('sheet-time-input')
       Object.getOwnPropertyDescriptor(
         HTMLInputElement.prototype, 'value',
       )?.set?.call(timeInput, '08:30')
       timeInput.dispatchEvent(new Event('change', { bubbles: true }))
-      await user.click(screen.getByTestId('sheet-save-button'))
 
       await user.click(screen.getByTestId('submit-routine-button'))
 
@@ -868,14 +847,13 @@ describe('SchedulePage', () => {
       mockGetPlaceCoordinates.mockResolvedValue(null)
       const user = await goToRoutineStep()
 
-      // Select Monday and set time
+      // Select Monday and set time inline
       await user.click(screen.getByTestId('day-pill-1'))
       const timeInput = screen.getByTestId('sheet-time-input')
       Object.getOwnPropertyDescriptor(
         HTMLInputElement.prototype, 'value',
       )?.set?.call(timeInput, '08:30')
       timeInput.dispatchEvent(new Event('change', { bubbles: true }))
-      await user.click(screen.getByTestId('sheet-save-button'))
 
       await user.click(screen.getByTestId('submit-routine-button'))
 
@@ -889,14 +867,13 @@ describe('SchedulePage', () => {
       mockInsert.mockReturnValue(mockInsertReturn({ error: { message: 'DB error' } }))
       const user = await goToRoutineStep()
 
-      // Select Monday and set time
+      // Select Monday and set time inline
       await user.click(screen.getByTestId('day-pill-1'))
       const timeInput = screen.getByTestId('sheet-time-input')
       Object.getOwnPropertyDescriptor(
         HTMLInputElement.prototype, 'value',
       )?.set?.call(timeInput, '08:30')
       timeInput.dispatchEvent(new Event('change', { bubbles: true }))
-      await user.click(screen.getByTestId('sheet-save-button'))
 
       await user.click(screen.getByTestId('submit-routine-button'))
 
@@ -911,6 +888,158 @@ describe('SchedulePage', () => {
       await user.click(screen.getByTestId('back-button'))
       expect(screen.getByTestId('route-name-input')).toBeInTheDocument()
       expect(screen.getByText('Schedule a Drive')).toBeInTheDocument()
+    })
+
+    // ── Per-Day Time Mode ──────────────────────────────────────────────────────
+
+    it('shows per-day toggle when 2+ days are selected', async () => {
+      const user = await goToRoutineStep()
+
+      // Select only one day — toggle should NOT appear
+      await user.click(screen.getByTestId('day-pill-1'))
+      expect(screen.queryByTestId('per-day-toggle')).not.toBeInTheDocument()
+
+      // Select a second day — toggle SHOULD appear
+      await user.click(screen.getByTestId('day-pill-3'))
+      expect(screen.getByTestId('per-day-toggle')).toBeInTheDocument()
+      expect(screen.getByText('Set different time per day')).toBeInTheDocument()
+    })
+
+    it('toggling per-day mode shows individual day time rows', async () => {
+      const user = await goToRoutineStep()
+
+      // Select Mon, Wed
+      await user.click(screen.getByTestId('day-pill-1'))
+      await user.click(screen.getByTestId('day-pill-3'))
+
+      // Switch to per-day mode
+      await user.click(screen.getByTestId('per-day-toggle'))
+
+      // Should show per-day time rows
+      expect(screen.getByTestId('day-time-row-1')).toBeInTheDocument()
+      expect(screen.getByTestId('day-time-row-3')).toBeInTheDocument()
+      expect(screen.getByText('Monday')).toBeInTheDocument()
+      expect(screen.getByText('Wednesday')).toBeInTheDocument()
+
+      // Shared time picker should NOT be visible
+      expect(screen.queryByTestId('sheet-time-input')).not.toBeInTheDocument()
+    })
+
+    it('per-day mode pre-fills all days with the shared time', async () => {
+      const user = await goToRoutineStep()
+
+      // Select Mon, Wed, Fri
+      await user.click(screen.getByTestId('day-pill-1'))
+      await user.click(screen.getByTestId('day-pill-3'))
+      await user.click(screen.getByTestId('day-pill-5'))
+
+      // Set shared time first
+      const sharedInput = screen.getByTestId('sheet-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(sharedInput, '08:30')
+      sharedInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      // Switch to per-day mode
+      await user.click(screen.getByTestId('per-day-toggle'))
+
+      // All three days should be pre-filled with 08:30
+      expect(screen.getByTestId('day-1-time-input')).toHaveValue('08:30')
+      expect(screen.getByTestId('day-3-time-input')).toHaveValue('08:30')
+      expect(screen.getByTestId('day-5-time-input')).toHaveValue('08:30')
+
+      // Now change just Friday to 10:00
+      const friInput = screen.getByTestId('day-5-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(friInput, '10:00')
+      friInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      expect(screen.getByTestId('day-1-time-input')).toHaveValue('08:30')
+      expect(screen.getByTestId('day-3-time-input')).toHaveValue('08:30')
+      expect(screen.getByTestId('day-5-time-input')).toHaveValue('10:00')
+    })
+
+    it('per-day mode allows different times per day', async () => {
+      const user = await goToRoutineStep()
+
+      // Select Mon, Wed
+      await user.click(screen.getByTestId('day-pill-1'))
+      await user.click(screen.getByTestId('day-pill-3'))
+
+      // Switch to per-day mode
+      await user.click(screen.getByTestId('per-day-toggle'))
+
+      // Set Monday time: 08:00
+      const monTimeInput = screen.getByTestId('day-1-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(monTimeInput, '08:00')
+      monTimeInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      // Set Wednesday time: 10:00
+      const wedTimeInput = screen.getByTestId('day-3-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(wedTimeInput, '10:00')
+      wedTimeInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      expect(monTimeInput).toHaveValue('08:00')
+      expect(wedTimeInput).toHaveValue('10:00')
+    })
+
+    it('per-day mode can toggle back to shared mode', async () => {
+      const user = await goToRoutineStep()
+
+      // Select Mon, Wed
+      await user.click(screen.getByTestId('day-pill-1'))
+      await user.click(screen.getByTestId('day-pill-3'))
+
+      // Switch to per-day mode
+      await user.click(screen.getByTestId('per-day-toggle'))
+      expect(screen.getByText('Use same time for all days')).toBeInTheDocument()
+
+      // Switch back to shared mode
+      await user.click(screen.getByTestId('per-day-toggle'))
+      expect(screen.getByTestId('sheet-time-input')).toBeInTheDocument()
+      expect(screen.getByText('Set time for 2 days')).toBeInTheDocument()
+    })
+
+    it('shows validation error in per-day mode when time not set for a day', async () => {
+      const user = await goToRoutineStep()
+
+      // Select Mon, Wed
+      await user.click(screen.getByTestId('day-pill-1'))
+      await user.click(screen.getByTestId('day-pill-3'))
+
+      // Switch to per-day mode
+      await user.click(screen.getByTestId('per-day-toggle'))
+
+      // Set only Monday time, leave Wednesday empty
+      const monTimeInput = screen.getByTestId('day-1-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(monTimeInput, '08:00')
+      monTimeInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      await user.click(screen.getByTestId('submit-routine-button'))
+      expect(screen.getByText(/Please set a time for Wednesday/i)).toBeInTheDocument()
+    })
+
+    it('per-day mode supports departure/arrival per day', async () => {
+      const user = await goToRoutineStep()
+
+      // Select Mon, Wed
+      await user.click(screen.getByTestId('day-pill-1'))
+      await user.click(screen.getByTestId('day-pill-3'))
+
+      // Switch to per-day mode
+      await user.click(screen.getByTestId('per-day-toggle'))
+
+      // Monday: departure (default), Wednesday: arrival
+      await user.click(screen.getByTestId('day-3-time-type-arrival'))
+      expect(screen.getByTestId('day-3-time-type-arrival')).toHaveClass('bg-primary')
+      expect(screen.getByTestId('day-1-time-type-departure')).toHaveClass('bg-primary')
     })
   })
 })

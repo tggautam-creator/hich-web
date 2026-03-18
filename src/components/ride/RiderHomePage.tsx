@@ -111,25 +111,13 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
         </Map>
       </APIProvider>
 
-      {/* ── Slim frosted top bar — hamburger + wordmark ─────────────────────── */}
+      {/* ── Slim frosted top bar — wordmark + notifications ────────────────── */}
       <div
         data-testid="top-bar"
-        className="absolute left-0 right-0 top-0 z-[1000] bg-white/90 backdrop-blur-sm border-b border-border flex items-center px-4"
+        className="absolute left-0 right-0 top-0 z-[1000] bg-white/90 backdrop-blur-sm border-b border-border flex items-center justify-between px-4"
         style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}
       >
-        <button
-          data-testid="hamburger-menu"
-          aria-label="Open menu"
-          className="p-1 text-text-primary active:opacity-60 transition-opacity"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6" aria-hidden="true">
-            <line x1="3" y1="6" x2="21" y2="6" />
-            <line x1="3" y1="12" x2="21" y2="12" />
-            <line x1="3" y1="18" x2="21" y2="18" />
-          </svg>
-        </button>
-
-        <span className="flex-1 text-center font-bold text-lg text-primary tracking-widest select-none">
+        <span className="font-bold text-lg text-primary tracking-widest select-none">
           HICH
         </span>
 
@@ -174,17 +162,17 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
         </button>
       )}
 
-      {/* ── From / Where-to card + Schedule button ──────────────────────────── */}
+      {/* ── Stacked search + ride board cards ─────────────────────────────── */}
       <div
-        className="absolute left-0 right-0 z-[1000] px-4 flex gap-2 items-start"
+        className="absolute left-0 right-0 z-[1000] px-4 flex flex-col gap-2"
         style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 4.5rem)' }}
       >
-        {/* Two-line location card */}
+        {/* Full-width search card */}
         <button
           data-testid="search-bar"
           onClick={() => { navigate('/ride/search', { state: { locationName, originLat: center.lat, originLng: center.lng } }) }}
           aria-label="Search for a destination"
-          className="flex-1 bg-white rounded-2xl shadow-lg px-4 py-3 text-left active:scale-[0.99] transition-transform"
+          className="w-full bg-white rounded-2xl shadow-lg px-4 py-3 text-left active:scale-[0.99] transition-transform"
         >
           {/* From line */}
           <div className="flex items-center gap-3">
@@ -209,23 +197,29 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
           </div>
         </button>
 
-        {/* Ride Board — single action button */}
+        {/* Full-width ride board button */}
         <button
           data-testid="ride-board-button"
           onClick={() => { navigate('/rides/board', { state: { fromTab: 'home' } }) }}
           aria-label="Browse ride board"
-          className="bg-white rounded-2xl shadow-lg border border-border w-12 h-12 flex items-center justify-center shrink-0 self-center active:scale-[0.97] transition-transform"
+          className="w-full bg-white rounded-2xl shadow-lg px-4 py-3 flex items-center gap-3 active:scale-[0.99] transition-transform"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-text-primary" aria-hidden="true">
-            <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
-            <line x1="16" y1="2" x2="16" y2="6" />
-            <line x1="8" y1="2" x2="8" y2="6" />
-            <line x1="3" y1="10" x2="21" y2="10" />
-            <circle cx="12" cy="16" r="1.5" fill="currentColor" stroke="none" />
+          <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+              <line x1="16" y1="2" x2="16" y2="6" />
+              <line x1="8" y1="2" x2="8" y2="6" />
+              <line x1="3" y1="10" x2="21" y2="10" />
+              <circle cx="12" cy="16" r="1.5" fill="currentColor" stroke="none" />
+            </svg>
+          </div>
+          <span className="flex-1 text-sm font-semibold text-text-primary text-left">
+            Browse Ride Board
+          </span>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
+            <path d="M9 18l6-6-6-6" />
           </svg>
         </button>
-
-
       </div>
 
       {/* ── Bottom navigation ──────────────────────────────────────────────── */}

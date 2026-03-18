@@ -231,6 +231,33 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
     return () => { void supabase.removeChannel(channel) }
   }, [profile?.id, rideId, navigate])
 
+  // ── Polling fallback — catch missed Realtime events ────────────────────
+  useEffect(() => {
+    if (!rideId) return
+
+    const poll = setInterval(async () => {
+      const { data } = await supabase
+        .from('rides')
+        .select('status, started_at')
+        .eq('id', rideId)
+        .single()
+
+      if (!data) return
+
+      if (data.status === 'completed' || data.status === 'cancelled') {
+        navigate(data.status === 'completed' ? `/ride/summary/${rideId}` : '/home/driver', { replace: true })
+      } else if (data.status === 'active' && data.started_at) {
+        setRide((prev) => {
+          if (!prev) return prev
+          if (prev.status !== 'active') return { ...prev, status: 'active', started_at: data.started_at }
+          return prev
+        })
+      }
+    }, 15_000)
+
+    return () => clearInterval(poll)
+  }, [rideId, navigate])
+
   // ── Listen for new chat messages (unread badge) ────────────────────────
   useEffect(() => {
     if (!rideId) return

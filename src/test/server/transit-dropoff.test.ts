@@ -353,6 +353,16 @@ describe('PATCH /api/rides/:id/decline-dropoff', () => {
       if (table === 'rides') {
         return { update: mockUpdate }
       }
+      if (table === 'driver_locations') {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockResolvedValue({
+              data: [{ user_id: 'other-driver-1' }, { user_id: 'other-driver-2' }],
+              error: null,
+            }),
+          }),
+        }
+      }
       if (table === 'users') {
         return {
           select: vi.fn().mockReturnValue({

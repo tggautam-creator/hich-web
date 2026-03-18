@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from 'express'
 interface ApiError {
   code?: string
   message?: string
+  stack?: string
 }
 
 /**
@@ -14,6 +15,7 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ): void {
+  console.error('[ERROR]', err.stack ?? err)
   res.status(500).json({
     error: {
       code: err.code ?? 'INTERNAL_ERROR',

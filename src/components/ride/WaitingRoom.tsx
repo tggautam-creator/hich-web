@@ -23,6 +23,9 @@ interface LocationState {
   destinationLat?: number
   destinationLng?: number
   polyline?: string
+  /** Set by MultiDriverMap after selecting a driver */
+  selectedDriverId?: string
+  selectedDriverName?: string
 }
 
 interface DriverOfferInfo {
@@ -35,6 +38,14 @@ interface DriverOfferInfo {
   driver_destination_name: string | null
 }
 
+/**
+ * Phase state machine:
+ * - finding: waiting for drivers to accept
+ * - driver_choosing_dropoff: a driver was selected, waiting for them to choose dropoff
+ * - navigating_away: about to leave this page (prevents race conditions)
+ */
+type Phase = 'finding' | 'driver_choosing_dropoff' | 'navigating_away'
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps) {
@@ -43,10 +54,18 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
   const state = location.state as LocationState | null
   const profile = useAuthStore((s) => s.profile)
 
+  const [phase, setPhase] = useState<Phase>(() =>
+    state?.selectedDriverId ? 'driver_choosing_dropoff' : 'finding',
+  )
+  const phaseRef = useRef(phase)
+  phaseRef.current = phase
+  const [offers, setOffers] = useState<DriverOfferInfo[]>([])
+  const [selectedDriverName, setSelectedDriverName] = useState<string | null>(
+    state?.selectedDriverName ?? null,
+  )
+  const [cancelToast, setCancelToast] = useState<string | null>(null)
   const [isCancelling, setCancelling] = useState(false)
-  const [driverOffers, setDriverOffers] = useState<DriverOfferInfo[]>([])
-  const [driverChoosingDropoff, setDriverChoosingDropoff] = useState(false)
-  const [selectedDriverName, setSelectedDriverName] = useState<string | null>(null)
+
   const selectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Redirect if missing required state
@@ -56,159 +75,69 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
     }
   }, [state, navigate])
 
-  // Auto-select logic: after first offer, wait 15s then decide
-  const handleSelectOrNavigate = useCallback((offers: DriverOfferInfo[]) => {
-    if (!state?.rideId) return
-    const navState = {
-      destination: state.destination,
-      destinationLat: state.destinationLat,
-      destinationLng: state.destinationLng,
-    }
+  // ── Auto-select / navigate logic ─────────────────────────────────────────
+  const handleSelectOrNavigate = useCallback(
+    (currentOffers: DriverOfferInfo[]) => {
+      if (!state?.rideId || phaseRef.current !== 'finding') return
+      const navState = {
+        destination: state.destination,
+        destinationLat: state.destinationLat,
+        destinationLng: state.destinationLng,
+      }
 
-    if (offers.length === 1) {
-      // Single driver — auto-select
-      void (async () => {
-        const { data: { session } } = await supabase.auth.getSession()
-        if (session) {
+      if (currentOffers.length === 1) {
+        // Single driver — auto-select
+        void (async () => {
+          const { data: { session } } = await supabase.auth.getSession()
+          if (!session || phaseRef.current !== 'finding') return
+
           const resp = await fetch(`/api/rides/${state.rideId}/select-driver`, {
             method: 'PATCH',
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${session.access_token}`,
             },
-            body: JSON.stringify({ driver_id: offers[0].driver_id }),
+            body: JSON.stringify({ driver_id: currentOffers[0]!.driver_id }),
           })
 
-          // Driver always goes through DropoffSelection after accepting.
-          // Wait here until they finish choosing a drop-off point.
           if (resp.ok) {
-            const body = await resp.json() as { driver_name?: string | null }
-            setSelectedDriverName(body.driver_name ?? offers[0].driver_name)
-            setDriverChoosingDropoff(true)
-            return
+            const body = (await resp.json()) as { driver_name?: string | null; driver_has_destination?: boolean }
+            setSelectedDriverName(body.driver_name ?? currentOffers[0]!.driver_name)
+            setPhase('driver_choosing_dropoff')
+          } else {
+            // If 409 (offer no longer available), remove this driver and stay in finding phase
+            if (resp.status === 409) {
+              setOffers((prev) => prev.filter((o) => o.driver_id !== currentOffers[0]!.driver_id))
+            } else {
+              navigate(`/ride/messaging/${state.rideId}`, { replace: true, state: navState })
+            }
           }
-        }
-        navigate(`/ride/messaging/${state.rideId}`, { replace: true, state: navState })
-      })()
-    } else {
-      // Multiple drivers — navigate to multi-driver selection
-      navigate(`/ride/multi-driver/${state.rideId}`, { replace: true, state: navState })
-    }
-  }, [state, navigate])
-
-  // Poll ride_offers and ride status every 5s as a reliable fallback for Realtime.
-  // This ensures the rider sees driver acceptances even if server Realtime is down.
-  useEffect(() => {
-    if (!state?.rideId) return
-    let cancelled = false
-
-    const poll = async () => {
-      if (cancelled) return
-
-      // Check ride status first — if coordinating, go to chat; if cancelled, go home
-      const { data: rideData } = await supabase
-        .from('rides')
-        .select('status, driver_id')
-        .eq('id', state.rideId)
-        .single()
-
-      if (cancelled || !rideData) return
-
-      if (rideData.status === 'coordinating') {
-        navigate(`/ride/messaging/${state.rideId}`, {
-          replace: true,
-          state: {
-            destination: state.destination,
-            destinationLat: state.destinationLat,
-            destinationLng: state.destinationLng,
-          },
-        })
-        return
+        })()
+      } else if (currentOffers.length > 1) {
+        // Multiple drivers — navigate to multi-driver selection
+        setPhase('navigating_away')
+        navigate(`/ride/multi-driver/${state.rideId}`, { replace: true, state: navState })
       }
+    },
+    [state, navigate],
+  )
 
-      if (rideData.status === 'cancelled') {
-        navigate('/home/rider', { replace: true })
-        return
-      }
-
-      // If ride reverted to requested with no driver (driver cancelled), reset state
-      if (rideData.status === 'requested' && !rideData.driver_id && driverChoosingDropoff) {
-        setDriverChoosingDropoff(false)
-        setSelectedDriverName(null)
-        setDriverOffers((prev) => prev.filter(() => false)) // clear all
-      }
-
-      // Check for new driver offers
-      const { data: existingOffers } = await supabase
-        .from('ride_offers')
-        .select('driver_id, driver_destination_name, overlap_pct, status')
-        .eq('ride_id', state.rideId)
-        .eq('status', 'pending')
-
-      if (cancelled || !existingOffers || existingOffers.length === 0) return
-
-      const driverIds = existingOffers.map(o => o.driver_id)
-      const { data: drivers } = await supabase
-        .from('users')
-        .select('id, full_name, avatar_url, rating_avg, rating_count')
-        .in('id', driverIds)
-
-      if (cancelled) return
-
-      const driverMap: Record<string, { full_name: string | null; avatar_url: string | null; rating_avg: number | null; rating_count: number }> = {}
-      for (const d of drivers ?? []) driverMap[d.id] = d
-
-      const offers: DriverOfferInfo[] = existingOffers.map((row) => {
-        const driver = driverMap[row.driver_id]
-        return {
-          driver_id: row.driver_id,
-          driver_name: driver?.full_name ?? null,
-          driver_avatar: driver?.avatar_url ?? null,
-          driver_rating: driver?.rating_avg ?? null,
-          driver_rating_count: driver?.rating_count ?? 0,
-          overlap_pct: row.overlap_pct,
-          driver_destination_name: row.driver_destination_name,
-        }
-      })
-
-      setDriverOffers((prev) => {
-        const existing = new Set(prev.map(o => o.driver_id))
-        const newOffers = offers.filter(o => !existing.has(o.driver_id))
-        if (newOffers.length === 0) return prev
-        const merged = [...prev, ...newOffers]
-
-        // Start auto-select timer if this is the first batch and no timer running
-        if (prev.length === 0 && merged.length >= 1 && !selectionTimerRef.current) {
-          selectionTimerRef.current = setTimeout(() => {
-            handleSelectOrNavigate(merged)
-          }, 15000)
-        }
-
-        return merged
-      })
-    }
-
-    // Run immediately on mount, then every 5 seconds
-    void poll()
-    const interval = setInterval(() => void poll(), 5000)
-
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [state, navigate, handleSelectOrNavigate, driverChoosingDropoff])
-
-  // Subscribe to ride acceptance via Supabase Realtime broadcast
+  // ── Single Realtime channel + Single polling interval ─────────────────────
   useEffect(() => {
     if (!state?.rideId || !profile?.id) return
+    let cancelled = false
 
+    const rideId = state.rideId
+
+    // ── Realtime channel ────────────────────────────────────────────────
     const channel = supabase
       .channel(`waiting:${profile.id}`)
       .on('broadcast', { event: 'ride_accepted' }, (msg) => {
+        if (cancelled || phaseRef.current === 'navigating_away') return
         const data = msg.payload as Record<string, unknown>
-        const rideId = data['ride_id'] as string | undefined
+        if (data['ride_id'] !== rideId) return
         const driverId = data['driver_id'] as string | undefined
-        if (rideId !== state.rideId || !driverId) return
+        if (!driverId) return
 
         const offer: DriverOfferInfo = {
           driver_id: driverId,
@@ -220,7 +149,7 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
           driver_destination_name: typeof data['driver_destination_name'] === 'string' ? data['driver_destination_name'] : null,
         }
 
-        // If broadcast didn't include driver name, fetch it from DB
+        // Fetch driver info if broadcast didn't include it
         if (!offer.driver_name) {
           void supabase
             .from('users')
@@ -229,16 +158,10 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
             .single()
             .then(({ data: driverUser }) => {
               if (driverUser?.full_name) {
-                setDriverOffers((prev) =>
+                setOffers((prev) =>
                   prev.map((o) =>
                     o.driver_id === driverId
-                      ? {
-                          ...o,
-                          driver_name: driverUser.full_name,
-                          driver_avatar: driverUser.avatar_url ?? o.driver_avatar,
-                          driver_rating: driverUser.rating_avg ?? o.driver_rating,
-                          driver_rating_count: driverUser.rating_count ?? o.driver_rating_count,
-                        }
+                      ? { ...o, driver_name: driverUser.full_name, driver_avatar: driverUser.avatar_url ?? o.driver_avatar, driver_rating: driverUser.rating_avg ?? o.driver_rating, driver_rating_count: driverUser.rating_count ?? o.driver_rating_count }
                       : o,
                   ),
                 )
@@ -246,138 +169,233 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
             })
         }
 
-        setDriverOffers((prev) => {
-          if (prev.some(o => o.driver_id === driverId)) return prev
+        setOffers((prev) => {
+          if (prev.some((o) => o.driver_id === driverId)) return prev
           const updated = [...prev, offer]
 
-          // First offer: start 15s timer
-          if (updated.length === 1) {
-            selectionTimerRef.current = setTimeout(() => {
-              handleSelectOrNavigate(updated)
-            }, 15000)
-          }
+          // Auto-select timer management
+          if (selectionTimerRef.current) clearTimeout(selectionTimerRef.current)
 
-          // Second+ offer: clear old timer, start a shorter 5s timer
-          // to give a few more seconds for additional offers
-          if (updated.length > 1 && selectionTimerRef.current) {
-            clearTimeout(selectionTimerRef.current)
-            selectionTimerRef.current = setTimeout(() => {
-              handleSelectOrNavigate(updated)
-            }, 5000)
+          if (updated.length === 1) {
+            // First offer: 2s grace period then auto-select
+            selectionTimerRef.current = setTimeout(() => handleSelectOrNavigate(updated), 2000)
+          } else {
+            // Additional offer: 3s to batch then navigate to multi-driver
+            selectionTimerRef.current = setTimeout(() => handleSelectOrNavigate(updated), 3000)
           }
 
           return updated
         })
       })
       .on('broadcast', { event: 'driver_cancelled' }, (msg) => {
+        if (cancelled) return
         const data = msg.payload as Record<string, unknown>
-        if (data['ride_id'] !== state.rideId) return
+        if (data['ride_id'] !== rideId) return
 
-        // Reset to "finding driver" state
-        setDriverChoosingDropoff(false)
-        setSelectedDriverName(null)
+        const cancelledId = data['cancelled_driver_id'] as string | undefined
+
+        // Clear selection timer — cancelled driver may have been the one about to be auto-selected
         if (selectionTimerRef.current) {
           clearTimeout(selectionTimerRef.current)
           selectionTimerRef.current = null
         }
 
-        // Remove the cancelled driver from offers
-        const cancelledId = data['cancelled_driver_id'] as string | undefined
+        // Remove cancelled driver from offers
         if (cancelledId) {
-          setDriverOffers((prev) => prev.filter(o => o.driver_id !== cancelledId))
+          setOffers((prev) => prev.filter((o) => o.driver_id !== cancelledId))
         }
+
+        // Handle based on current phase
+        if (phaseRef.current === 'driver_choosing_dropoff') {
+          setPhase('finding')
+          setSelectedDriverName(null)
+
+          // Show toast
+          const standbyCount = typeof data['standby_count'] === 'number' ? data['standby_count'] : 0
+          const toastMsg = standbyCount > 0
+            ? `Driver cancelled — ${standbyCount} other driver${standbyCount > 1 ? 's' : ''} available`
+            : 'Driver cancelled — finding another driver…'
+          setCancelToast(toastMsg)
+          setTimeout(() => setCancelToast(null), 5000)
+        } else if (phaseRef.current === 'finding') {
+          // Driver cancelled before we even selected them (Path C)
+          setCancelToast('A driver cancelled — still searching…')
+          setTimeout(() => setCancelToast(null), 4000)
+        }
+      })
+      .on('broadcast', { event: 'dropoff_done' }, (msg) => {
+        if (cancelled || phaseRef.current === 'navigating_away') return
+        const data = msg.payload as Record<string, unknown>
+        if (data['ride_id'] !== rideId) return
+        setPhase('navigating_away')
+        navigate(`/ride/messaging/${rideId}`, {
+          replace: true,
+          state: {
+            destination: state.destination,
+            destinationLat: state.destinationLat,
+            destinationLng: state.destinationLng,
+          },
+        })
+      })
+      .on('broadcast', { event: 'ride_cancelled' }, (msg) => {
+        if (cancelled) return
+        const data = msg.payload as Record<string, unknown>
+        if (data['ride_id'] !== rideId) return
+        setPhase('navigating_away')
+        navigate('/home/rider', { replace: true })
       })
       .subscribe()
 
-    return () => {
-      if (selectionTimerRef.current) clearTimeout(selectionTimerRef.current)
-      void supabase.removeChannel(channel)
-    }
-  }, [state, profile?.id, handleSelectOrNavigate])
-
-  // Listen for driver finishing dropoff selection (when driverChoosingDropoff is true)
-  useEffect(() => {
-    if (!driverChoosingDropoff || !state?.rideId) return
-
-    const navState = {
-      destination: state.destination,
-      destinationLat: state.destinationLat,
-      destinationLng: state.destinationLng,
-    }
-
-    const goToChat = () => {
-      navigate(`/ride/messaging/${state.rideId}`, { replace: true, state: navState })
-    }
-
-    let cancelled = false
-
-    const channel = supabase
-      .channel(`chat:${state.rideId}`)
+    // Also subscribe to the chat channel for transit_dropoff_suggestion during dropoff phase
+    const chatChannel = supabase
+      .channel(`chat:${rideId}`)
       .on('broadcast', { event: 'new_message' }, (msg) => {
+        if (cancelled || phaseRef.current !== 'driver_choosing_dropoff') return
         const payload = msg.payload as Record<string, unknown>
         if (payload['type'] === 'transit_dropoff_suggestion') {
-          goToChat()
+          setPhase('navigating_away')
+          navigate(`/ride/messaging/${rideId}`, {
+            replace: true,
+            state: {
+              destination: state.destination,
+              destinationLat: state.destinationLat,
+              destinationLng: state.destinationLng,
+            },
+          })
         }
       })
       .on('broadcast', { event: 'dropoff_done' }, () => {
-        goToChat()
+        if (cancelled || phaseRef.current === 'navigating_away') return
+        setPhase('navigating_away')
+        navigate(`/ride/messaging/${rideId}`, {
+          replace: true,
+          state: {
+            destination: state.destination,
+            destinationLat: state.destinationLat,
+            destinationLng: state.destinationLng,
+          },
+        })
       })
-      .on('broadcast', { event: 'ride_cancelled' }, () => {
-        navigate('/home/rider', { replace: true })
-      })
-      .on('broadcast', { event: 'driver_cancelled' }, () => {
-        // Driver cancelled during dropoff selection — reset to finding driver state
-        setDriverChoosingDropoff(false)
-        setSelectedDriverName(null)
+      .on('broadcast', { event: 'driver_cancelled' }, (msg) => {
+        if (cancelled) return
+        const data = msg.payload as Record<string, unknown>
+        if (data['ride_id'] !== rideId) return
+        // Driver cancelled during dropoff — handled by waiting channel above
       })
       .subscribe()
 
-    // Poll ride status every 5s as a reliable fallback.
-    // - If ride reverted to 'requested' → driver cancelled, reset to finding mode
-    // - If ride has messages → driver finished dropoff, go to chat
-    // - If ride is 'coordinating' → go to chat
-    // - After 60s total → go to chat anyway
-    const startTime = Date.now()
-    const poll = setInterval(() => {
+    // ── Polling interval (5s) ───────────────────────────────────────────
+    const poll = async () => {
       if (cancelled) return
-      void supabase
+
+      const { data: rideData } = await supabase
         .from('rides')
         .select('status, driver_id')
-        .eq('id', state.rideId)
+        .eq('id', rideId)
         .single()
-        .then(({ data: rideData }) => {
-          if (cancelled || !rideData) return
-          if (rideData.status === 'requested' || !rideData.driver_id) {
-            // Driver cancelled — revert to finding driver state
-            setDriverChoosingDropoff(false)
-            setSelectedDriverName(null)
-            setDriverOffers((prev) => prev.filter(o => o.driver_id !== rideData.driver_id))
-          } else if (rideData.status === 'coordinating') {
-            goToChat()
-          } else if (rideData.status === 'cancelled') {
-            navigate('/home/rider', { replace: true })
-          } else if (Date.now() - startTime > 60000) {
-            // 60s hard fallback
-            goToChat()
+
+      if (cancelled || !rideData) return
+
+      // Ride coordinating → go to chat
+      if (rideData.status === 'coordinating') {
+        setPhase('navigating_away')
+        navigate(`/ride/messaging/${rideId}`, {
+          replace: true,
+          state: {
+            destination: state.destination,
+            destinationLat: state.destinationLat,
+            destinationLng: state.destinationLng,
+          },
+        })
+        return
+      }
+
+      // Ride cancelled → go home
+      if (rideData.status === 'cancelled') {
+        setPhase('navigating_away')
+        navigate('/home/rider', { replace: true })
+        return
+      }
+
+      // If ride reverted to 'requested' with no driver while we're in dropoff phase → driver cancelled
+      if (rideData.status === 'requested' && !rideData.driver_id && phaseRef.current === 'driver_choosing_dropoff') {
+        setPhase('finding')
+        setSelectedDriverName(null)
+        // Don't wipe offers — the poll below will re-fetch current pending offers
+        setCancelToast('Driver cancelled — finding another driver…')
+        setTimeout(() => setCancelToast(null), 5000)
+      }
+
+      // If we're in 'finding' phase, check for new offers
+      if (phaseRef.current === 'finding') {
+        const { data: existingOffers } = await supabase
+          .from('ride_offers')
+          .select('driver_id, driver_destination_name, overlap_pct, status')
+          .eq('ride_id', rideId)
+          .in('status', ['pending', 'selected'])
+
+        if (cancelled || !existingOffers || existingOffers.length === 0) return
+
+        const driverIds = existingOffers.map((o) => o.driver_id)
+        const { data: drivers } = await supabase
+          .from('users')
+          .select('id, full_name, avatar_url, rating_avg, rating_count')
+          .in('id', driverIds)
+
+        if (cancelled) return
+
+        const driverMap: Record<string, { full_name: string | null; avatar_url: string | null; rating_avg: number | null; rating_count: number }> = {}
+        for (const d of drivers ?? []) driverMap[d.id] = d
+
+        const polledOffers: DriverOfferInfo[] = existingOffers.map((row) => {
+          const driver = driverMap[row.driver_id]
+          return {
+            driver_id: row.driver_id,
+            driver_name: driver?.full_name ?? null,
+            driver_avatar: driver?.avatar_url ?? null,
+            driver_rating: driver?.rating_avg ?? null,
+            driver_rating_count: driver?.rating_count ?? 0,
+            overlap_pct: row.overlap_pct,
+            driver_destination_name: row.driver_destination_name,
           }
         })
-    }, 5000)
+
+        setOffers((prev) => {
+          const existing = new Set(prev.map((o) => o.driver_id))
+          const newOffers = polledOffers.filter((o) => !existing.has(o.driver_id))
+          if (newOffers.length === 0) return prev
+          const merged = [...prev, ...newOffers]
+
+          // Start auto-select timer if first batch
+          if (prev.length === 0 && merged.length >= 1 && !selectionTimerRef.current) {
+            selectionTimerRef.current = setTimeout(() => handleSelectOrNavigate(merged), 2000)
+          }
+
+          return merged
+        })
+      }
+    }
+
+    void poll()
+    const interval = setInterval(() => void poll(), 10000)
 
     return () => {
       cancelled = true
-      clearInterval(poll)
+      clearInterval(interval)
+      if (selectionTimerRef.current) clearTimeout(selectionTimerRef.current)
       void supabase.removeChannel(channel)
+      void supabase.removeChannel(chatChannel)
     }
-  }, [driverChoosingDropoff, state, navigate])
+  }, [state, profile?.id, navigate, handleSelectOrNavigate, setPhase])
 
   if (!state?.rideId) return null
 
   const destination = state.destination
   const fareRange = state.fareRange
   const fareDisplay = fareRange
-    ? (fareRange.low.fare_cents === fareRange.high.fare_cents
-        ? formatCents(fareRange.low.fare_cents)
-        : `${formatCents(fareRange.low.fare_cents)}–${formatCents(fareRange.high.fare_cents)}`)
+    ? fareRange.low.fare_cents === fareRange.high.fare_cents
+      ? formatCents(fareRange.low.fare_cents)
+      : `${formatCents(fareRange.low.fare_cents)}–${formatCents(fareRange.high.fare_cents)}`
     : null
 
   // ── Map coordinates ─────────────────────────────────────────────────────
@@ -404,14 +422,15 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
     }
   }
 
-  // Status text based on offers
-  const statusText = driverChoosingDropoff
-    ? `${selectedDriverName ?? 'Driver'} is choosing a drop-off point…`
-    : driverOffers.length === 0
-      ? 'Finding you a driver…'
-      : driverOffers.length === 1
-        ? `${driverOffers[0].driver_name ?? 'A driver'} accepted!`
-        : `${driverOffers.length} drivers accepted — choosing best match…`
+  // Status text based on phase + offers
+  const statusText =
+    phase === 'driver_choosing_dropoff'
+      ? `${selectedDriverName ?? 'Driver'} is choosing a drop-off point…`
+      : offers.length === 0
+        ? 'Finding you a driver…'
+        : offers.length === 1
+          ? `${offers[0]!.driver_name ?? 'A driver'} accepted!`
+          : `${offers.length} drivers accepted — choosing best match…`
 
   return (
     <div
@@ -420,7 +439,7 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
     >
 
       {/* ── Route preview map ────────────────────────────────────────────────── */}
-      <div className="relative w-full" style={{ height: driverOffers.length > 0 ? '35dvh' : '45dvh' }}>
+      <div className="relative w-full" style={{ height: offers.length > 0 ? '35dvh' : '45dvh' }}>
         {hasRoute ? (
           <Map
             mapId={MAP_ID}
@@ -430,16 +449,14 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
             disableDefaultUI
             className="h-full w-full"
           >
-            {/* Pickup marker */}
             <AdvancedMarker position={{ lat: oLat, lng: oLng }} title="Pickup">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-success shadow-lg text-xs font-bold text-white">
-                P
+              <div className="flex h-7 items-center justify-center rounded-full border-[3px] border-white bg-success px-2 shadow-lg text-[10px] font-bold text-white whitespace-nowrap">
+                PICKUP
               </div>
             </AdvancedMarker>
-            {/* Destination marker */}
             <AdvancedMarker position={{ lat: dLat, lng: dLng }} title="Destination">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-danger shadow-lg text-xs font-bold text-white">
-                D
+              <div className="flex h-7 items-center justify-center rounded-full border-[3px] border-white bg-danger px-2 shadow-lg text-[10px] font-bold text-white whitespace-nowrap">
+                DROP-OFF
               </div>
             </AdvancedMarker>
             {state.polyline ? (
@@ -457,14 +474,23 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
         {/* Overlay: status badge */}
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-white/95 px-4 py-2 shadow-lg backdrop-blur-sm">
           <span className="relative flex h-3 w-3">
-            <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${driverChoosingDropoff ? 'bg-primary' : driverOffers.length > 0 ? 'bg-success' : 'bg-primary'} opacity-75`} />
-            <span className={`relative inline-flex h-3 w-3 rounded-full ${driverChoosingDropoff ? 'bg-primary' : driverOffers.length > 0 ? 'bg-success' : 'bg-primary'}`} />
+            <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${phase === 'driver_choosing_dropoff' ? 'bg-primary' : offers.length > 0 ? 'bg-success' : 'bg-primary'} opacity-75`} />
+            <span className={`relative inline-flex h-3 w-3 rounded-full ${phase === 'driver_choosing_dropoff' ? 'bg-primary' : offers.length > 0 ? 'bg-success' : 'bg-primary'}`} />
           </span>
           <span data-testid="status-text" className="text-sm font-semibold text-text-primary">
             {statusText}
           </span>
         </div>
       </div>
+
+      {/* ── Cancel toast ─────────────────────────────────────────────────────── */}
+      {cancelToast && (
+        <div className="mx-5 mt-3 rounded-2xl bg-warning/10 border border-warning/20 px-4 py-3">
+          <p data-testid="cancel-toast" className="text-sm font-medium text-warning-dark text-center">
+            {cancelToast}
+          </p>
+        </div>
+      )}
 
       {/* ── Bottom panel ─────────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col px-5 pt-5 gap-4">
@@ -495,12 +521,12 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
         )}
 
         {/* Driver offer cards */}
-        {driverOffers.length > 0 && (
+        {offers.length > 0 && (
           <div className="space-y-3" data-testid="driver-offers">
             <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider">
-              {driverOffers.length === 1 ? 'Driver accepted' : `${driverOffers.length} drivers accepted`}
+              {offers.length === 1 ? 'Driver accepted' : `${offers.length} drivers accepted`}
             </p>
-            {driverOffers.map((offer) => (
+            {offers.map((offer) => (
               <div
                 key={offer.driver_id}
                 data-testid="driver-offer-card"
@@ -511,7 +537,9 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
                     <img src={offer.driver_avatar} alt="" className="h-10 w-10 rounded-full object-cover" />
                   ) : (
                     <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary-light">
-                      <span className="text-lg">🧑</span>
+                      <span className="text-lg font-semibold text-primary">
+                        {offer.driver_name?.[0]?.toUpperCase() ?? '?'}
+                      </span>
                     </div>
                   )}
                   <div className="flex-1 min-w-0">
@@ -520,7 +548,7 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
                     </p>
                     {offer.driver_rating != null && (
                       <div className="flex items-center gap-1">
-                        <span className="text-warning text-xs">★</span>
+                        <span className="text-warning text-xs">&#x2605;</span>
                         <span className="text-xs text-text-secondary">{offer.driver_rating.toFixed(1)}</span>
                       </div>
                     )}
@@ -551,14 +579,14 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
           </div>
         )}
 
-        {driverOffers.length === 0 && !driverChoosingDropoff && (
+        {offers.length === 0 && phase === 'finding' && (
           <p className="text-center text-sm text-text-secondary">
             Sit tight — we're notifying nearby drivers
           </p>
         )}
 
         {/* Driver is choosing a drop-off point — show a waiting card */}
-        {driverChoosingDropoff && (
+        {phase === 'driver_choosing_dropoff' && (
           <div data-testid="driver-choosing-dropoff" className="bg-primary/5 border border-primary/15 rounded-2xl p-4 space-y-3">
             <div className="flex items-center gap-3">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent shrink-0" />

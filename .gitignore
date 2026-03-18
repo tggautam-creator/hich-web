@@ -34,3 +34,8 @@ firebase-service-account.json
 # AI tool artifacts
 .claude/
 .claire/
+
+# Local planning docs (not for repo)
+PRD.md
+HICH_PRD.md
+SESSION_BRIEF.md

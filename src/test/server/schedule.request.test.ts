@@ -97,9 +97,9 @@ function setupMocks(schedule: Record<string, unknown>, requesterId: string) {
   })
   const mockSelectTokens = vi.fn().mockReturnValue({ eq: mockTokenEq })
 
-  // users (requester name) → .select().eq().single()
+  // users (requester name + driver check) → .select().eq().single()
   const mockUserSingle = vi.fn().mockResolvedValue({
-    data: { full_name: 'Test User' },
+    data: { full_name: 'Test User', is_driver: true },
     error: null,
   })
   const mockUserEq = vi.fn().mockReturnValue({ single: mockUserSingle })

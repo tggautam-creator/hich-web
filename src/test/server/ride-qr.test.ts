@@ -238,6 +238,20 @@ describe('POST /api/rides/:id/start', () => {
           }),
         }
       }
+      if (table === 'ride_offers') {
+        return {
+          select: () => ({
+            eq: (_col: string, _val: string) => ({
+              eq: () => Promise.resolve({ data: [], error: null }),
+            }),
+          }),
+          update: () => ({
+            eq: (_col: string, _val: string) => ({
+              eq: () => Promise.resolve({ error: null }),
+            }),
+          }),
+        }
+      }
       return {}
     })
 

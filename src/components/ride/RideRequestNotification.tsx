@@ -57,6 +57,8 @@ interface NotificationState {
   destinationLng: string
   /** When true, navigate to board-review instead of ride suggestion */
   isBoardRequest?: boolean
+  /** When true, this is a re-notification after the selected driver cancelled — show standby screen */
+  isRenewal?: boolean
 }
 
 interface InboxNotification {
@@ -102,7 +104,7 @@ export default function RideRequestNotification({
   }, [notification?.rideId])
 
   // Handle incoming ride request data from any source
-  const handleRideRequest = useCallback((data: RideRequestData) => {
+  const handleRideRequest = useCallback((data: RideRequestData, isRenewal?: boolean) => {
     // Deduplicate: skip if we've already shown a notification for this ride
     if (seenRideIdsRef.current.has(data.ride_id)) return
     seenRideIdsRef.current.add(data.ride_id)
@@ -118,6 +120,7 @@ export default function RideRequestNotification({
       originLng: data.origin_lng ?? '',
       destinationLat: data.destination_lat ?? '',
       destinationLng: data.destination_lng ?? '',
+      isRenewal: isRenewal ?? false,
     })
     setSecondsLeft(DISMISS_SECONDS)
   }, [])
@@ -173,6 +176,64 @@ export default function RideRequestNotification({
     cancelledTimerRef.current = setTimeout(() => setCancelledToast(null), 8000)
   }, [dismiss])
 
+  // When WaitingRoom auto-selects this driver after a cancellation, navigate
+  // them directly to DropoffSelection without needing to re-call /accept.
+  const handleDriverSelected = useCallback(async (
+    rideId: string,
+    driverDestLat?: number | null,
+    driverDestLng?: number | null,
+    driverDestName?: string | null,
+  ) => {
+    dismiss()
+    let lat = driverDestLat ?? null
+    let lng = driverDestLng ?? null
+    let name = driverDestName ?? null
+    if (!lat || !lng) {
+      // Payload didn't include coords (FCM path) — fetch from offer table first
+      try {
+        const { data: offer } = await supabase
+          .from('ride_offers')
+          .select('driver_destination, driver_destination_name')
+          .eq('ride_id', rideId)
+          .eq('driver_id', profile?.id ?? '')
+          .single()
+        if (offer?.driver_destination) {
+          const geo = offer.driver_destination as { coordinates: [number, number] }
+          lat = geo.coordinates[1]
+          lng = geo.coordinates[0]
+          name = (offer.driver_destination_name as string | null) ?? null
+        }
+      } catch { /* fall through */ }
+    }
+    if (!lat || !lng) {
+      // Offer may not have destination yet (DB write race) — try the ride row.
+      // /select-driver copies driver_destination from offer to ride synchronously.
+      try {
+        const { data: rideRow } = await supabase
+          .from('rides')
+          .select('driver_destination, driver_destination_name')
+          .eq('id', rideId)
+          .single()
+        if (rideRow?.driver_destination) {
+          const geo = rideRow.driver_destination as { coordinates: [number, number] }
+          lat = geo.coordinates[1]
+          lng = geo.coordinates[0]
+          name = (rideRow.driver_destination_name as string | null) ?? null
+        }
+      } catch { /* fall through */ }
+    }
+    if (lat && lng) {
+      navigate(`/ride/dropoff/${rideId}`, {
+        replace: true,
+        state: { driverDestLat: lat, driverDestLng: lng, driverDestName: name ?? '' },
+      })
+    } else {
+      // No destination found — driver is selected but hasn't submitted one yet.
+      // Send them to the suggestion form so they can enter their destination.
+      navigate(`/ride/suggestion/${rideId}`, { replace: true })
+    }
+  }, [dismiss, profile?.id, navigate])
+
   // Primary: Supabase Realtime channel (works on all browsers)
   useEffect(() => {
     if (!profile?.id) return
@@ -189,6 +250,31 @@ export default function RideRequestNotification({
         const data = msg.payload as { ride_id?: string }
         if (rideIdRef.current && rideIdRef.current === data.ride_id) {
           dismiss()
+        }
+      })
+      channel.on('broadcast', { event: 'ride_standby' }, (msg) => {
+        const data = msg.payload as { ride_id?: string }
+        if (rideIdRef.current && rideIdRef.current === data.ride_id) {
+          dismiss()
+        }
+      })
+      channel.on('broadcast', { event: 'ride_request_renewed' }, (msg) => {
+        const data = msg.payload as unknown as RideRequestData
+        // Clear dedup guard so this ride can re-appear, then re-show notification
+        if (data.ride_id) {
+          seenRideIdsRef.current.delete(data.ride_id)
+          handleRideRequest({ ...data, type: 'ride_request' }, true)
+        }
+      })
+      channel.on('broadcast', { event: 'driver_selected' }, (msg) => {
+        const data = msg.payload as {
+          ride_id?: string
+          driver_dest_lat?: number | null
+          driver_dest_lng?: number | null
+          driver_dest_name?: string | null
+        }
+        if (data.ride_id) {
+          void handleDriverSelected(data.ride_id, data.driver_dest_lat, data.driver_dest_lng, data.driver_dest_name)
         }
       })
       channel.subscribe()
@@ -227,7 +313,7 @@ export default function RideRequestNotification({
       supabase.removeChannel(boardChannel)
       supabase.removeChannel(riderChannel)
     }
-  }, [profile?.id, isDriver, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled, dismiss])
+  }, [profile?.id, isDriver, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled, handleDriverSelected, dismiss])
 
   // Fallback: FCM foreground messages
   useEffect(() => {
@@ -248,13 +334,24 @@ export default function RideRequestNotification({
       } else if (payload.data?.type === 'driver_cancelled') {
         // driver_cancelled means re-match — don't show cancelled toast
         // The WaitingRoom handler will take care of navigation
+      } else if (payload.data?.type === 'ride_request_renewed') {
+        // Intentionally ignored in FCM — the Realtime channel handles this.
+        // Handling it here too caused duplicate notifications (Realtime + FCM both
+        // delete from seenRideIds) which raced with WaitingRoom's auto-select.
+        // The driver_selected event (below) is the real transition signal.
+      } else if (payload.data?.type === 'driver_selected') {
+        if (!isDriver) return
+        const data = payload.data as { ride_id?: string }
+        if (data.ride_id) {
+          void handleDriverSelected(data.ride_id)
+        }
       }
     })
 
     return () => {
       if (unsub) unsub()
     }
-  }, [isDriver, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled])
+  }, [isDriver, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled, handleDriverSelected])
 
   // Ref to track current notification so the polling callback can skip when
   // a notification is already being displayed without re-creating the effect.
@@ -298,10 +395,10 @@ export default function RideRequestNotification({
 
           if (notif.type !== 'ride_request') continue
 
-          // Skip stale ride requests (older than 5 minutes)
+          // Skip stale ride requests (older than 2 minutes)
           if (notif.created_at) {
             const ageMs = Date.now() - new Date(notif.created_at).getTime()
-            if (ageMs > 5 * 60 * 1000) continue
+            if (ageMs > 2 * 60 * 1000) continue
           }
 
           const data = notif.data as unknown as RideRequestData
@@ -316,7 +413,7 @@ export default function RideRequestNotification({
     }
 
     void poll()
-    const intervalId = setInterval(() => { void poll() }, 8000)
+    const intervalId = setInterval(() => { void poll() }, 15000)
 
     return () => {
       cancelled = true
@@ -346,18 +443,76 @@ export default function RideRequestNotification({
     }
   }, [notification, dismiss])
 
-  function handleViewDetails() {
+  async function handleViewDetails() {
     if (!notification) return
-    const { rideId, riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng, isBoardRequest } = notification
+    const { rideId, riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng, isBoardRequest, isRenewal } = notification
     dismiss()
 
     if (isBoardRequest) {
       navigate(`/ride/board-review/${rideId}`)
-    } else {
-      navigate(`/ride/suggestion/${rideId}`, {
-        state: { riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng },
-      })
+      return
     }
+
+    // Renewal notifications: the previously-selected driver cancelled.
+    // Never re-run the full /accept flow — WaitingRoom auto-selects from the offer queue.
+    // Determine the right screen based on current ride state.
+    if (isRenewal) {
+      try {
+        const { data: rideRow } = await supabase
+          .from('rides')
+          .select('status, driver_id, driver_destination, driver_destination_name')
+          .eq('id', rideId)
+          .single()
+
+        if (rideRow?.status === 'accepted' && rideRow.driver_id === profile?.id) {
+          // WaitingRoom already selected this driver — go straight to DropoffSelection
+          const geo = rideRow.driver_destination as { coordinates: [number, number] } | null
+          void handleDriverSelected(
+            rideId,
+            geo ? geo.coordinates[1] : null,
+            geo ? geo.coordinates[0] : null,
+            rideRow.driver_destination_name as string | null,
+          )
+          return
+        }
+
+        if (rideRow?.status === 'accepted' && rideRow.driver_id !== profile?.id) {
+          // Someone else was auto-selected first — show standby screen
+          navigate(`/ride/suggestion/${rideId}`, {
+            state: { riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng, isStandbyRenewal: true },
+          })
+          return
+        }
+      } catch { /* fall through */ }
+
+      // Ride is 'requested' — show "back in queue" screen.
+      // WaitingRoom will auto-select this driver within seconds; the driver_selected
+      // Realtime event will then navigate them to DropoffSelection automatically.
+      navigate(`/ride/suggestion/${rideId}`, {
+        state: { riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng, isRenewalStandby: true },
+      })
+      return
+    }
+
+    // Quick status check — if the ride is no longer 'requested', skip navigation
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session) {
+        const resp = await fetch(`/api/rides/${rideId}/status`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+        if (resp.ok) {
+          const body = (await resp.json()) as { status?: string }
+          if (body.status && body.status !== 'requested') return
+        }
+      }
+    } catch {
+      // Continue to navigate even if check fails
+    }
+
+    navigate(`/ride/suggestion/${rideId}`, {
+      state: { riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng },
+    })
   }
 
   const portalTarget =
@@ -469,9 +624,9 @@ export default function RideRequestNotification({
         {/* Header row */}
         <div className="flex items-center justify-between px-4 pt-3 pb-2">
           <div className="flex items-center gap-2">
-            <span className="text-lg">{notification.isBoardRequest ? '📋' : '🚗'}</span>
+            <span className="text-lg">{notification.isBoardRequest ? '📋' : notification.isRenewal ? '🔔' : '🚗'}</span>
             <h3 className="text-sm font-bold text-primary">
-              {notification.isBoardRequest ? 'Ride Board Match' : 'New Ride Request'}
+              {notification.isBoardRequest ? 'Ride Board Match' : notification.isRenewal ? 'You\'re Back in the Running' : 'New Ride Request'}
             </h3>
           </div>
           <button
@@ -494,7 +649,7 @@ export default function RideRequestNotification({
               {notification.riderName}
             </p>
             <p className="text-xs text-text-secondary">
-              {notification.isBoardRequest ? 'wants to coordinate a ride' : 'needs a ride'}
+              {notification.isBoardRequest ? 'wants to coordinate a ride' : notification.isRenewal ? 'previous driver cancelled — your offer is active' : 'needs a ride'}
             </p>
           </div>
         </div>

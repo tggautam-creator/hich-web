@@ -17,6 +17,9 @@ interface MultiDriverMapProps {
 
 interface LocationState {
   destination?: PlaceSuggestion
+  fareRange?: { low: { fare_cents: number }; high: { fare_cents: number } }
+  originLat?: number
+  originLng?: number
   destinationLat?: number
   destinationLng?: number
 }
@@ -46,7 +49,6 @@ interface DriverOffer {
   created_at: string
 }
 
-// Driver marker colors for differentiation
 const DRIVER_COLORS = [tokenColors.primary, tokenColors.success, tokenColors.warning, tokenColors.danger, '#8B5CF6', '#EC4899']
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -64,12 +66,14 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
   const [rideDestination, setRideDestination] = useState<GeoPoint | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  // ── Fetch ride + offers ───────────────────────────────────────────────────
+  // ── Fetch ride + offers on mount ────────────────────────────────────────
   useEffect(() => {
     if (!rideId) {
       navigate('/home/rider', { replace: true })
       return
     }
+
+    let cancelled = false
 
     async function fetchOffers() {
       const { data: { session } } = await supabase.auth.getSession()
@@ -79,7 +83,6 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
         return
       }
 
-      // Fetch ride for origin/destination
       const { data: ride } = await supabase
         .from('rides')
         .select('origin, destination')
@@ -91,10 +94,11 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
         setRideDestination(ride.destination as GeoPoint | null)
       }
 
-      // Fetch offers from server
       const resp = await fetch(`/api/rides/${rideId}/offers`, {
         headers: { Authorization: `Bearer ${session.access_token}` },
       })
+
+      if (cancelled) return
 
       if (resp.ok) {
         const body = (await resp.json()) as { offers: DriverOffer[] }
@@ -107,9 +111,94 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
     }
 
     void fetchOffers()
+    return () => { cancelled = true }
   }, [rideId, navigate])
 
-  // ── Select a driver ───────────────────────────────────────────────────────
+  // ── Realtime + polling ──────────────────────────────────────────────────
+  // Auto-navigate back to WaitingRoom when all drivers cancel (offers drop to 0 after load)
+  const hasLoadedRef = useRef(false)
+  useEffect(() => {
+    if (loading) return
+    if (!hasLoadedRef.current) {
+      hasLoadedRef.current = true
+      // Don't navigate on initial load with 0 offers — that's covered by the error state below
+      if (offers.length > 0) return
+    }
+    if (offers.length === 0 && hasLoadedRef.current) {
+      navigate('/ride/waiting', {
+        replace: true,
+        state: {
+          rideId,
+          destination: state?.destination,
+          fareRange: state?.fareRange,
+          originLat: state?.originLat,
+          originLng: state?.originLng,
+          destinationLat: state?.destinationLat,
+          destinationLng: state?.destinationLng,
+        },
+      })
+    }
+  }, [offers.length, loading, navigate, rideId, state])
+
+  useEffect(() => {
+    if (!rideId) return
+    let cancelled = false
+
+    // Subscribe to driver cancellations for this ride
+    const channel = supabase
+      .channel(`multi-driver:${rideId}`)
+      .on('broadcast', { event: 'driver_cancelled' }, (msg) => {
+        if (cancelled) return
+        const data = msg.payload as Record<string, unknown>
+        const cancelledId = data['cancelled_driver_id'] as string | undefined
+        if (cancelledId) {
+          setOffers((prev) => prev.filter((o) => o.driver_id !== cancelledId))
+        }
+      })
+      .on('broadcast', { event: 'ride_cancelled' }, () => {
+        if (cancelled) return
+        navigate('/home/rider', { replace: true })
+      })
+      .subscribe()
+
+    // Polling fallback (8s)
+    const poll = setInterval(async () => {
+      if (cancelled) return
+
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session || cancelled) return
+
+      // Check ride status
+      const { data: rideData } = await supabase
+        .from('rides')
+        .select('status')
+        .eq('id', rideId)
+        .single()
+
+      if (cancelled) return
+      if (rideData?.status === 'cancelled') {
+        navigate('/home/rider', { replace: true })
+        return
+      }
+
+      // Re-fetch offers
+      const resp = await fetch(`/api/rides/${rideId}/offers`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
+
+      if (cancelled || !resp.ok) return
+      const body = (await resp.json()) as { offers: DriverOffer[] }
+      setOffers(body.offers ?? [])
+    }, 8000)
+
+    return () => {
+      cancelled = true
+      clearInterval(poll)
+      void supabase.removeChannel(channel)
+    }
+  }, [rideId, navigate])
+
+  // ── Select a driver → navigate to WaitingRoom (not chat) ───────────────
   const handleSelectDriver = useCallback(async (driverId: string) => {
     if (!rideId || selecting) return
     setSelecting(driverId)
@@ -128,12 +217,23 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
       })
 
       if (resp.ok) {
-        navigate(`/ride/messaging/${rideId}`, {
+        const body = (await resp.json()) as { driver_name?: string | null }
+        const selectedOffer = offers.find((o) => o.driver_id === driverId)
+        const driverName = body.driver_name ?? selectedOffer?.driver?.full_name ?? null
+
+        // Navigate to WaitingRoom with selectedDriverId hint → enters 'driver_choosing_dropoff' phase
+        navigate('/ride/waiting', {
           replace: true,
           state: {
+            rideId,
             destination: state?.destination,
+            fareRange: state?.fareRange,
+            originLat: state?.originLat,
+            originLng: state?.originLng,
             destinationLat: state?.destinationLat,
             destinationLng: state?.destinationLng,
+            selectedDriverId: driverId,
+            selectedDriverName: driverName,
           },
         })
       }
@@ -142,9 +242,9 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
     } finally {
       setSelecting(null)
     }
-  }, [rideId, selecting, navigate, state])
+  }, [rideId, selecting, navigate, state, offers])
 
-  // ── Loading / error states ────────────────────────────────────────────────
+  // ── Loading / error states ──────────────────────────────────────────────
   if (loading) {
     return (
       <div data-testid={testId ?? 'multi-driver-page'} className="flex min-h-dvh items-center justify-center bg-surface">
@@ -168,17 +268,17 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
     )
   }
 
-  // ── Map points ────────────────────────────────────────────────────────────
+  // ── Map points ──────────────────────────────────────────────────────────
   const mapPoints: Array<{ lat: number; lng: number }> = []
   if (rideOrigin) {
-    mapPoints.push({ lat: rideOrigin.coordinates[1], lng: rideOrigin.coordinates[0] })
+    mapPoints.push({ lat: rideOrigin.coordinates[1]!, lng: rideOrigin.coordinates[0]! })
   }
   if (rideDestination) {
-    mapPoints.push({ lat: rideDestination.coordinates[1], lng: rideDestination.coordinates[0] })
+    mapPoints.push({ lat: rideDestination.coordinates[1]!, lng: rideDestination.coordinates[0]! })
   }
   for (const offer of offers) {
     if (offer.location) {
-      mapPoints.push({ lat: offer.location.coordinates[1], lng: offer.location.coordinates[0] })
+      mapPoints.push({ lat: offer.location.coordinates[1]!, lng: offer.location.coordinates[0]! })
     }
   }
 
@@ -189,8 +289,7 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
     ? mapPoints.reduce((s, p) => s + p.lng, 0) / mapPoints.length
     : -121.76
 
-  // Calculate estimated fare for display
-  const fare = calculateFare(10, 15) // Use defaults; actual fare depends on real route
+  const fare = calculateFare(10, 15)
 
   return (
     <div data-testid={testId ?? 'multi-driver-page'} className="flex h-dvh flex-col bg-white font-sans overflow-hidden">
@@ -202,7 +301,18 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
       >
         <button
           data-testid="back-button"
-          onClick={() => navigate('/rides', { replace: true })}
+          onClick={() => navigate('/ride/waiting', {
+            replace: true,
+            state: {
+              rideId,
+              destination: state?.destination,
+              fareRange: state?.fareRange,
+              originLat: state?.originLat,
+              originLng: state?.originLng,
+              destinationLat: state?.destinationLat,
+              destinationLng: state?.destinationLng,
+            },
+          })}
           className="p-1 shrink-0 text-text-primary active:opacity-60"
           aria-label="Go back"
         >
@@ -230,10 +340,9 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
           disableDefaultUI
           className="h-full w-full"
         >
-          {/* Rider origin marker */}
           {rideOrigin && (
             <AdvancedMarker
-              position={{ lat: rideOrigin.coordinates[1], lng: rideOrigin.coordinates[0] }}
+              position={{ lat: rideOrigin.coordinates[1]!, lng: rideOrigin.coordinates[0]! }}
               title="Your location"
             >
               <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-primary shadow-lg">
@@ -242,26 +351,24 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
             </AdvancedMarker>
           )}
 
-          {/* Destination marker */}
           {rideDestination && (
             <AdvancedMarker
-              position={{ lat: rideDestination.coordinates[1], lng: rideDestination.coordinates[0] }}
+              position={{ lat: rideDestination.coordinates[1]!, lng: rideDestination.coordinates[0]! }}
               title="Destination"
             >
-              <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-danger shadow-lg text-xs font-bold text-white">
-                D
+              <div className="flex h-7 items-center justify-center rounded-full border-[3px] border-white bg-danger px-2 shadow-lg text-[10px] font-bold text-white whitespace-nowrap">
+                DROP-OFF
               </div>
             </AdvancedMarker>
           )}
 
-          {/* Driver markers — numbered and color-coded */}
           {offers.map((offer, idx) => {
             if (!offer.location) return null
             const color = DRIVER_COLORS[idx % DRIVER_COLORS.length] as string
             return (
               <AdvancedMarker
                 key={offer.offer_id}
-                position={{ lat: offer.location.coordinates[1], lng: offer.location.coordinates[0] }}
+                position={{ lat: offer.location.coordinates[1]!, lng: offer.location.coordinates[0]! }}
                 title={offer.driver?.full_name ?? `Driver ${idx + 1}`}
               >
                 <div
@@ -304,11 +411,9 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
                 data-testid={`driver-card-${offer.driver_id}`}
                 className="snap-center shrink-0 w-[280px] rounded-2xl border border-border bg-white shadow-sm flex flex-col"
               >
-                {/* Color strip */}
                 <div className="h-1.5 rounded-t-2xl" style={{ backgroundColor: color }} />
 
                 <div className="p-4 flex flex-col flex-1">
-                  {/* Driver info */}
                   <div className="flex items-center gap-3 mb-3">
                     <div
                       className="h-11 w-11 rounded-full flex items-center justify-center text-white font-bold text-sm shrink-0"
@@ -338,7 +443,6 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
                     </span>
                   </div>
 
-                  {/* Vehicle info */}
                   {vehicle && (
                     <div className="bg-surface rounded-2xl px-3 py-2 mb-3 space-y-1">
                       <p className="text-xs font-medium text-text-primary">
@@ -360,13 +464,11 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
                     </div>
                   )}
 
-                  {/* Fare estimate */}
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-xs text-text-secondary">Est. fare</span>
                     <span className="text-sm font-bold text-text-primary">{formatCents(fare.fare_cents)}</span>
                   </div>
 
-                  {/* Choose button */}
                   <button
                     data-testid={`choose-driver-${offer.driver_id}`}
                     onClick={() => { void handleSelectDriver(offer.driver_id) }}

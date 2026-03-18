@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 
 interface NotificationItem {
@@ -24,38 +25,30 @@ function formatTimestamp(iso: string): string {
     ', ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
 }
 
+async function fetchNotifications(): Promise<NotificationItem[]> {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) throw new Error('Not authenticated')
+  const resp = await fetch('/api/notifications', {
+    headers: { Authorization: `Bearer ${session.access_token}` },
+  })
+  if (!resp.ok) throw new Error('Failed to fetch notifications')
+  const body = await resp.json() as { notifications: NotificationItem[] }
+  return body.notifications
+}
+
 export default function NotificationsPage({
   'data-testid': testId = 'notifications-page',
 }: NotificationsPageProps) {
   const navigate = useNavigate()
-  const [notifications, setNotifications] = useState<NotificationItem[]>([])
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
   const [actioningId, setActioningId] = useState<string | null>(null)
 
-  const fetchNotifications = useCallback(async () => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) return
+  const { data: notifications = [], isLoading: loading } = useQuery({
+    queryKey: ['notifications'],
+    queryFn: fetchNotifications,
+  })
 
-      const resp = await fetch('/api/notifications', {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      })
-      if (resp.ok) {
-        const body = (await resp.json()) as { notifications: NotificationItem[] }
-        setNotifications(body.notifications)
-      }
-    } catch {
-      // non-fatal
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    void fetchNotifications()
-  }, [fetchNotifications])
-
-  // Mark all as read on mount
+  // Mark all as read on mount (fire-and-forget side effect)
   useEffect(() => {
     async function markAllRead() {
       try {
@@ -68,26 +61,21 @@ export default function NotificationsPage({
             Authorization: `Bearer ${session.access_token}`,
           },
         })
+        // Invalidate unread-count badge in other pages
+        void queryClient.invalidateQueries({ queryKey: ['unread-count'] })
       } catch {
         // non-fatal
       }
     }
     void markAllRead()
-  }, [])
+  }, [queryClient])
 
-  // Handle accept from a board_request notification
-  const handleAccept = useCallback(async (notif: NotificationItem) => {
-    const rideId = notif.data['ride_id'] as string | undefined
-    if (!rideId || actioningId) return
-    setActioningId(notif.id)
-
-    // Optimistically remove from local state before navigating
-    setNotifications((prev) => prev.filter((n) => n.id !== notif.id))
-
-    try {
+  const acceptMutation = useMutation({
+    mutationFn: async (notif: NotificationItem) => {
+      const rideId = notif.data['ride_id'] as string | undefined
+      if (!rideId) throw new Error('No ride_id')
       const { data: { session } } = await supabase.auth.getSession()
-      if (!session) return
-
+      if (!session) throw new Error('Not authenticated')
       const res = await fetch('/api/schedule/accept-board', {
         method: 'PATCH',
         headers: {
@@ -96,30 +84,28 @@ export default function NotificationsPage({
         },
         body: JSON.stringify({ ride_id: rideId }),
       })
+      if (!res.ok) throw new Error('Failed to accept')
+      return rideId
+    },
+    onMutate: (notif) => {
+      setActioningId(notif.id)
+      // Optimistic remove
+      queryClient.setQueryData<NotificationItem[]>(['notifications'], (prev) =>
+        (prev ?? []).filter((n) => n.id !== notif.id)
+      )
+    },
+    onSuccess: (rideId) => {
+      navigate(`/ride/messaging/${rideId}`, { replace: true })
+    },
+    onSettled: () => setActioningId(null),
+  })
 
-      if (res.ok) {
-        navigate(`/ride/messaging/${rideId}`, { replace: true })
-      }
-    } catch {
-      // non-fatal
-    } finally {
-      setActioningId(null)
-    }
-  }, [actioningId, navigate])
-
-  // Handle decline from a board_request notification
-  const handleDecline = useCallback(async (notif: NotificationItem) => {
-    const rideId = notif.data['ride_id'] as string | undefined
-    if (!rideId || actioningId) return
-    setActioningId(notif.id)
-
-    // Remove from list optimistically
-    setNotifications((prev) => prev.filter((n) => n.id !== notif.id))
-
-    try {
+  const declineMutation = useMutation({
+    mutationFn: async (notif: NotificationItem) => {
+      const rideId = notif.data['ride_id'] as string | undefined
+      if (!rideId) throw new Error('No ride_id')
       const { data: { session } } = await supabase.auth.getSession()
-      if (!session) return
-
+      if (!session) throw new Error('Not authenticated')
       await fetch('/api/schedule/decline-board', {
         method: 'PATCH',
         headers: {
@@ -128,15 +114,19 @@ export default function NotificationsPage({
         },
         body: JSON.stringify({ ride_id: rideId }),
       })
-    } catch {
-      // non-fatal
-    } finally {
-      setActioningId(null)
-    }
-  }, [actioningId])
+    },
+    onMutate: (notif) => {
+      setActioningId(notif.id)
+      // Optimistic remove
+      queryClient.setQueryData<NotificationItem[]>(['notifications'], (prev) =>
+        (prev ?? []).filter((n) => n.id !== notif.id)
+      )
+    },
+    onSettled: () => setActioningId(null),
+  })
 
   // Handle tapping on accepted/declined notifications
-  const handleTap = useCallback((notif: NotificationItem) => {
+  function handleTap(notif: NotificationItem) {
     const rideId = notif.data['ride_id'] as string | undefined
     if (!rideId) return
 
@@ -156,7 +146,7 @@ export default function NotificationsPage({
         },
       })
     }
-  }, [navigate])
+  }
 
   function getIcon(type: string): string {
     switch (type) {
@@ -267,7 +257,7 @@ export default function NotificationsPage({
                           <button
                             data-testid="notif-accept-button"
                             disabled={isActioning}
-                            onClick={(e) => { e.stopPropagation(); void handleAccept(notif) }}
+                            onClick={(e) => { e.stopPropagation(); acceptMutation.mutate(notif) }}
                             className="flex-1 rounded-2xl bg-success py-2.5 text-sm font-semibold text-white active:opacity-90 disabled:opacity-50"
                           >
                             {isActioning ? 'Accepting…' : 'Accept'}
@@ -275,7 +265,7 @@ export default function NotificationsPage({
                           <button
                             data-testid="notif-decline-button"
                             disabled={isActioning}
-                            onClick={(e) => { e.stopPropagation(); void handleDecline(notif) }}
+                            onClick={(e) => { e.stopPropagation(); declineMutation.mutate(notif) }}
                             className="flex-1 rounded-2xl border-2 border-danger/30 bg-danger/5 py-2.5 text-sm font-semibold text-danger active:bg-danger/10 disabled:opacity-50"
                           >
                             Decline

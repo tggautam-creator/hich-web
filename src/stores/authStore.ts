@@ -35,6 +35,8 @@ export interface AuthState {
   isLoading: boolean
   /** Derived from profile.is_driver for quick access */
   isDriver: boolean
+  /** True when the session has expired and needs re-authentication */
+  sessionExpired: boolean
 
   /**
    * Subscribe to Supabase auth changes and load the initial session.
@@ -62,6 +64,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   profile:   null,
   isLoading: true,
   isDriver:  false,
+  sessionExpired: false,
 
   initialize: () => {
     // Subscribe to future auth-state changes (token refresh, sign-out, new sign-in)
@@ -87,10 +90,40 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
     })
 
-    return () => { subscription.unsubscribe() }
+    // Re-validate session when app resumes (tab focus, phone unlock)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && get().session) {
+        void supabase.auth.getSession().then(({ data: { session } }) => {
+          if (!session) {
+            set({ sessionExpired: true, session: null, user: null })
+          } else {
+            set({ session, user: session.user, sessionExpired: false })
+          }
+        })
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      subscription.unsubscribe()
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
   },
 
   signOut: async () => {
+    // Remove this device's FCM token before signing out
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { getLastFcmToken } = await import('@/lib/fcm')
+        const token = getLastFcmToken()
+        if (token) {
+          await supabase.from('push_tokens').delete().eq('user_id', user.id).eq('token', token)
+        }
+      }
+    } catch {
+      // non-fatal: token cleanup failure shouldn't block sign-out
+    }
     await supabase.auth.signOut()
     resetAnalytics()
     set({ user: null, session: null, profile: null, isDriver: false, isLoading: false })

@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import WalletPage from '@/components/ride/WalletPage'
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
@@ -90,13 +91,16 @@ beforeEach(() => {
 })
 
 function renderWallet() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <MemoryRouter initialEntries={['/wallet']}>
-      <Routes>
-        <Route path="/wallet" element={<WalletPage />} />
-        <Route path="/wallet/add" element={<div data-testid="add-funds-page">Add Funds</div>} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={['/wallet']}>
+        <Routes>
+          <Route path="/wallet" element={<WalletPage />} />
+          <Route path="/wallet/add" element={<div data-testid="add-funds-page">Add Funds</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 

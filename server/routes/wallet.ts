@@ -110,14 +110,11 @@ walletRouter.post('/confirm-topup', validateJwt, async (req, res, next) => {
 
     const amountCents = paymentIntent.amount
 
-    // Check if this payment was already credited (idempotency)
+    // Idempotency: check if this PaymentIntent was already credited (by webhook or previous call)
     const { data: existing } = await supabaseAdmin
       .from('transactions')
       .select('id')
-      .eq('user_id', userId)
-      .eq('type', 'topup')
-      .eq('amount_cents', amountCents)
-      .eq('description', `Added $${(amountCents / 100).toFixed(2)} to wallet via ${payment_intent_id}`)
+      .eq('payment_intent_id', payment_intent_id)
       .limit(1)
 
     if (existing && existing.length > 0) {
@@ -160,7 +157,8 @@ walletRouter.post('/confirm-topup', validateJwt, async (req, res, next) => {
         type: 'topup',
         amount_cents: amountCents,
         balance_after_cents: newBalance,
-        description: `Added $${(amountCents / 100).toFixed(2)} to wallet via ${payment_intent_id}`,
+        description: `Added $${(amountCents / 100).toFixed(2)} to wallet`,
+        payment_intent_id: payment_intent_id,
       })
 
     res.json({ credited: true, balance: newBalance })

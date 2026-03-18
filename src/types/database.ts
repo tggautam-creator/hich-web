@@ -485,7 +485,7 @@ export type Database = {
           ride_id: string
           driver_id: string
           vehicle_id: string | null
-          status: 'pending' | 'selected' | 'released'
+          status: 'pending' | 'selected' | 'standby' | 'released'
           created_at: string
           driver_destination: GeoPoint | null
           driver_destination_name: string | null
@@ -497,7 +497,7 @@ export type Database = {
           ride_id: string
           driver_id: string
           vehicle_id?: string | null
-          status?: 'pending' | 'selected' | 'released'
+          status?: 'pending' | 'selected' | 'standby' | 'released'
           created_at?: string
           driver_destination?: GeoPoint | null
           driver_destination_name?: string | null
@@ -509,7 +509,7 @@ export type Database = {
           ride_id?: string
           driver_id?: string
           vehicle_id?: string | null
-          status?: 'pending' | 'selected' | 'released'
+          status?: 'pending' | 'selected' | 'standby' | 'released'
           created_at?: string
           driver_destination?: GeoPoint | null
           driver_destination_name?: string | null

@@ -28,6 +28,10 @@ interface NotificationState {
   originLng?: string
   destinationLat?: string
   destinationLng?: string
+  /** When true, this was a ride_request_renewed — show standby screen immediately */
+  isStandbyRenewal?: boolean
+  /** When true, driver was on standby and previous driver cancelled — WaitingRoom is auto-selecting */
+  isRenewalStandby?: boolean
 }
 
 export default function RideSuggestion({
@@ -41,6 +45,11 @@ export default function RideSuggestion({
   const navState = location.state as NotificationState | null
   // Stabilize navState ref so it doesn't trigger re-fetches on re-render
   const navStateRef = useRef(navState)
+  // Whether this page was opened from a ride_request_renewed notification
+  const isStandbyRenewal = !!navState?.isStandbyRenewal
+  // Whether WaitingRoom is about to auto-select this driver (previous driver cancelled,
+  // ride is back to 'requested', driver just needs to wait for driver_selected event)
+  const isRenewalStandby = !!navState?.isRenewalStandby
 
   const [data, setData] = useState<RideWithRider | null>(null)
   const [loading, setLoading] = useState(true)
@@ -60,6 +69,9 @@ export default function RideSuggestion({
   const [driverDestResults, setDriverDestResults] = useState<PlaceSuggestion[]>([])
   const [selectedDriverDest, setSelectedDriverDest] = useState<PlaceSuggestion | null>(null)
   const [driverDestCoords, setDriverDestCoords] = useState<{ lat: number; lng: number } | null>(null)
+  const [standbyMode, setStandbyMode] = useState(() => !!navState?.isStandbyRenewal || !!navState?.isRenewalStandby)
+  // True when the driver already has a pending (reverted-from-standby) offer with destination set
+  const [isRenewalOffer, setIsRenewalOffer] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const routineAutoFilled = useRef(false)
 
@@ -161,16 +173,118 @@ export default function RideSuggestion({
     })()
   }, [rideId])
 
+  // ── Check for existing offer (guards against bypassed renewal flags) ─────
+  // If the driver already has a standby offer, or a pending offer with a
+  // destination already set (renewal case — their previous offer was reverted
+  // from standby to pending after the selected driver cancelled), skip the
+  // destination form and go straight to standby mode. This handles the race
+  // where the polling fallback fires instead of Realtime, so the navigation
+  // state doesn't carry isRenewalStandby/isStandbyRenewal flags.
+  useEffect(() => {
+    if (!rideId || standbyMode) return   // already in standby — no need to check
+
+    async function checkExistingOffer() {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) return
+
+      const { data: offer } = await supabase
+        .from('ride_offers')
+        .select('status, driver_destination')
+        .eq('ride_id', rideId as string)
+        .eq('driver_id', session.user.id)
+        .maybeSingle()
+
+      if (!offer) return   // no prior offer — show form normally
+
+      const hasStandby = offer.status === 'standby'
+      // Pending + destination already submitted = reverted standby (renewal case)
+      const hasRenewal = offer.status === 'pending' && offer.driver_destination !== null
+
+      if (hasStandby || hasRenewal) {
+        if (hasRenewal) setIsRenewalOffer(true)
+        setStandbyMode(true)
+      }
+    }
+
+    void checkExistingOffer()
+  }, [rideId])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Standby polling — detect when rider selects this driver ─────────────
+  // RideRequestNotification handles `driver_selected` via Realtime, but if
+  // that event is missed (subscription lag, reconnect), the driver is stuck
+  // on standby forever while the rider's WaitingRoom shows them as selected.
+  // Poll ride status every 8s as a fallback to catch missed events.
+  useEffect(() => {
+    if (!rideId || !standbyMode) return
+
+    let cancelled = false
+
+    const poll = async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session || cancelled) return
+
+      const { data: ride } = await supabase
+        .from('rides')
+        .select('status, driver_id, driver_destination, driver_destination_name')
+        .eq('id', rideId as string)
+        .single()
+
+      if (!ride || cancelled) return
+
+      if (ride.status === 'accepted' && ride.driver_id === session.user.id) {
+        // Rider selected this driver — navigate to DropoffSelection
+        const geo = ride.driver_destination as { coordinates: [number, number] } | null
+        const lat = geo ? geo.coordinates[1] : null
+        const lng = geo ? geo.coordinates[0] : null
+        const destName = (ride.driver_destination_name as string | null) ?? ''
+
+        if (lat && lng) {
+          navigate(`/ride/dropoff/${rideId}`, {
+            replace: true,
+            state: { driverDestLat: lat, driverDestLng: lng, driverDestName: destName },
+          })
+        } else {
+          // Destination not yet on the ride row — check the offer
+          const { data: offer } = await supabase
+            .from('ride_offers')
+            .select('driver_destination, driver_destination_name')
+            .eq('ride_id', rideId as string)
+            .eq('driver_id', session.user.id)
+            .maybeSingle()
+          const oGeo = offer?.driver_destination as { coordinates: [number, number] } | null
+          const oLat = oGeo ? oGeo.coordinates[1] : null
+          const oLng = oGeo ? oGeo.coordinates[0] : null
+          if (oLat && oLng) {
+            navigate(`/ride/dropoff/${rideId}`, {
+              replace: true,
+              state: { driverDestLat: oLat, driverDestLng: oLng, driverDestName: offer?.driver_destination_name ?? '' },
+            })
+          } else {
+            navigate(`/ride/dropoff/${rideId}`, { replace: true })
+          }
+        }
+        return
+      }
+
+      if (ride.status === 'cancelled' || ride.status === 'completed') {
+        navigate('/home/driver', { replace: true })
+      }
+    }
+
+    void poll()
+    const id = setInterval(() => { void poll() }, 8000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [rideId, standbyMode, navigate])
+
   // ── Decline helper ────────────────────────────────────────────────────────
-  const handleDecline = useCallback(async () => {
-    if (!rideId) return
-    setSubmitting(true)
-    await supabase
-      .from('rides')
-      .update({ status: 'cancelled' as const })
-      .eq('id', rideId)
+  // A decline simply means the driver isn't interested. The ride stays in
+  // 'requested' status for other drivers. No server call needed.
+  const handleDecline = useCallback(() => {
     navigate('/home/driver', { replace: true })
-  }, [rideId, navigate])
+  }, [navigate])
 
   // ── Countdown timer (auto-decline on expiry) ─────────────────────────────
   useEffect(() => {
@@ -220,7 +334,16 @@ export default function RideSuggestion({
         return
       }
 
+      const resBody = (await res.json()) as { offer_status?: string }
+
       trackEvent('driver_accepted', { ride_id: rideId })
+
+      // If the ride already has a selected driver, this driver joins as standby
+      if (resBody.offer_status === 'standby') {
+        setStandbyMode(true)
+        setSubmitting(false)
+        return
+      }
 
       const { ride, rider } = data
       const ns = navStateRef.current
@@ -304,6 +427,7 @@ export default function RideSuggestion({
     const dLng = data.ride.destination?.coordinates?.[0] ?? parseFloat(ns?.destinationLng ?? '')
 
     if (isNaN(oLat) || isNaN(oLng) || isNaN(dLat) || isNaN(dLng)) return
+    if (oLat === dLat && oLng === dLng) return
 
     // Fetch pickup → destination polyline
     void getDirectionsByLatLng(oLat, oLng, dLat, dLng).then((result) => {
@@ -360,6 +484,41 @@ export default function RideSuggestion({
 
   if (!data) return null
 
+  // ── Standby mode — driver joined after rider already selected someone, or
+  // reopened from a ride_request_renewed notification ─────────────────────
+  if (standbyMode) {
+    return (
+      <div
+        data-testid={testId}
+        className="flex min-h-dvh flex-col items-center justify-center gap-6 bg-surface px-6"
+      >
+        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-warning/15">
+          <span className="text-3xl">🔔</span>
+        </div>
+        <div className="text-center space-y-2">
+          <h2 className="text-xl font-bold text-text-primary">
+            {isRenewalStandby ? "You're Back First in Line" : "You're on Standby"}
+          </h2>
+          <p className="text-sm text-text-secondary leading-relaxed max-w-xs">
+            {isRenewalStandby || isRenewalOffer
+              ? "The previous driver cancelled. Your offer is active — we'll connect you with the rider shortly."
+              : isStandbyRenewal
+              ? "The previous driver cancelled. You're back in the queue — we'll match you with the rider shortly."
+              : "The rider is already coordinating with another driver. We'll notify you if they cancel so you can take over."}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => navigate('/home/driver', { replace: true })}
+          className="rounded-2xl bg-primary px-8 py-3 font-semibold text-white shadow-sm"
+          data-testid="standby-home-button"
+        >
+          Back to Home
+        </button>
+      </div>
+    )
+  }
+
   const { ride, rider } = data
   const ns = navStateRef.current
 
@@ -411,14 +570,14 @@ export default function RideSuggestion({
             )}
             {/* Rider pickup marker (green P) */}
             <AdvancedMarker position={{ lat: oLat, lng: oLng }} title="Pickup">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-success shadow-lg text-xs font-bold text-white">
-                P
+              <div className="flex h-7 items-center justify-center rounded-full border-[3px] border-white bg-success px-2 shadow-lg text-[10px] font-bold text-white whitespace-nowrap">
+                PICKUP
               </div>
             </AdvancedMarker>
             {/* Final destination marker (red D) */}
             <AdvancedMarker position={{ lat: dLat, lng: dLng }} title="Destination">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-danger shadow-lg text-xs font-bold text-white">
-                D
+              <div className="flex h-7 items-center justify-center rounded-full border-[3px] border-white bg-danger px-2 shadow-lg text-[10px] font-bold text-white whitespace-nowrap">
+                DROP-OFF
               </div>
             </AdvancedMarker>
             {/* Driver → Pickup polyline (dashed gray) */}
