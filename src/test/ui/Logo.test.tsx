@@ -9,7 +9,7 @@ describe('Logo', () => {
     expect(logo).toBeDefined()
     const img = logo.querySelector('img')
     expect(img?.getAttribute('width')).toBe('48')
-    expect(img?.getAttribute('height')).toBe('58')
+    expect(img?.getAttribute('height')).toBe('48')
   })
 
   it('renders small size', () => {
@@ -37,9 +37,9 @@ describe('Logo', () => {
     expect(screen.getByTestId('custom-logo')).toBeDefined()
   })
 
-  it('uses /logo.svg as image source', () => {
+  it('uses /icon-512x512.png as image source', () => {
     render(<Logo />)
     const img = screen.getByTestId('logo').querySelector('img')
-    expect(img?.getAttribute('src')).toBe('/logo.svg')
+    expect(img?.getAttribute('src')).toBe('/icon-512x512.png')
   })
 })

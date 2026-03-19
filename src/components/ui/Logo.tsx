@@ -12,10 +12,10 @@ export default function Logo({ size = 'md', 'data-testid': testId = 'logo' }: Lo
   return (
     <div data-testid={testId} className="flex items-center gap-3" style={{ height: px }}>
       <img
-        src="/logo.svg"
+        src="/icon-512x512.png"
         alt="HICH"
         width={px}
-        height={Math.round(px * 1.2)}
+        height={px}
         aria-hidden="true"
       />
       {showText && (
