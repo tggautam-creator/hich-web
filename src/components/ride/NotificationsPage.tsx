@@ -208,7 +208,12 @@ export default function NotificationsPage({
 
         {!loading && notifications.length > 0 && (
           <div className="divide-y divide-border">
-            {notifications.map((notif) => {
+            {notifications.filter((notif) => {
+              // Hide ride_request notifications older than 1 hour — the ride is
+              // certainly no longer in 'requested' status by then.
+              if (notif.type !== 'ride_request') return true
+              return Date.now() - new Date(notif.created_at).getTime() < 60 * 60 * 1000
+            }).map((notif) => {
               const isBoardRequest = notif.type === 'board_request'
               const isActioned = notif.type === 'board_request_actioned'
               const isAccepted = notif.type === 'board_accepted'

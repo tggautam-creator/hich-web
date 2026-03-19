@@ -139,6 +139,14 @@ export default function RideSuggestion({
         return
       }
 
+      // Ride is no longer open — it was cancelled, accepted, or completed.
+      // Show an error instead of the accept form so the driver isn't confused.
+      if (ride.status !== 'requested') {
+        setError('This ride is no longer available.')
+        setLoading(false)
+        return
+      }
+
       setData({ ride, rider })
       setLoading(false)
       trackEvent('driver_notified', { ride_id: rideId })
