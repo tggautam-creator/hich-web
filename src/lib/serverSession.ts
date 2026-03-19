@@ -22,7 +22,7 @@ export async function syncSessionToServer(session: Session): Promise<boolean> {
         Authorization: `Bearer ${session.access_token}`,
       },
       body: JSON.stringify({ refresh_token: session.refresh_token }),
-      credentials: 'same-origin',
+      credentials: 'include',
       cache: 'no-store', // required for iOS PWA cookie reliability
     })
     return res.ok
@@ -39,7 +39,7 @@ export async function syncSessionToServer(session: Session): Promise<boolean> {
 export async function recoverSessionFromServer(): Promise<Session | null> {
   try {
     const res = await fetch('/api/auth/session', {
-      credentials: 'same-origin',
+      credentials: 'include',
       cache: 'no-store', // required for iOS PWA cookie reliability
     })
     if (!res.ok) return null
@@ -58,7 +58,7 @@ export async function clearServerSession(): Promise<void> {
   try {
     await fetch('/api/auth/session', {
       method: 'DELETE',
-      credentials: 'same-origin',
+      credentials: 'include',
       cache: 'no-store',
     })
   } catch {

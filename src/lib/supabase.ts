@@ -8,7 +8,7 @@
 import { createClient } from '@supabase/supabase-js'
 import type { Database } from '@/types/database'
 import { env } from '@/lib/env'
-import { authCookieStorage } from '@/lib/authCookieStorage'
+import { idbStorage } from '@/lib/idbStorage'
 
 export const supabase = createClient<Database>(
   env.SUPABASE_URL,
@@ -18,11 +18,10 @@ export const supabase = createClient<Database>(
       autoRefreshToken: true,
       persistSession: true,
       detectSessionInUrl: true,
-      // Use cookie-backed storage so sessions survive iOS PWA force-kill.
-      // Cookies persist where localStorage gets cleared on iOS when the app
-      // is removed from the app switcher. Falls back to localStorage in
-      // non-browser environments (e.g. SSR, tests).
-      storage: typeof window !== 'undefined' ? authCookieStorage : undefined,
+      // IndexedDB-backed storage — more persistent than localStorage on iOS PWAs.
+      // Survives force-kills where localStorage and JS cookies get cleared.
+      // Falls back to localStorage if IndexedDB is unavailable.
+      storage: typeof window !== 'undefined' ? idbStorage : undefined,
     },
   },
 )
