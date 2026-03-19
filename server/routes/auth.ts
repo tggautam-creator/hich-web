@@ -22,12 +22,12 @@ import { getServerEnv } from '../env.ts'
 export const authRouter = Router()
 
 const COOKIE_NAME = 'hich_rt'
-const COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days — matches Supabase refresh token lifetime
+const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000 // 30 days — outlasts Supabase refresh token for reliability
 
-function cookieOpts(secure: boolean) {
+function cookieOpts() {
   return {
     httpOnly: true,
-    secure,
+    secure: true, // always true — app is served over HTTPS via Vercel
     sameSite: 'lax' as const,
     path: '/',
     maxAge: COOKIE_MAX_AGE_MS,
@@ -45,8 +45,7 @@ authRouter.post('/session', validateJwt, (req: Request, res: Response) => {
     return
   }
 
-  const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https'
-  res.cookie(COOKIE_NAME, refreshToken, cookieOpts(isSecure))
+  res.cookie(COOKIE_NAME, refreshToken, cookieOpts())
   res.json({ ok: true })
 })
 
@@ -96,8 +95,7 @@ authRouter.get('/session', async (req: Request, res: Response) => {
     }
 
     // Update cookie with the new refresh token (Supabase rotates on each refresh)
-    const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https'
-    res.cookie(COOKIE_NAME, session.refresh_token, cookieOpts(isSecure))
+    res.cookie(COOKIE_NAME, session.refresh_token, cookieOpts())
 
     res.json({ session })
   } catch {

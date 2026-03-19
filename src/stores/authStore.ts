@@ -68,17 +68,51 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   sessionExpired: false,
 
   initialize: () => {
+    // Flag to prevent infinite server-recovery loops
+    let serverRecoveryAttempted = false
+
+    /**
+     * Try to restore the session from the server's HTTP-only cookie.
+     * Called when client-side storage returns no session (iOS PWA force-kill)
+     * or when Supabase's auto-refresh fails (stale JS cookies).
+     */
+    async function attemptServerRecovery(): Promise<boolean> {
+      if (serverRecoveryAttempted) return false
+      serverRecoveryAttempted = true
+
+      const recovered = await recoverSessionFromServer()
+      if (!recovered) return false
+
+      await supabase.auth.setSession({
+        access_token: recovered.access_token,
+        refresh_token: recovered.refresh_token,
+      })
+      // onAuthStateChange will fire and handle profile load + cookie sync
+      return true
+    }
+
     // Subscribe to future auth-state changes (token refresh, sign-out, new sign-in)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
+      (event, session) => {
         set({ session, user: session?.user ?? null })
         if (session?.user) {
+          // Reset flag so future losses can try recovery again
+          serverRecoveryAttempted = false
           // Sync refresh token to server HTTP-only cookie (survives iOS force-kill)
           void syncSessionToServer(session)
           // Silently refresh profile; isLoading stays false (already initialised)
           void get().refreshProfile()
-        } else {
+        } else if (event === 'SIGNED_OUT') {
+          // Explicit sign-out — don't try recovery
           set({ profile: null, isDriver: false })
+        } else {
+          // Session lost unexpectedly (auto-refresh failed, stale tokens) —
+          // try to recover from server HTTP-only cookie before giving up
+          void attemptServerRecovery().then((recovered) => {
+            if (!recovered) {
+              set({ profile: null, isDriver: false, isLoading: false })
+            }
+          })
         }
       },
     )
@@ -94,33 +128,27 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       // Client storage is empty — try server-side HTTP-only cookie recovery
-      const recovered = await recoverSessionFromServer()
-      if (recovered) {
-        // Restore the session into the Supabase client
-        await supabase.auth.setSession({
-          access_token: recovered.access_token,
-          refresh_token: recovered.refresh_token,
-        })
-        // onAuthStateChange will fire and handle the rest
-        return
+      const recovered = await attemptServerRecovery()
+      if (!recovered) {
+        set({ isLoading: false })
       }
-
-      set({ isLoading: false })
     })
 
     // Re-validate session when app resumes (tab focus, phone unlock, PWA foreground)
     const handleVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return
-      void supabase.auth.getSession().then(({ data: { session } }) => {
+      void supabase.auth.getSession().then(async ({ data: { session } }) => {
         if (session) {
-          // Refresh in store and silently update profile if missing
           set({ session, user: session.user, sessionExpired: false })
           if (!get().profile) void get().refreshProfile()
         } else if (get().session) {
-          // Had a session but it's gone now — mark expired so AuthGuard shows re-login
-          set({ sessionExpired: true, session: null, user: null })
+          // Had a session but it's gone now — try server recovery first
+          serverRecoveryAttempted = false // allow retry on foreground
+          const recovered = await attemptServerRecovery()
+          if (!recovered) {
+            set({ sessionExpired: true, session: null, user: null })
+          }
         }
-        // If session is null and we never had one, do nothing — initialize() handles it
       })
     }
     document.addEventListener('visibilitychange', handleVisibilityChange)

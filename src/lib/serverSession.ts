@@ -13,19 +13,21 @@ import type { Session } from '@supabase/supabase-js'
  * Save the current session's refresh token to the server's HTTP-only cookie.
  * Called after every auth state change (login, token refresh).
  */
-export async function syncSessionToServer(session: Session): Promise<void> {
+export async function syncSessionToServer(session: Session): Promise<boolean> {
   try {
-    await fetch('/api/auth/session', {
+    const res = await fetch('/api/auth/session', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${session.access_token}`,
       },
       body: JSON.stringify({ refresh_token: session.refresh_token }),
-      credentials: 'include', // send/receive cookies
+      credentials: 'same-origin',
+      cache: 'no-store', // required for iOS PWA cookie reliability
     })
+    return res.ok
   } catch {
-    // Non-fatal — cookie storage and localStorage still work as fallback
+    return false
   }
 }
 
@@ -37,7 +39,8 @@ export async function syncSessionToServer(session: Session): Promise<void> {
 export async function recoverSessionFromServer(): Promise<Session | null> {
   try {
     const res = await fetch('/api/auth/session', {
-      credentials: 'include', // send HTTP-only cookie
+      credentials: 'same-origin',
+      cache: 'no-store', // required for iOS PWA cookie reliability
     })
     if (!res.ok) return null
 
@@ -55,7 +58,8 @@ export async function clearServerSession(): Promise<void> {
   try {
     await fetch('/api/auth/session', {
       method: 'DELETE',
-      credentials: 'include',
+      credentials: 'same-origin',
+      cache: 'no-store',
     })
   } catch {
     // Non-fatal
