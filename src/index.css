@@ -10,3 +10,25 @@ html, body, #root {
   /* Prevent iOS overscroll bounce showing white below content */
   overflow-x: hidden;
 }
+
+/* Match BottomNav bg so any residual gap is invisible */
+body {
+  background-color: #FFFFFF;
+}
+
+/*
+ * iOS standalone PWA bottom-gap fix.
+ *
+ * With viewport-fit=cover + black-translucent status bar, iOS extends the
+ * viewport under the status bar but offsets the content down by the status-bar
+ * height. html at height:100% doesn't cover that offset, leaving a white band
+ * at the bottom of the screen.
+ *
+ * Extending html's min-height by the top safe-area inset compensates exactly.
+ * Reference: https://dev.to/karmasakshi/make-your-pwas-look-handsome-on-ios-1o08
+ */
+@media all and (display-mode: standalone) {
+  html {
+    min-height: calc(100% + env(safe-area-inset-top));
+  }
+}
