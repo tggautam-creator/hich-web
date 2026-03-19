@@ -80,27 +80,42 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       },
     )
 
-    // Load the current session (PKCE code already exchanged by supabase client)
+    // Load the current session from localStorage.
+    // On iOS PWA, localStorage is occasionally not ready on the very first
+    // read after an app relaunch — retry once after 300ms before giving up.
     void supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
         set({ session, user: session.user })
         void get().refreshProfile()  // sets isLoading: false when done
       } else {
-        set({ isLoading: false })
+        // Retry once: iOS can return null on the first tick after a cold start
+        setTimeout(() => {
+          void supabase.auth.getSession().then(({ data: { session: s2 } }) => {
+            if (s2) {
+              set({ session: s2, user: s2.user })
+              void get().refreshProfile()
+            } else {
+              set({ isLoading: false })
+            }
+          })
+        }, 300)
       }
     })
 
-    // Re-validate session when app resumes (tab focus, phone unlock)
+    // Re-validate session when app resumes (tab focus, phone unlock, PWA foreground)
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && get().session) {
-        void supabase.auth.getSession().then(({ data: { session } }) => {
-          if (!session) {
-            set({ sessionExpired: true, session: null, user: null })
-          } else {
-            set({ session, user: session.user, sessionExpired: false })
-          }
-        })
-      }
+      if (document.visibilityState !== 'visible') return
+      void supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session) {
+          // Refresh in store and silently update profile if missing
+          set({ session, user: session.user, sessionExpired: false })
+          if (!get().profile) void get().refreshProfile()
+        } else if (get().session) {
+          // Had a session but it's gone now — mark expired so AuthGuard shows re-login
+          set({ sessionExpired: true, session: null, user: null })
+        }
+        // If session is null and we never had one, do nothing — initialize() handles it
+      })
     }
     document.addEventListener('visibilitychange', handleVisibilityChange)
 

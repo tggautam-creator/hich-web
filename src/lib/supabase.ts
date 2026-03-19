@@ -17,6 +17,9 @@ export const supabase = createClient<Database>(
       autoRefreshToken: true,
       persistSession: true,
       detectSessionInUrl: true,
+      // Explicitly use localStorage — avoids iOS PWA falling back to
+      // sessionStorage (which is cleared when the app is force-killed).
+      storage: typeof window !== 'undefined' ? window.localStorage : undefined,
     },
   },
 )
