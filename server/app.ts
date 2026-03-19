@@ -1,5 +1,6 @@
 import express from 'express'
 import cors from 'cors'
+import cookieParser from 'cookie-parser'
 import rateLimit from 'express-rate-limit'
 import { ridesRouter } from './routes/rides.ts'
 import { notificationsRouter } from './routes/notifications.ts'
@@ -10,6 +11,7 @@ import { messagesRouter } from './routes/messages.ts'
 import { walletRouter } from './routes/wallet.ts'
 import { stripeWebhookRouter } from './routes/stripeWebhook.ts'
 import { safetyRouter } from './routes/safety.ts'
+import { authRouter } from './routes/auth.ts'
 import { errorHandler } from './middleware/errorHandler.ts'
 
 export const app = express()
@@ -46,6 +48,7 @@ const limiter = rateLimit({
 })
 app.use('/api/', limiter)
 
+app.use(cookieParser())
 app.use(express.json())
 
 app.use('/api/rides', ridesRouter)
@@ -56,5 +59,6 @@ app.use('/api/directions', directionsRouter)
 app.use('/api/messages', messagesRouter)
 app.use('/api/wallet', walletRouter)
 app.use('/api/safety', safetyRouter)
+app.use('/api/auth', authRouter)
 
 app.use(errorHandler)

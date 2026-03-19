@@ -21,6 +21,7 @@ import type { User } from '@/types/database'
 import { supabase } from '@/lib/supabase'
 import { requestAndSaveFcmToken } from '@/lib/fcm'
 import { identifyUser, resetAnalytics } from '@/lib/analytics'
+import { syncSessionToServer, recoverSessionFromServer, clearServerSession } from '@/lib/serverSession'
 
 // ── State & Actions ────────────────────────────────────────────────────────────
 
@@ -72,6 +73,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       (_event, session) => {
         set({ session, user: session?.user ?? null })
         if (session?.user) {
+          // Sync refresh token to server HTTP-only cookie (survives iOS force-kill)
+          void syncSessionToServer(session)
           // Silently refresh profile; isLoading stays false (already initialised)
           void get().refreshProfile()
         } else {
@@ -80,26 +83,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       },
     )
 
-    // Load the current session from localStorage.
-    // On iOS PWA, localStorage is occasionally not ready on the very first
-    // read after an app relaunch — retry once after 300ms before giving up.
-    void supabase.auth.getSession().then(({ data: { session } }) => {
+    // Load the current session from client-side storage.
+    // If that fails (iOS cleared localStorage/cookies on force-kill),
+    // recover from the server's HTTP-only cookie as a last resort.
+    void supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (session) {
         set({ session, user: session.user })
         void get().refreshProfile()  // sets isLoading: false when done
-      } else {
-        // Retry once: iOS can return null on the first tick after a cold start
-        setTimeout(() => {
-          void supabase.auth.getSession().then(({ data: { session: s2 } }) => {
-            if (s2) {
-              set({ session: s2, user: s2.user })
-              void get().refreshProfile()
-            } else {
-              set({ isLoading: false })
-            }
-          })
-        }, 300)
+        return
       }
+
+      // Client storage is empty — try server-side HTTP-only cookie recovery
+      const recovered = await recoverSessionFromServer()
+      if (recovered) {
+        // Restore the session into the Supabase client
+        await supabase.auth.setSession({
+          access_token: recovered.access_token,
+          refresh_token: recovered.refresh_token,
+        })
+        // onAuthStateChange will fire and handle the rest
+        return
+      }
+
+      set({ isLoading: false })
     })
 
     // Re-validate session when app resumes (tab focus, phone unlock, PWA foreground)
@@ -140,6 +146,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // non-fatal: token cleanup failure shouldn't block sign-out
     }
     await supabase.auth.signOut()
+    void clearServerSession()
     resetAnalytics()
     set({ user: null, session: null, profile: null, isDriver: false, isLoading: false })
   },
