@@ -43,27 +43,27 @@ describe('Landing page', () => {
     expect(screen.getByTestId('landing-logo').textContent).toContain('HICH')
   })
 
-  it('renders "Sign up" CTA button', () => {
+  it('renders "Get started" CTA button', () => {
     renderLanding()
     const btn = screen.getByTestId('cta-signup')
     expect(btn).toBeInTheDocument()
-    expect(btn).toHaveTextContent('Sign up')
+    expect(btn).toHaveTextContent('Get started')
   })
 
-  it('renders "Log in" CTA button', () => {
+  it('renders "I have an account" CTA button', () => {
     renderLanding()
     const btn = screen.getByTestId('cta-login')
     expect(btn).toBeInTheDocument()
-    expect(btn).toHaveTextContent('Log in')
+    expect(btn).toHaveTextContent('I have an account')
   })
 
   it('renders trust strip with all three claims', () => {
     renderLanding()
     const strip = screen.getByTestId('trust-strip')
     expect(strip).toBeInTheDocument()
-    expect(strip.textContent).toContain('.edu verified')
-    expect(strip.textContent).toContain('QR-confirmed rides')
-    expect(strip.textContent).toContain('Fare splitting')
+    expect(strip.textContent).toContain('Verified community')
+    expect(strip.textContent).toContain('Instant matching')
+    expect(strip.textContent).toContain('Automatic payments')
   })
 
   it('"Sign up" navigates to /signup', async () => {

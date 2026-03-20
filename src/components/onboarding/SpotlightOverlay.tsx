@@ -15,18 +15,18 @@ interface SpotlightStep {
 const STEPS: SpotlightStep[] = [
   {
     targetTestId: 'search-bar',
-    title: 'Find Rides in Real-Time',
-    description: 'Tap here to enter your destination. Our AI will instantly match you with a verified driver heading the same way — no posting needed.',
+    title: 'Where are you headed?',
+    description: 'Tap here, type your destination, and we\'ll match you with someone going that way. No posting, no waiting.',
   },
   {
     targetTestId: 'ride-board-button',
-    title: 'Browse the Ride Board',
-    description: 'See all scheduled rides from fellow students. Find a ride that fits your schedule or post your own commute.',
+    title: 'Browse upcoming rides',
+    description: 'See rides people have already scheduled. Find one that works for you, or post your own trip.',
   },
   {
     targetTestId: 'driver-tab',
-    title: 'Drive & Earn Money',
-    description: 'Already commuting? Switch to driver mode and earn money on rides you\'re already taking. Set it and forget it.',
+    title: 'Earn while you drive',
+    description: 'Already commuting? Switch to driver mode and get paid for empty seats. Set your schedule, we handle the rest.',
   },
   {
     targetTestId: 'rides-tab',
@@ -36,7 +36,7 @@ const STEPS: SpotlightStep[] = [
   {
     targetTestId: 'wallet-tab',
     title: 'Your Wallet',
-    description: 'Add funds, track earnings, and view your transaction history. Payments are automatic after each QR-verified ride.',
+    description: 'Track earnings and payments. Everything is handled automatically after each ride.',
   },
   {
     targetTestId: 'profile-tab',

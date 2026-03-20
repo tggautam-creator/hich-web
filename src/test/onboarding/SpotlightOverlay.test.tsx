@@ -37,9 +37,9 @@ describe('SpotlightOverlay', () => {
     expect(screen.getByTestId('spotlight-overlay')).toBeDefined()
   })
 
-  it('shows step 1 — Find Rides in Real-Time', () => {
+  it('shows step 1 — Where are you headed?', () => {
     render(<SpotlightOverlay />)
-    expect(screen.getByTestId('spotlight-title').textContent).toBe('Find Rides in Real-Time')
+    expect(screen.getByTestId('spotlight-title').textContent).toBe('Where are you headed?')
   })
 
   it('shows step indicator for 6 steps', () => {
@@ -50,7 +50,7 @@ describe('SpotlightOverlay', () => {
   it('advances to ride board step', () => {
     render(<SpotlightOverlay />)
     fireEvent.click(screen.getByTestId('spotlight-next'))
-    expect(screen.getByTestId('spotlight-title').textContent).toBe('Browse the Ride Board')
+    expect(screen.getByTestId('spotlight-title').textContent).toBe('Browse upcoming rides')
     expect(screen.getByText('2 of 6')).toBeDefined()
   })
 
@@ -58,7 +58,7 @@ describe('SpotlightOverlay', () => {
     render(<SpotlightOverlay />)
     fireEvent.click(screen.getByTestId('spotlight-next')) // → ride board
     fireEvent.click(screen.getByTestId('spotlight-next')) // → driver
-    expect(screen.getByTestId('spotlight-title').textContent).toBe('Drive & Earn Money')
+    expect(screen.getByTestId('spotlight-title').textContent).toBe('Earn while you drive')
   })
 
   it('calls setWalkthroughSeen on skip', () => {

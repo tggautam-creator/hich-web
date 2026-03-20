@@ -511,7 +511,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
           onClick={() => { navigate('/rides/board', { replace: true }) }}
           className="mt-3 text-sm font-medium text-primary hover:text-primary/80 transition-colors"
         >
-          Browse Ride Board
+          Browse upcoming rides
         </button>
       </div>
     )

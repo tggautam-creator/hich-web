@@ -33,7 +33,7 @@ describe('ModeSelectionPage', () => {
 
     it('shows heading', () => {
       renderPage()
-      expect(screen.getByText('How will you use HICH?')).toBeDefined()
+      expect(screen.getByText('How do you want to ride?')).toBeDefined()
     })
 
     it('renders all three mode cards', () => {
@@ -45,17 +45,17 @@ describe('ModeSelectionPage', () => {
 
     it('shows rider card text', () => {
       renderPage()
-      expect(screen.getByText('I need rides')).toBeDefined()
+      expect(screen.getByText('Get rides')).toBeDefined()
     })
 
     it('shows driver card text', () => {
       renderPage()
-      expect(screen.getByText('I offer rides')).toBeDefined()
+      expect(screen.getByText('Give rides & earn')).toBeDefined()
     })
 
     it('shows both card text', () => {
       renderPage()
-      expect(screen.getByText('I do both')).toBeDefined()
+      expect(screen.getByText('Both')).toBeDefined()
     })
   })
 

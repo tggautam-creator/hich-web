@@ -14,11 +14,11 @@ describe('IntroCarousel', () => {
     mockSetIntroSeen.mockClear()
   })
 
-  it('renders the first slide with campus messaging', () => {
+  it('renders the first slide with welcome messaging', () => {
     render(<IntroCarousel />)
     expect(screen.getByTestId('intro-carousel')).toBeDefined()
     expect(screen.getByTestId('slide-title-welcome')).toBeDefined()
-    expect(screen.getByText('Your Campus, Your Rides')).toBeDefined()
+    expect(screen.getByText('Going the same way?')).toBeDefined()
   })
 
   it('renders skip button on first slide', () => {
@@ -30,7 +30,7 @@ describe('IntroCarousel', () => {
     render(<IntroCarousel />)
     fireEvent.click(screen.getByTestId('next-button'))
     expect(screen.getByTestId('slide-title-realtime')).toBeDefined()
-    expect(screen.getByText('Real-Time Matching')).toBeDefined()
+    expect(screen.getByText('Just tap and go')).toBeDefined()
   })
 
   it('calls setIntroSeen on skip', () => {
@@ -46,7 +46,7 @@ describe('IntroCarousel', () => {
     fireEvent.click(screen.getByTestId('next-button')) // → safety
     fireEvent.click(screen.getByTestId('next-button')) // → earn
     fireEvent.click(screen.getByTestId('next-button')) // → get-started (last)
-    expect(screen.getByText("Let's Go")).toBeDefined()
+    expect(screen.getByText('Find my first ride')).toBeDefined()
     fireEvent.click(screen.getByTestId('next-button')) // finish
     expect(mockSetIntroSeen).toHaveBeenCalledOnce()
   })
@@ -61,7 +61,7 @@ describe('IntroCarousel', () => {
 
   it('shows selling points across slides', () => {
     render(<IntroCarousel />)
-    // First slide mentions .edu verification
-    expect(screen.getByText(/\.edu verified/)).toBeDefined()
+    // First slide mentions verified profiles
+    expect(screen.getByText(/Verified profiles/)).toBeDefined()
   })
 })

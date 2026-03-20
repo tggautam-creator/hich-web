@@ -1,7 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import BottomNav from '@/components/ui/BottomNav'
-import AppIcon from '@/components/ui/AppIcon'
 
 interface BecomeDriverPageProps {
   'data-testid'?: string
@@ -19,20 +18,23 @@ export default function BecomeDriverPage({
     >
       {/* ── Content ─────────────────────────────────────────────────────────── */}
       <div className="flex flex-1 flex-col items-center justify-center px-6">
-        {/* Icon */}
-        <div className="mb-6 flex h-24 w-24 items-center justify-center rounded-full bg-primary-light">
-          <AppIcon name="steering-wheel" className="h-12 w-12 text-primary" />
-        </div>
+        {/* Illustration */}
+        <img
+          src="/onboarding/become-driver.png"
+          alt="Earn on your everyday drive"
+          className="mb-6 w-48 h-48 object-contain"
+          data-testid="become-driver-illustration"
+        />
 
         {/* Heading */}
         <h1
           className="mb-2 text-center text-2xl font-bold text-text-primary"
           data-testid="heading"
         >
-          Offer rides to fellow students
+          Earn on your everyday drive
         </h1>
         <p className="mb-8 text-center text-text-secondary">
-          Register your car to start earning on your commute
+          You&apos;re already making the drive — now get paid for the empty seats.
         </p>
 
         {/* Steps */}
@@ -40,18 +42,18 @@ export default function BecomeDriverPage({
           <div className="flex items-start gap-3">
             <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-white text-xs font-bold shrink-0">1</div>
             <div>
-              <p className="font-medium text-text-primary">Register your car</p>
+              <p className="font-medium text-text-primary">Add your car</p>
               <p className="text-sm text-text-secondary">
-                Add your vehicle details so riders know what to expect
+                Takes 30 seconds. Riders see your car details before they hop in.
               </p>
             </div>
           </div>
           <div className="flex items-start gap-3">
             <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-white text-xs font-bold shrink-0">2</div>
             <div>
-              <p className="font-medium text-text-primary">Connect your bank</p>
+              <p className="font-medium text-text-primary">Connect payouts</p>
               <p className="text-sm text-text-secondary">
-                Set up Stripe to receive earnings directly — we never see your bank details
+                Link your bank once. Earnings hit your account after every ride.
               </p>
             </div>
           </div>
@@ -60,7 +62,7 @@ export default function BecomeDriverPage({
             <div>
               <p className="font-medium text-text-primary">Start earning</p>
               <p className="text-sm text-text-secondary">
-                Drive when you want — keep 100% of every fare
+                Drive whenever you want. Keep 100% of every fare — paid automatically.
               </p>
             </div>
           </div>
@@ -72,7 +74,7 @@ export default function BecomeDriverPage({
           onClick={() => { navigate('/onboarding/vehicle') }}
           className="w-full max-w-sm"
         >
-          Get started
+          Register my car
         </PrimaryButton>
       </div>
 

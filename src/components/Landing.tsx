@@ -24,11 +24,11 @@ export default function Landing({ 'data-testid': testId }: LandingProps) {
       <main className="flex-1 flex flex-col justify-center px-6 gap-10">
         <div className="space-y-4">
           <h1 className="text-4xl font-bold text-text-primary leading-tight">
-            Carpool smarter.<br />Get home cheaper.
+            Going the same way?<br />Let&apos;s ride.
           </h1>
           <p className="text-base text-text-secondary leading-relaxed">
-            AI-powered rides between UC Davis and the Bay Area.
-            Drivers are matched automatically — no posting required.
+            Request a ride and get matched with someone headed your direction.
+            No posting, no waiting — just tap and go.
           </p>
         </div>
 
@@ -37,13 +37,13 @@ export default function Landing({ 'data-testid': testId }: LandingProps) {
             data-testid="cta-signup"
             onClick={() => { navigate('/signup') }}
           >
-            Sign up
+            Get started
           </PrimaryButton>
           <SecondaryButton
             data-testid="cta-login"
             onClick={() => { navigate('/login') }}
           >
-            Log in
+            I have an account
           </SecondaryButton>
         </div>
       </main>
@@ -58,7 +58,7 @@ export default function Landing({ 'data-testid': testId }: LandingProps) {
             data-testid="trust-strip"
             className="text-sm text-text-secondary text-center"
           >
-            .edu verified · QR-confirmed rides · Fare splitting
+            Verified community · Instant matching · Automatic payments
           </p>
         </div>
       </footer>

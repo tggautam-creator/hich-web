@@ -72,9 +72,9 @@ export default function LocationPermissionsPage({
           {state === 'denied' ? '\u26A0\uFE0F' : '\uD83D\uDCCD'}
         </div>
 
-        <h1 className="text-2xl font-bold text-text-primary mb-3">Enable location</h1>
+        <h1 className="text-2xl font-bold text-text-primary mb-3">Where are you?</h1>
         <p className="text-sm text-text-secondary mb-8">
-          HICH uses your location to find drivers heading your way. Required to use the app.
+          We need your location to match you with rides nearby. Just one tap.
         </p>
 
         {state === 'denied' ? (
@@ -111,7 +111,7 @@ export default function LocationPermissionsPage({
               onClick={handleAllow}
               isLoading={state === 'loading'}
             >
-              Allow location access
+              Share my location
             </PrimaryButton>
             <button
               data-testid="skip-location"

@@ -41,28 +41,28 @@ export default function ModeSelectionPage({
       }}
     >
       <div className="flex-1 flex flex-col justify-center px-6">
-        <h1 className="text-2xl font-bold text-text-primary mb-2">How will you use HICH?</h1>
+        <h1 className="text-2xl font-bold text-text-primary mb-2">How do you want to ride?</h1>
         <p className="text-sm text-text-secondary mb-8">You can always change this later.</p>
 
         <div className="flex flex-col gap-4">
           <ModeCard
             emoji={'\uD83D\uDEB6'}
-            title="I need rides"
-            description="Request rides from drivers heading your way"
+            title="Get rides"
+            description="Match with someone going your direction in seconds"
             testId="mode-rider"
             onClick={() => { navigate('/home/rider') }}
           />
           <ModeCard
             emoji={'\uD83D\uDE97'}
-            title="I offer rides"
-            description="Pick up riders along your regular commute"
+            title="Give rides & earn"
+            description="Fill your empty seats on drives you're already making"
             testId="mode-driver"
             onClick={() => { navigate('/onboarding/vehicle') }}
           />
           <ModeCard
             emoji={'\u26A1'}
-            title="I do both"
-            description="Switch between requesting and offering rides"
+            title="Both"
+            description="Ride sometimes, drive sometimes — switch anytime"
             testId="mode-both"
             onClick={() => { navigate('/onboarding/vehicle') }}
           />

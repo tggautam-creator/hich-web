@@ -298,8 +298,8 @@ describe('E2E Happy Path', () => {
       )
 
       expect(screen.getByTestId('landing-page')).toBeInTheDocument()
-      expect(screen.getByTestId('cta-signup')).toHaveTextContent('Sign up')
-      expect(screen.getByTestId('cta-login')).toHaveTextContent('Log in')
+      expect(screen.getByTestId('cta-signup')).toHaveTextContent('Get started')
+      expect(screen.getByTestId('cta-login')).toHaveTextContent('I have an account')
     })
 
     it('Sign up button navigates to /signup', async () => {

@@ -1,11 +1,11 @@
 {
-  "name": "HICH — Campus Carpooling",
+  "name": "HICH — Community Rideshare",
   "short_name": "HICH",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#FFFFFF",
   "theme_color": "#00A8F3",
-  "description": "Carpooling for university students. .edu verified rides.",
+  "description": "Share rides with verified people headed your way.",
   "icons": [
     {
       "src": "/icon-192x192.png",

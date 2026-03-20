@@ -67,7 +67,7 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
           void reverseGeocode(lat, lng).then(setLocationName)
         }
       },
-      (err) => { console.warn('[RiderHome] Geolocation error:', err.code, err.message) },
+      () => { /* geolocation denied or unavailable */ },
       { enableHighAccuracy: true, timeout: 10_000, maximumAge: 5_000 },
     )
     return () => { navigator.geolocation.clearWatch(watchId) }
@@ -212,7 +212,7 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
             </svg>
           </div>
           <span className="flex-1 text-sm font-semibold text-text-primary text-left">
-            Browse Ride Board
+            Browse upcoming rides
           </span>
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
             <path d="M9 18l6-6-6-6" />

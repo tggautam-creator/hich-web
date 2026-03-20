@@ -40,13 +40,13 @@ describe('LocationPermissionsPage', () => {
 
     it('shows heading', () => {
       renderPage()
-      expect(screen.getByText('Enable location')).toBeDefined()
+      expect(screen.getByText('Where are you?')).toBeDefined()
     })
 
     it('shows explanation text', () => {
       renderPage()
       expect(
-        screen.getByText(/HICH uses your location to find drivers heading your way/),
+        screen.getByText(/We need your location to match you with rides nearby/),
       ).toBeDefined()
     })
 

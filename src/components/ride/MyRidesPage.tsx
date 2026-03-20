@@ -238,7 +238,7 @@ export default function MyRidesPage({
               onClick={() => navigate('/rides/board')}
               className="mt-4 px-6 py-3 bg-primary text-white font-semibold rounded-2xl text-sm"
             >
-              Browse Ride Board
+              Browse upcoming rides
             </button>
           </div>
         )}

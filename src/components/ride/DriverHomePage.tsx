@@ -251,7 +251,7 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
             </svg>
           </div>
           <span className="flex-1 text-sm font-semibold text-text-primary text-left">
-            Browse Ride Board
+            Browse ride requests
           </span>
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
             <path d="M9 18l6-6-6-6" />

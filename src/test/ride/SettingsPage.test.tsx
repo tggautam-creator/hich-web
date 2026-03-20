@@ -102,6 +102,6 @@ describe('SettingsPage', () => {
   it('shows about section', () => {
     render(<SettingsPage />)
     expect(screen.getByText('Version 1.0.0')).toBeDefined()
-    expect(screen.getByText('Made with love at UC Davis')).toBeDefined()
+    expect(screen.getByText('Made with love in Davis, CA')).toBeDefined()
   })
 })

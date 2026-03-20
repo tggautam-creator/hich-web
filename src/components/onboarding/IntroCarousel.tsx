@@ -1,48 +1,40 @@
 import { useState, useCallback } from 'react'
 import { useOnboardingStore } from '@/stores/onboardingStore'
 import Logo from '@/components/ui/Logo'
-import AppIcon from '@/components/ui/AppIcon'
-import type { AppIconName } from '@/components/ui/AppIcon'
-
 interface IntroCarouselProps {
   'data-testid'?: string
 }
 
-const SLIDES: readonly { id: string; title: string; description: string; icon: AppIconName; iconColor: string }[] = [
+const SLIDES: readonly { id: string; title: string; description: string; image: string }[] = [
   {
     id: 'welcome',
-    title: 'Your Campus, Your Rides',
-    description: 'HICH connects university students for safe, affordable carpooling. Only .edu verified students can join — your campus is your community.',
-    icon: 'graduation',
-    iconColor: 'text-primary',
+    title: 'Going the same way?',
+    description: 'HICH matches you with people already headed your direction. Verified profiles, real savings, zero hassle.',
+    image: '/onboarding/slide-welcome.png',
   },
   {
     id: 'realtime',
-    title: 'Real-Time Matching',
-    description: 'No posting, no waiting. Request a ride and our AI instantly matches you with a driver heading your way. It just works.',
-    icon: 'lightning',
-    iconColor: 'text-warning',
+    title: 'Just tap and go',
+    description: 'Enter where you\'re going and we\'ll find someone headed that way. No group chats, no refreshing a board. It just works.',
+    image: '/onboarding/slide-realtime.png',
   },
   {
     id: 'safety',
-    title: 'Trust Built In',
-    description: 'Every ride is QR-verified at pickup and drop-off. Emergency button always accessible. Every user is .edu authenticated. No strangers.',
-    icon: 'shield',
-    iconColor: 'text-success',
+    title: 'Rides from people you know',
+    description: 'Everyone on HICH is verified. You\'ll see their name, photo, and rating before you ride. Emergency help is always one tap away.',
+    image: '/onboarding/slide-safety.png',
   },
   {
     id: 'earn',
-    title: 'Drive & Earn',
-    description: 'Already commuting? Turn on driver mode and earn money on rides you\'re already taking. Set your schedule, we send riders to you.',
-    icon: 'wallet',
-    iconColor: 'text-primary',
+    title: 'Your commute pays you back',
+    description: 'Already driving somewhere? Turn on driver mode and earn on trips you\'re already making. We send riders to you — zero extra effort.',
+    image: '/onboarding/slide-earn.png',
   },
   {
     id: 'get-started',
-    title: 'Ready to Ride Smarter?',
-    description: 'Save up to 70% vs rideshare. Split costs fairly. Build your campus network. Let\'s go.',
-    icon: 'rocket',
-    iconColor: 'text-danger',
+    title: 'Save up to 70% vs Uber',
+    description: 'That\'s real money back in your pocket every week. Thousands of people are already sharing rides.',
+    image: '/onboarding/slide-savings.png',
   },
 ] as const
 
@@ -115,12 +107,13 @@ export default function IntroCarousel({ 'data-testid': testId = 'intro-carousel'
           </div>
         )}
 
-        {/* Icon for non-first slides */}
-        {current > 0 && (
-          <div className="w-28 h-28 rounded-full bg-primary/5 flex items-center justify-center" data-testid={`slide-icon-${slide.id}`}>
-            <AppIcon name={slide.icon} className={`h-14 w-14 ${slide.iconColor}`} />
-          </div>
-        )}
+        {/* Illustration */}
+        <img
+          src={slide.image}
+          alt={slide.title}
+          className="w-56 h-56 object-contain"
+          data-testid={`slide-image-${slide.id}`}
+        />
 
         <div className="text-center space-y-3 max-w-sm">
           <h2 data-testid={`slide-title-${slide.id}`} className="text-2xl font-bold text-text-primary">
@@ -154,7 +147,7 @@ export default function IntroCarousel({ 'data-testid': testId = 'intro-carousel'
           onClick={handleNext}
           className="w-full rounded-2xl bg-primary py-3.5 text-sm font-semibold text-white shadow-sm hover:shadow-md active:bg-primary-dark active:scale-[0.98] transition-all"
         >
-          {isLast ? "Let's Go" : 'Continue'}
+          {isLast ? 'Find my first ride' : 'Continue'}
         </button>
       </div>
     </div>
