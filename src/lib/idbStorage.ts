@@ -1,10 +1,10 @@
 /**
- * IndexedDB-based storage adapter for Supabase auth.
+ * Dual-write storage adapter for Supabase auth (IndexedDB + localStorage).
  *
- * On iOS PWAs, IndexedDB is more persistent than localStorage after force-kills.
- * Supabase's auth client accepts async storage (getItem/setItem/removeItem can
- * return Promises), so we use IndexedDB as the primary store with a localStorage
- * fallback for environments where IndexedDB is unavailable.
+ * iOS PWAs have a known WebKit bug where IndexedDB can lose its connection
+ * mid-session after repeated app-switch cycles. Writing to BOTH stores on
+ * every setItem means we always have a fallback ready. On read, we try
+ * IndexedDB first (more persistent after force-kills), then localStorage.
  */
 
 const DB_NAME = 'hich-auth'
@@ -29,46 +29,59 @@ function openDB(): Promise<IDBDatabase> {
   return dbPromise
 }
 
+async function idbGet(key: string): Promise<string | null> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly')
+    const request = tx.objectStore(STORE_NAME).get(key)
+    request.onsuccess = () => resolve((request.result as string) ?? null)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+async function idbSet(key: string, value: string): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite')
+    tx.objectStore(STORE_NAME).put(value, key)
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
+async function idbDelete(key: string): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite')
+    tx.objectStore(STORE_NAME).delete(key)
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
 export const idbStorage = {
   async getItem(key: string): Promise<string | null> {
+    // Try IndexedDB first (survives iOS force-kills better)
     try {
-      const db = await openDB()
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readonly')
-        const request = tx.objectStore(STORE_NAME).get(key)
-        request.onsuccess = () => resolve((request.result as string) ?? null)
-        request.onerror = () => reject(request.error)
-      })
+      const value = await idbGet(key)
+      if (value !== null) return value
     } catch {
-      return localStorage.getItem(key)
+      // IndexedDB disconnected — reset so next call retries
+      dbPromise = null
     }
+    // Fallback to localStorage
+    return localStorage.getItem(key)
   },
 
   async setItem(key: string, value: string): Promise<void> {
-    try {
-      const db = await openDB()
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite')
-        tx.objectStore(STORE_NAME).put(value, key)
-        tx.oncomplete = () => resolve()
-        tx.onerror = () => reject(tx.error)
-      })
-    } catch {
-      localStorage.setItem(key, value)
-    }
+    // Write-through: BOTH stores get every write.
+    // If IndexedDB disconnects mid-session, localStorage already has the data.
+    try { localStorage.setItem(key, value) } catch { /* quota exceeded */ }
+    try { await idbSet(key, value) } catch { dbPromise = null }
   },
 
   async removeItem(key: string): Promise<void> {
-    try {
-      const db = await openDB()
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite')
-        tx.objectStore(STORE_NAME).delete(key)
-        tx.oncomplete = () => resolve()
-        tx.onerror = () => reject(tx.error)
-      })
-    } catch {
-      localStorage.removeItem(key)
-    }
+    try { localStorage.removeItem(key) } catch { /* ignore */ }
+    try { await idbDelete(key) } catch { dbPromise = null }
   },
 }
