@@ -9,6 +9,8 @@
  *     recovery path if IndexedDB and localStorage are both wiped.
  */
 
+import { authLog } from '@/lib/authLogger'
+
 const CACHE_NAME = 'hich-auth-v1'
 const CACHE_KEY = '/hich-auth-token'
 
@@ -20,10 +22,13 @@ const CACHE_KEY = '/hich-auth-token'
 export async function requestPersistentStorage(): Promise<boolean> {
   try {
     if (navigator.storage?.persist) {
-      return await navigator.storage.persist()
+      const granted = await navigator.storage.persist()
+      authLog('cacheStorage', 'requestPersistentStorage', granted, granted ? 'granted' : 'denied by browser')
+      return granted
     }
-  } catch {
-    // Not supported or blocked
+    authLog('cacheStorage', 'requestPersistentStorage', false, 'API not available')
+  } catch (err) {
+    authLog('cacheStorage', 'requestPersistentStorage', false, String(err))
   }
   return false
 }
@@ -34,7 +39,10 @@ export async function requestPersistentStorage(): Promise<boolean> {
  */
 export async function cacheRefreshToken(refreshToken: string): Promise<void> {
   try {
-    if (typeof caches === 'undefined') return
+    if (typeof caches === 'undefined') {
+      authLog('cacheStorage', 'cacheRefreshToken', false, 'Cache API not available')
+      return
+    }
     const cache = await caches.open(CACHE_NAME)
     await cache.put(
       new Request(CACHE_KEY),
@@ -42,8 +50,9 @@ export async function cacheRefreshToken(refreshToken: string): Promise<void> {
         headers: { 'Content-Type': 'text/plain', 'X-Timestamp': Date.now().toString() },
       }),
     )
-  } catch {
-    // Cache API not available or quota exceeded
+    authLog('cacheStorage', 'cacheRefreshToken', true, `token length=${refreshToken.length}`)
+  } catch (err) {
+    authLog('cacheStorage', 'cacheRefreshToken', false, String(err))
   }
 }
 
@@ -53,23 +62,35 @@ export async function cacheRefreshToken(refreshToken: string): Promise<void> {
  */
 export async function getCachedRefreshToken(): Promise<string | null> {
   try {
-    if (typeof caches === 'undefined') return null
+    if (typeof caches === 'undefined') {
+      authLog('cacheStorage', 'getCachedRefreshToken', false, 'Cache API not available')
+      return null
+    }
     const cache = await caches.open(CACHE_NAME)
     const response = await cache.match(CACHE_KEY)
-    if (!response) return null
+    if (!response) {
+      authLog('cacheStorage', 'getCachedRefreshToken', false, 'no cached token found')
+      return null
+    }
 
     // Check age — reject tokens older than 30 days
     const timestamp = response.headers.get('X-Timestamp')
     if (timestamp) {
-      const age = Date.now() - Number(timestamp)
-      if (age > 30 * 24 * 60 * 60 * 1000) {
+      const ageMs = Date.now() - Number(timestamp)
+      const ageDays = Math.round(ageMs / (24 * 60 * 60 * 1000))
+      if (ageMs > 30 * 24 * 60 * 60 * 1000) {
         await cache.delete(CACHE_KEY)
+        authLog('cacheStorage', 'getCachedRefreshToken', false, `token expired (${ageDays} days old)`)
         return null
       }
+      authLog('cacheStorage', 'getCachedRefreshToken', true, `token found (${ageDays} days old)`)
+    } else {
+      authLog('cacheStorage', 'getCachedRefreshToken', true, 'token found (no timestamp)')
     }
 
     return await response.text()
-  } catch {
+  } catch (err) {
+    authLog('cacheStorage', 'getCachedRefreshToken', false, String(err))
     return null
   }
 }
@@ -82,7 +103,8 @@ export async function clearCachedRefreshToken(): Promise<void> {
     if (typeof caches === 'undefined') return
     const cache = await caches.open(CACHE_NAME)
     await cache.delete(CACHE_KEY)
-  } catch {
-    // ignore
+    authLog('cacheStorage', 'clearCachedRefreshToken', true)
+  } catch (err) {
+    authLog('cacheStorage', 'clearCachedRefreshToken', false, String(err))
   }
 }

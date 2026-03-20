@@ -8,6 +8,7 @@
  */
 
 import type { Session } from '@supabase/supabase-js'
+import { authLog } from '@/lib/authLogger'
 
 /**
  * Save the current session's refresh token to the server's HTTP-only cookie.
@@ -23,10 +24,12 @@ export async function syncSessionToServer(session: Session): Promise<boolean> {
       },
       body: JSON.stringify({ refresh_token: session.refresh_token }),
       credentials: 'include',
-      cache: 'no-store', // required for iOS PWA cookie reliability
+      cache: 'no-store',
     })
+    authLog('serverCookie', 'syncSessionToServer', res.ok, `status=${res.status}`)
     return res.ok
-  } catch {
+  } catch (err) {
+    authLog('serverCookie', 'syncSessionToServer', false, String(err))
     return false
   }
 }
@@ -40,12 +43,33 @@ export async function recoverSessionFromServer(): Promise<Session | null> {
   try {
     const res = await fetch('/api/auth/session', {
       credentials: 'include',
-      cache: 'no-store', // required for iOS PWA cookie reliability
+      cache: 'no-store',
     })
+    authLog('serverCookie', 'recoverSessionFromServer:fetch', res.ok, `status=${res.status}`)
     if (!res.ok) return null
 
     const body = (await res.json()) as { session: Session | null }
+    const hasSession = body.session !== null && body.session !== undefined
+    authLog('serverCookie', 'recoverSessionFromServer:result', hasSession, hasSession ? 'session recovered' : 'no session in cookie')
     return body.session ?? null
+  } catch (err) {
+    authLog('serverCookie', 'recoverSessionFromServer', false, String(err))
+    return null
+  }
+}
+
+/**
+ * Check if the server-side cookie is present (diagnostic endpoint).
+ * Returns the debug info or null on failure.
+ */
+export async function checkServerCookie(): Promise<{ hasCookie: boolean; cookieLength: number; timestamp: string } | null> {
+  try {
+    const res = await fetch('/api/auth/debug', {
+      credentials: 'include',
+      cache: 'no-store',
+    })
+    if (!res.ok) return null
+    return (await res.json()) as { hasCookie: boolean; cookieLength: number; timestamp: string }
   } catch {
     return null
   }
@@ -61,7 +85,8 @@ export async function clearServerSession(): Promise<void> {
       credentials: 'include',
       cache: 'no-store',
     })
-  } catch {
-    // Non-fatal
+    authLog('serverCookie', 'clearServerSession', true)
+  } catch (err) {
+    authLog('serverCookie', 'clearServerSession', false, String(err))
   }
 }

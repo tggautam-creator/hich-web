@@ -7,6 +7,8 @@
  * IndexedDB first (more persistent after force-kills), then localStorage.
  */
 
+import { authLog } from '@/lib/authLogger'
+
 const DB_NAME = 'hich-auth'
 const STORE_NAME = 'session'
 const DB_VERSION = 1
@@ -20,9 +22,13 @@ function openDB(): Promise<IDBDatabase> {
     request.onupgradeneeded = () => {
       request.result.createObjectStore(STORE_NAME)
     }
-    request.onsuccess = () => resolve(request.result)
+    request.onsuccess = () => {
+      authLog('idb', 'openDB', true)
+      resolve(request.result)
+    }
     request.onerror = () => {
       dbPromise = null
+      authLog('idb', 'openDB', false, String(request.error))
       reject(request.error)
     }
   })
@@ -64,20 +70,37 @@ export const idbStorage = {
     // Try IndexedDB first (survives iOS force-kills better)
     try {
       const value = await idbGet(key)
-      if (value !== null) return value
-    } catch {
+      if (value !== null) {
+        authLog('idb', `getItem(${key.slice(0, 30)})`, true, 'source=IndexedDB')
+        return value
+      }
+    } catch (err) {
       // IndexedDB disconnected — reset so next call retries
       dbPromise = null
+      authLog('idb', `getItem(${key.slice(0, 30)})`, false, String(err))
     }
     // Fallback to localStorage
-    return localStorage.getItem(key)
+    const lsValue = localStorage.getItem(key)
+    authLog('localStorage', `getItem(${key.slice(0, 30)})`, lsValue !== null, lsValue ? 'source=localStorage' : 'not found in any store')
+    return lsValue
   },
 
   async setItem(key: string, value: string): Promise<void> {
     // Write-through: BOTH stores get every write.
     // If IndexedDB disconnects mid-session, localStorage already has the data.
-    try { localStorage.setItem(key, value) } catch { /* quota exceeded */ }
-    try { await idbSet(key, value) } catch { dbPromise = null }
+    try {
+      localStorage.setItem(key, value)
+      authLog('localStorage', `setItem(${key.slice(0, 30)})`, true)
+    } catch (err) {
+      authLog('localStorage', `setItem(${key.slice(0, 30)})`, false, String(err))
+    }
+    try {
+      await idbSet(key, value)
+      authLog('idb', `setItem(${key.slice(0, 30)})`, true)
+    } catch (err) {
+      dbPromise = null
+      authLog('idb', `setItem(${key.slice(0, 30)})`, false, String(err))
+    }
   },
 
   async removeItem(key: string): Promise<void> {

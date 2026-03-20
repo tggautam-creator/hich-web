@@ -111,3 +111,18 @@ authRouter.delete('/session', (_req: Request, res: Response) => {
   res.clearCookie(COOKIE_NAME, { path: '/' })
   res.json({ ok: true })
 })
+
+/**
+ * GET /api/auth/debug — diagnostic endpoint.
+ * Returns whether the HTTP-only session cookie is present in the request.
+ * Used to verify that Vercel's rewrite proxy forwards cookies correctly.
+ * No JWT required — this is a diagnostic tool, not a data endpoint.
+ */
+authRouter.get('/debug', (req: Request, res: Response) => {
+  const hasCookie = Boolean(req.cookies?.[COOKIE_NAME])
+  res.json({
+    hasCookie,
+    cookieLength: hasCookie ? (req.cookies[COOKIE_NAME] as string).length : 0,
+    timestamp: new Date().toISOString(),
+  })
+})

@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, lazy, Suspense } from 'react'
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import { APIProvider } from '@vis.gl/react-google-maps'
 import { useAuthStore } from '@/stores/authStore'
@@ -6,6 +6,8 @@ import { useOnboardingStore } from '@/stores/onboardingStore'
 import { env } from '@/lib/env'
 import RideRequestNotification from '@/components/ride/RideRequestNotification'
 import IntroCarousel from '@/components/onboarding/IntroCarousel'
+
+const SessionDebugPanel = lazy(() => import('@/components/auth/SessionDebugPanel'))
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -75,10 +77,17 @@ export default function AuthGuard({ 'data-testid': testId }: AuthGuardProps) {
     return <IntroCarousel />
   }
 
+  const showDebug = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug')
+
   return (
     <APIProvider apiKey={env.GOOGLE_MAPS_KEY ?? ''}>
       <Outlet />
       <RideRequestNotification />
+      {showDebug && (
+        <Suspense fallback={null}>
+          <SessionDebugPanel />
+        </Suspense>
+      )}
     </APIProvider>
   )
 }

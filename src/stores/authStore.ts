@@ -23,6 +23,7 @@ import { requestAndSaveFcmToken } from '@/lib/fcm'
 import { identifyUser, resetAnalytics } from '@/lib/analytics'
 import { syncSessionToServer, recoverSessionFromServer, clearServerSession } from '@/lib/serverSession'
 import { requestPersistentStorage, cacheRefreshToken, getCachedRefreshToken, clearCachedRefreshToken } from '@/lib/persistentStorage'
+import { authLog } from '@/lib/authLogger'
 
 // ── State & Actions ────────────────────────────────────────────────────────────
 
@@ -69,8 +70,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   sessionExpired: false,
 
   initialize: () => {
-    // Flag to prevent infinite server-recovery loops
-    let serverRecoveryAttempted = false
+    // Recovery rate-limiter: allow up to 3 attempts, reset after 30 seconds
+    let recoveryCount = 0
+    let recoveryLastAttempt = 0
+    const RECOVERY_MAX = 3
+    const RECOVERY_RESET_MS = 30_000
 
     /**
      * Try to restore the session from multiple fallback sources:
@@ -80,12 +84,23 @@ export const useAuthStore = create<AuthState>((set, get) => ({
      * or when Supabase's auto-refresh fails (stale tokens).
      */
     async function attemptRecovery(): Promise<boolean> {
-      if (serverRecoveryAttempted) return false
-      serverRecoveryAttempted = true
+      // Reset counter after 30s of inactivity
+      if (Date.now() - recoveryLastAttempt > RECOVERY_RESET_MS) {
+        recoveryCount = 0
+      }
+      if (recoveryCount >= RECOVERY_MAX) {
+        authLog('recovery', 'attemptRecovery', false, `blocked: ${recoveryCount}/${RECOVERY_MAX} attempts used`)
+        return false
+      }
+      recoveryCount++
+      recoveryLastAttempt = Date.now()
+      authLog('recovery', 'attemptRecovery:start', true, `attempt ${recoveryCount}/${RECOVERY_MAX}`)
 
       // Layer 1: Server HTTP-only cookie recovery
+      authLog('recovery', 'trying serverCookie', true)
       const recovered = await recoverSessionFromServer()
       if (recovered) {
+        authLog('recovery', 'serverCookie recovered session', true)
         await supabase.auth.setSession({
           access_token: recovered.access_token,
           refresh_token: recovered.refresh_token,
@@ -94,28 +109,33 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       // Layer 2: Cache Storage refresh token recovery
+      authLog('recovery', 'trying cacheStorage', true)
       const cachedToken = await getCachedRefreshToken()
       if (cachedToken) {
         const { data, error } = await supabase.auth.refreshSession({ refresh_token: cachedToken })
         if (data.session && !error) {
+          authLog('recovery', 'cacheStorage recovered session', true)
           await supabase.auth.setSession({
             access_token: data.session.access_token,
             refresh_token: data.session.refresh_token,
           })
           return true
         }
+        authLog('recovery', 'cacheStorage refreshSession failed', false, error?.message)
       }
 
+      authLog('recovery', 'all layers exhausted', false)
       return false
     }
 
     // Subscribe to future auth-state changes (token refresh, sign-out, new sign-in)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
+        authLog('supabaseAuth', `onAuthStateChange: ${event}`, session !== null)
         set({ session, user: session?.user ?? null })
         if (session?.user) {
-          // Reset flag so future losses can try recovery again
-          serverRecoveryAttempted = false
+          // Reset counter so future losses can try recovery again
+          recoveryCount = 0
           // Persist refresh token across multiple layers for iOS PWA survival
           void syncSessionToServer(session)     // Layer: server HTTP-only cookie
           void cacheRefreshToken(session.refresh_token)  // Layer: Cache Storage
@@ -125,9 +145,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         } else if (event === 'SIGNED_OUT') {
           // Explicit sign-out — don't try recovery
           set({ profile: null, isDriver: false })
+        } else if (event === 'INITIAL_SESSION') {
+          // No session on cold start — trigger recovery from server cookie / CacheStorage.
+          // This is the SINGLE recovery entry point (not duplicated in getSession().then()).
+          authLog('recovery', 'INITIAL_SESSION with no session — starting recovery', true)
+          void attemptRecovery().then((recovered) => {
+            if (!recovered) {
+              authLog('recovery', 'cold-start recovery failed', false)
+              set({ profile: null, isDriver: false, isLoading: false })
+            }
+          })
         } else {
-          // Session lost unexpectedly (auto-refresh failed, stale tokens) —
-          // try to recover from server HTTP-only cookie before giving up
+          // Session lost unexpectedly (auto-refresh failed, stale tokens)
+          authLog('recovery', `session lost unexpectedly (event=${event})`, false)
           void attemptRecovery().then((recovered) => {
             if (!recovered) {
               set({ profile: null, isDriver: false, isLoading: false })
@@ -138,32 +168,30 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     )
 
     // Load the current session from client-side storage.
-    // If that fails (iOS cleared localStorage/cookies on force-kill),
-    // recover from the server's HTTP-only cookie as a last resort.
-    void supabase.auth.getSession().then(async ({ data: { session } }) => {
+    // Recovery is handled by onAuthStateChange(INITIAL_SESSION) above — NOT here.
+    // This avoids the race condition where two concurrent attemptRecovery() calls
+    // would consume the retry budget and set isLoading: false prematurely.
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      authLog('supabaseAuth', 'getSession', session !== null, session ? 'session found in storage' : 'no session in storage')
       if (session) {
         set({ session, user: session.user })
         void get().refreshProfile()  // sets isLoading: false when done
-        return
       }
-
-      // Client storage is empty — try server-side HTTP-only cookie recovery
-      const recovered = await attemptRecovery()
-      if (!recovered) {
-        set({ isLoading: false })
-      }
+      // If no session: onAuthStateChange(INITIAL_SESSION, null) handles recovery.
+      // Do NOT set isLoading: false here — that would race with recovery.
     })
 
     // Re-validate session when app resumes (tab focus, phone unlock, PWA foreground)
     const handleVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return
+      authLog('supabaseAuth', 'visibility changed to visible', true)
       void supabase.auth.getSession().then(async ({ data: { session } }) => {
         if (session) {
           set({ session, user: session.user, sessionExpired: false })
           if (!get().profile) void get().refreshProfile()
         } else if (get().session) {
           // Had a session but it's gone now — try server recovery first
-          serverRecoveryAttempted = false // allow retry on foreground
+          authLog('recovery', 'session lost on foreground — attempting recovery', true)
           const recovered = await attemptRecovery()
           if (!recovered) {
             set({ sessionExpired: true, session: null, user: null })

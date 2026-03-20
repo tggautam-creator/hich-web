@@ -72,9 +72,11 @@ beforeEach(() => {
     isDriver:  false,
   })
 
-  // Default: no existing session, subscription returns an unsubscribe stub
-  mockOnAuthStateChange.mockReturnValue({
-    data: { subscription: { unsubscribe: vi.fn() } },
+  // Default: fire INITIAL_SESSION with null (no existing session).
+  // The callback is invoked asynchronously to match real Supabase behavior.
+  mockOnAuthStateChange.mockImplementation((callback: (event: string, session: unknown) => void) => {
+    queueMicrotask(() => callback('INITIAL_SESSION', null))
+    return { data: { subscription: { unsubscribe: vi.fn() } } }
   })
   mockGetSession.mockResolvedValue({ data: { session: null } })
   mockSupabaseSignOut.mockResolvedValue({ error: null })
@@ -114,6 +116,10 @@ describe('useAuthStore — initialize()', () => {
   })
 
   it('loads session + profile when a session exists', async () => {
+    mockOnAuthStateChange.mockImplementation((callback: (event: string, session: unknown) => void) => {
+      queueMicrotask(() => callback('INITIAL_SESSION', fakeSession))
+      return { data: { subscription: { unsubscribe: vi.fn() } } }
+    })
     mockGetSession.mockResolvedValue({ data: { session: fakeSession } })
     mockProfileQuery({ data: fakeProfile, error: null })
 
@@ -131,6 +137,10 @@ describe('useAuthStore — initialize()', () => {
 
   it('sets isDriver=true when profile.is_driver is true', async () => {
     const driverProfile = { ...fakeProfile, is_driver: true }
+    mockOnAuthStateChange.mockImplementation((callback: (event: string, session: unknown) => void) => {
+      queueMicrotask(() => callback('INITIAL_SESSION', fakeSession))
+      return { data: { subscription: { unsubscribe: vi.fn() } } }
+    })
     mockGetSession.mockResolvedValue({ data: { session: fakeSession } })
     mockProfileQuery({ data: driverProfile, error: null })
 

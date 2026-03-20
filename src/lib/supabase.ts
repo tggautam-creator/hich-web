@@ -17,7 +17,12 @@ export const supabase = createClient<Database>(
     auth: {
       autoRefreshToken: true,
       persistSession: true,
-      detectSessionInUrl: true,
+      // Disable URL-based session detection in standalone PWA mode.
+      // PWAs launched from the home screen never have auth callback URLs,
+      // and parsing stale URL fragments can interfere with session restoration.
+      detectSessionInUrl: typeof window !== 'undefined'
+        ? !window.matchMedia?.('(display-mode: standalone)').matches
+        : true,
       // IndexedDB-backed storage — more persistent than localStorage on iOS PWAs.
       // Survives force-kills where localStorage and JS cookies get cleared.
       // Falls back to localStorage if IndexedDB is unavailable.
