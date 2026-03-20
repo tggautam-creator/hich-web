@@ -8,8 +8,31 @@ interface QrScannerProps {
 }
 
 /**
+ * Stop a scanner and kill every MediaStream track so the camera LED goes off.
+ * html5-qrcode's stop() sometimes leaves tracks alive — this ensures full cleanup.
+ */
+async function stopAndReleaseTracks(scanner: Html5Qrcode): Promise<void> {
+  try {
+    if (scanner.isScanning) {
+      await scanner.stop()
+    }
+  } catch {
+    // Swallow — stop can throw if already stopped
+  }
+  // Belt-and-suspenders: kill any lingering video tracks in the DOM
+  document.querySelectorAll('video').forEach((video) => {
+    const stream = video.srcObject
+    if (stream instanceof MediaStream) {
+      stream.getTracks().forEach((track) => track.stop())
+      video.srcObject = null
+    }
+  })
+}
+
+/**
  * Camera-based QR scanner using html5-qrcode.
  * Calls onScan with the decoded text when a QR is successfully read.
+ * Immediately stops the camera on successful scan — no lingering stream.
  */
 export default function QrScanner({
   onScan,
@@ -24,6 +47,10 @@ export default function QrScanner({
   const handleScan = useCallback((text: string) => {
     if (hasScanned.current) return
     hasScanned.current = true
+    // Stop camera immediately — don't wait for parent to unmount this component
+    if (scannerRef.current) {
+      void stopAndReleaseTracks(scannerRef.current)
+    }
     onScan(text)
   }, [onScan])
 
@@ -52,8 +79,8 @@ export default function QrScanner({
     void startScanner()
 
     return () => {
-      if (scanner?.isScanning) {
-        scanner.stop().catch(() => { /* cleanup */ })
+      if (scanner) {
+        void stopAndReleaseTracks(scanner)
       }
     }
   }, [handleScan, onError])
