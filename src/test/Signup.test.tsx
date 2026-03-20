@@ -14,10 +14,8 @@
  * 10. Navigates to /check-inbox with email in state after successful OTP send
  * 11. Server error shown when OTP call fails
  * 12. isValidEduEmail helper — boundary cases
- * 13. Shows email-exists error when email is already registered
- * 14. "Log in instead" link navigates to /login
- * 15. Clears email-exists error when user changes email
- * 16. Does NOT call signInWithOtp when email already exists
+ * 13. Redirects to /login with pre-filled email when email already exists
+ * 14. Does NOT call signInWithOtp when email already exists
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -30,16 +28,14 @@ import { isValidEduEmail } from '@/lib/validation'
 /* ── Mocks ──────────────────────────────────────────────────────────── */
 
 // vi.hoisted ensures these are initialised before vi.mock hoisting runs
-const { mockSignInWithOtp, mockNavigate, mockRpc } = vi.hoisted(() => ({
+const { mockSignInWithOtp, mockNavigate } = vi.hoisted(() => ({
   mockSignInWithOtp: vi.fn(),
   mockNavigate: vi.fn(),
-  mockRpc: vi.fn(),
 }))
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
     auth: { signInWithOtp: mockSignInWithOtp },
-    rpc: mockRpc,
   },
 }))
 
@@ -94,9 +90,13 @@ describe('Signup screen', () => {
   beforeEach(() => {
     mockSignInWithOtp.mockReset()
     mockNavigate.mockReset()
-    mockRpc.mockReset()
-    // Default: email does not exist
-    mockRpc.mockResolvedValue({ data: false, error: null })
+    // Default: server says email does not exist
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ exists: false }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
   })
 
   it('renders the email input', () => {
@@ -190,55 +190,41 @@ describe('Signup screen', () => {
     })
   })
 
-  // ── Email already exists ───────────────────────────────────────────
+  // ── Email already exists — auto-redirect to /login ─────────────────
 
-  it('shows email-exists error when email is already registered', async () => {
-    mockRpc.mockResolvedValue({ data: true, error: null })
+  it('redirects to /login with email when email already exists', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ exists: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
     const user = userEvent.setup()
     renderSignup()
     await user.type(screen.getByTestId('email-input'), 'maya@ucdavis.edu')
     await user.click(screen.getByTestId('submit-button'))
     await waitFor(() => {
-      expect(screen.getByTestId('email-exists-error')).toBeInTheDocument()
+      expect(mockNavigate).toHaveBeenCalledWith('/login', {
+        state: { email: 'maya@ucdavis.edu' },
+        replace: true,
+      })
     })
   })
 
   it('does NOT call signInWithOtp when email already exists', async () => {
-    mockRpc.mockResolvedValue({ data: true, error: null })
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ exists: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
     const user = userEvent.setup()
     renderSignup()
     await user.type(screen.getByTestId('email-input'), 'maya@ucdavis.edu')
     await user.click(screen.getByTestId('submit-button'))
     await waitFor(() => {
-      expect(screen.getByTestId('email-exists-error')).toBeInTheDocument()
+      expect(mockNavigate).toHaveBeenCalledWith('/login', expect.anything())
     })
     expect(mockSignInWithOtp).not.toHaveBeenCalled()
-  })
-
-  it('"Log in instead" link navigates to /login', async () => {
-    mockRpc.mockResolvedValue({ data: true, error: null })
-    const user = userEvent.setup()
-    renderSignup()
-    await user.type(screen.getByTestId('email-input'), 'maya@ucdavis.edu')
-    await user.click(screen.getByTestId('submit-button'))
-    await waitFor(() => {
-      expect(screen.getByTestId('go-to-login-link')).toBeInTheDocument()
-    })
-    await user.click(screen.getByTestId('go-to-login-link'))
-    expect(mockNavigate).toHaveBeenCalledWith('/login')
-  })
-
-  it('clears email-exists error when user changes email', async () => {
-    mockRpc.mockResolvedValue({ data: true, error: null })
-    const user = userEvent.setup()
-    renderSignup()
-    await user.type(screen.getByTestId('email-input'), 'maya@ucdavis.edu')
-    await user.click(screen.getByTestId('submit-button'))
-    await waitFor(() => {
-      expect(screen.getByTestId('email-exists-error')).toBeInTheDocument()
-    })
-    // Type one more character — error should clear
-    await user.type(screen.getByTestId('email-input'), 'x')
-    expect(screen.queryByTestId('email-exists-error')).toBeNull()
   })
 })

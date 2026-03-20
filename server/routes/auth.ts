@@ -18,6 +18,7 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { validateJwt } from '../middleware/auth.ts'
 import { getServerEnv } from '../env.ts'
+import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 
 export const authRouter = Router()
 
@@ -110,6 +111,38 @@ authRouter.get('/session', async (req: Request, res: Response) => {
 authRouter.delete('/session', (_req: Request, res: Response) => {
   res.clearCookie(COOKIE_NAME, { path: '/' })
   res.json({ ok: true })
+})
+
+/**
+ * GET /api/auth/check-email — check if an email exists (completed account).
+ * Used by the signup page to redirect existing users to login.
+ * Queries public.users with supabaseAdmin (bypasses RLS, no RPC needed).
+ * No JWT required — only returns a boolean, no sensitive data.
+ */
+authRouter.get('/check-email', async (req: Request, res: Response) => {
+  const email = req.query['email']
+  if (!email || typeof email !== 'string') {
+    res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'email query param required' } })
+    return
+  }
+
+  try {
+    const normalizedEmail = email.trim().toLowerCase()
+
+    const { count, error } = await supabaseAdmin
+      .from('users')
+      .select('id', { count: 'exact', head: true })
+      .eq('email', normalizedEmail)
+
+    if (error) {
+      res.json({ exists: null })
+      return
+    }
+
+    res.json({ exists: (count ?? 0) > 0 })
+  } catch {
+    res.json({ exists: null })
+  }
 })
 
 /**

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { isValidEduEmail } from '@/lib/validation'
 import InputField from '@/components/ui/InputField'
@@ -12,10 +12,12 @@ interface LoginProps {
 
 export default function Login({ 'data-testid': testId }: LoginProps) {
   const navigate = useNavigate()
+  const location = useLocation()
+  const redirectedEmail = (location.state as { email?: string } | null)?.email ?? ''
 
-  const [email,        setEmail]       = useState('')
+  const [email,        setEmail]       = useState(redirectedEmail)
   const [password,     setPassword]    = useState('')
-  const [touched,      setTouched]     = useState(false)
+  const [touched,      setTouched]     = useState(redirectedEmail.length > 0)
   const [isSubmitting, setSubmitting]  = useState(false)
   const [serverError,  setServerError] = useState<string | null>(null)
 
@@ -114,6 +116,11 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
           <p className="text-text-secondary">
             Sign in with your university email and password.
           </p>
+          {redirectedEmail && (
+            <p data-testid="redirect-notice" className="text-sm text-primary font-medium">
+              An account with this email already exists. Please log in.
+            </p>
+          )}
         </div>
 
         <form
@@ -163,7 +170,6 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
             }}
           />
 
-          {/* Forgot password + magic link row */}
           <div className="flex items-center justify-between">
             <button
               data-testid="forgot-password-link"

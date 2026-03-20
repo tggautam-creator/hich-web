@@ -17,7 +17,6 @@ export default function Signup({ 'data-testid': testId }: SignupProps) {
   const [touched, setTouched]         = useState(false)
   const [isSubmitting, setSubmitting] = useState(false)
   const [serverError, setServerError] = useState<string | null>(null)
-  const [emailExists, setEmailExists] = useState(false)
 
   const isValid   = isValidEduEmail(email)
   const showError = touched && email.length > 0 && !isValid
@@ -29,28 +28,37 @@ export default function Signup({ 'data-testid': testId }: SignupProps) {
 
     setSubmitting(true)
     setServerError(null)
-    setEmailExists(false)
 
     try {
-      // Check if an account with this email already exists
-      const { data: exists } = await supabase.rpc('check_email_exists', {
-        check_email: email.trim().toLowerCase(),
-      })
-      if (exists) {
-        setEmailExists(true)
-        setSubmitting(false)
-        return
+      const trimmedEmail = email.trim().toLowerCase()
+
+      // Check if an account with this email already exists via server endpoint.
+      // Uses supabaseAdmin to query public.users — bypasses RLS, no RPC needed.
+      try {
+        const checkRes = await fetch(
+          `/api/auth/check-email?email=${encodeURIComponent(trimmedEmail)}`,
+          { signal: AbortSignal.timeout(8_000) },
+        )
+        if (checkRes.ok) {
+          const { exists } = (await checkRes.json()) as { exists: boolean | null }
+          if (exists === true) {
+            navigate('/login', { state: { email: trimmedEmail }, replace: true })
+            return
+          }
+        }
+      } catch {
+        // Server unreachable — fall through to OTP signup
       }
 
       const { error } = await supabase.auth.signInWithOtp({
-        email: email.trim().toLowerCase(),
+        email: trimmedEmail,
         options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
       })
       if (error) {
         setServerError(error.message)
       } else {
-        trackEvent('signup_started', { edu_domain: email.trim().toLowerCase().split('@')[1] })
-        navigate('/check-inbox', { state: { email: email.trim().toLowerCase() } })
+        trackEvent('signup_started', { edu_domain: trimmedEmail.split('@')[1] })
+        navigate('/check-inbox', { state: { email: trimmedEmail } })
       }
     } catch {
       setServerError('Something went wrong. Please try again.')
@@ -102,7 +110,6 @@ export default function Signup({ 'data-testid': testId }: SignupProps) {
               setEmail(e.target.value)
               setTouched(true)
               setServerError(null)
-              setEmailExists(false)
             }}
             error={
               showError
@@ -128,24 +135,6 @@ export default function Signup({ 'data-testid': testId }: SignupProps) {
             >
               {serverError}
             </p>
-          )}
-
-          {emailExists && (
-            <div
-              data-testid="email-exists-error"
-              className="rounded-2xl bg-primary-light p-4 text-sm text-text-primary"
-              role="alert"
-            >
-              <p className="font-medium">An account with this email already exists.</p>
-              <button
-                data-testid="go-to-login-link"
-                type="button"
-                onClick={() => { navigate('/login') }}
-                className="mt-1 text-primary font-semibold underline"
-              >
-                Log in instead
-              </button>
-            </div>
           )}
 
           <PrimaryButton

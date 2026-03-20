@@ -209,7 +209,7 @@ export default function CreateProfilePage() {
                 onChange={(e) => { setCountryKey(e.target.value) }}
                 className={[
                   INPUT_CLASS,
-                  'w-[5.5rem] !min-w-[5.5rem] shrink-0 cursor-pointer',
+                  '!w-[5.5rem] !min-w-[5.5rem] !max-w-[5.5rem] shrink-0 cursor-pointer',
                   errors.phone ? 'border-danger focus:ring-danger' : '',
                 ].join(' ')}
                 aria-label="Country code"
