@@ -233,6 +233,14 @@ export default function VehicleRegistrationPage({
       }}
     >
       <div className="flex-1 flex flex-col px-6 py-4">
+        <button
+          data-testid="back-button"
+          onClick={() => { navigate(-1) }}
+          className="self-start mb-4 text-sm font-medium text-primary"
+        >
+          &larr; Back
+        </button>
+
         <h1 className="mb-2 text-2xl font-bold text-text-primary">Register your vehicle</h1>
         <p className="mb-8 text-sm text-text-secondary">
           This info helps riders identify your car.

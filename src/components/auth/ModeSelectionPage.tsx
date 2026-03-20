@@ -1,25 +1,30 @@
 import { useNavigate } from 'react-router-dom'
+import AppIcon from '@/components/ui/AppIcon'
+import type { AppIconName } from '@/components/ui/AppIcon'
 
 interface ModeSelectionPageProps {
   'data-testid'?: string
 }
 
 interface ModeCardProps {
-  emoji: string
+  icon: AppIconName
+  iconColor: string
   title: string
   description: string
   testId: string
   onClick: () => void
 }
 
-function ModeCard({ emoji, title, description, testId, onClick }: ModeCardProps) {
+function ModeCard({ icon, iconColor, title, description, testId, onClick }: ModeCardProps) {
   return (
     <button
       data-testid={testId}
       onClick={onClick}
       className="w-full text-left rounded-2xl border border-border bg-white px-5 py-4 shadow-sm active:scale-[0.98] transition-transform"
     >
-      <div className="text-3xl mb-2">{emoji}</div>
+      <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-primary/5">
+        <AppIcon name={icon} className={`h-5 w-5 ${iconColor}`} />
+      </div>
       <p className="font-semibold text-text-primary">{title}</p>
       <p className="text-sm text-text-secondary mt-0.5">{description}</p>
     </button>
@@ -46,21 +51,24 @@ export default function ModeSelectionPage({
 
         <div className="flex flex-col gap-4">
           <ModeCard
-            emoji={'\uD83D\uDEB6'}
+            icon="person"
+            iconColor="text-primary"
             title="Get rides"
             description="Match with someone going your direction in seconds"
             testId="mode-rider"
             onClick={() => { navigate('/home/rider') }}
           />
           <ModeCard
-            emoji={'\uD83D\uDE97'}
+            icon="steering-wheel"
+            iconColor="text-success"
             title="Give rides & earn"
             description="Fill your empty seats on drives you're already making"
             testId="mode-driver"
             onClick={() => { navigate('/onboarding/vehicle') }}
           />
           <ModeCard
-            emoji={'\u26A1'}
+            icon="lightning"
+            iconColor="text-warning"
             title="Both"
             description="Ride sometimes, drive sometimes — switch anytime"
             testId="mode-both"
