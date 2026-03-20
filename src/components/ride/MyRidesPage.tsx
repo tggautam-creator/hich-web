@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import BottomNav from '@/components/ui/BottomNav'
+import AppIcon from '@/components/ui/AppIcon'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -227,7 +228,7 @@ export default function MyRidesPage({
 
         {!loading && rides.length === 0 && (
           <div className="text-center py-16 px-6">
-            <p className="text-4xl mb-3">🚗</p>
+            <div className="flex justify-center mb-3"><div className="h-14 w-14 rounded-full bg-surface flex items-center justify-center"><AppIcon name="car-request" className="h-7 w-7 text-text-secondary" /></div></div>
             <p className="text-text-secondary text-sm font-medium">No active rides</p>
             <p className="text-text-secondary text-xs mt-1">
               Request a ride or browse the ride board to get started.

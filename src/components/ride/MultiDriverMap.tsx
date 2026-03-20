@@ -297,7 +297,7 @@ export default function MultiDriverMap({ 'data-testid': testId }: MultiDriverMap
       {/* ── Header ───────────────────────────────────────────────────────────── */}
       <div
         className="flex items-center gap-3 px-4 border-b border-border bg-white z-10 shrink-0"
-        style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}
+        style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
       >
         <button
           data-testid="back-button"

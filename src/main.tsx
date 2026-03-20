@@ -46,10 +46,17 @@ const RateRidePage = lazy(() => import('@/components/ride/RateRidePage'))
 // ── Payment & Profile ────────────────────────────────────────────────────────
 const WalletPage = lazy(() => import('@/components/ride/WalletPage'))
 const AddFundsPage = lazy(() => import('@/components/ride/AddFundsPage'))
+const PaymentMethodsPage = lazy(() => import('@/components/payment/PaymentMethodsPage'))
+const SaveCardPage = lazy(() => import('@/components/payment/SaveCardPage'))
 const RideHistoryPage = lazy(() => import('@/components/ride/RideHistoryPage'))
 const ProfilePage = lazy(() => import('@/components/ride/ProfilePage'))
 const VehicleEditPage = lazy(() => import('@/components/ride/VehicleEditPage'))
 const SettingsPage = lazy(() => import('@/components/ride/SettingsPage'))
+
+// ── Stripe Connect (Driver) ─────────────────────────────────────────────────
+const StripeOnboardingPage = lazy(() => import('@/components/driver/StripeOnboardingPage'))
+const StripeOnboardingCompletePage = lazy(() => import('@/components/driver/StripeOnboardingCompletePage'))
+const DriverPayoutsPage = lazy(() => import('@/components/driver/DriverPayoutsPage'))
 
 // ── Schedule & Board ─────────────────────────────────────────────────────────
 const SchedulePage = lazy(() => import('@/components/schedule/SchedulePage'))
@@ -130,6 +137,13 @@ createRoot(rootEl).render(
               {/* Payment & Post-Ride */}
               <Route path="/wallet" element={<Suspense fallback={<ListPageSkeleton />}><WalletPage /></Suspense>} />
               <Route path="/wallet/add" element={<Suspense fallback={<FormPageSkeleton />}><AddFundsPage /></Suspense>} />
+              <Route path="/payment/methods" element={<Suspense fallback={<ListPageSkeleton />}><PaymentMethodsPage /></Suspense>} />
+              <Route path="/payment/add" element={<Suspense fallback={<FormPageSkeleton />}><SaveCardPage /></Suspense>} />
+
+              {/* Stripe Connect (Driver) */}
+              <Route path="/stripe/onboarding" element={<Suspense fallback={<FormPageSkeleton />}><StripeOnboardingPage /></Suspense>} />
+              <Route path="/stripe/onboarding/complete" element={<Suspense fallback={<FormPageSkeleton />}><StripeOnboardingCompletePage /></Suspense>} />
+              <Route path="/stripe/payouts" element={<Suspense fallback={<ListPageSkeleton />}><DriverPayoutsPage /></Suspense>} />
               <Route path="/rides/history" element={<Suspense fallback={<ListPageSkeleton />}><RideHistoryPage /></Suspense>} />
               <Route path="/ride/summary/:rideId" element={<Suspense fallback={<FormPageSkeleton />}><RideSummaryPage /></Suspense>} />
               <Route path="/ride/rate/:rideId" element={<Suspense fallback={<FormPageSkeleton />}><RateRidePage /></Suspense>} />

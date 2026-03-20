@@ -3,6 +3,7 @@ import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { useMap } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
 import { RoutePolyline, MapBoundsFitter, decodePolyline } from '@/components/map/RoutePreview'
+import { calculateFare, formatCents } from '@/lib/fare'
 import { MAP_ID } from '@/lib/mapConstants'
 
 // ── Types (exported for reuse by DriverDestinationCard) ──────────────────────
@@ -25,10 +26,12 @@ export interface TransitDropoffSuggestion {
   station_place_id: string
   station_address: string
   transit_options: TransitOption[]
+  ride_with_driver_minutes?: number
   walk_to_station_minutes: number
   driver_detour_minutes: number
   transit_to_dest_minutes: number
   total_rider_minutes: number
+  full_transit_minutes?: number
   rider_progress_pct?: number
   transit_polyline?: string | null
 }
@@ -152,6 +155,8 @@ export function TransitSuggestionPicker({
           total_rider_minutes: suggestion.total_rider_minutes,
           transit_polyline: suggestion.transit_polyline ?? null,
           rider_progress_pct: suggestion.rider_progress_pct ?? null,
+          ride_with_driver_minutes: suggestion.ride_with_driver_minutes ?? null,
+          full_transit_minutes: suggestion.full_transit_minutes ?? null,
         }),
       })
 
@@ -519,41 +524,100 @@ export default function TransitSuggestionCard({
         </div>
       )}
 
-      {/* Step-by-step transit journey */}
-      <div className="mt-2 space-y-1.5">
-        {suggestion.transit_options.map((opt, idx) => (
-          <div
-            key={`${opt.type}-${opt.line_name}-${idx}`}
-            data-testid="transit-leg"
-            className="flex items-center gap-1.5 text-xs"
-          >
-            <span className="shrink-0 text-sm">{opt.icon}</span>
-            <span className="font-semibold text-text-primary shrink-0">{opt.line_name}</span>
-            {opt.departure_stop && opt.arrival_stop ? (
-              <>
-                <span className="text-text-secondary truncate">
-                  {opt.departure_stop} → {opt.arrival_stop}
-                </span>
-                {opt.duration_minutes != null && (
-                  <span className="shrink-0 text-text-secondary">· {opt.duration_minutes} min</span>
-                )}
-              </>
-            ) : (
-              <span className="text-text-secondary">
-                {opt.walk_minutes > 0 ? `${opt.walk_minutes} min walk · ` : ''}{opt.total_minutes} min
-              </span>
-            )}
-          </div>
-        ))}
-      </div>
+      {/* Your journey — step by step */}
+      {(() => {
+        // Estimate ride time with driver: use server value, fallback to distance estimate
+        let rideMin = suggestion.ride_with_driver_minutes ?? 0
+        if (rideMin <= 0 && pickupLat != null && pickupLng != null) {
+          // Haversine distance → rough driving time (~50 km/h average)
+          const R = 6371
+          const dLat = (suggestion.station_lat - pickupLat) * Math.PI / 180
+          const dLng = (suggestion.station_lng - pickupLng) * Math.PI / 180
+          const a = Math.sin(dLat / 2) ** 2 + Math.cos(pickupLat * Math.PI / 180) * Math.cos(suggestion.station_lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2
+          const distKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+          rideMin = Math.round(distKm / 50 * 60) // 50 km/h average speed
+        }
+        // Time saved vs taking public transit for the entire journey
+        const totalJourney = Math.max(suggestion.total_rider_minutes, rideMin + suggestion.walk_to_station_minutes + suggestion.transit_to_dest_minutes)
+        const savedMinutes = (suggestion.full_transit_minutes ?? 0) > totalJourney
+          ? (suggestion.full_transit_minutes ?? 0) - totalJourney
+          : 0
+        // Estimate fare for the ride portion (pickup → station)
+        const rideDistKm = rideMin > 0 ? (rideMin / 60) * 50 : 0 // reverse of 50 km/h avg
+        const rideFare = rideDistKm > 0 ? calculateFare(rideDistKm, rideMin) : null
+        return (
+          <div className="mt-2 rounded-lg bg-surface/60 p-2 space-y-1.5 text-[10px]">
+            <p className="text-[9px] font-semibold text-text-secondary uppercase tracking-wider">Your journey</p>
 
-      {/* Summary */}
-      <div className="flex gap-3 mt-2 text-[10px] text-text-secondary">
-        <span>{suggestion.total_rider_minutes} min total to destination</span>
-        {suggestion.walk_to_station_minutes > 0 && (
-          <span>{suggestion.walk_to_station_minutes} min walk to station</span>
-        )}
-      </div>
+            {/* Step 1: Ride with driver */}
+            <div className="flex items-start gap-2">
+              <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-[#4F46E5] shrink-0" />
+              <p className="min-w-0">
+                <span className="font-semibold text-text-primary">Driver drops you at {suggestion.station_name}</span>
+                {rideMin > 0 && <span className="text-text-secondary"> · ~{rideMin} min</span>}
+              </p>
+            </div>
+
+            {/* Step 2: Walk to station */}
+            {suggestion.walk_to_station_minutes > 0 && (
+              <div className="flex items-start gap-2">
+                <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-text-secondary/40 shrink-0" />
+                <span className="text-text-secondary">
+                  Walk to {suggestion.station_name} station · ~{suggestion.walk_to_station_minutes} min
+                </span>
+              </div>
+            )}
+
+            {/* Step 3: Transit to destination — show each transit leg */}
+            {suggestion.transit_options.filter(o => o.type !== 'WALKING').length > 0 ? (
+              suggestion.transit_options.filter(o => o.type !== 'WALKING').map((opt, idx) => (
+                <div key={`transit-${idx}`} className="flex items-start gap-2 overflow-hidden">
+                  <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-[#10B981] shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-1">
+                      <span className="font-semibold text-text-primary shrink-0">{opt.line_name}</span>
+                      {opt.duration_minutes != null && opt.duration_minutes > 0 && (
+                        <span className="text-text-secondary shrink-0">· {opt.duration_minutes} min</span>
+                      )}
+                    </div>
+                    {opt.departure_stop && opt.arrival_stop && (
+                      <p className="text-text-secondary truncate">{opt.departure_stop} → {opt.arrival_stop}</p>
+                    )}
+                  </div>
+                </div>
+              ))
+            ) : suggestion.transit_to_dest_minutes > 0 ? (
+              <div className="flex items-start gap-2">
+                <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-[#10B981] shrink-0" />
+                <div>
+                  <span className="font-semibold text-text-primary">Transit to your destination</span>
+                  <span className="text-text-secondary ml-1">~{suggestion.transit_to_dest_minutes} min</span>
+                </div>
+              </div>
+            ) : null}
+
+            {/* Estimated fare for ride portion */}
+            {rideFare && (
+              <div className="border-t border-border pt-1.5 flex items-center justify-between">
+                <span className="text-text-secondary">Estimated ride fare</span>
+                <span className="font-semibold text-text-primary">~{formatCents(rideFare.fare_cents)}</span>
+              </div>
+            )}
+
+            {/* Total */}
+            <div className={`${!rideFare ? 'border-t border-border' : ''} pt-1.5 flex items-center justify-between`}>
+              <span className="font-semibold text-text-primary">
+                Total: ~{totalJourney} min
+              </span>
+              {savedMinutes > 0 && (
+                <span className="font-semibold text-success text-[9px]">
+                  {savedMinutes} min faster than public transit
+                </span>
+              )}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Accept / Counter buttons for rider */}
       {isRider && (onAccept ?? onCounter) && (

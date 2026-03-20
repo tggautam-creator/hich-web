@@ -140,7 +140,7 @@ export default function WalletPage() {
         )}
       </div>
 
-      <BottomNav activeTab="wallet" />
+      <BottomNav activeTab="payment" />
     </div>
   )
 }

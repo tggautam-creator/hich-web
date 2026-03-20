@@ -3,10 +3,24 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { validateVin, validateYear } from '@/lib/validation'
-import { decodeVin } from '@/lib/vin'
+import { decodeVin, guessBodyType } from '@/lib/vin'
+import type { VehicleBodyType } from '@/lib/vin'
 import { lookupFuelEconomy, DEFAULT_MPG } from '@/lib/fuelEconomy'
+import VehicleIcon from '@/components/ui/VehicleIcon'
 import InputField from '@/components/ui/InputField'
 import PrimaryButton from '@/components/ui/PrimaryButton'
+
+// ── Body type options ─────────────────────────────────────────────────────────
+const BODY_TYPES: { value: VehicleBodyType; label: string }[] = [
+  { value: 'sedan',     label: 'Sedan' },
+  { value: 'suv',       label: 'SUV' },
+  { value: 'hatchback', label: 'Hatchback' },
+  { value: 'coupe',     label: 'Coupe' },
+  { value: 'minivan',   label: 'Minivan' },
+  { value: 'pickup',    label: 'Pickup' },
+  { value: 'van',       label: 'Van' },
+  { value: 'wagon',     label: 'Wagon' },
+] as const
 
 // ── Car color options (data, not UI tokens) ──────────────────────────────────
 const CAR_COLORS = [
@@ -55,6 +69,7 @@ export default function VehicleRegistrationPage({
   const [carPhoto, setCarPhoto]             = useState<File | null>(null)
   const [licensePhoto, setLicensePhoto]     = useState<File | null>(null)
   const [seats, setSeats]                   = useState(2)
+  const [bodyType, setBodyType]             = useState<VehicleBodyType>('sedan')
   const [errors, setErrors]                 = useState<FormErrors>({})
   const [isLoading, setIsLoading]           = useState(false)
   const [vinDecoding, setVinDecoding]       = useState(false)
@@ -77,6 +92,8 @@ export default function VehicleRegistrationPage({
         if (result.make) setMake(result.make)
         if (result.model) setModel(result.model)
         if (result.year) setYear(result.year)
+        if (result.bodyType) setBodyType(result.bodyType)
+        else if (result.model) setBodyType(guessBodyType(result.model))
 
         // Look up fuel economy from EPA database
         if (result.year && result.make && result.model) {
@@ -172,6 +189,7 @@ export default function VehicleRegistrationPage({
         license_plate_photo_url: licPath,
         seats_available:         seats,
         fuel_efficiency_mpg:     fuelMpg ?? DEFAULT_MPG,
+        body_type:               bodyType,
       })
       if (vehErr) throw vehErr
 
@@ -184,7 +202,7 @@ export default function VehicleRegistrationPage({
 
       // Refresh auth store so AuthGuard sees is_driver + full_name
       await refreshProfile()
-      navigate('/home/driver')
+      navigate('/stripe/onboarding')
     } catch (err: unknown) {
       // eslint-disable-next-line no-console
       console.error('[VehicleRegistrationPage] submit error:', err)
@@ -363,6 +381,29 @@ export default function VehicleRegistrationPage({
             {errors.licensePhoto && (
               <p className="text-xs text-danger" role="alert">{errors.licensePhoto}</p>
             )}
+          </div>
+
+          {/* ── Vehicle type + preview ────────────────────────────────── */}
+          <div className="flex flex-col gap-2">
+            <span className="text-sm font-medium text-text-primary">Vehicle type</span>
+            <div className="flex items-center gap-4">
+              <select
+                data-testid="body-type-select"
+                value={bodyType}
+                onChange={(e) => { setBodyType(e.target.value as VehicleBodyType) }}
+                className="flex-1 rounded-xl border border-border bg-white px-3 py-2.5 text-sm text-text-primary"
+              >
+                {BODY_TYPES.map(({ value, label }) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+              <div className="h-14 w-20 rounded-xl bg-surface flex items-center justify-center shrink-0">
+                <VehicleIcon
+                  color={CAR_COLORS.find((c) => c.name.toLowerCase() === color.toLowerCase())?.hex ?? '#6b7280'}
+                  className="h-10 w-auto"
+                />
+              </div>
+            </div>
           </div>
 
           {/* ── Seats stepper ───────────────────────────────────────── */}

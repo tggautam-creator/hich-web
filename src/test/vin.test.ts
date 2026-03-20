@@ -12,7 +12,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-function nhtsaResponse(make: string | null, model: string | null, year: string | null) {
+function nhtsaResponse(make: string | null, model: string | null, year: string | null, bodyClass: string | null = null) {
   return {
     ok: true,
     json: () => Promise.resolve({
@@ -20,6 +20,7 @@ function nhtsaResponse(make: string | null, model: string | null, year: string |
         { Variable: 'Make', Value: make },
         { Variable: 'Model', Value: model },
         { Variable: 'Model Year', Value: year },
+        { Variable: 'Body Class', Value: bodyClass },
         { Variable: 'Other Field', Value: 'ignored' },
       ],
     }),
@@ -29,9 +30,9 @@ function nhtsaResponse(make: string | null, model: string | null, year: string |
 // ── Tests ────────────────────────────────────────────────────────────────────
 describe('decodeVin', () => {
   it('returns make, model, and year from NHTSA response', async () => {
-    mockFetch.mockResolvedValue(nhtsaResponse('Honda', 'Accord', '2020'))
+    mockFetch.mockResolvedValue(nhtsaResponse('Honda', 'Accord', '2020', 'Sedan/Saloon'))
     const result = await decodeVin('1HGBH41JXMN109186')
-    expect(result).toEqual({ make: 'Honda', model: 'Accord', year: '2020' })
+    expect(result).toEqual({ make: 'Honda', model: 'Accord', year: '2020', bodyType: 'sedan' })
   })
 
   it('calls the correct NHTSA URL', async () => {
@@ -53,13 +54,13 @@ describe('decodeVin', () => {
   it('returns null for missing fields', async () => {
     mockFetch.mockResolvedValue(nhtsaResponse(null, null, null))
     const result = await decodeVin('AAAAAAAAAAAAAAAAA')
-    expect(result).toEqual({ make: null, model: null, year: null })
+    expect(result).toEqual({ make: null, model: null, year: null, bodyType: null })
   })
 
   it('returns null for empty-string fields', async () => {
     mockFetch.mockResolvedValue(nhtsaResponse('', '', ''))
     const result = await decodeVin('AAAAAAAAAAAAAAAAA')
-    expect(result).toEqual({ make: null, model: null, year: null })
+    expect(result).toEqual({ make: null, model: null, year: null, bodyType: null })
   })
 
   it('throws on non-OK HTTP response', async () => {

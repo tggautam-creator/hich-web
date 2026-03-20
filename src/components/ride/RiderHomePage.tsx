@@ -67,7 +67,7 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
           void reverseGeocode(lat, lng).then(setLocationName)
         }
       },
-      () => { /* denied */ },
+      (err) => { console.warn('[RiderHome] Geolocation error:', err.code, err.message) },
       { enableHighAccuracy: true, timeout: 10_000, maximumAge: 5_000 },
     )
     return () => { navigator.geolocation.clearWatch(watchId) }
@@ -115,7 +115,7 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
       <div
         data-testid="top-bar"
         className="absolute left-0 right-0 top-0 z-[1000] bg-white/90 backdrop-blur-sm border-b border-border flex items-center justify-between px-4"
-        style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}
+        style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
       >
         <span className="font-bold text-lg text-primary tracking-widest select-none">
           HICH
@@ -139,34 +139,32 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
         </button>
       </div>
 
-      {/* ── Active ride banner ──────────────────────────────────────────────── */}
-      {activeRideCount > 0 && (
-        <button
-          data-testid="active-ride-banner"
-          onClick={() => navigate('/rides')}
-          className="absolute left-4 right-4 z-[1000] rounded-2xl bg-primary px-4 py-3 shadow-lg flex items-center gap-3 active:opacity-90 transition-opacity"
-          style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 11rem)' }}
-        >
-          <div className="h-8 w-8 rounded-full bg-white/20 flex items-center justify-center shrink-0">
-            <span className="text-white font-bold text-sm">{activeRideCount}</span>
-          </div>
-          <div className="flex-1 min-w-0 text-left">
-            <p className="text-sm font-semibold text-white">
-              {activeRideCount === 1 ? 'You have an active ride' : `You have ${activeRideCount} active rides`}
-            </p>
-            <p className="text-xs text-white/70">Tap to view</p>
-          </div>
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-white/70 shrink-0" aria-hidden="true">
-            <path d="M9 18l6-6-6-6" />
-          </svg>
-        </button>
-      )}
-
-      {/* ── Stacked search + ride board cards ─────────────────────────────── */}
+      {/* ── Stacked: active ride banner + search + ride board cards ────── */}
       <div
         className="absolute left-0 right-0 z-[1000] px-4 flex flex-col gap-2"
         style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 4.5rem)' }}
       >
+        {/* Active ride banner — stacks above search card naturally */}
+        {activeRideCount > 0 && (
+          <button
+            data-testid="active-ride-banner"
+            onClick={() => navigate('/rides')}
+            className="w-full rounded-2xl bg-primary px-4 py-3 shadow-lg flex items-center gap-3 active:opacity-90 transition-opacity"
+          >
+            <div className="h-8 w-8 rounded-full bg-white/20 flex items-center justify-center shrink-0">
+              <span className="text-white font-bold text-sm">{activeRideCount}</span>
+            </div>
+            <div className="flex-1 min-w-0 text-left">
+              <p className="text-sm font-semibold text-white">
+                {activeRideCount === 1 ? 'You have an active ride' : `You have ${activeRideCount} active rides`}
+              </p>
+              <p className="text-xs text-white/70">Tap to view</p>
+            </div>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-white/70 shrink-0" aria-hidden="true">
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+          </button>
+        )}
         {/* Full-width search card */}
         <button
           data-testid="search-bar"

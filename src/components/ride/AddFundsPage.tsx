@@ -256,7 +256,7 @@ export default function AddFundsPage() {
         )}
       </div>
 
-      <BottomNav activeTab="wallet" />
+      <BottomNav activeTab="payment" />
     </div>
   )
 }

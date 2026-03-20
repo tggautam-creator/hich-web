@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { calculateFareRange, formatCents, type FareRange } from '@/lib/fare'
 import type { PlaceSuggestion } from '@/lib/places'
@@ -38,6 +38,30 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
   const [isSubmitting, setSubmitting] = useState(false)
   const [showBreakdown, setShowBreakdown] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Payment method state
+  interface CardInfo { id: string; brand: string; last4: string; is_default: boolean }
+  const [cards, setCards] = useState<CardInfo[]>([])
+  const [selectedCard, setSelectedCard] = useState<string | null>(null)
+  const [loadingCards, setLoadingCards] = useState(true)
+
+  const fetchCards = useCallback(async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) { setLoadingCards(false); return }
+      const res = await fetch('/api/payment/methods', {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
+      if (res.ok) {
+        const body = (await res.json()) as { methods: CardInfo[]; default_method_id: string | null }
+        setCards(body.methods)
+        const defaultCard = body.methods.find((c) => c.is_default) ?? body.methods[0]
+        if (defaultCard) setSelectedCard(defaultCard.id)
+      }
+    } catch { /* non-fatal */ } finally { setLoadingCards(false) }
+  }, [])
+
+  useEffect(() => { void fetchCards() }, [fetchCards])
 
   // Redirect if no destination in state
   useEffect(() => {
@@ -301,6 +325,69 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
           </div>
         )}
 
+        {/* Payment method */}
+        <div data-testid="payment-section" className="bg-surface rounded-2xl p-5 space-y-3">
+          <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider">
+            Payment method
+          </p>
+
+          {loadingCards ? (
+            <div className="flex items-center gap-2 py-2">
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+              <span className="text-sm text-text-secondary">Loading...</span>
+            </div>
+          ) : cards.length === 0 ? (
+            <div className="space-y-2">
+              <p className="text-sm text-text-secondary">No payment method saved.</p>
+              <button
+                data-testid="add-card-button"
+                onClick={() => { navigate('/payment/add', { state: { returnTo: '/ride/confirm', confirmState: state } }) }}
+                className="text-sm font-medium text-primary"
+              >
+                + Add a card
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {cards.map((card) => (
+                <button
+                  key={card.id}
+                  data-testid="payment-card-option"
+                  onClick={() => { setSelectedCard(card.id) }}
+                  className={`flex w-full items-center gap-3 rounded-xl p-3 text-left transition-colors ${
+                    selectedCard === card.id
+                      ? 'bg-primary/10 border-2 border-primary'
+                      : 'bg-white border border-border'
+                  }`}
+                >
+                  <div className="flex h-8 w-11 items-center justify-center rounded-md bg-gray-100 text-[10px] font-bold text-text-secondary">
+                    {card.brand.charAt(0).toUpperCase() + card.brand.slice(1, 4)}
+                  </div>
+                  <span className="text-sm font-medium text-text-primary flex-1">
+                    •••• {card.last4}
+                  </span>
+                  {selectedCard === card.id && (
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary" aria-hidden="true">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  )}
+                </button>
+              ))}
+              <button
+                data-testid="add-another-card"
+                onClick={() => { navigate('/payment/add', { state: { returnTo: '/ride/confirm', confirmState: state } }) }}
+                className="text-sm font-medium text-primary mt-1"
+              >
+                + Add another card
+              </button>
+            </div>
+          )}
+
+          <p className="text-[11px] text-text-secondary leading-tight">
+            You won&apos;t be charged now. The final fare is calculated automatically when the ride ends based on actual distance and time.
+          </p>
+        </div>
+
         {/* Spacer */}
         <div className="flex-1" />
 
@@ -315,13 +402,14 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
             data-testid="request-ride-button"
             onClick={() => { handleRequestRide() }}
             isLoading={isSubmitting}
+            disabled={!selectedCard && !loadingCards}
           >
-            Request Ride
+            {!selectedCard && !loadingCards ? 'Add a payment method' : 'Request Ride'}
           </PrimaryButton>
 
           <button
             data-testid="change-destination-button"
-            onClick={() => { navigate('/ride/search') }}
+            onClick={() => { navigate('/ride/search', { state: { originLat: state.originLat, originLng: state.originLng } }) }}
             className="w-full text-center text-sm text-primary font-medium py-2"
           >
             Change destination

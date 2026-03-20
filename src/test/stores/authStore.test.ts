@@ -42,6 +42,9 @@ const fakeProfile = {
   rating_avg:         null,
   rating_count:       0,
   home_location:      null,
+  stripe_account_id:  null,
+  stripe_onboarding_complete: false,
+  default_payment_method_id: null,
   created_at:         '2024-01-01T00:00:00Z',
 }
 

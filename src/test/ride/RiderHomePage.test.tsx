@@ -230,11 +230,11 @@ describe('RiderHomePage', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/become-driver')
   })
 
-  it('wallet tab navigates to /wallet', async () => {
+  it('payment tab navigates to /payment/methods', async () => {
     const user = userEvent.setup()
     renderPage()
-    await user.click(screen.getByTestId('wallet-tab'))
-    expect(mockNavigate).toHaveBeenCalledWith('/wallet')
+    await user.click(screen.getByTestId('payment-tab'))
+    expect(mockNavigate).toHaveBeenCalledWith('/payment/methods')
   })
 
   it('profile tab navigates to /profile', async () => {

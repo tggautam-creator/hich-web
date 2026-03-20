@@ -72,9 +72,20 @@ describe('RideConfirm', () => {
     mockGetSession.mockResolvedValue({
       data: { session: { access_token: 'test-token' } },
     })
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ ride_id: 'ride-abc-123' }),
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('/api/payment/methods')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            methods: [{ id: 'pm_test', brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2028, is_default: true }],
+            default_method_id: 'pm_test',
+          }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ ride_id: 'ride-abc-123' }),
+      })
     })
   })
 
@@ -205,7 +216,7 @@ describe('RideConfirm', () => {
     const user = userEvent.setup()
     renderWithState({ destination: MOCK_DESTINATION })
     await user.click(screen.getByTestId('change-destination-button'))
-    expect(mockNavigate).toHaveBeenCalledWith('/ride/search')
+    expect(mockNavigate).toHaveBeenCalledWith('/ride/search', { state: { originLat: undefined, originLng: undefined } })
   })
 
   it('redirects to /ride/search when no destination in state', async () => {

@@ -6,8 +6,8 @@
  *   time_cost   = round(duration_min × 5)
  *   base        = 100 cents ($1.00)
  *   fare_cents  = max(200, min(4000, base + gas_cost + time_cost))
- *   platform_fee = round(fare × 0.15)
- *   driver_earns = fare - platform_fee
+ *   platform_fee = round(fare × 0) = 0 (zero commission)
+ *   driver_earns = fare
  *
  * Defaults: mpg = 25, gas_price = $3.50/gal
  */
@@ -57,28 +57,26 @@ describe('calculateFare', () => {
     expect(f.fare_cents).toBe(200)
   })
 
-  it('calculates platform fee as 15% rounded', () => {
+  it('calculates platform fee as 0 (zero commission)', () => {
     const f = calculateFare(10, 15) // fare = 262
-    expect(f.platform_fee_cents).toBe(Math.round(262 * 0.15)) // 39
-    expect(f.platform_fee_cents).toBe(39)
+    expect(f.platform_fee_cents).toBe(0)
   })
 
-  it('driver_earns = fare - platform_fee', () => {
-    const f = calculateFare(10, 15) // fare = 262, fee = 39
-    expect(f.driver_earns_cents).toBe(262 - 39)
-    expect(f.driver_earns_cents).toBe(223)
+  it('driver_earns = fare (zero commission)', () => {
+    const f = calculateFare(10, 15) // fare = 262
+    expect(f.driver_earns_cents).toBe(262)
   })
 
   it('computes correct breakdown at the maximum cap', () => {
     const f = calculateFare(300, 400) // fare = 4000
-    expect(f.platform_fee_cents).toBe(600) // round(4000 * 0.15) = 600
-    expect(f.driver_earns_cents).toBe(3400)
+    expect(f.platform_fee_cents).toBe(0)
+    expect(f.driver_earns_cents).toBe(4000)
   })
 
   it('computes correct breakdown at the minimum cap', () => {
     const f = calculateFare(0, 0) // fare = 200
-    expect(f.platform_fee_cents).toBe(30) // round(200 * 0.15) = 30
-    expect(f.driver_earns_cents).toBe(170)
+    expect(f.platform_fee_cents).toBe(0)
+    expect(f.driver_earns_cents).toBe(200)
   })
 
   it('includes gas_cost_cents and time_cost_cents in the breakdown', () => {

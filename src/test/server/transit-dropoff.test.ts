@@ -112,7 +112,7 @@ describe('GET /api/transit/options', () => {
     expect(res.body.options).toHaveLength(1)
     expect(res.body.options[0]).toMatchObject({
       type: 'BUS',
-      icon: '🚌',
+      icon: 'Bus',
       line_name: '42',
       total_minutes: 20,
     })

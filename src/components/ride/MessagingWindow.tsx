@@ -38,14 +38,39 @@ interface ChatMessage {
 
 type PinMode = 'pickup' | 'dropoff'
 
-/** Small inner component for pickup mini-map with real route directions. */
+/** Small inner component for pickup mini-map with walking + driving routes. */
 function PickupMiniMap({
-  originLat, originLng, pickupLat, pickupLng,
+  originLat, originLng, pickupLat, pickupLng, isRider, driverId,
 }: {
   originLat: number; originLng: number; pickupLat: number; pickupLng: number
+  isRider: boolean; driverId?: string | null
 }) {
   const [walkMin, setWalkMin] = useState<number | null>(null)
   const [driveMin, setDriveMin] = useState<number | null>(null)
+  const [driverLat, setDriverLat] = useState<number | null>(null)
+  const [driverLng, setDriverLng] = useState<number | null>(null)
+
+  // Fetch driver's live location for accurate drive ETA
+  useEffect(() => {
+    if (!driverId) return
+    void (async () => {
+      const { data } = await supabase
+        .from('driver_locations')
+        .select('location')
+        .eq('user_id', driverId)
+        .single()
+      if (data?.location) {
+        const loc = data.location as unknown as { coordinates: [number, number] }
+        setDriverLat(loc.coordinates[1])
+        setDriverLng(loc.coordinates[0])
+      }
+    })()
+  }, [driverId])
+
+  // Drive origin: driver's live location if available, otherwise rider origin as fallback
+  const driveOriginLat = driverLat ?? originLat
+  const driveOriginLng = driverLng ?? originLng
+  const hasDriverLocation = driverLat != null && driverLng != null
 
   return (
     <>
@@ -58,16 +83,19 @@ function PickupMiniMap({
           disableDefaultUI
           className="w-full h-full"
         >
+          {/* Rider origin marker */}
           <AdvancedMarker position={{ lat: originLat, lng: originLng }}>
             <div className="flex items-center justify-center">
               <span className="h-3 w-3 rounded-full bg-primary border-2 border-white shadow-md" />
             </div>
           </AdvancedMarker>
+          {/* Pickup marker */}
           <AdvancedMarker position={{ lat: pickupLat, lng: pickupLng }}>
             <div className="flex h-6 items-center justify-center rounded-full border-2 border-white shadow-lg bg-success px-2 text-white text-[10px] font-bold whitespace-nowrap">
               PICKUP
             </div>
           </AdvancedMarker>
+          {/* Walking route: rider → pickup */}
           <DirectionsRoute
             from={{ lat: originLat, lng: originLng }}
             to={{ lat: pickupLat, lng: pickupLng }}
@@ -76,8 +104,9 @@ function PickupMiniMap({
             weight={3}
             onResult={({ durationMin }) => setWalkMin(durationMin)}
           />
+          {/* Driving route: driver → pickup */}
           <DirectionsRoute
-            from={{ lat: originLat, lng: originLng }}
+            from={{ lat: driveOriginLat, lng: driveOriginLng }}
             to={{ lat: pickupLat, lng: pickupLng }}
             mode="DRIVING"
             color="#22C55E"
@@ -90,13 +119,21 @@ function PickupMiniMap({
           ]} />
         </Map>
       </div>
-      <div className="flex items-center gap-3 mb-1.5">
-        <span className="text-[10px] text-text-secondary">
-          &#x1F6B6; {walkMin != null ? `${walkMin} min walk` : 'calculating…'}
-        </span>
-        <span className="text-[10px] text-text-secondary">
-          &#x1F697; {driveMin != null ? `${driveMin} min drive` : 'calculating…'}
-        </span>
+      <div className="rounded-lg bg-surface/60 p-2 space-y-1 mb-1.5 text-[10px]">
+        <div className="flex items-center gap-1.5">
+          <span className="inline-block w-2 h-2 rounded-full bg-[#6366F1] shrink-0" />
+          <span className="text-text-primary font-medium">
+            {isRider ? 'Your walk to pickup' : "Rider's walk to pickup"}
+            {walkMin != null ? ` · ${walkMin} min` : ' · calculating…'}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="inline-block w-2 h-2 rounded-full bg-[#22C55E] shrink-0" />
+          <span className="text-text-primary font-medium">
+            {hasDriverLocation ? "Driver's drive to pickup" : 'Drive to pickup'}
+            {driveMin != null ? ` · ${driveMin} min` : ' · calculating…'}
+          </span>
+        </div>
       </div>
     </>
   )
@@ -691,7 +728,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         {/* Header */}
         <div
           className="flex items-center gap-3 px-4 border-b border-border bg-white z-10 shrink-0"
-          style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}
+          style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
         >
           <button
             data-testid="pin-back-button"
@@ -807,7 +844,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
       {/* ── Header (fixed) ─────────────────────────────────────────────────── */}
       <div
         className="flex items-center gap-3 px-4 border-b border-border bg-white z-10 shrink-0"
-        style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}
+        style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
       >
         <button
           data-testid="back-button"
@@ -1138,6 +1175,8 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                         originLng={(ride.origin as { coordinates: [number, number] }).coordinates[0]}
                         pickupLat={meta.lat as number}
                         pickupLng={meta.lng as number}
+                        isRider={isRider}
+                        driverId={ride.driver_id}
                       />
                     )}
                     {hasLocation && !ride?.origin && (
@@ -1267,6 +1306,8 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
               proposed_by?: string
               transit_polyline?: string | null
               rider_progress_pct?: number | null
+              ride_with_driver_minutes?: number | null
+              full_transit_minutes?: number | null
               pickup_lat?: number | null
               pickup_lng?: number | null
               rider_dest_lat?: number | null
@@ -1290,6 +1331,8 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
               driver_detour_minutes: 0,
               transit_to_dest_minutes: meta.transit_to_dest_minutes ?? 0,
               total_rider_minutes: meta.total_rider_minutes ?? 0,
+              ride_with_driver_minutes: meta.ride_with_driver_minutes ?? undefined,
+              full_transit_minutes: meta.full_transit_minutes ?? undefined,
               rider_progress_pct: meta.rider_progress_pct ?? undefined,
               transit_polyline: meta.transit_polyline ?? null,
             } : null
@@ -1429,6 +1472,22 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                   className="flex-1 rounded-2xl py-3 text-sm font-semibold text-white bg-success active:bg-success/90 transition-colors"
                 >
                   Navigate to Pickup
+                </button>
+              </div>
+              <div className="flex justify-center gap-3 mt-2">
+                <button
+                  data-testid="change-pickup-confirmed"
+                  onClick={() => openPinDropper('pickup')}
+                  className="text-[10px] text-text-secondary underline active:opacity-60"
+                >
+                  Change pickup
+                </button>
+                <button
+                  data-testid="change-dropoff-confirmed"
+                  onClick={() => openPinDropper('dropoff')}
+                  className="text-[10px] text-text-secondary underline active:opacity-60"
+                >
+                  Change dropoff
                 </button>
               </div>
             </>

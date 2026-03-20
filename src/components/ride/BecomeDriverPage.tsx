@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import BottomNav from '@/components/ui/BottomNav'
+import AppIcon from '@/components/ui/AppIcon'
 
 interface BecomeDriverPageProps {
   'data-testid'?: string
@@ -20,7 +21,7 @@ export default function BecomeDriverPage({
       <div className="flex flex-1 flex-col items-center justify-center px-6">
         {/* Icon */}
         <div className="mb-6 flex h-24 w-24 items-center justify-center rounded-full bg-primary-light">
-          <span className="text-5xl">🚗</span>
+          <AppIcon name="steering-wheel" className="h-12 w-12 text-primary" />
         </div>
 
         {/* Heading */}
@@ -34,32 +35,32 @@ export default function BecomeDriverPage({
           Register your car to start earning on your commute
         </p>
 
-        {/* Benefits */}
+        {/* Steps */}
         <div className="mb-10 w-full max-w-sm space-y-4">
           <div className="flex items-start gap-3">
-            <span className="mt-0.5 text-lg">💰</span>
+            <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-white text-xs font-bold shrink-0">1</div>
             <div>
-              <p className="font-medium text-text-primary">Earn money</p>
+              <p className="font-medium text-text-primary">Register your car</p>
               <p className="text-sm text-text-secondary">
-                Get paid for rides you&apos;re already making
+                Add your vehicle details so riders know what to expect
               </p>
             </div>
           </div>
           <div className="flex items-start gap-3">
-            <span className="mt-0.5 text-lg">🤝</span>
+            <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-white text-xs font-bold shrink-0">2</div>
             <div>
-              <p className="font-medium text-text-primary">Help commuters</p>
+              <p className="font-medium text-text-primary">Connect your bank</p>
               <p className="text-sm text-text-secondary">
-                Students heading the same way — verified .edu only
+                Set up Stripe to receive earnings directly — we never see your bank details
               </p>
             </div>
           </div>
           <div className="flex items-start gap-3">
-            <span className="mt-0.5 text-lg">⏰</span>
+            <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-white text-xs font-bold shrink-0">3</div>
             <div>
-              <p className="font-medium text-text-primary">Flexible schedule</p>
+              <p className="font-medium text-text-primary">Start earning</p>
               <p className="text-sm text-text-secondary">
-                Drive when you want — no commitments
+                Drive when you want — keep 100% of every fare
               </p>
             </div>
           </div>
@@ -71,7 +72,7 @@ export default function BecomeDriverPage({
           onClick={() => { navigate('/onboarding/vehicle') }}
           className="w-full max-w-sm"
         >
-          Register your car
+          Get started
         </PrimaryButton>
       </div>
 

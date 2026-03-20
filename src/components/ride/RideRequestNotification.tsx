@@ -5,6 +5,7 @@ import { onForegroundMessage } from '@/lib/fcm'
 import { formatCents } from '@/lib/fare'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
+import AppIcon from '@/components/ui/AppIcon'
 
 // ── Dismiss callback ref (stable across renders) ──────────────────────────────
 
@@ -529,7 +530,7 @@ export default function RideRequestNotification({
           <div className="flex items-center justify-between px-4 py-3">
             <div className="flex items-center gap-3 min-w-0">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-danger/10 shrink-0">
-                <span className="text-lg">❌</span>
+                <AppIcon name="x-circle" className="h-5 w-5 text-danger" />
               </div>
               <div className="min-w-0">
                 <p className="text-sm font-bold text-text-primary">Ride Cancelled</p>
@@ -574,7 +575,7 @@ export default function RideRequestNotification({
           <div className="flex items-center justify-between px-4 py-3">
             <div className="flex items-center gap-3 min-w-0">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-success/10 shrink-0">
-                <span className="text-lg">✅</span>
+                <AppIcon name="check-circle" className="h-5 w-5 text-success" />
               </div>
               <div className="min-w-0">
                 <p className="text-sm font-bold text-text-primary">Ride Accepted!</p>
@@ -624,7 +625,10 @@ export default function RideRequestNotification({
         {/* Header row */}
         <div className="flex items-center justify-between px-4 pt-3 pb-2">
           <div className="flex items-center gap-2">
-            <span className="text-lg">{notification.isBoardRequest ? '📋' : notification.isRenewal ? '🔔' : '🚗'}</span>
+            <AppIcon
+              name={notification.isBoardRequest ? 'clipboard' : notification.isRenewal ? 'bell' : 'car-request'}
+              className={`h-5 w-5 ${notification.isRenewal ? 'text-text-secondary' : 'text-primary'}`}
+            />
             <h3 className="text-sm font-bold text-primary">
               {notification.isBoardRequest ? 'Ride Board Match' : notification.isRenewal ? 'You\'re Back in the Running' : 'New Ride Request'}
             </h3>
@@ -642,7 +646,7 @@ export default function RideRequestNotification({
         {/* Rider info */}
         <div className="flex items-center gap-3 px-4 pb-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-light shrink-0">
-            <span className="text-sm">🧑</span>
+            <AppIcon name="person" className="h-4 w-4 text-text-secondary" />
           </div>
           <div className="min-w-0">
             <p className="font-semibold text-text-primary text-sm truncate" data-testid="rider-name">

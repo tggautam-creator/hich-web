@@ -11,6 +11,11 @@
  *  7.  Sends POST /api/schedule/request via confirmation sheet → enters waiting state
  *  8.  Shows error when request fails
  *  9.  Passes user location in board fetch
+ * 10.  Filters rides by destination when typing in search bar
+ * 11.  Shows search-aware empty state when no rides match
+ * 12.  Clears search and shows all rides when clear button is clicked
+ * 13.  Renders the Post Ride FAB
+ * 14.  Renders the search bar
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -309,5 +314,66 @@ describe('RideBoard', () => {
     const url = boardCall?.[0] as string
     expect(url).toContain('lat=38.54')
     expect(url).toContain('lng=-121.76')
+  })
+
+  // ── Search filtering tests ─────────────────────────────────────────────
+
+  it('filters rides by destination when typing in search bar', async () => {
+    const user = userEvent.setup()
+    setupBoardFetch()
+    render(<RideBoard />)
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('ride-card')).toHaveLength(2)
+    })
+
+    // Type "San Francisco" — only the driver ride matches
+    await user.type(screen.getByTestId('board-search-input'), 'San Francisco')
+
+    expect(screen.getAllByTestId('ride-card')).toHaveLength(1)
+    expect(screen.getByText('Ahmed')).toBeInTheDocument()
+  })
+
+  it('shows search-aware empty state when no rides match', async () => {
+    const user = userEvent.setup()
+    setupBoardFetch()
+    render(<RideBoard />)
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('ride-card')).toHaveLength(2)
+    })
+
+    await user.type(screen.getByTestId('board-search-input'), 'Sacramento')
+
+    expect(screen.queryByTestId('ride-card')).not.toBeInTheDocument()
+    expect(screen.getByText(/No rides matching "Sacramento"/)).toBeInTheDocument()
+  })
+
+  it('clears search and shows all rides when clear button is clicked', async () => {
+    const user = userEvent.setup()
+    setupBoardFetch()
+    render(<RideBoard />)
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('ride-card')).toHaveLength(2)
+    })
+
+    await user.type(screen.getByTestId('board-search-input'), 'San Francisco')
+    expect(screen.getAllByTestId('ride-card')).toHaveLength(1)
+
+    await user.click(screen.getByTestId('board-search-clear'))
+    expect(screen.getAllByTestId('ride-card')).toHaveLength(2)
+  })
+
+  it('renders the Post Ride FAB', async () => {
+    setupBoardFetch()
+    render(<RideBoard />)
+    expect(screen.getByTestId('post-ride-fab')).toBeInTheDocument()
+  })
+
+  it('renders the search bar', async () => {
+    setupBoardFetch()
+    render(<RideBoard />)
+    expect(screen.getByTestId('board-search-input')).toBeInTheDocument()
   })
 })

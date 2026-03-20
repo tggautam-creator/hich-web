@@ -258,9 +258,26 @@ beforeEach(() => {
   })
 
   // Mock fetch for API calls
-  globalThis.fetch = vi.fn().mockResolvedValue({
-    ok: true,
-    json: () => Promise.resolve({ ride_id: 'ride-abc-123' }),
+  globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+    if (typeof url === 'string' && url.includes('/api/auth/check-email')) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ exists: false }),
+      })
+    }
+    if (typeof url === 'string' && url.includes('/api/payment/methods')) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          methods: [{ id: 'pm_test', brand: 'visa', last4: '4242', exp_month: 12, exp_year: 2028, is_default: true }],
+          default_method_id: 'pm_test',
+        }),
+      })
+    }
+    return Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ ride_id: 'ride-abc-123' }),
+    })
   })
 })
 
@@ -321,14 +338,7 @@ describe('E2E Happy Path', () => {
       // Click submit
       await user.click(screen.getByTestId('submit-button'))
 
-      // check_email_exists RPC is called first
-      await waitFor(() => {
-        expect(mockRpc).toHaveBeenCalledWith('check_email_exists', {
-          check_email: 'maya@ucdavis.edu',
-        })
-      })
-
-      // Then signInWithOtp is called
+      // signInWithOtp is called (after server check-email returns exists: false)
       await waitFor(() => {
         expect(mockSignInWithOtp).toHaveBeenCalledWith({
           email: 'maya@ucdavis.edu',

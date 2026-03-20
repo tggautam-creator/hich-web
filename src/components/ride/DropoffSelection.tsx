@@ -241,6 +241,8 @@ export default function DropoffSelection({
           total_rider_minutes: suggestion.total_rider_minutes,
           transit_polyline: suggestion.transit_polyline ?? null,
           rider_progress_pct: suggestion.rider_progress_pct ?? null,
+          ride_with_driver_minutes: suggestion.ride_with_driver_minutes ?? null,
+          full_transit_minutes: suggestion.full_transit_minutes ?? null,
         }),
       })
 
@@ -403,18 +405,29 @@ export default function DropoffSelection({
         <p className="text-xs text-text-secondary mt-0.5">
           Pick a station along your route, or take {riderName} all the way.
         </p>
+        {loading && (
+          <div className="mt-2 flex items-center gap-2 rounded-lg bg-primary/5 border border-primary/20 px-3 py-2">
+            <svg className="h-4 w-4 animate-spin text-primary shrink-0" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            <p className="text-xs font-medium text-primary">
+              Loading transit stations near your route&hellip; Please wait before choosing.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* ── Scrollable options ──────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-2.5 min-h-0">
 
-        {/* Option 0: Drop off at rider's destination (always visible) */}
+        {/* Option 0: Drop off at rider's destination — disabled while loading transit options */}
         <button
           type="button"
           data-testid="rider-dest-option"
           onClick={handlePickRiderDest}
-          disabled={picking}
-          className="w-full rounded-2xl bg-white border-2 border-success/30 p-4 text-left shadow-sm active:bg-success/5 disabled:opacity-50 transition-colors"
+          disabled={picking || loading}
+          className={`w-full rounded-2xl bg-white border-2 p-4 text-left shadow-sm transition-colors disabled:opacity-50 ${loading ? 'border-border' : 'border-success/30 active:bg-success/5'}`}
         >
           <div className="flex items-center gap-3">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-success/10">

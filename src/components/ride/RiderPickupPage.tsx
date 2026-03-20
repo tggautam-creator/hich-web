@@ -10,6 +10,7 @@ import QrScanner from '@/components/ride/QrScanner'
 import EmergencySheet from '@/components/ui/EmergencySheet'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
+import AppIcon from '@/components/ui/AppIcon'
 import type { Ride, User, Vehicle, GeoPoint } from '@/types/database'
 
 // Transit info from a transit_dropoff_suggestion message
@@ -44,7 +45,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   const [error, setError] = useState<string | null>(null)
   const [signalling, setSignalling] = useState(false)
   const [signalled, setSignalled] = useState(false)
-  const [unreadChat, setUnreadChat] = useState(false)
+  const [unreadChat, setUnreadChat] = useState(0)
 
   // QR scanning / manual code entry state
   const [scanning, setScanning] = useState(false)
@@ -185,6 +186,14 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
       .on('broadcast', { event: 'ride_started' }, () => {
         navigate(`/ride/active-rider/${rideId}`, { replace: true })
       })
+      .on('broadcast', { event: 'driver_cancelled' }, () => {
+        // Driver cancelled — ride goes back to matching queue
+        navigate('/rides', { replace: true })
+      })
+      .on('broadcast', { event: 'ride_cancelled' }, () => {
+        // Ride fully cancelled
+        navigate('/home/rider', { replace: true })
+      })
       .subscribe()
 
     return () => { void supabase.removeChannel(channel) }
@@ -211,7 +220,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
     if (!rideId) return
     const ch = supabase
       .channel(`chat-badge:${rideId}`)
-      .on('broadcast', { event: 'new_message' }, () => setUnreadChat(true))
+      .on('broadcast', { event: 'new_message' }, () => setUnreadChat(c => c + 1))
       .subscribe()
     return () => { void supabase.removeChannel(ch) }
   }, [rideId])
@@ -350,7 +359,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
       <div data-testid={testId ?? 'rider-pickup-page'} className="flex h-dvh flex-col bg-black font-sans overflow-hidden">
         <div
           className="flex items-center gap-3 px-4 bg-black z-10 shrink-0"
-          style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}
+          style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
         >
           <button
             data-testid="scanner-back"
@@ -419,7 +428,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div
         className="flex items-center gap-3 px-4 border-b border-border bg-white z-10"
-        style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}
+        style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
       >
         <button
           data-testid="back-button"
@@ -551,7 +560,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
                   Look for this car
                 </p>
                 <div className="flex items-center gap-3" data-testid="vehicle-info">
-                  <div className="text-3xl">🚗</div>
+                  <AppIcon name="car-request" className="h-8 w-8 text-primary" />
                   <div>
                     <p className="text-sm font-semibold text-text-primary">
                       {vehicle.color} {vehicle.make} {vehicle.model}
@@ -584,7 +593,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
                     </p>
                     <div className="flex items-center gap-2 text-xs text-text-secondary">
                       {driver.rating_avg != null && (
-                        <span>⭐ {driver.rating_avg.toFixed(1)}</span>
+                        <span className="inline-flex items-center gap-0.5"><AppIcon name="star" className="h-3 w-3 text-warning" />{driver.rating_avg.toFixed(1)}</span>
                       )}
                       {driver.rating_count > 0 && (
                         <span>({driver.rating_count} {driver.rating_count === 1 ? 'ride' : 'rides'})</span>
@@ -686,11 +695,11 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
 
               <button
                 data-testid="message-driver-button"
-                onClick={() => { setUnreadChat(false); navigate(`/ride/messaging/${rideId as string}`) }}
+                onClick={() => { setUnreadChat(0); navigate(`/ride/messaging/${rideId as string}`) }}
                 className="relative flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3.5 active:bg-border transition-colors"
               >
-                {unreadChat && (
-                  <span className="absolute top-2 right-2 h-2.5 w-2.5 rounded-full bg-danger" />
+                {unreadChat > 0 && (
+                  <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-danger text-[10px] font-bold text-white shadow">{unreadChat}</span>
                 )}
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />

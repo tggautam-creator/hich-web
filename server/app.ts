@@ -9,6 +9,8 @@ import { transitRouter } from './routes/transit.ts'
 import { directionsRouter } from './routes/directions.ts'
 import { messagesRouter } from './routes/messages.ts'
 import { walletRouter } from './routes/wallet.ts'
+import { connectRouter } from './routes/connect.ts'
+import { paymentRouter } from './routes/payment.ts'
 import { stripeWebhookRouter } from './routes/stripeWebhook.ts'
 import { safetyRouter } from './routes/safety.ts'
 import { authRouter } from './routes/auth.ts'
@@ -58,6 +60,8 @@ app.use('/api/transit', transitRouter)
 app.use('/api/directions', directionsRouter)
 app.use('/api/messages', messagesRouter)
 app.use('/api/wallet', walletRouter)
+app.use('/api/connect', connectRouter)
+app.use('/api/payment', paymentRouter)
 app.use('/api/safety', safetyRouter)
 app.use('/api/auth', authRouter)
 

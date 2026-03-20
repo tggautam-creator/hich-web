@@ -21,7 +21,7 @@ const MIN_FARE_CENTS    = 200
 const MAX_FARE_CENTS    = 4000
 const BASE_CENTS        = 100
 const PER_MIN_CENTS     = 5
-const PLATFORM_FEE_RATE = 0.15
+const PLATFORM_FEE_RATE = 0
 const KM_TO_MILES       = 0.621371
 
 /** Average US gas price — updated periodically. Users see this on the breakdown. */
@@ -106,4 +106,12 @@ export function calculateFareRange(
 /** Format cents as a dollar string, e.g. 1250 → "$12.50" */
 export function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
+}
+
+/**
+ * Estimate Stripe processing fee for display purposes.
+ * Standard US rate: 2.9% + 30¢
+ */
+export function estimateStripeFee(amountCents: number): number {
+  return Math.round(amountCents * 0.029 + 30)
 }

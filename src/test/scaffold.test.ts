@@ -28,6 +28,9 @@ describe('scaffold — @/ alias and database types', () => {
       rating_avg: null,
       rating_count: 0,
       home_location: null,
+      stripe_account_id: null,
+      stripe_onboarding_complete: false,
+      default_payment_method_id: null,
       created_at: new Date().toISOString(),
     }
     expect(user.wallet_balance).toBe(0)
@@ -48,6 +51,9 @@ describe('scaffold — @/ alias and database types', () => {
       rating_avg: null,
       rating_count: 0,
       home_location: null,
+      stripe_account_id: null,
+      stripe_onboarding_complete: false,
+      default_payment_method_id: null,
       created_at: new Date().toISOString(),
     }
     expect(Number.isInteger(user.wallet_balance)).toBe(true)
@@ -81,6 +87,7 @@ describe('scaffold — @/ alias and database types', () => {
       seats_available: 3,
       fuel_efficiency_mpg: 28,
       is_active: true,
+      body_type: 'sedan',
     }
     expect(v.seats_available).toBeGreaterThanOrEqual(1)
     expect(v.seats_available).toBeLessThanOrEqual(4)

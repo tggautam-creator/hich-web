@@ -10,6 +10,7 @@ import { MAP_ID } from '@/lib/mapConstants'
 import { useAuthStore } from '@/stores/authStore'
 import DriverQrSheet from '@/components/ride/DriverQrSheet'
 import EmergencySheet from '@/components/ui/EmergencySheet'
+import AppIcon from '@/components/ui/AppIcon'
 import type { Ride, User, GeoPoint } from '@/types/database'
 
 interface PickupLocationState {
@@ -47,7 +48,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
   // QR sheet state (en-route mode)
   const [showQr, setShowQr] = useState(false)
   const [emergencyOpen, setEmergencyOpen] = useState(false)
-  const [unreadChat, setUnreadChat] = useState(false)
+  const [unreadChat, setUnreadChat] = useState(0)
 
   // Pickup pin position (driver can drag)
   const [pinLat, setPinLat] = useState<number | null>(null)
@@ -224,7 +225,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
     if (!rideId) return
     const ch = supabase
       .channel(`chat-badge:${rideId}`)
-      .on('broadcast', { event: 'new_message' }, () => setUnreadChat(true))
+      .on('broadcast', { event: 'new_message' }, () => setUnreadChat(c => c + 1))
       .subscribe()
     return () => { void supabase.removeChannel(ch) }
   }, [rideId])
@@ -398,7 +399,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
         {/* Header */}
         <div
           className="flex items-center gap-3 px-4 border-b border-border bg-white z-10"
-          style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}
+          style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
         >
           <button
             data-testid="back-button"
@@ -517,7 +518,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
                   {rider?.full_name ?? 'Rider'}
                 </p>
                 <div className="flex items-center gap-1.5 text-xs text-text-secondary">
-                  {rider?.rating_avg != null && <span>⭐ {rider.rating_avg.toFixed(1)}</span>}
+                  {rider?.rating_avg != null && <span className="inline-flex items-center gap-0.5"><AppIcon name="star" className="h-3 w-3 text-warning" />{rider.rating_avg.toFixed(1)}</span>}
                   {(!rider?.rating_count || rider.rating_count === 0) && <span className="text-warning">New</span>}
                 </div>
               </div>
@@ -578,11 +579,11 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
 
               <button
                 data-testid="message-rider-button"
-                onClick={() => { setUnreadChat(false); navigate(`/ride/messaging/${rideId as string}`) }}
+                onClick={() => { setUnreadChat(0); navigate(`/ride/messaging/${rideId as string}`) }}
                 className="relative flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3 active:bg-border transition-colors"
               >
-                {unreadChat && (
-                  <span className="absolute top-2 right-2 h-2.5 w-2.5 rounded-full bg-danger" />
+                {unreadChat > 0 && (
+                  <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-danger text-[10px] font-bold text-white shadow">{unreadChat}</span>
                 )}
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
@@ -619,7 +620,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div
         className="flex items-center gap-3 px-4 border-b border-border bg-white z-10"
-        style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}
+        style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
       >
         <button
           data-testid="back-button"
@@ -721,7 +722,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
                 {rider.full_name ?? 'Rider'}
               </p>
               {rider.rating_avg != null && (
-                <p className="text-[10px] text-text-secondary">⭐ {rider.rating_avg.toFixed(1)}</p>
+                <p className="text-[10px] text-text-secondary inline-flex items-center gap-0.5"><AppIcon name="star" className="h-2.5 w-2.5 text-warning" />{rider.rating_avg.toFixed(1)}</p>
               )}
             </div>
           </div>

@@ -5,6 +5,8 @@ import { useAuthStore } from '@/stores/authStore'
 import { formatCents } from '@/lib/fare'
 import BottomNav from '@/components/ui/BottomNav'
 import DriverQrSheet from '@/components/ride/DriverQrSheet'
+import AppIcon from '@/components/ui/AppIcon'
+import VehicleIcon from '@/components/ui/VehicleIcon'
 import type { Ride, DriverRoutine, Vehicle } from '@/types/database'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -309,7 +311,10 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
                 )}
                 {profile?.rating_avg != null && (
                   <p className="text-xs text-text-secondary mt-0.5">
-                    ⭐ {profile.rating_avg.toFixed(1)} ({profile.rating_count} ratings)
+                    <span className="inline-flex items-center gap-1">
+                      <AppIcon name="star" className="h-3.5 w-3.5 text-warning" />
+                      {profile.rating_avg.toFixed(1)} ({profile.rating_count} ratings)
+                    </span>
                   </p>
                 )}
               </>
@@ -346,18 +351,49 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
           )}
         </div>
 
-        {/* Wallet balance */}
-        <div className="mt-4 flex items-center justify-between rounded-2xl bg-surface px-4 py-3">
-          <span className="text-sm text-text-secondary">Wallet Balance</span>
-          <span data-testid="profile-balance" className="text-sm font-bold text-text-primary">
-            {formatCents(profile?.wallet_balance ?? 0)}
-          </span>
+        {/* Payment & Payouts links */}
+        <div className="mt-4 space-y-2">
+          <button
+            data-testid="payment-methods-link"
+            onClick={() => { navigate('/payment/methods') }}
+            className="w-full flex items-center justify-between rounded-2xl bg-surface px-4 py-3"
+          >
+            <div className="flex items-center gap-2">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary" aria-hidden="true">
+                <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
+                <line x1="1" y1="10" x2="23" y2="10" />
+              </svg>
+              <span className="text-sm text-text-secondary">Payment Methods</span>
+            </div>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary" aria-hidden="true">
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+          </button>
+
+          {profile?.is_driver && (
+            <button
+              data-testid="payouts-link"
+              onClick={() => { navigate('/stripe/payouts') }}
+              className="w-full flex items-center justify-between rounded-2xl bg-surface px-4 py-3"
+            >
+              <div className="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-success" aria-hidden="true">
+                  <line x1="12" y1="1" x2="12" y2="23" />
+                  <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+                </svg>
+                <span className="text-sm text-text-secondary">Payouts</span>
+              </div>
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary" aria-hidden="true">
+                <path d="M9 18l6-6-6-6" />
+              </svg>
+            </button>
+          )}
         </div>
 
         {/* Driver badge */}
         {profile?.is_driver && (
           <div className="mt-3 flex items-center gap-2 rounded-2xl bg-success/10 px-4 py-2.5">
-            <span className="text-sm">🚗</span>
+            <AppIcon name="verified" className="h-4 w-4 text-success" />
             <span className="text-xs font-medium text-success">Registered Driver</span>
           </div>
         )}
@@ -382,7 +418,7 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
                   />
                 ) : (
                   <div className="h-16 w-20 rounded-2xl bg-surface flex items-center justify-center shrink-0">
-                    <span className="text-2xl">🚗</span>
+                    <VehicleIcon color={vehicle.color.toLowerCase()} className="h-10 w-auto" />
                   </div>
                 )}
                 <div className="flex-1 min-w-0">
@@ -538,21 +574,32 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
         </div>
       )}
 
-      {/* ── Ride History ────────────────────────────────────────────────────── */}
+      {/* ── Ride History (compact — max 3, link to full page) ────────────── */}
       <div className="mx-4 mt-6">
-        <h2 className="text-sm font-semibold text-text-primary mb-3">Ride History</h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-text-primary">Ride History</h2>
+          {rides.length > 3 && (
+            <button
+              data-testid="view-all-rides"
+              onClick={() => navigate('/rides/history')}
+              className="text-xs font-medium text-primary"
+            >
+              View all ({rides.length})
+            </button>
+          )}
+        </div>
 
         {loadingRides ? (
-          <div className="flex justify-center py-8">
+          <div className="flex justify-center py-4">
             <div className="h-6 w-6 animate-spin rounded-full border-3 border-primary border-t-transparent" />
           </div>
         ) : rides.length === 0 ? (
-          <div className="bg-white rounded-2xl p-6 text-center border border-border">
+          <div className="bg-white rounded-2xl p-4 text-center border border-border">
             <p className="text-sm text-text-secondary">No completed rides yet</p>
           </div>
         ) : (
-          <div className="space-y-2">
-            {rides.map((ride) => {
+          <div className="bg-white rounded-2xl border border-border divide-y divide-border">
+            {rides.slice(0, 3).map((ride) => {
               const date = ride.ended_at ?? ride.created_at
               const fare = ride.fare_cents ?? 0
               const isDriverRole = ride.role === 'driver'
@@ -564,26 +611,24 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
                   key={ride.id}
                   data-testid={`ride-${ride.id}`}
                   onClick={() => navigate(`/ride/summary/${ride.id}`)}
-                  className="w-full bg-white rounded-2xl px-4 py-3 border border-border text-left active:bg-surface transition-colors"
+                  className="w-full px-4 py-2.5 text-left active:bg-surface transition-colors flex items-center justify-between gap-2"
                 >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-medium text-text-secondary">
-                      {new Date(date).toLocaleDateString([], { month: 'short', day: 'numeric' })}
-                      {' · '}
-                      {new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                    <span className={`text-xs font-semibold ${isDriverRole ? 'text-success' : 'text-danger'}`}>
-                      {isDriverRole ? `+${formatCents(earned)}` : `-${formatCents(fare)}`}
-                    </span>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <AppIcon name={isDriverRole ? 'steering-wheel' : 'person'} className="h-4 w-4 text-text-secondary shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-text-primary truncate">
+                        {ride.destination_name ?? (isDriverRole ? 'Driver' : 'Rider')}
+                      </p>
+                      <p className="text-[10px] text-text-secondary">
+                        {new Date(date).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                        {' · '}
+                        {new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-text-secondary">
-                      {isDriverRole ? '🚗 Driver' : '🧑 Rider'}
-                    </span>
-                    {ride.destination_name && (
-                      <span className="text-xs text-text-primary truncate">→ {ride.destination_name}</span>
-                    )}
-                  </div>
+                  <span className={`text-xs font-semibold shrink-0 ${isDriverRole ? 'text-success' : 'text-text-primary'}`}>
+                    {isDriverRole ? `+${formatCents(earned)}` : formatCents(fare)}
+                  </span>
                 </button>
               )
             })}

@@ -163,7 +163,7 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
       <div
         data-testid="top-bar"
         className="absolute left-0 right-0 top-0 z-[1000] bg-white/90 backdrop-blur-sm border-b border-border flex items-center justify-between px-4"
-        style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}
+        style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
       >
         {/* Online/offline pill toggle */}
         <button

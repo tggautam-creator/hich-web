@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
+import AppIcon from '@/components/ui/AppIcon'
+import type { AppIconName } from '@/components/ui/AppIcon'
 
 interface NotificationItem {
   id: string
@@ -148,14 +150,14 @@ export default function NotificationsPage({
     }
   }
 
-  function getIcon(type: string): string {
+  function getIconConfig(type: string): { name: AppIconName; color: string } {
     switch (type) {
-      case 'board_request': return '📋'
-      case 'board_request_actioned': return '📋'
-      case 'board_accepted': return '✅'
-      case 'board_declined': return '❌'
-      case 'ride_request': return '🚗'
-      default: return '🔔'
+      case 'board_request':
+      case 'board_request_actioned': return { name: 'clipboard', color: 'text-primary' }
+      case 'board_accepted':         return { name: 'check-circle', color: 'text-success' }
+      case 'board_declined':         return { name: 'x-circle', color: 'text-danger' }
+      case 'ride_request':           return { name: 'car-request', color: 'text-primary' }
+      default:                       return { name: 'bell', color: 'text-text-secondary' }
     }
   }
 
@@ -198,7 +200,7 @@ export default function NotificationsPage({
 
         {!loading && notifications.length === 0 && (
           <div className="text-center py-16 px-6">
-            <p className="text-4xl mb-3">🔔</p>
+            <div className="flex justify-center mb-3"><div className="h-14 w-14 rounded-full bg-surface flex items-center justify-center"><AppIcon name="bell" className="h-7 w-7 text-text-secondary" /></div></div>
             <p className="text-text-secondary text-sm">No notifications yet</p>
             <p className="text-text-secondary text-xs mt-1">
               When someone requests your posted ride or offers to drive you, it will appear here.
@@ -234,8 +236,8 @@ export default function NotificationsPage({
                 >
                   <div className="flex items-start gap-3">
                     {/* Icon */}
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-surface text-lg">
-                      {getIcon(notif.type)}
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-surface">
+                      <AppIcon name={getIconConfig(notif.type).name} className={`h-5 w-5 ${getIconConfig(notif.type).color}`} />
                     </div>
 
                     {/* Content */}

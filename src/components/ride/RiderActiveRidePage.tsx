@@ -9,6 +9,7 @@ import QrScanner from '@/components/ride/QrScanner'
 import EmergencySheet from '@/components/ui/EmergencySheet'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
+import AppIcon from '@/components/ui/AppIcon'
 import type { Ride, User, GeoPoint } from '@/types/database'
 
 // Transit info from a transit_dropoff_suggestion message
@@ -47,7 +48,7 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
   const [routePolyline, setRoutePolyline] = useState<string | null>(null)
   const [riderPos, setRiderPos] = useState<{ lat: number; lng: number } | null>(null)
   const [transitBanner, setTransitBanner] = useState<TransitBannerData | null>(null)
-  const [unreadChat, setUnreadChat] = useState(false)
+  const [unreadChat, setUnreadChat] = useState(0)
 
   // ETA + journey progress
   const [routeEta, setRouteEta] = useState<string | null>(null)
@@ -240,7 +241,7 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
     if (!rideId) return
     const ch = supabase
       .channel(`chat-badge:${rideId}`)
-      .on('broadcast', { event: 'new_message' }, () => setUnreadChat(true))
+      .on('broadcast', { event: 'new_message' }, () => setUnreadChat(c => c + 1))
       .subscribe()
     return () => { void supabase.removeChannel(ch) }
   }, [rideId])
@@ -371,7 +372,7 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
         {/* Scanner header */}
         <div
           className="flex items-center gap-3 px-4 bg-black z-10 shrink-0"
-          style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}
+          style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
         >
           <button
             data-testid="scanner-back"
@@ -422,7 +423,7 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
       {/* ── Header w/ status badge + timer ─────────────────────────────── */}
       <div
         className="flex items-center justify-between px-4 border-b border-border bg-white z-10"
-        style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: '0.75rem' }}
+        style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
       >
         <div className="flex items-center gap-3">
           {/* Status badge — green RIDING for active, yellow EN ROUTE for coordinating */}
@@ -527,7 +528,7 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
           <div className="space-y-1 mt-1">
             {transitBanner.transit_options.slice(0, 3).map((opt, idx) => (
               <div key={`${opt.line_name}-${idx}`} className="flex items-center gap-1.5 text-[10px]">
-                <span className="shrink-0">{opt.icon}</span>
+                <span className="shrink-0 rounded bg-primary/10 px-1 py-0.5 font-semibold text-primary">{opt.icon}</span>
                 <span className="font-semibold text-text-primary shrink-0">{opt.line_name}</span>
                 {opt.departure_stop && opt.arrival_stop ? (
                   <>
@@ -563,7 +564,7 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold text-text-primary truncate">{driver.full_name ?? 'Driver'}</p>
             <div className="flex items-center gap-2 text-xs text-text-secondary">
-              {driver.rating_avg != null && <span>⭐ {driver.rating_avg.toFixed(1)}</span>}
+              {driver.rating_avg != null && <span className="inline-flex items-center gap-0.5"><AppIcon name="star" className="h-3 w-3 text-warning" />{driver.rating_avg.toFixed(1)}</span>}
               {vehicle && (
                 <span className="truncate">{vehicle.color} {vehicle.make} {vehicle.model}</span>
               )}
@@ -629,11 +630,11 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
 
           <button
             data-testid="chat-button"
-            onClick={() => { setUnreadChat(false); navigate(`/ride/messaging/${rideId as string}`) }}
+            onClick={() => { setUnreadChat(0); navigate(`/ride/messaging/${rideId as string}`) }}
             className="relative flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3.5 active:bg-border transition-colors"
           >
-            {unreadChat && (
-              <span className="absolute top-2 right-2 h-2.5 w-2.5 rounded-full bg-danger" />
+            {unreadChat > 0 && (
+              <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-danger text-[10px] font-bold text-white shadow">{unreadChat}</span>
             )}
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />

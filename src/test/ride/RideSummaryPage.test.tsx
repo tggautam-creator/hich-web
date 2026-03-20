@@ -79,6 +79,9 @@ const completedRide = {
   pickup_note: null,
   dropoff_point: null,
   fare_cents: 850,
+  stripe_fee_cents: 55,
+  payment_status: 'paid',
+  payment_intent_id: 'pi_test_001',
   started_at: '2026-03-09T10:00:00Z',
   ended_at: '2026-03-09T10:15:00Z',
   created_at: '2026-03-09T09:55:00Z',
@@ -184,10 +187,11 @@ describe('RideSummaryPage', () => {
       })
     })
 
-    it('shows "$X.XX charged" for rider', async () => {
+    it('shows "$X.XX charged" for rider (fare + Stripe fee)', async () => {
       renderWithRouter()
       await waitFor(() => {
-        expect(screen.getByTestId('fare-message')).toHaveTextContent('$8.50 charged')
+        // totalCharged = fare_cents(850) + stripe_fee_cents(55) = 905 → $9.05
+        expect(screen.getByTestId('fare-message')).toHaveTextContent('$9.05 charged')
       })
     })
 
@@ -234,11 +238,10 @@ describe('RideSummaryPage', () => {
       fireEvent.click(screen.getByTestId('fare-breakdown-toggle'))
       expect(screen.getByTestId('fare-breakdown')).toBeInTheDocument()
 
-      // Shows correct values  (850 * 0.15 = 127.5 → 128)
-      // $8.50 appears in both the "charged" header and the "Ride fare" row
+      // Shows correct values: ride fare $8.50, processing fee $0.55, total $9.05
       expect(screen.getAllByText('$8.50').length).toBeGreaterThanOrEqual(1) // ride fare
-      expect(screen.getByText('−$1.28')).toBeInTheDocument() // platform fee
-      expect(screen.getByText('$7.22')).toBeInTheDocument() // driver earns (850 - 128)
+      expect(screen.getByText('$0.55')).toBeInTheDocument() // processing fee
+      expect(screen.getByText('$9.05')).toBeInTheDocument() // total charged
 
       // Close
       fireEvent.click(screen.getByTestId('fare-breakdown-toggle'))
@@ -299,11 +302,11 @@ describe('RideSummaryPage', () => {
       mockSingleFns['vehicles'] = vi.fn(() => Promise.resolve({ data: vehicle, error: null }))
     })
 
-    it('shows "You earned $X.XX" for driver', async () => {
+    it('shows "You earned $X.XX" for driver (full fare, zero commission)', async () => {
       renderWithRouter()
       await waitFor(() => {
-        // 850 - 128 = 722 → $7.22
-        expect(screen.getByTestId('fare-message')).toHaveTextContent('You earned $7.22')
+        // Driver earns full fare: 850 → $8.50
+        expect(screen.getByTestId('fare-message')).toHaveTextContent('You earned $8.50')
       })
     })
 

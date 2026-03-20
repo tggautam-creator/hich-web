@@ -7,50 +7,9 @@ import { validateJwt } from '../middleware/auth.ts'
 import { generateQrToken, validateQrToken } from '../lib/qrToken.ts'
 import { computeTransitDropoffSuggestions, fetchDrivingRoute, type TransitDropoffSuggestion } from '../lib/transitSuggestions.ts'
 import { realtimeBroadcast, realtimeBroadcastMany } from '../lib/realtimeBroadcast.ts'
+import { chargeRideFare } from '../lib/stripeConnect.ts'
 
 export const ridesRouter = Router()
-
-// ── Wallet transfer helper ────────────────────────────────────────────────────
-/**
- * Atomically debit rider wallet and credit driver wallet when a ride ends.
- * Uses Supabase RPC to run debit+credit+insert in a single Postgres transaction.
- * SELECT ... FOR UPDATE prevents TOCTOU race conditions.
- */
-async function transferFare(
-  rideId: string,
-  riderId: string,
-  driverId: string,
-  fareCents: number,
-  platformFeeCents: number,
-): Promise<{ transferred: boolean; error?: string }> {
-  const driverEarnsCents = fareCents - platformFeeCents
-
-  console.log(`[transferFare] rideId=${rideId} fare=${fareCents} platform=${platformFeeCents} driverEarns=${driverEarnsCents}`)
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- RPC not in generated types until migration runs
-  const { data, error } = await (supabaseAdmin.rpc as any)('transfer_ride_fare', {
-    p_ride_id: rideId,
-    p_rider_id: riderId,
-    p_driver_id: driverId,
-    p_fare_cents: fareCents,
-    p_platform_fee_cents: platformFeeCents,
-  })
-
-  if (error) {
-    console.error(`[transferFare] RPC failed: ${(error as { message: string }).message}`)
-    return { transferred: false, error: (error as { message: string }).message }
-  }
-
-  const result = data as unknown as { transferred: boolean; error?: string; rider_balance?: number; driver_balance?: number }
-
-  if (!result.transferred) {
-    console.error(`[transferFare] Transfer failed: ${result.error}`)
-    return { transferred: false, error: result.error }
-  }
-
-  console.log(`[transferFare] SUCCESS rideId=${rideId} rider=${result.rider_balance} driver=${result.driver_balance}`)
-  return { transferred: true }
-}
 
 interface GeoPoint {
   type: 'Point'
@@ -65,7 +24,7 @@ const MIN_FARE_CENTS = 200
 const MAX_FARE_CENTS = 4000
 const BASE_CENTS = 100
 const PER_MIN_CENTS = 5
-const PLATFORM_FEE_RATE = 0.15
+const PLATFORM_FEE_RATE = 0
 const DEFAULT_MPG = 25
 const DEFAULT_GAS_PRICE_PER_GALLON = 3.50
 
@@ -503,6 +462,7 @@ ridesRouter.patch(
       }
       await Promise.all([
         realtimeBroadcast(`rider:${ride.rider_id}`, 'driver_cancelled', driverCancelPayload),
+        realtimeBroadcast(`rider-pickup:${ride.rider_id}`, 'driver_cancelled', driverCancelPayload),
         realtimeBroadcast(`waiting:${ride.rider_id}`, 'driver_cancelled', driverCancelPayload),
         realtimeBroadcast(`chat:${rideId}`, 'driver_cancelled', driverCancelPayload),
         realtimeBroadcast(`multi-driver:${rideId}`, 'driver_cancelled', driverCancelPayload),
@@ -692,6 +652,12 @@ ridesRouter.patch(
         realtimeBroadcast(channelName, 'ride_cancelled', {
           type: 'ride_cancelled', ride_id: rideId, cancelled_by: cancellerRole,
         }),
+        // Also notify rider-pickup page if rider is on "Walk to Pickup" screen
+        ...(cancellerRole === 'driver' ? [
+          realtimeBroadcast(`rider-pickup:${otherUserId}`, 'ride_cancelled', {
+            type: 'ride_cancelled', ride_id: rideId, cancelled_by: cancellerRole,
+          }),
+        ] : []),
         realtimeBroadcast(`myrides:${otherUserId}`, 'ride_status_changed', {
           ride_id: rideId, status: 'cancelled',
         }),
@@ -1706,6 +1672,7 @@ ridesRouter.patch(
     // Broadcast the suggestion message to the ride chat channel
     if (suggestionMsg) {
       void realtimeBroadcast(`chat:${rideId}`, 'new_message', suggestionMsg as Record<string, unknown>)
+      void realtimeBroadcast(`chat-badge:${rideId}`, 'new_message', suggestionMsg as Record<string, unknown>)
     }
 
     // Determine who to notify — the other party
@@ -1824,6 +1791,7 @@ ridesRouter.patch(
     // Broadcast the suggestion to chat
     if (suggestionMsg) {
       void realtimeBroadcast(`chat:${rideId}`, 'new_message', suggestionMsg as Record<string, unknown>)
+      void realtimeBroadcast(`chat-badge:${rideId}`, 'new_message', suggestionMsg as Record<string, unknown>)
     }
 
     // Notify the other party
@@ -1910,6 +1878,7 @@ ridesRouter.post(
     // Broadcast acceptance to chat
     if (acceptMsg) {
       void realtimeBroadcast(`chat:${rideId}`, 'new_message', acceptMsg as Record<string, unknown>)
+      void realtimeBroadcast(`chat-badge:${rideId}`, 'new_message', acceptMsg as Record<string, unknown>)
     }
 
     // Broadcast details_accepted to driver — both rider:{id} and msg-driver:{id}
@@ -2035,6 +2004,7 @@ ridesRouter.post(
     // Broadcast acceptance to chat
     if (acceptMsg) {
       void realtimeBroadcast(`chat:${rideId}`, 'new_message', acceptMsg as Record<string, unknown>)
+      void realtimeBroadcast(`chat-badge:${rideId}`, 'new_message', acceptMsg as Record<string, unknown>)
     }
 
     // If both locations are now confirmed, broadcast to both parties
@@ -2433,14 +2403,58 @@ ridesRouter.post(
       return
     }
 
-    // Transfer fare: debit rider, credit driver
-    let transferred = false
+    // Charge rider's card and route to driver via Stripe Connect
+    let paymentStatus = 'pending'
+    let paymentIntentId: string | undefined
+    let stripeFeeCents = 0
+
     if (ride.driver_id) {
-      const result = await transferFare(rideId, ride.rider_id, ride.driver_id, fareCents, platformFeeCents)
-      transferred = result.transferred
-      if (!transferred) {
-        console.warn(`[rides/end] Fare transfer failed: ${result.error}`)
+      // Look up rider + driver Stripe info
+      const [riderRes, driverRes] = await Promise.all([
+        supabaseAdmin.from('users').select('stripe_customer_id, default_payment_method_id').eq('id', ride.rider_id).single(),
+        supabaseAdmin.from('users').select('stripe_account_id, stripe_onboarding_complete').eq('id', ride.driver_id).single(),
+      ])
+
+      const rider = riderRes.data
+      const driver = driverRes.data
+
+      if (
+        rider?.stripe_customer_id &&
+        rider?.default_payment_method_id &&
+        driver?.stripe_account_id &&
+        driver?.stripe_onboarding_complete
+      ) {
+        const chargeResult = await chargeRideFare({
+          rideId,
+          fareCents,
+          riderCustomerId: rider.stripe_customer_id as string,
+          riderPaymentMethodId: rider.default_payment_method_id as string,
+          driverAccountId: driver.stripe_account_id as string,
+        })
+
+        if (chargeResult.success) {
+          paymentStatus = 'processing'
+          paymentIntentId = chargeResult.paymentIntentId
+          stripeFeeCents = chargeResult.stripFeeCents ?? 0
+        } else {
+          paymentStatus = 'failed'
+          console.warn(`[rides/end] Stripe charge failed: ${chargeResult.error}`)
+        }
+      } else {
+        // Missing payment setup — log but don't block ride end
+        paymentStatus = 'failed'
+        console.warn(`[rides/end] Missing Stripe setup: rider_customer=${!!rider?.stripe_customer_id} rider_pm=${!!rider?.default_payment_method_id} driver_acct=${!!driver?.stripe_account_id} driver_verified=${!!driver?.stripe_onboarding_complete}`)
       }
+
+      // Update ride with payment info
+      await supabaseAdmin
+        .from('rides')
+        .update({
+          payment_status: paymentStatus,
+          ...(paymentIntentId ? { payment_intent_id: paymentIntentId } : {}),
+          stripe_fee_cents: stripeFeeCents,
+        })
+        .eq('id', rideId)
     }
 
     // Broadcast ride_ended to both parties + component-specific channels
@@ -2472,14 +2486,15 @@ ridesRouter.post(
       }
     }
 
-    console.log(`[rides/end] rideId=${rideId} fare=${fareCents} dist=${distance_miles.toFixed(1)}mi dur=${duration_min}min transferred=${transferred}`)
+    console.log(`[rides/end] rideId=${rideId} fare=${fareCents} stripeFee=${stripeFeeCents} dist=${distance_miles.toFixed(1)}mi dur=${duration_min}min payment=${paymentStatus}`)
     res.status(200).json({
       ride_id: rideId,
       status: 'completed',
       fare_cents: fareCents,
       platform_fee_cents: platformFeeCents,
       driver_earns_cents: driverEarnsCents,
-      fare_transferred: transferred,
+      stripe_fee_cents: stripeFeeCents,
+      payment_status: paymentStatus,
     })
   },
 )
@@ -2684,14 +2699,55 @@ ridesRouter.post(
 
     if (updateErr) { next(updateErr); return }
 
-    // Transfer fare: debit rider, credit driver
-    let transferred = false
+    // Charge rider's card and route to driver via Stripe Connect
+    let scanPaymentStatus = 'pending'
+    let scanPaymentIntentId: string | undefined
+    let scanStripeFeeCents = 0
+
     if (ride.driver_id) {
-      const result = await transferFare(ride.id, ride.rider_id, ride.driver_id, fareCents, platformFeeCents)
-      transferred = result.transferred
-      if (!transferred) {
-        console.warn(`[rides/scan-driver] Fare transfer failed: ${result.error}`)
+      const [riderRes, driverRes] = await Promise.all([
+        supabaseAdmin.from('users').select('stripe_customer_id, default_payment_method_id').eq('id', ride.rider_id).single(),
+        supabaseAdmin.from('users').select('stripe_account_id, stripe_onboarding_complete').eq('id', ride.driver_id).single(),
+      ])
+
+      const scanRider = riderRes.data
+      const scanDriver = driverRes.data
+
+      if (
+        scanRider?.stripe_customer_id &&
+        scanRider?.default_payment_method_id &&
+        scanDriver?.stripe_account_id &&
+        scanDriver?.stripe_onboarding_complete
+      ) {
+        const chargeResult = await chargeRideFare({
+          rideId: ride.id,
+          fareCents,
+          riderCustomerId: scanRider.stripe_customer_id as string,
+          riderPaymentMethodId: scanRider.default_payment_method_id as string,
+          driverAccountId: scanDriver.stripe_account_id as string,
+        })
+
+        if (chargeResult.success) {
+          scanPaymentStatus = 'processing'
+          scanPaymentIntentId = chargeResult.paymentIntentId
+          scanStripeFeeCents = chargeResult.stripFeeCents ?? 0
+        } else {
+          scanPaymentStatus = 'failed'
+          console.warn(`[rides/scan-driver] Stripe charge failed: ${chargeResult.error}`)
+        }
+      } else {
+        scanPaymentStatus = 'failed'
+        console.warn(`[rides/scan-driver] Missing Stripe setup for ride ${ride.id}`)
       }
+
+      await supabaseAdmin
+        .from('rides')
+        .update({
+          payment_status: scanPaymentStatus,
+          ...(scanPaymentIntentId ? { payment_intent_id: scanPaymentIntentId } : {}),
+          stripe_fee_cents: scanStripeFeeCents,
+        })
+        .eq('id', ride.id)
     }
 
     // Broadcast ride_ended to both parties + component-specific channels
@@ -2720,7 +2776,7 @@ ridesRouter.post(
       })
     }
 
-    console.log(`[rides/scan-driver] rideId=${ride.id} ended via driver code, fare=${fareCents} dist=${distance_miles.toFixed(1)}mi dur=${duration_min}min transferred=${transferred}`)
+    console.log(`[rides/scan-driver] rideId=${ride.id} ended via driver code, fare=${fareCents} stripeFee=${scanStripeFeeCents} dist=${distance_miles.toFixed(1)}mi dur=${duration_min}min payment=${scanPaymentStatus}`)
     res.status(200).json({
       ride_id: ride.id,
       action: 'ended',
@@ -2728,7 +2784,8 @@ ridesRouter.post(
       fare_cents: fareCents,
       platform_fee_cents: platformFeeCents,
       driver_earns_cents: driverEarnsCents,
-      fare_transferred: transferred,
+      stripe_fee_cents: scanStripeFeeCents,
+      payment_status: scanPaymentStatus,
     })
   },
 )
@@ -3228,6 +3285,8 @@ ridesRouter.post(
       total_rider_minutes,
       transit_polyline,
       rider_progress_pct,
+      ride_with_driver_minutes,
+      full_transit_minutes,
     } = req.body as {
       station_name?: string
       station_lat?: number
@@ -3240,6 +3299,8 @@ ridesRouter.post(
       total_rider_minutes?: number
       transit_polyline?: string | null
       rider_progress_pct?: number | null
+      ride_with_driver_minutes?: number | null
+      full_transit_minutes?: number | null
     }
 
     if (
@@ -3332,6 +3393,8 @@ ridesRouter.post(
           proposed_by: driverId,
           transit_polyline: transit_polyline ?? null,
           rider_progress_pct: rider_progress_pct ?? null,
+          ride_with_driver_minutes: ride_with_driver_minutes ?? null,
+          full_transit_minutes: full_transit_minutes ?? null,
           pickup_lat: rideOrigin?.coordinates?.[1] ?? null,
           pickup_lng: rideOrigin?.coordinates?.[0] ?? null,
           rider_dest_lat: riderDest?.coordinates?.[1] ?? null,
@@ -3349,6 +3412,7 @@ ridesRouter.post(
     // Broadcast the message to chat
     if (msg) {
       void realtimeBroadcast(`chat:${rideId}`, 'new_message', msg as Record<string, unknown>)
+      void realtimeBroadcast(`chat-badge:${rideId}`, 'new_message', msg as Record<string, unknown>)
     }
 
     // Notify rider via push
@@ -3451,6 +3515,100 @@ ridesRouter.patch(
 
     console.log(`[rides/dropoff-done] rideId=${rideId} driver=${driverId} → coordinating`)
     res.status(200).json({ ride_id: rideId, status: 'coordinating' })
+  },
+)
+
+// ─── Retry payment ────────────────────────────────────────────────────────────
+/**
+ * POST /api/rides/:id/retry-payment
+ *
+ * Rider retries a failed payment on a completed ride.
+ * Uses the rider's current default payment method.
+ */
+ridesRouter.post(
+  ':id/retry-payment',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const userId = res.locals['userId'] as string
+    const rideId = req.params['id'] as string
+
+    try {
+      const { data: ride, error: rideErr } = await supabaseAdmin
+        .from('rides')
+        .select('id, rider_id, driver_id, fare_cents, payment_status')
+        .eq('id', rideId)
+        .single()
+
+      if (rideErr || !ride) {
+        res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Ride not found' } })
+        return
+      }
+
+      if (ride.rider_id !== userId) {
+        res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only the rider can retry payment' } })
+        return
+      }
+
+      if (ride.payment_status !== 'failed' && ride.payment_status !== 'pending') {
+        res.status(400).json({ error: { code: 'INVALID_STATE', message: `Cannot retry: payment is ${ride.payment_status}` } })
+        return
+      }
+
+      const fareCents = ride.fare_cents as number
+      if (!fareCents || fareCents <= 0) {
+        res.status(400).json({ error: { code: 'NO_FARE', message: 'No fare to charge' } })
+        return
+      }
+
+      if (!ride.rider_id || !ride.driver_id) {
+        res.status(400).json({ error: { code: 'INVALID_RIDE', message: 'Ride missing rider or driver' } })
+        return
+      }
+
+      // Fetch rider + driver Stripe info
+      const [riderRes, driverRes] = await Promise.all([
+        supabaseAdmin.from('users').select('stripe_customer_id, default_payment_method_id').eq('id', ride.rider_id).single(),
+        supabaseAdmin.from('users').select('stripe_account_id, stripe_onboarding_complete').eq('id', ride.driver_id).single(),
+      ])
+
+      const rider = riderRes.data
+      const driver = driverRes.data
+
+      if (!rider?.stripe_customer_id || !rider?.default_payment_method_id) {
+        res.status(400).json({ error: { code: 'NO_PAYMENT_METHOD', message: 'Please add a payment method first' } })
+        return
+      }
+
+      if (!driver?.stripe_account_id || !driver?.stripe_onboarding_complete) {
+        res.status(400).json({ error: { code: 'DRIVER_NOT_SETUP', message: 'Driver payment account not ready' } })
+        return
+      }
+
+      const chargeResult = await chargeRideFare({
+        rideId,
+        fareCents,
+        riderCustomerId: rider.stripe_customer_id as string,
+        riderPaymentMethodId: rider.default_payment_method_id as string,
+        driverAccountId: driver.stripe_account_id as string,
+      })
+
+      if (chargeResult.success) {
+        await supabaseAdmin
+          .from('rides')
+          .update({
+            payment_status: 'processing',
+            payment_intent_id: chargeResult.paymentIntentId,
+            stripe_fee_cents: chargeResult.stripFeeCents ?? 0,
+          })
+          .eq('id', rideId)
+
+        res.json({ success: true, payment_status: 'processing' })
+      } else {
+        res.status(402).json({ error: { code: 'CHARGE_FAILED', message: chargeResult.error ?? 'Payment failed' } })
+      }
+    } catch (err) {
+      next(err)
+    }
   },
 )
 

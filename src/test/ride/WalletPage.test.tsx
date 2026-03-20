@@ -182,10 +182,10 @@ describe('WalletPage', () => {
     expect(amounts[2].className).toContain('text-success')
   })
 
-  it('shows bottom navigation with wallet tab active', () => {
+  it('shows bottom navigation with payment tab', () => {
     renderWallet()
     expect(screen.getByTestId('bottom-nav')).toBeInTheDocument()
-    expect(screen.getByTestId('wallet-tab')).toBeInTheDocument()
+    expect(screen.getByTestId('payment-tab')).toBeInTheDocument()
   })
 
   it('displays zero balance correctly', () => {

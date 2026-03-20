@@ -3,7 +3,7 @@ import { useAuthStore } from '@/stores/authStore'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Tab = 'home' | 'drive' | 'rides' | 'wallet' | 'profile'
+type Tab = 'home' | 'drive' | 'rides' | 'wallet' | 'payment' | 'profile'
 
 interface BottomNavProps {
   activeTab: Tab
@@ -101,18 +101,18 @@ export default function BottomNav({
           <span className={labelClass('rides')}>Rides</span>
         </button>
 
-        {/* Wallet */}
+        {/* Payment */}
         <button
-          data-testid="wallet-tab"
-          onClick={() => { navigate('/wallet') }}
-          aria-label="Wallet"
-          className={tabClass('wallet')}
+          data-testid="payment-tab"
+          onClick={() => { navigate('/payment/methods') }}
+          aria-label="Payment"
+          className={tabClass('payment')}
         >
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
             <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
             <line x1="1" y1="10" x2="23" y2="10" />
           </svg>
-          <span className={labelClass('wallet')}>Wallet</span>
+          <span className={labelClass('payment')}>Payment</span>
         </button>
 
         {/* Profile */}

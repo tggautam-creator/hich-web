@@ -69,20 +69,20 @@ function cacheKey(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const VEHICLE_ICONS: Record<string, string> = {
-  BUS: '🚌',
-  SUBWAY: '🚇',
-  RAIL: '🚆',
-  TRAM: '🚊',
-  FERRY: '⛴️',
-  CABLE_CAR: '🚡',
-  COMMUTER_TRAIN: '🚆',
-  HEAVY_RAIL: '🚆',
-  HIGH_SPEED_TRAIN: '🚄',
-  INTERCITY_BUS: '🚌',
-  METRO_RAIL: '🚇',
-  MONORAIL: '🚝',
-  SHARE_TAXI: '🚐',
-  TROLLEYBUS: '🚎',
+  BUS: 'Bus',
+  SUBWAY: 'Metro',
+  RAIL: 'Rail',
+  TRAM: 'Tram',
+  FERRY: 'Ferry',
+  CABLE_CAR: 'Cable',
+  COMMUTER_TRAIN: 'Rail',
+  HEAVY_RAIL: 'Rail',
+  HIGH_SPEED_TRAIN: 'Rail',
+  INTERCITY_BUS: 'Bus',
+  METRO_RAIL: 'Metro',
+  MONORAIL: 'Rail',
+  SHARE_TAXI: 'Van',
+  TROLLEYBUS: 'Bus',
 }
 
 function parseTransitOptions(data: GoogleDirectionsResponse): TransitOption[] {
@@ -107,7 +107,7 @@ function parseTransitOptions(data: GoogleDirectionsResponse): TransitOption[] {
 
       options.push({
         type: vehicleType,
-        icon: VEHICLE_ICONS[vehicleType] ?? '🚍',
+        icon: VEHICLE_ICONS[vehicleType] ?? 'Bus',
         line_name: lineName,
         departure_stop: td.departure_stop?.name ?? undefined,
         arrival_stop: td.arrival_stop?.name ?? undefined,
@@ -122,7 +122,7 @@ function parseTransitOptions(data: GoogleDirectionsResponse): TransitOption[] {
   if (options.length === 0 && totalMinutes > 0) {
     options.push({
       type: 'WALKING',
-      icon: '🚶',
+      icon: 'Walk',
       line_name: 'Walk',
       walk_minutes: totalMinutes,
       total_minutes: totalMinutes,

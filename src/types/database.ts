@@ -49,6 +49,9 @@ export type Database = {
           rating_avg: number | null
           rating_count: number
           home_location: GeoPoint | null
+          stripe_account_id: string | null
+          stripe_onboarding_complete: boolean
+          default_payment_method_id: string | null
           created_at: string
         }
         Insert: {
@@ -63,6 +66,9 @@ export type Database = {
           rating_avg?: number | null
           rating_count?: number
           home_location?: GeoPoint | null
+          stripe_account_id?: string | null
+          stripe_onboarding_complete?: boolean
+          default_payment_method_id?: string | null
           created_at?: string
         }
         Update: {
@@ -77,6 +83,9 @@ export type Database = {
           rating_avg?: number | null
           rating_count?: number
           home_location?: GeoPoint | null
+          stripe_account_id?: string | null
+          stripe_onboarding_complete?: boolean
+          default_payment_method_id?: string | null
           created_at?: string
         }
         Relationships: never[]
@@ -98,6 +107,7 @@ export type Database = {
           seats_available: number
           fuel_efficiency_mpg: number | null
           is_active: boolean
+          body_type: string
         }
         Insert: {
           id?: string
@@ -113,6 +123,7 @@ export type Database = {
           seats_available?: number
           fuel_efficiency_mpg?: number | null
           is_active?: boolean
+          body_type?: string
         }
         Update: {
           id?: string
@@ -128,6 +139,7 @@ export type Database = {
           seats_available?: number
           fuel_efficiency_mpg?: number | null
           is_active?: boolean
+          body_type?: string
         }
         Relationships: never[]
       }
@@ -188,6 +200,9 @@ export type Database = {
           driver_destination: GeoPoint | null
           driver_destination_name: string | null
           driver_route_polyline: string | null  // encoded polyline, driver origin → driver destination
+          payment_status: string | null
+          payment_intent_id: string | null
+          stripe_fee_cents: number
         }
         Insert: {
           id?: string
@@ -214,6 +229,9 @@ export type Database = {
           driver_destination?: GeoPoint | null
           driver_destination_name?: string | null
           driver_route_polyline?: string | null
+          payment_status?: string | null
+          payment_intent_id?: string | null
+          stripe_fee_cents?: number
         }
         Update: {
           id?: string
@@ -240,6 +258,9 @@ export type Database = {
           driver_destination?: GeoPoint | null
           driver_destination_name?: string | null
           driver_route_polyline?: string | null
+          payment_status?: string | null
+          payment_intent_id?: string | null
+          stripe_fee_cents?: number
         }
         Relationships: never[]
       }

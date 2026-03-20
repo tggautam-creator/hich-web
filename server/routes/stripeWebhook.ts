@@ -2,6 +2,7 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import Stripe from 'stripe'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
+import { sendFcmPush } from '../lib/fcm.ts'
 import { getServerEnv } from '../env.ts'
 
 export const stripeWebhookRouter = Router()
@@ -34,73 +35,194 @@ stripeWebhookRouter.post('/', async (req: Request, res: Response) => {
     return
   }
 
+  // ── payment_intent.succeeded ────────────────────────────────────────────
   if (event.type === 'payment_intent.succeeded') {
     const paymentIntent = event.data.object as Stripe.PaymentIntent
-    const userId = paymentIntent.metadata['user_id']
-    const amountCents = paymentIntent.amount
+    const rideId = paymentIntent.metadata['ride_id']
 
-    if (!userId) {
-      console.error('PaymentIntent missing user_id metadata:', paymentIntent.id)
-      res.status(400).json({ error: { code: 'MISSING_METADATA', message: 'No user_id in metadata' } })
-      return
-    }
-
-    // Idempotency guard: reject duplicate Stripe events
-    const { data: existingTx } = await supabaseAdmin
-      .from('transactions')
-      .select('id')
-      .eq('stripe_event_id', event.id)
-      .maybeSingle()
-
-    if (existingTx) {
-      console.log(`[Webhook] Duplicate event ${event.id}, skipping`)
+    // Ride payment (Stripe Connect) — has ride_id in metadata
+    if (rideId) {
+      await handleRidePaymentSucceeded(rideId, paymentIntent.id)
       res.json({ received: true })
       return
     }
 
-    // Get current balance
-    const { data: user, error: userErr } = await supabaseAdmin
-      .from('users')
-      .select('wallet_balance')
-      .eq('id', userId)
-      .single()
-
-    if (userErr || !user) {
-      console.error('User not found for topup:', userId)
-      res.status(404).json({ error: { code: 'USER_NOT_FOUND', message: 'User not found' } })
-      return
+    // Legacy wallet topup — has user_id in metadata
+    const userId = paymentIntent.metadata['user_id']
+    if (userId) {
+      await handleWalletTopup(event.id, paymentIntent, userId)
     }
+  }
 
-    const currentBalance = user.wallet_balance as number
-    const newBalance = currentBalance + amountCents
+  // ── payment_intent.payment_failed — ride payment failed ─────────────────
+  if (event.type === 'payment_intent.payment_failed') {
+    const paymentIntent = event.data.object as Stripe.PaymentIntent
+    const rideId = paymentIntent.metadata['ride_id']
 
-    const { error: updateErr } = await supabaseAdmin
-      .from('users')
-      .update({ wallet_balance: newBalance })
-      .eq('id', userId)
-
-    if (updateErr) {
-      console.error('Failed to update wallet balance:', updateErr)
-      res.status(500).json({ error: { code: 'DB_ERROR', message: 'Failed to update balance' } })
-      return
+    if (rideId) {
+      await handleRidePaymentFailed(rideId, paymentIntent.id)
     }
+  }
 
-    const { error: txErr } = await supabaseAdmin
-      .from('transactions')
-      .insert({
-        user_id: userId,
-        type: 'topup',
-        amount_cents: amountCents,
-        balance_after_cents: newBalance,
-        description: `Added $${(amountCents / 100).toFixed(2)} to wallet`,
-        stripe_event_id: event.id,
-        payment_intent_id: paymentIntent.id,
-      })
-
-    if (txErr) {
-      console.error('Failed to insert transaction record:', txErr)
-    }
+  // ── account.updated — Stripe Connect account verification changes ───────
+  if (event.type === 'account.updated') {
+    const account = event.data.object as Stripe.Account
+    await handleAccountUpdated(account)
   }
 
   res.json({ received: true })
 })
+
+// ── Handlers ──────────────────────────────────────────────────────────────────
+
+async function handleRidePaymentSucceeded(rideId: string, paymentIntentId: string): Promise<void> {
+  console.log(`[Webhook] Ride payment succeeded: ride=${rideId} pi=${paymentIntentId}`)
+
+  const { error } = await supabaseAdmin
+    .from('rides')
+    .update({ payment_status: 'paid' })
+    .eq('id', rideId)
+
+  if (error) {
+    console.error(`[Webhook] Failed to update ride payment status: ${error.message}`)
+    return
+  }
+
+  // Notify driver that payment was received
+  const { data: ride } = await supabaseAdmin
+    .from('rides')
+    .select('driver_id, fare_cents')
+    .eq('id', rideId)
+    .single()
+
+  if (ride?.driver_id) {
+    const { data: tokens } = await supabaseAdmin
+      .from('push_tokens')
+      .select('token')
+      .eq('user_id', ride.driver_id)
+
+    const tokenList = (tokens ?? []).map((t: { token: string }) => t.token)
+    if (tokenList.length > 0) {
+      const amount = ((ride.fare_cents as number) / 100).toFixed(2)
+      await sendFcmPush(tokenList, {
+        title: 'Payment received',
+        body: `$${amount} has been deposited to your Stripe account`,
+        data: { type: 'payment_received', ride_id: rideId },
+      })
+    }
+  }
+}
+
+async function handleRidePaymentFailed(rideId: string, paymentIntentId: string): Promise<void> {
+  console.log(`[Webhook] Ride payment failed: ride=${rideId} pi=${paymentIntentId}`)
+
+  const { error } = await supabaseAdmin
+    .from('rides')
+    .update({ payment_status: 'failed' })
+    .eq('id', rideId)
+
+  if (error) {
+    console.error(`[Webhook] Failed to update ride payment status: ${error.message}`)
+    return
+  }
+
+  // Notify rider to update their payment method
+  const { data: ride } = await supabaseAdmin
+    .from('rides')
+    .select('rider_id')
+    .eq('id', rideId)
+    .single()
+
+  if (ride?.rider_id) {
+    const { data: tokens } = await supabaseAdmin
+      .from('push_tokens')
+      .select('token')
+      .eq('user_id', ride.rider_id)
+
+    const tokenList = (tokens ?? []).map((t: { token: string }) => t.token)
+    if (tokenList.length > 0) {
+      await sendFcmPush(tokenList, {
+        title: 'Payment failed',
+        body: 'Your ride payment could not be processed. Please update your payment method.',
+        data: { type: 'payment_failed', ride_id: rideId },
+      })
+    }
+  }
+}
+
+async function handleAccountUpdated(account: Stripe.Account): Promise<void> {
+  const accountId = account.id
+  const chargesEnabled = account.charges_enabled ?? false
+  const payoutsEnabled = account.payouts_enabled ?? false
+  const isComplete = chargesEnabled && payoutsEnabled
+
+  console.log(`[Webhook] account.updated: ${accountId} charges=${chargesEnabled} payouts=${payoutsEnabled}`)
+
+  // Find user by stripe_account_id and update onboarding status
+  const { error } = await supabaseAdmin
+    .from('users')
+    .update({ stripe_onboarding_complete: isComplete })
+    .eq('stripe_account_id', accountId)
+
+  if (error) {
+    console.error(`[Webhook] Failed to update onboarding status for account ${accountId}: ${error.message}`)
+  }
+}
+
+/** Legacy wallet topup handler — kept for backward compatibility */
+async function handleWalletTopup(eventId: string, paymentIntent: Stripe.PaymentIntent, userId: string): Promise<void> {
+  const amountCents = paymentIntent.amount
+
+  // Idempotency guard: reject duplicate Stripe events
+  const { data: existingTx } = await supabaseAdmin
+    .from('transactions')
+    .select('id')
+    .eq('stripe_event_id', eventId)
+    .maybeSingle()
+
+  if (existingTx) {
+    console.log(`[Webhook] Duplicate event ${eventId}, skipping`)
+    return
+  }
+
+  // Get current balance
+  const { data: user, error: userErr } = await supabaseAdmin
+    .from('users')
+    .select('wallet_balance')
+    .eq('id', userId)
+    .single()
+
+  if (userErr || !user) {
+    console.error('User not found for topup:', userId)
+    return
+  }
+
+  const currentBalance = user.wallet_balance as number
+  const newBalance = currentBalance + amountCents
+
+  const { error: updateErr } = await supabaseAdmin
+    .from('users')
+    .update({ wallet_balance: newBalance })
+    .eq('id', userId)
+
+  if (updateErr) {
+    console.error('Failed to update wallet balance:', updateErr)
+    return
+  }
+
+  const { error: txErr } = await supabaseAdmin
+    .from('transactions')
+    .insert({
+      user_id: userId,
+      type: 'topup',
+      amount_cents: amountCents,
+      balance_after_cents: newBalance,
+      description: `Added $${(amountCents / 100).toFixed(2)} to wallet`,
+      stripe_event_id: eventId,
+      payment_intent_id: paymentIntent.id,
+    })
+
+  if (txErr) {
+    console.error('Failed to insert transaction record:', txErr)
+  }
+}

@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { supabase } from '@/lib/supabase'
 import { formatCents } from '@/lib/fare'
 import BottomNav from '@/components/ui/BottomNav'
+import AppIcon from '@/components/ui/AppIcon'
 import type { Ride } from '@/types/database'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -126,7 +127,7 @@ export default function RideHistoryPage({ 'data-testid': testId }: RideHistoryPa
       {/* Empty state */}
       {rides.length === 0 && (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6" data-testid="empty-state">
-          <span className="text-4xl">🚗</span>
+          <div className="h-14 w-14 rounded-full bg-surface flex items-center justify-center"><AppIcon name="car-request" className="h-7 w-7 text-text-secondary" /></div>
           <p className="text-text-secondary">No completed rides yet.</p>
         </div>
       )}

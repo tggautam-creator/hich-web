@@ -66,6 +66,9 @@ describe('database types — row aliases', () => {
       rating_avg: null,
       rating_count: 0,
       home_location: null,
+      stripe_account_id: null,
+      stripe_onboarding_complete: false,
+      default_payment_method_id: null,
       created_at: new Date().toISOString(),
     }
     expect(user.wallet_balance).toBe(500)
@@ -79,6 +82,7 @@ describe('database types — row aliases', () => {
       plate: 'ABC123', license_plate_photo_url: 'https://x.com/p.jpg',
       car_photo_url: 'https://x.com/c.jpg', seats_available: 3,
       fuel_efficiency_mpg: null, is_active: true,
+      body_type: 'suv',
     }
     expect(v.seats_available).toBeGreaterThanOrEqual(1)
   })
@@ -113,6 +117,7 @@ describe('database types — row aliases', () => {
       created_at: new Date().toISOString(),
       schedule_id: null, trip_date: null, trip_time: null,
       driver_destination: null, driver_destination_name: null, driver_route_polyline: null,
+      payment_status: 'pending', payment_intent_id: null, stripe_fee_cents: 0,
     }
     expect(ride.fare_cents).not.toBeNull()
     expect(Number.isInteger(ride.fare_cents)).toBe(true)

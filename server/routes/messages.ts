@@ -132,6 +132,7 @@ messagesRouter.post(
     const recipientId = senderId === ride.rider_id ? ride.driver_id : ride.rider_id
     if (recipientId) {
       void realtimeBroadcast(`chat:${rideId}`, 'new_message', msg)
+      void realtimeBroadcast(`chat-badge:${rideId}`, 'new_message', msg)
 
       // Send FCM push notification to recipient (fire-and-forget)
       void (async () => {

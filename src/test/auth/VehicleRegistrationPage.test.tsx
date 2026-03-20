@@ -329,7 +329,7 @@ describe('VehicleRegistrationPage', () => {
         // Updated user is_driver
         expect(mockUpdate).toHaveBeenCalledWith({ is_driver: true })
         // Navigated
-        expect(mockNavigate).toHaveBeenCalledWith('/home/driver')
+        expect(mockNavigate).toHaveBeenCalledWith('/stripe/onboarding')
       })
     })
 

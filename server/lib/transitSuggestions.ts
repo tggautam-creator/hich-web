@@ -28,10 +28,12 @@ export interface TransitDropoffSuggestion {
   station_place_id: string
   station_address: string
   transit_options: TransitOption[]
+  ride_with_driver_minutes: number
   walk_to_station_minutes: number
   driver_detour_minutes: number
   transit_to_dest_minutes: number
   total_rider_minutes: number
+  full_transit_minutes?: number
   rider_progress_pct?: number
   transit_polyline?: string | null
 }
@@ -91,20 +93,20 @@ const STATION_TYPES = [
 ]
 
 const VEHICLE_ICONS: Record<string, string> = {
-  BUS: '\u{1F68C}',
-  SUBWAY: '\u{1F687}',
-  RAIL: '\u{1F686}',
-  TRAM: '\u{1F68A}',
-  FERRY: '\u26F4\uFE0F',
-  CABLE_CAR: '\u{1F6A1}',
-  COMMUTER_TRAIN: '\u{1F686}',
-  HEAVY_RAIL: '\u{1F686}',
-  HIGH_SPEED_TRAIN: '\u{1F684}',
-  INTERCITY_BUS: '\u{1F68C}',
-  METRO_RAIL: '\u{1F687}',
-  MONORAIL: '\u{1F69D}',
-  SHARE_TAXI: '\u{1F690}',
-  TROLLEYBUS: '\u{1F68E}',
+  BUS: 'Bus',
+  SUBWAY: 'Metro',
+  RAIL: 'Rail',
+  TRAM: 'Tram',
+  FERRY: 'Ferry',
+  CABLE_CAR: 'Cable',
+  COMMUTER_TRAIN: 'Rail',
+  HEAVY_RAIL: 'Rail',
+  HIGH_SPEED_TRAIN: 'Rail',
+  INTERCITY_BUS: 'Bus',
+  METRO_RAIL: 'Metro',
+  MONORAIL: 'Rail',
+  SHARE_TAXI: 'Taxi',
+  TROLLEYBUS: 'Bus',
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -131,7 +133,7 @@ function parseTransitOptions(data: GoogleDirectionsResponse): TransitOption[] {
 
       options.push({
         type: vehicleType,
-        icon: VEHICLE_ICONS[vehicleType] ?? '\u{1F68D}',
+        icon: VEHICLE_ICONS[vehicleType] ?? 'Bus',
         line_name: lineName,
         departure_stop: td.departure_stop?.name ?? undefined,
         arrival_stop: td.arrival_stop?.name ?? undefined,
@@ -306,11 +308,21 @@ export async function computeTransitDropoffSuggestions(
 
   const samplePoints = samplePolyline(decoded, SAMPLE_INTERVAL_M)
 
+  // 2b. Fetch full transit-only time from pickup → rider destination (runs in parallel with station search)
+  const fullTransitPromise = fetchTransitFromStation(
+    driverLat, driverLng, riderDestLat, riderDestLng, apiKey,
+  ).then(({ options }) => {
+    return options.length > 0 ? options[0].total_minutes : 0
+  }).catch(() => 0)
+
   // 3. Search for transit stations near each sample point (parallel)
   const stationSearches = samplePoints.map((pt) =>
     searchNearbyStations(pt.lat, pt.lng, SEARCH_RADIUS_M, apiKey),
   )
-  const stationResults = await Promise.all(stationSearches)
+  const [stationResults, fullTransitMinutes] = await Promise.all([
+    Promise.all(stationSearches),
+    fullTransitPromise,
+  ])
 
   // 4. Deduplicate by place ID
   const uniqueStations = new Map<string, { id: string; name: string; address: string; lat: number; lng: number }>()
@@ -364,6 +376,10 @@ export async function computeTransitDropoffSuggestions(
           station.lat, station.lng,
           apiKey,
         )
+        // Drive time from pickup to this station = rider's ride time with driver
+        const rideWithDriverMin = detourRoute
+          ? Math.round(detourRoute.durationMin)
+          : 0
         const detourMin = detourRoute
           ? Math.max(0, detourRoute.durationMin - driverDirectDurationMin)
           : 0
@@ -382,10 +398,12 @@ export async function computeTransitDropoffSuggestions(
           station_place_id: station.id,
           station_address: station.address,
           transit_options: transitOptions,
+          ride_with_driver_minutes: rideWithDriverMin,
           walk_to_station_minutes: walkToStationMin,
           driver_detour_minutes: Math.round(detourMin),
           transit_to_dest_minutes: transitToDestMin,
-          total_rider_minutes: walkToStationMin + transitToDestMin,
+          total_rider_minutes: rideWithDriverMin + walkToStationMin + transitToDestMin,
+          full_transit_minutes: fullTransitMinutes > 0 ? fullTransitMinutes : undefined,
           rider_progress_pct: Math.round(progressRatio * 100),
           transit_polyline: transitPolyline,
         } satisfies TransitDropoffSuggestion

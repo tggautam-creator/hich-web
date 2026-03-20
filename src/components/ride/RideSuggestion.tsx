@@ -9,6 +9,7 @@ import type { PlaceSuggestion } from '@/lib/places'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
 import CarMarker from '@/components/map/CarMarker'
 import { MAP_ID } from '@/lib/mapConstants'
+import AppIcon from '@/components/ui/AppIcon'
 import type { Ride, User } from '@/types/database'
 
 const COUNTDOWN_SECONDS = 150
@@ -501,7 +502,7 @@ export default function RideSuggestion({
         className="flex min-h-dvh flex-col items-center justify-center gap-6 bg-surface px-6"
       >
         <div className="flex h-16 w-16 items-center justify-center rounded-full bg-warning/15">
-          <span className="text-3xl">🔔</span>
+          <AppIcon name="bell" className="h-8 w-8 text-primary" />
         </div>
         <div className="text-center space-y-2">
           <h2 className="text-xl font-bold text-text-primary">
@@ -640,7 +641,7 @@ export default function RideSuggestion({
             />
           ) : (
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary-light">
-              <span className="text-xl">🧑</span>
+              <AppIcon name="person" className="h-5 w-5 text-text-secondary" />
             </div>
           )}
           <div className="flex-1">

@@ -74,10 +74,11 @@ const SUGGESTION: TransitDropoffSuggestion = {
       walk_minutes: 1, total_minutes: 30,
     },
   ],
+  ride_with_driver_minutes: 10,
   walk_to_station_minutes: 3,
   driver_detour_minutes: 5,
   transit_to_dest_minutes: 20,
-  total_rider_minutes: 23,
+  total_rider_minutes: 33,
   rider_progress_pct: 72,
   transit_polyline: 'encoded_transit_polyline_abc',
 }
@@ -96,10 +97,11 @@ const SUGGESTION_2: TransitDropoffSuggestion = {
       walk_minutes: 2, total_minutes: 15,
     },
   ],
+  ride_with_driver_minutes: 8,
   walk_to_station_minutes: 2,
   driver_detour_minutes: 3,
   transit_to_dest_minutes: 15,
-  total_rider_minutes: 17,
+  total_rider_minutes: 25,
   rider_progress_pct: 85,
   transit_polyline: 'encoded_transit_polyline_def',
 }
@@ -116,26 +118,21 @@ describe('TransitSuggestionCard', () => {
     expect(screen.getByText('123 Market St, San Francisco')).toBeDefined()
   })
 
-  it('renders step-by-step transit journey', () => {
+  it('shows unified journey breakdown with transit legs', () => {
     render(
       <TransitSuggestionCard suggestion={SUGGESTION} isRider={true} />,
     )
 
-    const legs = screen.getAllByTestId('transit-leg')
-    expect(legs).toHaveLength(2)
+    // Section header
+    expect(screen.getByText('Your journey')).toBeDefined()
+    // Step 1: Driver drops you at station with ride time
+    expect(screen.getByText(/Driver drops you at Downtown BART/)).toBeDefined()
+    expect(screen.getByText(/~10 min/)).toBeDefined()
+    // Transit legs shown inside journey
     expect(screen.getByText('Blue Line')).toBeDefined()
     expect(screen.getByText('Route 42')).toBeDefined()
-    // Step-by-step stops
-    expect(screen.getByText(/Downtown Station → Mission District/)).toBeDefined()
-    expect(screen.getByText(/Mission District → Sunset Blvd/)).toBeDefined()
-  })
-
-  it('shows total time to destination', () => {
-    render(
-      <TransitSuggestionCard suggestion={SUGGESTION} isRider={true} />,
-    )
-
-    expect(screen.getByText('23 min total to destination')).toBeDefined()
+    // Total time
+    expect(screen.getByText(/Total: ~33 min/)).toBeDefined()
   })
 
   it('shows Accept and Counter buttons for rider', () => {
@@ -190,7 +187,7 @@ describe('TransitSuggestionCard', () => {
     const oldSuggestion: TransitDropoffSuggestion = {
       ...SUGGESTION,
       transit_options: [
-        { type: 'BUS', icon: '\u{1F68C}', line_name: 'Route 99', walk_minutes: 1, total_minutes: 40 },
+        { type: 'BUS', icon: 'Bus', line_name: 'Route 99', duration_minutes: 40, walk_minutes: 1, total_minutes: 40 },
       ],
     }
     render(

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { supabase } from '@/lib/supabase'
-import { formatCents, calculateFare } from '@/lib/fare'
+import { formatCents, calculateFare, estimateStripeFee } from '@/lib/fare'
 import { colors as tokenColors } from '@/lib/tokens'
 import { haversineMetres } from '@/lib/geo'
 import PrimaryButton from '@/components/ui/PrimaryButton'
@@ -160,8 +160,10 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
 
   // ── Derived fare values ────────────────────────────────────────────────
   const fareCents = ride?.fare_cents ?? 0
-  const platformFeeCents = Math.round(fareCents * 0.15)
-  const driverEarnsCents = fareCents - platformFeeCents
+  const stripeFeeCents = ride?.stripe_fee_cents ?? estimateStripeFee(fareCents)
+  const totalCharged = fareCents + stripeFeeCents
+  const driverEarnsCents = fareCents // driver gets full fare (0% platform commission)
+  const paymentStatus = (ride as Record<string, unknown>)?.payment_status as string | undefined
 
   // ── Fare breakdown details ────────────────────────────────────────────
   const fareBreakdown = (() => {
@@ -192,6 +194,42 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
   // ── Navigation ────────────────────────────────────────────────────────
   const goHome = () => {
     navigate(isDriver ? '/home/driver' : '/home/rider', { replace: true })
+  }
+
+  const [retrying, setRetrying] = useState(false)
+  const [retryError, setRetryError] = useState<string | null>(null)
+
+  async function handleRetryPayment() {
+    if (!rideId) return
+    setRetrying(true)
+    setRetryError(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) { setRetryError('Please sign in to retry payment.'); return }
+
+      const resp = await fetch(`/api/rides/${rideId}/retry-payment`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
+
+      if (!resp.ok) {
+        const body = (await resp.json()) as { error?: { message?: string } }
+        setRetryError(body.error?.message ?? 'Payment failed. Please try again.')
+        return
+      }
+
+      // Refresh ride data to get updated payment_status
+      const { data: updatedRide } = await supabase
+        .from('rides')
+        .select('*')
+        .eq('id', rideId)
+        .single()
+      if (updatedRide) setRide(updatedRide)
+    } catch {
+      setRetryError('Network error. Please try again.')
+    } finally {
+      setRetrying(false)
+    }
   }
 
   const goRate = () => {
@@ -240,9 +278,49 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
         <p className="text-lg text-text-secondary" data-testid="fare-message">
           {isDriver
             ? `You earned ${formatCents(driverEarnsCents)}`
-            : `${formatCents(fareCents)} charged`
+            : `${formatCents(totalCharged)} charged`
           }
         </p>
+
+        {/* Payment status badge */}
+        {paymentStatus && paymentStatus !== 'paid' && (
+          <span
+            data-testid="payment-status"
+            className={`mt-1 rounded-full px-3 py-0.5 text-xs font-medium ${
+              paymentStatus === 'processing' ? 'bg-warning/10 text-warning' :
+              paymentStatus === 'failed' ? 'bg-danger/10 text-danger' :
+              'bg-gray-100 text-text-secondary'
+            }`}
+          >
+            {paymentStatus === 'processing' ? 'Payment processing' :
+             paymentStatus === 'failed' ? 'Payment failed' :
+             'Payment pending'}
+          </span>
+        )}
+
+        {/* Retry payment for rider when payment failed */}
+        {!isDriver && (paymentStatus === 'failed' || paymentStatus === 'pending') && (
+          <div className="mt-3 flex flex-col items-center gap-2 w-full px-6">
+            {retryError && (
+              <p data-testid="retry-error" className="text-xs text-danger text-center">{retryError}</p>
+            )}
+            <button
+              data-testid="retry-payment-button"
+              onClick={() => { void handleRetryPayment() }}
+              disabled={retrying}
+              className="w-full max-w-xs rounded-xl bg-primary py-2.5 text-sm font-semibold text-white shadow active:opacity-80 disabled:opacity-50"
+            >
+              {retrying ? 'Retrying...' : 'Retry Payment'}
+            </button>
+            <button
+              data-testid="manage-payment-methods"
+              onClick={() => { navigate('/payment/methods') }}
+              className="text-xs text-primary font-medium"
+            >
+              Manage payment methods
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ── Ride info card ────────────────────────────────────────────────── */}
@@ -341,13 +419,17 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
                   <span className="text-text-primary">{formatCents(fareCents)}</span>
                 </div>
               )}
-              <div className="flex justify-between">
-                <span className="text-text-secondary">Platform fee (15%)</span>
-                <span className="text-text-primary">−{formatCents(platformFeeCents)}</span>
-              </div>
+              {!isDriver && (
+                <div className="flex justify-between">
+                  <span className="text-text-secondary">Processing fee</span>
+                  <span className="text-text-primary">{formatCents(stripeFeeCents)}</span>
+                </div>
+              )}
               <div className="flex justify-between border-t border-border pt-2 font-semibold">
-                <span className="text-text-primary">Driver earns</span>
-                <span className="text-success">{formatCents(driverEarnsCents)}</span>
+                <span className="text-text-primary">{isDriver ? 'You earn' : 'Total charged'}</span>
+                <span className={isDriver ? 'text-success' : 'text-text-primary'}>
+                  {formatCents(isDriver ? driverEarnsCents : totalCharged)}
+                </span>
               </div>
             </div>
           </div>
