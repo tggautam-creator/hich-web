@@ -4,11 +4,11 @@
  * Verifies:
  *  1. Page renders with OTP inputs
  *  2. Submitted email is displayed
- *  3. Shows 6 OTP input boxes
+ *  3. Shows 8 OTP input boxes
  *  4. Auto-focuses first input
  *  5. Advances focus on digit entry
  *  6. Backspace moves to previous input
- *  7. Calls verifyOtp when all 6 digits entered
+ *  7. Calls verifyOtp when all 8 digits entered
  *  8. Shows error on invalid code
  *  9. Navigates to /onboarding/profile on success (new user)
  * 10. Navigates to /home/rider on success (returning user)
@@ -59,7 +59,7 @@ function renderCheckInbox(email = 'maya@ucdavis.edu') {
   )
 }
 
-function fillOtp(code = '123456') {
+function fillOtp(code = '12345678') {
   for (let i = 0; i < code.length; i++) {
     fireEvent.change(screen.getByTestId(`otp-input-${i}`), {
       target: { value: code[i] },
@@ -92,10 +92,10 @@ describe('CheckInbox OTP screen', () => {
     expect(screen.getByTestId('submitted-email').textContent).toBe('maya@ucdavis.edu')
   })
 
-  it('renders 6 OTP input boxes', () => {
+  it('renders 8 OTP input boxes', () => {
     renderCheckInbox()
     expect(screen.getByTestId('otp-inputs')).toBeInTheDocument()
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 8; i++) {
       expect(screen.getByTestId(`otp-input-${i}`)).toBeInTheDocument()
     }
   })
@@ -126,10 +126,10 @@ describe('CheckInbox OTP screen', () => {
       }),
     })
     renderCheckInbox('maya@ucdavis.edu')
-    await act(async () => { fillOtp('123456') })
+    await act(async () => { fillOtp('12345678') })
     expect(mockVerifyOtp).toHaveBeenCalledWith({
       email: 'maya@ucdavis.edu',
-      token: '123456',
+      token: '12345678',
       type: 'email',
     })
   })
@@ -150,7 +150,7 @@ describe('CheckInbox OTP screen', () => {
       }),
     })
     renderCheckInbox()
-    await act(async () => { fillOtp('123456') })
+    await act(async () => { fillOtp('12345678') })
     expect(mockNavigate).toHaveBeenCalledWith('/onboarding/profile', { replace: true })
   })
 
@@ -173,7 +173,7 @@ describe('CheckInbox OTP screen', () => {
       }),
     })
     renderCheckInbox()
-    await act(async () => { fillOtp('123456') })
+    await act(async () => { fillOtp('12345678') })
     expect(mockNavigate).toHaveBeenCalledWith('/home/rider', { replace: true })
   })
 
@@ -196,7 +196,7 @@ describe('CheckInbox OTP screen', () => {
       }),
     })
     renderCheckInbox()
-    await act(async () => { fillOtp('123456') })
+    await act(async () => { fillOtp('12345678') })
     expect(mockNavigate).toHaveBeenCalledWith('/home/driver', { replace: true })
   })
 
@@ -206,7 +206,7 @@ describe('CheckInbox OTP screen', () => {
       error: { message: 'Token has expired or is invalid' },
     })
     renderCheckInbox()
-    await act(async () => { fillOtp('999999') })
+    await act(async () => { fillOtp('99999999') })
     expect(screen.getByTestId('verify-error')).toBeInTheDocument()
     expect(screen.getByTestId('verify-error').textContent).toBe('Invalid code. Please try again.')
   })
@@ -269,12 +269,12 @@ describe('CheckInbox OTP screen', () => {
     // Simulate pasting into the first input
     await act(async () => {
       fireEvent.change(screen.getByTestId('otp-input-0'), {
-        target: { value: '654321' },
+        target: { value: '65432178' },
       })
     })
     expect(mockVerifyOtp).toHaveBeenCalledWith({
       email: 'maya@ucdavis.edu',
-      token: '654321',
+      token: '65432178',
       type: 'email',
     })
   })

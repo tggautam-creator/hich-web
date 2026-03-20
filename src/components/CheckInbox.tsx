@@ -5,7 +5,7 @@ import PrimaryButton from '@/components/ui/PrimaryButton'
 import Logo from '@/components/ui/Logo'
 
 const RESEND_COOLDOWN = 60
-const OTP_LENGTH = 6
+const OTP_LENGTH = 8
 
 interface CheckInboxProps {
   'data-testid'?: string
@@ -190,7 +190,7 @@ export default function CheckInbox({ 'data-testid': testId }: CheckInboxProps) {
       <main className="flex-1 flex flex-col justify-center px-6 gap-6 text-center">
         <div className="space-y-3">
           <h1 className="text-2xl font-bold text-text-primary">Enter your code</h1>
-          <p className="text-text-secondary">We sent a 6-digit code to</p>
+          <p className="text-text-secondary">We sent an 8-digit code to</p>
           {email && (
             <p
               data-testid="submitted-email"
@@ -203,7 +203,7 @@ export default function CheckInbox({ 'data-testid': testId }: CheckInboxProps) {
 
         {/* OTP Input */}
         <form onSubmit={handleSubmit} className="flex flex-col items-center gap-4">
-          <div className="flex gap-3 justify-center" data-testid="otp-inputs">
+          <div className="flex gap-2 justify-center" data-testid="otp-inputs">
             {digits.map((digit, i) => (
               <input
                 key={i}
@@ -212,11 +212,11 @@ export default function CheckInbox({ 'data-testid': testId }: CheckInboxProps) {
                 type="text"
                 inputMode="numeric"
                 pattern="[0-9]*"
-                maxLength={i === 0 ? OTP_LENGTH : 1}
+                maxLength={i === 0 ? 8 : 1}
                 value={digit}
                 onChange={(e) => { handleDigitChange(i, e.target.value) }}
                 onKeyDown={(e) => { handleKeyDown(i, e) }}
-                className="w-12 h-14 text-center text-2xl font-bold rounded-xl border-2 border-border bg-white text-text-primary focus:border-primary focus:outline-none transition-colors"
+                className="w-10 h-12 text-center text-xl font-bold rounded-lg border-2 border-border bg-white text-text-primary focus:border-primary focus:outline-none transition-colors"
                 aria-label={`Digit ${i + 1}`}
                 autoComplete={i === 0 ? 'one-time-code' : 'off'}
               />
