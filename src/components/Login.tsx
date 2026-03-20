@@ -35,7 +35,6 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
     try {
       const { error } = await supabase.auth.signInWithOtp({
         email: email.trim().toLowerCase(),
-        options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
       })
       if (error) {
         setServerError(error.message)
@@ -186,7 +185,7 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
               disabled={!isEmailValid || isSubmitting}
               className="text-sm text-primary font-medium disabled:opacity-40"
             >
-              Use magic link
+              Send login code
             </button>
           </div>
 

@@ -209,6 +209,21 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
           </div>
         </section>
 
+        {/* ── Support ─────────────────────────────────────────────────── */}
+        <section className="mb-6">
+          <h2 className="text-sm font-semibold text-text-primary mb-3">Support</h2>
+          <div className="bg-white rounded-2xl border border-border">
+            <button
+              data-testid="report-issue-button"
+              onClick={() => navigate('/report-issue')}
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-text-primary"
+            >
+              Report an issue
+              <span className="text-text-secondary">&rsaquo;</span>
+            </button>
+          </div>
+        </section>
+
         {/* ── About ───────────────────────────────────────────────────── */}
         <section className="mb-6">
           <h2 className="text-sm font-semibold text-text-primary mb-3">About</h2>

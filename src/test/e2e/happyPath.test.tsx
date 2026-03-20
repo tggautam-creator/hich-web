@@ -342,7 +342,6 @@ describe('E2E Happy Path', () => {
       await waitFor(() => {
         expect(mockSignInWithOtp).toHaveBeenCalledWith({
           email: 'maya@ucdavis.edu',
-          options: { emailRedirectTo: expect.stringContaining('/auth/callback') as string },
         })
       })
 
@@ -374,7 +373,7 @@ describe('E2E Happy Path', () => {
 
       expect(screen.getByTestId('check-inbox-page')).toBeInTheDocument()
       expect(screen.getByTestId('submitted-email')).toHaveTextContent('maya@ucdavis.edu')
-      expect(screen.getByText('Check your inbox')).toBeInTheDocument()
+      expect(screen.getByText('Enter your code')).toBeInTheDocument()
     })
   })
 

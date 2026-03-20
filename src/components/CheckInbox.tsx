@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import Logo from '@/components/ui/Logo'
 
 const RESEND_COOLDOWN = 60
+const OTP_LENGTH = 6
 
 interface CheckInboxProps {
   'data-testid'?: string
@@ -13,16 +14,25 @@ interface CheckInboxProps {
 export default function CheckInbox({ 'data-testid': testId }: CheckInboxProps) {
   const navigate = useNavigate()
   const location = useLocation()
-  const email    = (location.state as { email?: string } | null)?.email ?? ''
+  const email = (location.state as { email?: string } | null)?.email ?? ''
 
-  const [countdown, setCountdown]       = useState(RESEND_COOLDOWN)
-  const [isResending, setResending]     = useState(false)
-  const [resendError, setResendError]   = useState<string | null>(null)
+  const [digits, setDigits] = useState<string[]>(Array(OTP_LENGTH).fill(''))
+  const [isVerifying, setVerifying] = useState(false)
+  const [verifyError, setVerifyError] = useState<string | null>(null)
+
+  const [countdown, setCountdown] = useState(RESEND_COOLDOWN)
+  const [isResending, setResending] = useState(false)
   const [resendSuccess, setResendSuccess] = useState(false)
+  const [resendError, setResendError] = useState<string | null>(null)
 
-  // phase increments each time we need to restart the countdown (on resend success)
   const [phase, setPhase] = useState(0)
-  const intervalRef        = useRef<ReturnType<typeof setInterval> | null>(null)
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const inputRefs = useRef<(HTMLInputElement | null)[]>([])
+
+  // Auto-focus first input on mount
+  useEffect(() => {
+    inputRefs.current[0]?.focus()
+  }, [])
 
   // 60-second countdown — restarts whenever `phase` changes
   useEffect(() => {
@@ -41,17 +51,90 @@ export default function CheckInbox({ 'data-testid': testId }: CheckInboxProps) {
     }
   }, [phase])
 
-  // Listen for Supabase auth state change → redirect on sign-in
-  useEffect(() => {
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_IN') {
-        navigate('/onboarding/profile')
+  const verify = useCallback(async (code: string) => {
+    if (!email || code.length !== OTP_LENGTH) return
+    setVerifying(true)
+    setVerifyError(null)
+
+    try {
+      const { data, error } = await supabase.auth.verifyOtp({
+        email,
+        token: code,
+        type: 'email',
+      })
+
+      if (error) {
+        setVerifyError('Invalid code. Please try again.')
+        setDigits(Array(OTP_LENGTH).fill(''))
+        inputRefs.current[0]?.focus()
+        return
       }
-    })
-    return () => { subscription.unsubscribe() }
-  }, [navigate])
+
+      if (data.session) {
+        // Check if user has completed onboarding
+        const { data: profile } = await supabase
+          .from('users')
+          .select('full_name, is_driver')
+          .eq('id', data.user?.id ?? '')
+          .single()
+
+        if (profile?.full_name) {
+          navigate(profile.is_driver ? '/home/driver' : '/home/rider', { replace: true })
+        } else {
+          navigate('/onboarding/profile', { replace: true })
+        }
+      }
+    } catch {
+      setVerifyError('Something went wrong. Please try again.')
+    } finally {
+      setVerifying(false)
+    }
+  }, [email, navigate])
+
+  function handleDigitChange(index: number, value: string) {
+    // Handle paste of full code
+    if (value.length > 1) {
+      const pasted = value.replace(/\D/g, '').slice(0, OTP_LENGTH)
+      if (pasted.length > 0) {
+        const newDigits = Array(OTP_LENGTH).fill('')
+        for (let i = 0; i < pasted.length; i++) {
+          newDigits[i] = pasted[i]!
+        }
+        setDigits(newDigits)
+        setVerifyError(null)
+        const focusIndex = Math.min(pasted.length, OTP_LENGTH - 1)
+        inputRefs.current[focusIndex]?.focus()
+        if (pasted.length === OTP_LENGTH) {
+          void verify(pasted)
+        }
+        return
+      }
+    }
+
+    const digit = value.replace(/\D/g, '').slice(-1)
+    const newDigits = [...digits]
+    newDigits[index] = digit
+    setDigits(newDigits)
+    setVerifyError(null)
+
+    if (digit && index < OTP_LENGTH - 1) {
+      inputRefs.current[index + 1]?.focus()
+    }
+
+    // Auto-submit when all digits filled
+    if (digit && newDigits.every((d) => d !== '')) {
+      void verify(newDigits.join(''))
+    }
+  }
+
+  function handleKeyDown(index: number, e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Backspace' && !digits[index] && index > 0) {
+      const newDigits = [...digits]
+      newDigits[index - 1] = ''
+      setDigits(newDigits)
+      inputRefs.current[index - 1]?.focus()
+    }
+  }
 
   async function handleResend() {
     if (countdown > 0 || isResending || !email) return
@@ -60,20 +143,28 @@ export default function CheckInbox({ 'data-testid': testId }: CheckInboxProps) {
     setResendSuccess(false)
 
     try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
-      })
+      const { error } = await supabase.auth.signInWithOtp({ email })
       if (error) {
         setResendError(error.message)
       } else {
         setResendSuccess(true)
-        setPhase((p) => p + 1) // restart countdown
+        setDigits(Array(OTP_LENGTH).fill(''))
+        setVerifyError(null)
+        setPhase((p) => p + 1)
+        inputRefs.current[0]?.focus()
       }
     } catch {
       setResendError('Something went wrong. Please try again.')
     } finally {
       setResending(false)
+    }
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    const code = digits.join('')
+    if (code.length === OTP_LENGTH) {
+      void verify(code)
     }
   }
 
@@ -87,6 +178,7 @@ export default function CheckInbox({ 'data-testid': testId }: CheckInboxProps) {
         style={{ paddingTop: 'max(env(safe-area-inset-top), 2rem)' }}
       >
         <button
+          data-testid="back-button"
           onClick={() => { navigate(-1) }}
           className="text-primary text-sm font-medium"
         >
@@ -96,11 +188,9 @@ export default function CheckInbox({ 'data-testid': testId }: CheckInboxProps) {
       </header>
 
       <main className="flex-1 flex flex-col justify-center px-6 gap-6 text-center">
-        <div className="text-6xl" aria-hidden="true">📬</div>
-
         <div className="space-y-3">
-          <h1 className="text-2xl font-bold text-text-primary">Check your inbox</h1>
-          <p className="text-text-secondary">We sent a magic link to</p>
+          <h1 className="text-2xl font-bold text-text-primary">Enter your code</h1>
+          <p className="text-text-secondary">We sent a 6-digit code to</p>
           {email && (
             <p
               data-testid="submitted-email"
@@ -109,40 +199,78 @@ export default function CheckInbox({ 'data-testid': testId }: CheckInboxProps) {
               {email}
             </p>
           )}
-          <p className="text-sm text-text-secondary">
-            Tap the link in that email to continue.
-          </p>
         </div>
 
-        <div className="flex flex-col items-center gap-3">
-          <PrimaryButton
-            data-testid="resend-button"
-            disabled={countdown > 0 || isResending}
-            isLoading={isResending}
-            onClick={() => { void handleResend() }}
-          >
-            {countdown > 0 ? `Resend in ${countdown}s` : 'Resend email'}
-          </PrimaryButton>
+        {/* OTP Input */}
+        <form onSubmit={handleSubmit} className="flex flex-col items-center gap-4">
+          <div className="flex gap-3 justify-center" data-testid="otp-inputs">
+            {digits.map((digit, i) => (
+              <input
+                key={i}
+                ref={(el) => { inputRefs.current[i] = el }}
+                data-testid={`otp-input-${i}`}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={i === 0 ? OTP_LENGTH : 1}
+                value={digit}
+                onChange={(e) => { handleDigitChange(i, e.target.value) }}
+                onKeyDown={(e) => { handleKeyDown(i, e) }}
+                className="w-12 h-14 text-center text-2xl font-bold rounded-xl border-2 border-border bg-white text-text-primary focus:border-primary focus:outline-none transition-colors"
+                aria-label={`Digit ${i + 1}`}
+                autoComplete={i === 0 ? 'one-time-code' : 'off'}
+              />
+            ))}
+          </div>
 
-          {resendError && (
+          {verifyError && (
             <p
-              data-testid="resend-error"
+              data-testid="verify-error"
               className="text-sm text-danger"
               role="alert"
             >
+              {verifyError}
+            </p>
+          )}
+
+          <PrimaryButton
+            data-testid="verify-button"
+            type="submit"
+            disabled={digits.some((d) => !d) || isVerifying}
+            isLoading={isVerifying}
+            className="w-full max-w-xs"
+          >
+            Verify
+          </PrimaryButton>
+        </form>
+
+        {/* Resend */}
+        <div className="flex flex-col items-center gap-3">
+          <button
+            data-testid="resend-button"
+            disabled={countdown > 0 || isResending}
+            onClick={() => { void handleResend() }}
+            className="text-sm font-medium text-primary disabled:text-text-secondary disabled:opacity-60"
+          >
+            {countdown > 0 ? `Resend code in ${countdown}s` : 'Resend code'}
+          </button>
+
+          {resendError && (
+            <p data-testid="resend-error" className="text-sm text-danger" role="alert">
               {resendError}
             </p>
           )}
 
           {resendSuccess && (
-            <p
-              data-testid="resend-success"
-              className="text-sm text-success font-medium"
-            >
-              ✓ Email sent!
+            <p data-testid="resend-success" className="text-sm text-success font-medium">
+              New code sent!
             </p>
           )}
         </div>
+
+        <p className="text-xs text-text-secondary">
+          Didn&apos;t get an email? Check your spam folder.
+        </p>
       </main>
     </div>
   )

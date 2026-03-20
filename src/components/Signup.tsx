@@ -52,7 +52,6 @@ export default function Signup({ 'data-testid': testId }: SignupProps) {
 
       const { error } = await supabase.auth.signInWithOtp({
         email: trimmedEmail,
-        options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
       })
       if (error) {
         setServerError(error.message)

@@ -18,8 +18,8 @@
  * 14.  Shows raw server error message for other errors
  * 15.  "Sign up" button navigates to /signup
  * 16.  "Forgot password?" link navigates to /forgot-password
- * 17.  "Use magic link" button calls signInWithOtp
- * 18.  "Use magic link" button disabled when email invalid
+ * 17.  "Send login code" button calls signInWithOtp
+ * 18.  "Send login code" button disabled when email invalid
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -253,7 +253,7 @@ describe('Login screen', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/signup')
   })
 
-  // ── Forgot password + magic link ───────────────────────────────────
+  // ── Forgot password + login code ───────────────────────────────────
 
   it('"Forgot password?" link navigates to /forgot-password', async () => {
     const user = userEvent.setup()
@@ -262,12 +262,12 @@ describe('Login screen', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/forgot-password')
   })
 
-  it('"Use magic link" button is disabled when email is invalid', () => {
+  it('"Send login code" button is disabled when email is invalid', () => {
     renderLogin()
     expect(screen.getByTestId('magic-link-button')).toBeDisabled()
   })
 
-  it('"Use magic link" calls signInWithOtp and navigates to /check-inbox', async () => {
+  it('"Send login code" calls signInWithOtp and navigates to /check-inbox', async () => {
     mockSignInWithOtp.mockResolvedValue({ error: null })
     const user = userEvent.setup()
     renderLogin()
@@ -276,7 +276,6 @@ describe('Login screen', () => {
     await waitFor(() => {
       expect(mockSignInWithOtp).toHaveBeenCalledWith({
         email: 'maya@ucdavis.edu',
-        options: { emailRedirectTo: expect.stringContaining('/auth/callback') },
       })
     })
     expect(mockNavigate).toHaveBeenCalledWith('/check-inbox', {

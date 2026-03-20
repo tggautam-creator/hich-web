@@ -99,6 +99,18 @@ describe('SettingsPage', () => {
     expect(screen.getByTestId('delete-account-button')).toBeDefined()
   })
 
+  it('shows report issue button', () => {
+    render(<SettingsPage />)
+    expect(screen.getByTestId('report-issue-button')).toBeDefined()
+    expect(screen.getByText('Report an issue')).toBeDefined()
+  })
+
+  it('navigates to report issue page', () => {
+    render(<SettingsPage />)
+    fireEvent.click(screen.getByTestId('report-issue-button'))
+    expect(mockNavigate).toHaveBeenCalledWith('/report-issue')
+  })
+
   it('shows about section', () => {
     render(<SettingsPage />)
     expect(screen.getByText('Version 1.0.0')).toBeDefined()

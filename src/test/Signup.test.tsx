@@ -161,7 +161,6 @@ describe('Signup screen', () => {
     await user.click(screen.getByTestId('submit-button'))
     expect(mockSignInWithOtp).toHaveBeenCalledWith({
       email: 'maya@ucdavis.edu',
-      options: { emailRedirectTo: expect.stringContaining('/auth/callback') as string },
     })
   })
 

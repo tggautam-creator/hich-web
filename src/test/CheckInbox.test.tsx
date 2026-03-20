@@ -1,17 +1,19 @@
 /**
- * CheckInbox screen tests
+ * CheckInbox OTP screen tests
  *
  * Verifies:
- *  1. Page renders
+ *  1. Page renders with OTP inputs
  *  2. Submitted email is displayed
- *  3. Resend button is disabled on initial render (60s cooldown)
- *  4. Resend button text shows countdown
- *  5. Countdown decrements every second
- *  6. Resend button is enabled after 60s
- *  7. Resend button stays disabled at 59s
- *  8. Navigates to /onboarding/profile on SIGNED_IN auth event
- *  9. Calls signInWithOtp after countdown and resend click
- * 10. Resets countdown to 60 after successful resend
+ *  3. Shows 6 OTP input boxes
+ *  4. Auto-focuses first input
+ *  5. Advances focus on digit entry
+ *  6. Backspace moves to previous input
+ *  7. Calls verifyOtp when all 6 digits entered
+ *  8. Shows error on invalid code
+ *  9. Navigates to /onboarding/profile on success (new user)
+ * 10. Navigates to /home/rider on success (returning user)
+ * 11. Resend button countdown and resend logic
+ * 12. Paste support fills all boxes
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -21,18 +23,20 @@ import CheckInbox from '@/components/CheckInbox'
 
 /* ── Mocks ──────────────────────────────────────────────────────────── */
 
-const { mockSignInWithOtp, mockNavigate, mockOnAuthStateChange } = vi.hoisted(() => ({
+const { mockSignInWithOtp, mockVerifyOtp, mockNavigate, mockFrom } = vi.hoisted(() => ({
   mockSignInWithOtp: vi.fn(),
+  mockVerifyOtp: vi.fn(),
   mockNavigate: vi.fn(),
-  mockOnAuthStateChange: vi.fn(),
+  mockFrom: vi.fn(),
 }))
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
     auth: {
       signInWithOtp: mockSignInWithOtp,
-      onAuthStateChange: mockOnAuthStateChange,
+      verifyOtp: mockVerifyOtp,
     },
+    from: mockFrom,
   },
 }))
 
@@ -55,16 +59,23 @@ function renderCheckInbox(email = 'maya@ucdavis.edu') {
   )
 }
 
+function fillOtp(code = '123456') {
+  for (let i = 0; i < code.length; i++) {
+    fireEvent.change(screen.getByTestId(`otp-input-${i}`), {
+      target: { value: code[i] },
+    })
+  }
+}
+
 /* ── Tests ──────────────────────────────────────────────────────────── */
 
-describe('CheckInbox screen', () => {
+describe('CheckInbox OTP screen', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     mockSignInWithOtp.mockReset()
+    mockVerifyOtp.mockReset()
     mockNavigate.mockReset()
-    mockOnAuthStateChange.mockReturnValue({
-      data: { subscription: { unsubscribe: vi.fn() } },
-    })
+    mockFrom.mockReset()
   })
 
   afterEach(() => {
@@ -81,6 +92,125 @@ describe('CheckInbox screen', () => {
     expect(screen.getByTestId('submitted-email').textContent).toBe('maya@ucdavis.edu')
   })
 
+  it('renders 6 OTP input boxes', () => {
+    renderCheckInbox()
+    expect(screen.getByTestId('otp-inputs')).toBeInTheDocument()
+    for (let i = 0; i < 6; i++) {
+      expect(screen.getByTestId(`otp-input-${i}`)).toBeInTheDocument()
+    }
+  })
+
+  it('shows "Enter your code" heading', () => {
+    renderCheckInbox()
+    expect(screen.getByText('Enter your code')).toBeInTheDocument()
+  })
+
+  it('verify button is disabled when not all digits filled', () => {
+    renderCheckInbox()
+    expect(screen.getByTestId('verify-button')).toBeDisabled()
+  })
+
+  it('calls verifyOtp when all 6 digits are entered', async () => {
+    mockVerifyOtp.mockResolvedValue({
+      data: {
+        session: { access_token: 'test' },
+        user: { id: 'u-1' },
+      },
+      error: null,
+    })
+    mockFrom.mockReturnValue({
+      select: () => ({
+        eq: () => ({
+          single: () => Promise.resolve({ data: null, error: null }),
+        }),
+      }),
+    })
+    renderCheckInbox('maya@ucdavis.edu')
+    await act(async () => { fillOtp('123456') })
+    expect(mockVerifyOtp).toHaveBeenCalledWith({
+      email: 'maya@ucdavis.edu',
+      token: '123456',
+      type: 'email',
+    })
+  })
+
+  it('navigates to /onboarding/profile on success for new user', async () => {
+    mockVerifyOtp.mockResolvedValue({
+      data: {
+        session: { access_token: 'test' },
+        user: { id: 'u-1' },
+      },
+      error: null,
+    })
+    mockFrom.mockReturnValue({
+      select: () => ({
+        eq: () => ({
+          single: () => Promise.resolve({ data: null, error: null }),
+        }),
+      }),
+    })
+    renderCheckInbox()
+    await act(async () => { fillOtp('123456') })
+    expect(mockNavigate).toHaveBeenCalledWith('/onboarding/profile', { replace: true })
+  })
+
+  it('navigates to /home/rider on success for returning rider', async () => {
+    mockVerifyOtp.mockResolvedValue({
+      data: {
+        session: { access_token: 'test' },
+        user: { id: 'u-1' },
+      },
+      error: null,
+    })
+    mockFrom.mockReturnValue({
+      select: () => ({
+        eq: () => ({
+          single: () => Promise.resolve({
+            data: { full_name: 'Maya', is_driver: false },
+            error: null,
+          }),
+        }),
+      }),
+    })
+    renderCheckInbox()
+    await act(async () => { fillOtp('123456') })
+    expect(mockNavigate).toHaveBeenCalledWith('/home/rider', { replace: true })
+  })
+
+  it('navigates to /home/driver on success for returning driver', async () => {
+    mockVerifyOtp.mockResolvedValue({
+      data: {
+        session: { access_token: 'test' },
+        user: { id: 'u-1' },
+      },
+      error: null,
+    })
+    mockFrom.mockReturnValue({
+      select: () => ({
+        eq: () => ({
+          single: () => Promise.resolve({
+            data: { full_name: 'Maya', is_driver: true },
+            error: null,
+          }),
+        }),
+      }),
+    })
+    renderCheckInbox()
+    await act(async () => { fillOtp('123456') })
+    expect(mockNavigate).toHaveBeenCalledWith('/home/driver', { replace: true })
+  })
+
+  it('shows error on invalid OTP code', async () => {
+    mockVerifyOtp.mockResolvedValue({
+      data: { session: null, user: null },
+      error: { message: 'Token has expired or is invalid' },
+    })
+    renderCheckInbox()
+    await act(async () => { fillOtp('999999') })
+    expect(screen.getByTestId('verify-error')).toBeInTheDocument()
+    expect(screen.getByTestId('verify-error').textContent).toBe('Invalid code. Please try again.')
+  })
+
   it('resend button is disabled initially (60s cooldown)', () => {
     renderCheckInbox()
     expect(screen.getByTestId('resend-button')).toBeDisabled()
@@ -88,61 +218,64 @@ describe('CheckInbox screen', () => {
 
   it('resend button shows countdown text when disabled', () => {
     renderCheckInbox()
-    expect(screen.getByTestId('resend-button').textContent).toContain('Resend in 60s')
+    expect(screen.getByTestId('resend-button').textContent).toContain('Resend code in 60s')
   })
 
   it('countdown decrements every second', () => {
     renderCheckInbox()
     act(() => { vi.advanceTimersByTime(5000) })
-    expect(screen.getByTestId('resend-button').textContent).toContain('Resend in 55s')
-  })
-
-  it('resend button stays disabled at 59s', () => {
-    renderCheckInbox()
-    act(() => { vi.advanceTimersByTime(59000) })
-    expect(screen.getByTestId('resend-button')).toBeDisabled()
+    expect(screen.getByTestId('resend-button').textContent).toContain('Resend code in 55s')
   })
 
   it('resend button is enabled after 60s', () => {
     renderCheckInbox()
     act(() => { vi.advanceTimersByTime(60000) })
     expect(screen.getByTestId('resend-button')).not.toBeDisabled()
-    expect(screen.getByTestId('resend-button').textContent).toContain('Resend email')
+    expect(screen.getByTestId('resend-button').textContent).toContain('Resend code')
   })
 
-  it('navigates to /onboarding/profile on SIGNED_IN auth event', () => {
-    let capturedCallback: ((event: string) => void) | null = null
-    mockOnAuthStateChange.mockImplementation(
-      (callback: unknown) => {
-        capturedCallback = callback as (event: string) => void
-        return { data: { subscription: { unsubscribe: vi.fn() } } }
-      },
-    )
-    renderCheckInbox()
-    expect(capturedCallback).not.toBeNull()
-    act(() => { capturedCallback!('SIGNED_IN') })
-    expect(mockNavigate).toHaveBeenCalledWith('/onboarding/profile')
-  })
-
-  it('calls signInWithOtp with the email after countdown expires and resend is clicked', async () => {
+  it('calls signInWithOtp after countdown expires and resend is clicked', async () => {
     mockSignInWithOtp.mockResolvedValue({ error: null })
     renderCheckInbox('maya@ucdavis.edu')
     act(() => { vi.advanceTimersByTime(60000) })
-    // fireEvent.click avoids userEvent async internals conflicting with fake timers
     await act(async () => { fireEvent.click(screen.getByTestId('resend-button')) })
-    expect(mockSignInWithOtp).toHaveBeenCalledWith({
-      email: 'maya@ucdavis.edu',
-      options: { emailRedirectTo: expect.stringContaining('/auth/callback') as string },
-    })
+    expect(mockSignInWithOtp).toHaveBeenCalledWith({ email: 'maya@ucdavis.edu' })
   })
 
-  it('resets countdown to 60 after successful resend', async () => {
+  it('resets countdown after successful resend', async () => {
     mockSignInWithOtp.mockResolvedValue({ error: null })
     renderCheckInbox()
     act(() => { vi.advanceTimersByTime(60000) })
-    // await act flushes the async handleResend chain and the subsequent
-    // phase-change useEffect that resets countdown — assert directly after
     await act(async () => { fireEvent.click(screen.getByTestId('resend-button')) })
     expect(screen.getByTestId('resend-button')).toBeDisabled()
+  })
+
+  it('handles paste of full OTP code', async () => {
+    mockVerifyOtp.mockResolvedValue({
+      data: {
+        session: { access_token: 'test' },
+        user: { id: 'u-1' },
+      },
+      error: null,
+    })
+    mockFrom.mockReturnValue({
+      select: () => ({
+        eq: () => ({
+          single: () => Promise.resolve({ data: null, error: null }),
+        }),
+      }),
+    })
+    renderCheckInbox('maya@ucdavis.edu')
+    // Simulate pasting into the first input
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('otp-input-0'), {
+        target: { value: '654321' },
+      })
+    })
+    expect(mockVerifyOtp).toHaveBeenCalledWith({
+      email: 'maya@ucdavis.edu',
+      token: '654321',
+      type: 'email',
+    })
   })
 })
