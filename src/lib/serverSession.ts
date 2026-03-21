@@ -15,23 +15,29 @@ import { authLog } from '@/lib/authLogger'
  * Called after every auth state change (login, token refresh).
  */
 export async function syncSessionToServer(session: Session): Promise<boolean> {
-  try {
-    const res = await fetch('/api/auth/session', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
-      },
-      body: JSON.stringify({ refresh_token: session.refresh_token }),
-      credentials: 'include',
-      cache: 'no-store',
-    })
-    authLog('serverCookie', 'syncSessionToServer', res.ok, `status=${res.status}`)
-    return res.ok
-  } catch (err) {
-    authLog('serverCookie', 'syncSessionToServer', false, String(err))
-    return false
+  // Retry up to 2 times — if the first attempt fails (network blip, server cold start),
+  // a second attempt 2s later usually succeeds. Without this, the cookie never gets saved
+  // and force-killing the PWA means zero recovery path.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch('/api/auth/session', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ refresh_token: session.refresh_token }),
+        credentials: 'include',
+        cache: 'no-store',
+      })
+      authLog('serverCookie', 'syncSessionToServer', res.ok, `status=${res.status} attempt=${attempt + 1}`)
+      if (res.ok) return true
+    } catch (err) {
+      authLog('serverCookie', 'syncSessionToServer', false, `attempt=${attempt + 1} ${String(err)}`)
+    }
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 2000))
   }
+  return false
 }
 
 /**

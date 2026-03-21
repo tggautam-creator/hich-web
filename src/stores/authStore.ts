@@ -128,6 +128,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       return false
     }
 
+    // Guard: prevent concurrent recovery attempts from consuming retry budget
+    let recoveryInProgress = false
+
     // Subscribe to future auth-state changes (token refresh, sign-out, new sign-in)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
@@ -136,49 +139,59 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         if (session?.user) {
           // Reset counter so future losses can try recovery again
           recoveryCount = 0
+          recoveryInProgress = false
           // Persist refresh token across multiple layers for iOS PWA survival
           void syncSessionToServer(session)     // Layer: server HTTP-only cookie
           void cacheRefreshToken(session.refresh_token)  // Layer: Cache Storage
           void requestPersistentStorage()        // Ask iOS to keep our data
-          // Silently refresh profile; isLoading stays false (already initialised)
+          // Load/refresh profile — sets isLoading: false when done
           void get().refreshProfile()
         } else if (event === 'SIGNED_OUT') {
           // Explicit sign-out — don't try recovery
+          recoveryInProgress = false
           set({ profile: null, isDriver: false })
         } else if (event === 'INITIAL_SESSION') {
           // No session on cold start — trigger recovery from server cookie / CacheStorage.
-          // This is the SINGLE recovery entry point (not duplicated in getSession().then()).
+          // This is the SINGLE path that resolves isLoading for the no-session case.
+          if (recoveryInProgress) return
+          recoveryInProgress = true
           authLog('recovery', 'INITIAL_SESSION with no session — starting recovery', true)
-          void attemptRecovery().then((recovered) => {
+          attemptRecovery().then((recovered) => {
             if (!recovered) {
               authLog('recovery', 'cold-start recovery failed', false)
               set({ profile: null, isDriver: false, isLoading: false })
             }
+          }).catch((err: unknown) => {
+            authLog('recovery', 'cold-start recovery threw', false, String(err))
+            set({ profile: null, isDriver: false, isLoading: false })
+          }).finally(() => {
+            recoveryInProgress = false
           })
         } else {
           // Session lost unexpectedly (auto-refresh failed, stale tokens)
+          if (recoveryInProgress) return
+          recoveryInProgress = true
           authLog('recovery', `session lost unexpectedly (event=${event})`, false)
-          void attemptRecovery().then((recovered) => {
+          attemptRecovery().then((recovered) => {
             if (!recovered) {
               set({ profile: null, isDriver: false, isLoading: false })
             }
+          }).catch((err: unknown) => {
+            authLog('recovery', 'unexpected-loss recovery threw', false, String(err))
+            set({ profile: null, isDriver: false, isLoading: false })
+          }).finally(() => {
+            recoveryInProgress = false
           })
         }
       },
     )
 
-    // Load the current session from client-side storage.
-    // Recovery is handled by onAuthStateChange(INITIAL_SESSION) above — NOT here.
-    // This avoids the race condition where two concurrent attemptRecovery() calls
-    // would consume the retry budget and set isLoading: false prematurely.
+    // Kick Supabase's internal _initialize() which fires INITIAL_SESSION above.
+    // Do NOT call refreshProfile() here — onAuthStateChange is the single gatekeeper
+    // for isLoading. Calling it here would race: if the stored session is stale,
+    // refreshProfile() could set isLoading: false before recovery has a chance to run.
     void supabase.auth.getSession().then(({ data: { session } }) => {
       authLog('supabaseAuth', 'getSession', session !== null, session ? 'session found in storage' : 'no session in storage')
-      if (session) {
-        set({ session, user: session.user })
-        void get().refreshProfile()  // sets isLoading: false when done
-      }
-      // If no session: onAuthStateChange(INITIAL_SESSION, null) handles recovery.
-      // Do NOT set isLoading: false here — that would race with recovery.
     })
 
     // Re-validate session when app resumes (tab focus, phone unlock, PWA foreground)

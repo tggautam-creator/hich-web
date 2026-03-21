@@ -19,6 +19,10 @@ import { errorHandler } from './middleware/errorHandler.ts'
 
 export const app = express()
 
+// Trust first proxy (e.g. ALB / CloudFront / nginx) so express-rate-limit
+// and req.ip use the real client IP from X-Forwarded-For
+app.set('trust proxy', 1)
+
 // CORS — allow Vercel production, preview deploys, and localhost dev
 const ALLOWED_ORIGINS = [
   /^https:\/\/.*\.vercel\.app$/,
