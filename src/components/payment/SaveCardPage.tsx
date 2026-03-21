@@ -40,7 +40,8 @@ function SaveCardForm() {
       })
 
       if (!res.ok) {
-        setError('Failed to initialize card setup')
+        const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } }
+        setError(body.error?.message ?? 'Failed to initialize card setup')
         return
       }
 
