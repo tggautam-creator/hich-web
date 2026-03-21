@@ -47,7 +47,7 @@ authRouter.post('/session', validateJwt, (req: Request, res: Response) => {
     return
   }
   if (refreshToken.length < 20) {
-    console.warn(`[auth/session POST] Refusing to store suspiciously short refresh token (${refreshToken.length} chars)`)
+    console.warn(`[auth/session POST] Refusing to store suspiciously short refresh token (${refreshToken.length} chars): value="${refreshToken}"`)
     res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'refresh_token too short' } })
     return
   }
