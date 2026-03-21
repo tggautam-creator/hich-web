@@ -12,12 +12,12 @@ module.exports = {
   apps: [
     {
       name: 'hich-server',
-      script: 'server/index.ts',
-      interpreter: 'tsx',
+      script: './node_modules/.bin/tsx',
+      args: 'server/index.ts',
 
-      // Cluster mode: one worker per CPU core (EC2 t3.small = 2 cores)
-      instances: 'max',
-      exec_mode: 'cluster',
+      // Fork mode required when using tsx as the script
+      instances: 1,
+      exec_mode: 'fork',
 
       // Restart policy
       max_restarts: 10,
