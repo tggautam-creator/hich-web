@@ -10,13 +10,20 @@ import EmergencySheet from '@/components/ui/EmergencySheet'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
 import AppIcon from '@/components/ui/AppIcon'
+import { calculateFare, formatCents } from '@/lib/fare'
 import type { Ride, User, GeoPoint } from '@/types/database'
 
 // Transit info from a transit_dropoff_suggestion message
 interface TransitBannerData {
   station_name: string
-  transit_options: Array<{ icon: string; line_name: string; departure_stop?: string; arrival_stop?: string; duration_minutes?: number; total_minutes: number }>
+  transit_options: Array<{ icon: string; line_name: string; type?: string; departure_stop?: string; arrival_stop?: string; duration_minutes?: number; total_minutes: number }>
   total_rider_minutes: number
+  ride_with_driver_minutes: number
+  walk_to_station_minutes: number
+  transit_to_dest_minutes: number
+  rider_progress_pct: number
+  full_transit_minutes: number
+  ride_distance_km: number
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -96,23 +103,30 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
         if (vehicleData) setVehicle(vehicleData)
       }
 
-      // Check for transit dropoff suggestion in messages (non-fatal)
+      // Check for the LATEST dropoff-related message. Only show transit journey
+      // if the final agreed message is a transit_dropoff_suggestion (not a manual counter).
       try {
-        const { data: transitMsg } = await supabase
+        const { data: latestDropoff } = await supabase
           .from('messages')
-          .select('meta')
+          .select('type, meta')
           .eq('ride_id', rideId as string)
-          .eq('type', 'transit_dropoff_suggestion')
+          .in('type', ['transit_dropoff_suggestion', 'dropoff_suggestion'])
           .order('created_at', { ascending: false })
           .limit(1)
           .single()
 
-        if (transitMsg?.meta) {
-          const m = transitMsg.meta as Record<string, unknown>
+        if (latestDropoff?.type === 'transit_dropoff_suggestion' && latestDropoff.meta) {
+          const m = latestDropoff.meta as Record<string, unknown>
           setTransitBanner({
             station_name: (m['station_name'] as string) ?? 'Transit Station',
-            transit_options: (m['transit_options'] as Array<{ icon: string; line_name: string; departure_stop?: string; arrival_stop?: string; duration_minutes?: number; total_minutes: number }>) ?? [],
+            transit_options: (m['transit_options'] as TransitBannerData['transit_options']) ?? [],
             total_rider_minutes: (m['total_rider_minutes'] as number) ?? 0,
+            ride_with_driver_minutes: (m['ride_with_driver_minutes'] as number) ?? 0,
+            walk_to_station_minutes: (m['walk_to_station_minutes'] as number) ?? 0,
+            transit_to_dest_minutes: (m['transit_to_dest_minutes'] as number) ?? 0,
+            rider_progress_pct: (m['rider_progress_pct'] as number) ?? 0,
+            full_transit_minutes: (m['full_transit_minutes'] as number) ?? 0,
+            ride_distance_km: (m['ride_distance_km'] as number) ?? 0,
           })
         }
       } catch {
@@ -521,40 +535,102 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
 
       {/* ── Bottom section (fixed at bottom, map fills remaining) ──── */}
 
-      {/* ── Transit banner ─────────────────────────────────────────────── */}
-      {transitBanner && (
-        <div data-testid="transit-banner" className="px-4 py-3 bg-primary/5 border-t border-border shrink-0">
-          <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">
-            After dropoff — continue via transit
-          </p>
-          <p className="text-sm font-semibold text-text-primary mb-1">
-            {transitBanner.station_name}
-          </p>
-          <div className="space-y-1 mt-1">
-            {transitBanner.transit_options.slice(0, 3).map((opt, idx) => (
-              <div key={`${opt.line_name}-${idx}`} className="flex items-center gap-1.5 text-[10px]">
-                <span className="shrink-0 rounded bg-primary/10 px-1 py-0.5 font-semibold text-primary">{opt.icon}</span>
-                <span className="font-semibold text-text-primary shrink-0">{opt.line_name}</span>
-                {opt.departure_stop && opt.arrival_stop ? (
-                  <>
-                    <span className="text-text-secondary truncate">{opt.departure_stop} → {opt.arrival_stop}</span>
-                    {opt.duration_minutes != null && (
-                      <span className="shrink-0 text-text-secondary">· {opt.duration_minutes} min</span>
-                    )}
-                  </>
-                ) : (
-                  <span className="text-text-secondary">{opt.total_minutes} min</span>
-                )}
-              </div>
-            ))}
-          </div>
-          {transitBanner.total_rider_minutes > 0 && (
-            <p className="text-[10px] text-text-secondary mt-1">
-              ~{transitBanner.total_rider_minutes} min to your destination
+      {/* ── Transit journey breakdown ─────────────────────────────────── */}
+      {transitBanner && (() => {
+        const rideMin = transitBanner.ride_with_driver_minutes
+        const rideDistKm = transitBanner.ride_distance_km || (rideMin > 0 ? (rideMin / 60) * 80 : 0)
+        const rideFare = rideDistKm > 0 ? calculateFare(rideDistKm, rideMin) : null
+        const totalJourney = Math.max(
+          transitBanner.total_rider_minutes,
+          rideMin + transitBanner.walk_to_station_minutes + transitBanner.transit_to_dest_minutes,
+        )
+        const savedMinutes = (transitBanner.full_transit_minutes > totalJourney)
+          ? transitBanner.full_transit_minutes - totalJourney
+          : 0
+
+        return (
+          <div data-testid="transit-banner" className="px-4 py-3 bg-primary/5 border-t border-border shrink-0">
+            <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">
+              After dropoff — continue via transit
             </p>
-          )}
-        </div>
-      )}
+            <p className="text-sm font-semibold text-text-primary mb-0.5">
+              {transitBanner.station_name}
+            </p>
+            {transitBanner.rider_progress_pct > 0 && (
+              <div className="flex items-center gap-2 mb-2">
+                <div className="flex-1 h-1.5 rounded-full bg-border overflow-hidden">
+                  <div className="h-full rounded-full bg-success" style={{ width: `${transitBanner.rider_progress_pct}%` }} />
+                </div>
+                <span className="text-[10px] font-medium text-success shrink-0">{transitBanner.rider_progress_pct}% of the way</span>
+              </div>
+            )}
+
+            <p className="text-[9px] font-semibold text-text-secondary uppercase tracking-wider mt-2 mb-1.5">Your journey</p>
+
+            <div className="flex items-start gap-2 mb-1.5">
+              <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-[#4F46E5] shrink-0" />
+              <p className="text-[10px] min-w-0">
+                <span className="font-semibold text-text-primary">Driver drops you at {transitBanner.station_name}</span>
+                {rideMin > 0 && <span className="text-text-secondary"> · ~{rideMin} min</span>}
+              </p>
+            </div>
+
+            {transitBanner.walk_to_station_minutes > 0 && (
+              <div className="flex items-start gap-2 mb-1.5">
+                <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-text-secondary/40 shrink-0" />
+                <span className="text-[10px] text-text-secondary">
+                  Walk to {transitBanner.station_name} station · ~{transitBanner.walk_to_station_minutes} min
+                </span>
+              </div>
+            )}
+
+            {transitBanner.transit_options.filter(o => o.type !== 'WALKING').length > 0 ? (
+              transitBanner.transit_options.filter(o => o.type !== 'WALKING').map((opt, idx) => (
+                <div key={`transit-${idx}`} className="flex items-start gap-2 mb-1.5 overflow-hidden">
+                  <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-[#10B981] shrink-0" />
+                  <div className="min-w-0 flex-1 text-[10px]">
+                    <div className="flex items-baseline gap-1">
+                      <span className="font-semibold text-text-primary shrink-0">{opt.line_name}</span>
+                      {opt.duration_minutes != null && opt.duration_minutes > 0 && (
+                        <span className="text-text-secondary shrink-0">· {opt.duration_minutes} min</span>
+                      )}
+                    </div>
+                    {opt.departure_stop && opt.arrival_stop && (
+                      <p className="text-text-secondary truncate">{opt.departure_stop} → {opt.arrival_stop}</p>
+                    )}
+                  </div>
+                </div>
+              ))
+            ) : transitBanner.transit_to_dest_minutes > 0 ? (
+              <div className="flex items-start gap-2 mb-1.5">
+                <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-[#10B981] shrink-0" />
+                <div className="text-[10px]">
+                  <span className="font-semibold text-text-primary">Transit to your destination</span>
+                  <span className="text-text-secondary ml-1">~{transitBanner.transit_to_dest_minutes} min</span>
+                </div>
+              </div>
+            ) : null}
+
+            {rideFare && (
+              <div className="border-t border-border pt-1.5 mt-1.5 flex items-center justify-between text-[10px]">
+                <span className="text-text-secondary">Estimated ride fare</span>
+                <span className="font-semibold text-text-primary">~{formatCents(rideFare.fare_cents)}</span>
+              </div>
+            )}
+
+            <div className={`${!rideFare ? 'border-t border-border mt-1.5' : ''} pt-1.5 flex items-center justify-between text-[10px]`}>
+              <span className="font-semibold text-text-primary">
+                Total: ~{totalJourney} min
+              </span>
+              {savedMinutes > 0 && (
+                <span className="font-semibold text-success text-[9px]">
+                  {savedMinutes} min faster than public transit
+                </span>
+              )}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* ── Driver + Vehicle info ────────────────────────────────────── */}
       {driver && (

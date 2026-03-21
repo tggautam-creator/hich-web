@@ -654,12 +654,16 @@ ridesRouter.patch(
         realtimeBroadcast(channelName, 'ride_cancelled', {
           type: 'ride_cancelled', ride_id: rideId, cancelled_by: cancellerRole,
         }),
-        // Also notify rider-pickup page if rider is on "Walk to Pickup" screen
+        // Also notify pickup pages if rider/driver is on navigation screen
         ...(cancellerRole === 'driver' ? [
           realtimeBroadcast(`rider-pickup:${otherUserId}`, 'ride_cancelled', {
             type: 'ride_cancelled', ride_id: rideId, cancelled_by: cancellerRole,
           }),
-        ] : []),
+        ] : [
+          realtimeBroadcast(`driver-pickup:${otherUserId}`, 'ride_cancelled', {
+            type: 'ride_cancelled', ride_id: rideId, cancelled_by: cancellerRole,
+          }),
+        ]),
         realtimeBroadcast(`myrides:${otherUserId}`, 'ride_status_changed', {
           ride_id: rideId, status: 'cancelled',
         }),
@@ -3289,6 +3293,7 @@ ridesRouter.post(
       rider_progress_pct,
       ride_with_driver_minutes,
       full_transit_minutes,
+      ride_distance_km,
     } = req.body as {
       station_name?: string
       station_lat?: number
@@ -3303,6 +3308,7 @@ ridesRouter.post(
       rider_progress_pct?: number | null
       ride_with_driver_minutes?: number | null
       full_transit_minutes?: number | null
+      ride_distance_km?: number | null
     }
 
     if (
@@ -3396,6 +3402,7 @@ ridesRouter.post(
           transit_polyline: transit_polyline ?? null,
           rider_progress_pct: rider_progress_pct ?? null,
           ride_with_driver_minutes: ride_with_driver_minutes ?? null,
+          ride_distance_km: ride_distance_km ?? null,
           full_transit_minutes: full_transit_minutes ?? null,
           pickup_lat: rideOrigin?.coordinates?.[1] ?? null,
           pickup_lng: rideOrigin?.coordinates?.[0] ?? null,

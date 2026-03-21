@@ -94,19 +94,20 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
 
       if (riderData) setRider(riderData)
 
-      // Check for transit dropoff suggestion (non-fatal)
+      // Check for the LATEST dropoff-related message. Only show transit banner
+      // if the final agreed message is a transit_dropoff_suggestion (not a manual counter).
       try {
-        const { data: transitMsg } = await supabase
+        const { data: latestDropoff } = await supabase
           .from('messages')
-          .select('meta')
+          .select('type, meta')
           .eq('ride_id', rideId as string)
-          .eq('type', 'transit_dropoff_suggestion')
+          .in('type', ['transit_dropoff_suggestion', 'dropoff_suggestion'])
           .order('created_at', { ascending: false })
           .limit(1)
           .single()
 
-        if (transitMsg?.meta) {
-          const m = transitMsg.meta as Record<string, unknown>
+        if (latestDropoff?.type === 'transit_dropoff_suggestion' && latestDropoff.meta) {
+          const m = latestDropoff.meta as Record<string, unknown>
           setTransitBanner({
             station_name: (m['station_name'] as string) ?? 'Transit Station',
             transit_options: (m['transit_options'] as TransitBannerData['transit_options']) ?? [],

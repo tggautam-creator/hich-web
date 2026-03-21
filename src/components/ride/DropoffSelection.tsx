@@ -242,6 +242,7 @@ export default function DropoffSelection({
           transit_polyline: suggestion.transit_polyline ?? null,
           rider_progress_pct: suggestion.rider_progress_pct ?? null,
           ride_with_driver_minutes: suggestion.ride_with_driver_minutes ?? null,
+          ride_distance_km: suggestion.ride_distance_km ?? null,
           full_transit_minutes: suggestion.full_transit_minutes ?? null,
         }),
       })

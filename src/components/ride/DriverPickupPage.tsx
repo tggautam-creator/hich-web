@@ -58,6 +58,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const [toastType, setToastType] = useState<'error' | 'success'>('error')
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [cancelledMsg, setCancelledMsg] = useState<string | null>(null)
 
   // Rider position (from ride origin)
   const riderPos = useMemo(() => ride?.origin
@@ -200,6 +201,12 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
       .channel(`driver-pickup:${profile.id}`)
       .on('broadcast', { event: 'ride_started' }, () => {
         navigate(`/ride/active-driver/${rideId}`, { replace: true })
+      })
+      .on('broadcast', { event: 'ride_cancelled' }, (msg) => {
+        const payload = msg.payload as { ride_id?: string }
+        if (payload.ride_id && payload.ride_id !== rideId) return
+        setCancelledMsg('The rider cancelled the ride. We apologize for the inconvenience.')
+        setTimeout(() => navigate('/home/driver', { replace: true }), 3000)
       })
       .subscribe()
 
@@ -616,6 +623,18 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
   // ── Pin Dropper View (pickup not yet confirmed) ────────────────────────
   return (
     <div data-testid={testId ?? 'driver-pickup-page'} className="flex min-h-dvh flex-col bg-white font-sans">
+
+      {/* ── Cancellation overlay ──────────────────────────────────────────── */}
+      {cancelledMsg && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="mx-6 rounded-2xl bg-white p-6 text-center shadow-xl">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-danger/10">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6 text-danger"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            </div>
+            <p className="text-base font-semibold text-text-primary">{cancelledMsg}</p>
+          </div>
+        </div>
+      )}
 
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div
