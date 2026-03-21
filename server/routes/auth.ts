@@ -41,14 +41,8 @@ function cookieOpts() {
  */
 authRouter.post('/session', validateJwt, (req: Request, res: Response) => {
   const refreshToken = req.body?.refresh_token
-  console.log(`[auth/session POST] body keys=${Object.keys(req.body ?? {}).join(',')} refresh_token type=${typeof refreshToken} length=${typeof refreshToken === 'string' ? refreshToken.length : 'N/A'}`)
   if (!refreshToken || typeof refreshToken !== 'string') {
     res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'refresh_token required' } })
-    return
-  }
-  if (refreshToken.length < 20) {
-    console.warn(`[auth/session POST] Refusing to store suspiciously short refresh token (${refreshToken.length} chars): value="${refreshToken}"`)
-    res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'refresh_token too short' } })
     return
   }
 

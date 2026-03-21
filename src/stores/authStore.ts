@@ -135,10 +135,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
         authLog('supabaseAuth', `onAuthStateChange: ${event}`, session !== null)
-        if (session) {
-          const rt = session.refresh_token
-          authLog('supabaseAuth', `refresh_token length=${rt?.length} first4=${rt?.slice(0, 4)} last4=${rt?.slice(-4)} event=${event}`, true)
-        }
         set({ session, user: session?.user ?? null })
         if (session?.user) {
           // Reset counter so future losses can try recovery again
