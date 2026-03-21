@@ -14,6 +14,7 @@ import { paymentRouter } from './routes/payment.ts'
 import { stripeWebhookRouter } from './routes/stripeWebhook.ts'
 import { safetyRouter } from './routes/safety.ts'
 import { authRouter } from './routes/auth.ts'
+import { gasPriceRouter } from './routes/gasPrice.ts'
 import { errorHandler } from './middleware/errorHandler.ts'
 
 export const app = express()
@@ -66,5 +67,6 @@ app.use('/api/connect', connectRouter)
 app.use('/api/payment', paymentRouter)
 app.use('/api/safety', safetyRouter)
 app.use('/api/auth', authRouter)
+app.use('/api/gas-price', gasPriceRouter)
 
 app.use(errorHandler)

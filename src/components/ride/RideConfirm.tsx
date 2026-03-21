@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { calculateFareRange, formatCents, type FareRange } from '@/lib/fare'
+import { calculateFareRange, formatCents, type FareRange, DEFAULT_GAS_PRICE_PER_GALLON } from '@/lib/fare'
 import type { PlaceSuggestion } from '@/lib/places'
 import { supabase } from '@/lib/supabase'
 import { trackEvent } from '@/lib/analytics'
+import { parseStateFromSecondaryText, fetchGasPrice } from '@/lib/gasPrice'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -38,6 +39,7 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
   const [isSubmitting, setSubmitting] = useState(false)
   const [showBreakdown, setShowBreakdown] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [gasPrice, setGasPrice] = useState<number>(DEFAULT_GAS_PRICE_PER_GALLON)
 
   // Payment method state
   interface CardInfo { id: string; brand: string; last4: string; is_default: boolean }
@@ -63,6 +65,16 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
 
   useEffect(() => { void fetchCards() }, [fetchCards])
 
+  // Fetch current gas price based on destination state
+  useEffect(() => {
+    if (!state?.destination) return
+    const stateAbbrev = parseStateFromSecondaryText(state.destination.secondaryText)
+    if (!stateAbbrev) return
+    void fetchGasPrice(stateAbbrev).then((price) => {
+      if (price != null) setGasPrice(price)
+    })
+  }, [state?.destination])
+
   // Redirect if no destination in state
   useEffect(() => {
     if (!state?.destination) {
@@ -76,7 +88,7 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
   const distanceKm  = state.estimatedDistanceKm ?? DEFAULT_DISTANCE_KM
   const durationMin = state.estimatedDurationMin ?? DEFAULT_DURATION_MIN
   const hasRealEstimates = state.estimatedDistanceKm != null
-  const fareRange: FareRange = calculateFareRange(distanceKm, durationMin)
+  const fareRange: FareRange = calculateFareRange(distanceKm, durationMin, undefined, gasPrice)
 
   const isSingleFare = fareRange.low.fare_cents === fareRange.high.fare_cents
   const fareDisplay  = isSingleFare
