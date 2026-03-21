@@ -74,6 +74,7 @@ export default function RideSuggestion({
   // True when the driver already has a pending (reverted-from-standby) offer with destination set
   const [isRenewalOffer, setIsRenewalOffer] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sessionTokenRef = useRef(crypto.randomUUID())
   const routineAutoFilled = useRef(false)
 
   // ── Fetch ride + rider ────────────────────────────────────────────────────
@@ -402,7 +403,7 @@ export default function RideSuggestion({
       return
     }
     debounceRef.current = setTimeout(() => {
-      void searchPlaces(val).then(setDriverDestResults)
+      void searchPlaces(val, sessionTokenRef.current).then(setDriverDestResults)
     }, 350)
   }
 
@@ -410,7 +411,9 @@ export default function RideSuggestion({
     setSelectedDriverDest(place)
     setDriverDestQuery(place.fullAddress)
     setDriverDestResults([])
-    const coords = await getPlaceCoordinates(place.placeId)
+    const coords = await getPlaceCoordinates(place.placeId, sessionTokenRef.current)
+    // End session — regenerate token for next search
+    sessionTokenRef.current = crypto.randomUUID()
     if (coords) {
       setDriverDestCoords(coords)
     }
@@ -438,10 +441,15 @@ export default function RideSuggestion({
     if (isNaN(oLat) || isNaN(oLng) || isNaN(dLat) || isNaN(dLng)) return
     if (oLat === dLat && oLng === dLng) return
 
-    // Fetch pickup → destination polyline
-    void getDirectionsByLatLng(oLat, oLng, dLat, dLng).then((result) => {
-      if (result?.polyline) setRidePolyline(result.polyline)
-    })
+    // Use stored polyline if available, otherwise fetch from API
+    const storedPolyline = (data.ride as Record<string, unknown>)['route_polyline'] as string | null
+    if (storedPolyline) {
+      setRidePolyline(storedPolyline)
+    } else {
+      void getDirectionsByLatLng(oLat, oLng, dLat, dLng).then((result) => {
+        if (result?.polyline) setRidePolyline(result.polyline)
+      })
+    }
   }, [data])
 
   // ── Fetch driver → pickup polyline once we have driver location ──────────

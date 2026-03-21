@@ -170,7 +170,7 @@ describe('DestinationSearch', () => {
       renderPage()
       fireEvent.change(screen.getByTestId('search-input'), { target: { value: 'UC Davis' } })
       act(() => { vi.advanceTimersByTime(300) })
-      expect(mockSearchPlaces).toHaveBeenCalledWith('UC Davis')
+      expect(mockSearchPlaces).toHaveBeenCalledWith('UC Davis', expect.any(String))
     })
 
     it('resets the timer if the user keeps typing (only one fetch for the final value)', () => {
@@ -178,8 +178,8 @@ describe('DestinationSearch', () => {
       fireEvent.change(screen.getByTestId('search-input'), { target: { value: 'U' } })
       fireEvent.change(screen.getByTestId('search-input'), { target: { value: 'UC Davis' } })
       act(() => { vi.advanceTimersByTime(600) })
-      expect(mockSearchPlaces).not.toHaveBeenCalledWith('U')
-      expect(mockSearchPlaces).toHaveBeenCalledWith('UC Davis')
+      expect(mockSearchPlaces).not.toHaveBeenCalledWith('U', expect.any(String))
+      expect(mockSearchPlaces).toHaveBeenCalledWith('UC Davis', expect.any(String))
     })
   })
 

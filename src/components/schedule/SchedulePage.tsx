@@ -87,6 +87,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
   const [fromLoading, setFromLoading] = useState(false)
   const [showFromDropdown, setShowFromDropdown] = useState(false)
   const fromInputRef = useRef<HTMLInputElement>(null)
+  const fromSessionTokenRef = useRef(crypto.randomUUID())
 
   // To location autocomplete state
   const [toQuery, setToQuery] = useState('')
@@ -94,6 +95,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
   const [toLoading, setToLoading] = useState(false)
   const [showToDropdown, setShowToDropdown] = useState(false)
   const toInputRef = useRef<HTMLInputElement>(null)
+  const toSessionTokenRef = useRef(crypto.randomUUID())
 
   // Validation state
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -109,7 +111,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
 
     const timer = setTimeout(() => {
       setFromLoading(true)
-      void searchPlaces(fromQuery).then((results) => {
+      void searchPlaces(fromQuery, fromSessionTokenRef.current).then((results) => {
         setFromSuggestions(results)
         setFromLoading(false)
       })
@@ -129,7 +131,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
 
     const timer = setTimeout(() => {
       setToLoading(true)
-      void searchPlaces(toQuery).then((results) => {
+      void searchPlaces(toQuery, toSessionTokenRef.current).then((results) => {
         setToSuggestions(results)
         setToLoading(false)
       })
@@ -256,9 +258,11 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
         const { data: { session } } = await supabase.auth.getSession()
         // BUG-051: Geocode places to get coordinates for proximity/bearing matching
         const [fromCoords, toCoords] = await Promise.all([
-          getPlaceCoordinates(fromLocation.placeId),
-          getPlaceCoordinates(toLocation.placeId),
+          getPlaceCoordinates(fromLocation.placeId, fromSessionTokenRef.current),
+          getPlaceCoordinates(toLocation.placeId, toSessionTokenRef.current),
         ])
+        fromSessionTokenRef.current = crypto.randomUUID()
+        toSessionTokenRef.current = crypto.randomUUID()
         await fetch('/api/schedule/notify', {
           method: 'POST',
           headers: {
@@ -339,9 +343,11 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
     try {
       // Geocode both places
       const [fromCoords, toCoords] = await Promise.all([
-        getPlaceCoordinates(fromLocation.placeId),
-        getPlaceCoordinates(toLocation.placeId),
+        getPlaceCoordinates(fromLocation.placeId, fromSessionTokenRef.current),
+        getPlaceCoordinates(toLocation.placeId, toSessionTokenRef.current),
       ])
+      fromSessionTokenRef.current = crypto.randomUUID()
+      toSessionTokenRef.current = crypto.randomUUID()
 
       if (!fromCoords || !toCoords) {
         setSubmitError('Could not determine coordinates for your locations.')

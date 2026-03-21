@@ -31,6 +31,7 @@ export default function DestinationSearch({ 'data-testid': testId }: Destination
   const originLng = locState?.originLng
 
   const inputRef = useRef<HTMLInputElement>(null)
+  const sessionTokenRef = useRef(crypto.randomUUID())
 
   const [query,        setQuery]        = useState('')
   const [suggestions,  setSuggestions]  = useState<PlaceSuggestion[]>([])
@@ -59,7 +60,7 @@ export default function DestinationSearch({ 'data-testid': testId }: Destination
 
     const timer = setTimeout(() => {
       setIsLoading(true)
-      void searchPlaces(query).then((results) => {
+      void searchPlaces(query, sessionTokenRef.current).then((results) => {
         setSuggestions(results)
         setIsLoading(false)
       })

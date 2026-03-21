@@ -11,7 +11,8 @@ import DriverDestinationCard from '@/components/ride/DriverDestinationCard'
 import TransitSuggestionCard, { TransitSuggestionPicker } from '@/components/ride/TransitSuggestionCard'
 import type { TransitDropoffSuggestion } from '@/components/ride/TransitSuggestionCard'
 import { MAP_ID } from '@/lib/mapConstants'
-import { MapBoundsFitter, DirectionsRoute } from '@/components/map/RoutePreview'
+import { MapBoundsFitter, RoutePolyline } from '@/components/map/RoutePreview'
+import { getDirectionsByLatLng } from '@/lib/directions'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -46,6 +47,7 @@ function PickupMiniMap({
   isRider: boolean; driverId?: string | null
 }) {
   const [walkMin, setWalkMin] = useState<number | null>(null)
+  const [walkPolyline, setWalkPolyline] = useState<string | null>(null)
   const [driveMin, setDriveMin] = useState<number | null>(null)
   const [driverLat, setDriverLat] = useState<number | null>(null)
   const [driverLng, setDriverLng] = useState<number | null>(null)
@@ -72,6 +74,27 @@ function PickupMiniMap({
   const driveOriginLng = driverLng ?? originLng
   const hasDriverLocation = driverLat != null && driverLng != null
 
+  // Fetch walking route via server-side Routes API
+  useEffect(() => {
+    void (async () => {
+      const result = await getDirectionsByLatLng(originLat, originLng, pickupLat, pickupLng, 'WALK')
+      if (result) {
+        setWalkMin(Math.max(1, Math.round(result.duration_min)))
+        setWalkPolyline(result.polyline)
+      }
+    })()
+  }, [originLat, originLng, pickupLat, pickupLng])
+
+  // Fetch driving route via server-side Routes API (invisible polyline, just for ETA)
+  useEffect(() => {
+    void (async () => {
+      const result = await getDirectionsByLatLng(driveOriginLat, driveOriginLng, pickupLat, pickupLng)
+      if (result) {
+        setDriveMin(Math.max(1, Math.round(result.duration_min)))
+      }
+    })()
+  }, [driveOriginLat, driveOriginLng, pickupLat, pickupLng])
+
   return (
     <>
       <div className="rounded-xl overflow-hidden mb-1.5" style={{ height: '120px' }}>
@@ -95,24 +118,10 @@ function PickupMiniMap({
               PICKUP
             </div>
           </AdvancedMarker>
-          {/* Walking route: rider → pickup */}
-          <DirectionsRoute
-            from={{ lat: originLat, lng: originLng }}
-            to={{ lat: pickupLat, lng: pickupLng }}
-            mode="WALKING"
-            color="#6366F1"
-            weight={3}
-            onResult={({ durationMin }) => setWalkMin(durationMin)}
-          />
-          {/* Driving route: driver → pickup */}
-          <DirectionsRoute
-            from={{ lat: driveOriginLat, lng: driveOriginLng }}
-            to={{ lat: pickupLat, lng: pickupLng }}
-            mode="DRIVING"
-            color="#22C55E"
-            weight={0}
-            onResult={({ durationMin }) => setDriveMin(durationMin)}
-          />
+          {/* Walking route polyline: rider → pickup */}
+          {walkPolyline && (
+            <RoutePolyline encodedPath={walkPolyline} color="#6366F1" weight={3} fitBounds={false} />
+          )}
           <MapBoundsFitter points={[
             { lat: originLat, lng: originLng },
             { lat: pickupLat, lng: pickupLng },

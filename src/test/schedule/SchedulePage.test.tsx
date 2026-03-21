@@ -312,7 +312,7 @@ describe('SchedulePage', () => {
     await user.type(input, 'UC Davis')
     
     await waitFor(() => {
-      expect(mockSearchPlaces).toHaveBeenCalledWith('UC Davis')
+      expect(mockSearchPlaces).toHaveBeenCalledWith('UC Davis', expect.any(String))
     }, { timeout: 1000 })
   })
 
@@ -375,7 +375,7 @@ describe('SchedulePage', () => {
     await user.type(input, 'San Francisco')
     
     await waitFor(() => {
-      expect(mockSearchPlaces).toHaveBeenCalledWith('San Francisco')
+      expect(mockSearchPlaces).toHaveBeenCalledWith('San Francisco', expect.any(String))
     }, { timeout: 1000 })
   })
 

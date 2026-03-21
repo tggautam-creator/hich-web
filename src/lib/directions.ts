@@ -63,6 +63,7 @@ export async function getDirectionsByLatLng(
   originLng: number,
   destLat: number,
   destLng: number,
+  mode?: 'DRIVE' | 'WALK',
 ): Promise<DirectionsResult | null> {
   try {
     const { data: { session } } = await supabase.auth.getSession()
@@ -75,6 +76,7 @@ export async function getDirectionsByLatLng(
       destLat: String(destLat),
       destLng: String(destLng),
     })
+    if (mode) params.set('mode', mode)
 
     const resp = await fetch(`/api/directions?${params.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },

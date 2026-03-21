@@ -125,6 +125,7 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
           destination_lng: state?.destinationLng,
           distance_km: distanceKm,
           estimated_fare_cents: fareRange.low.fare_cents,
+          route_polyline: state?.polyline,
         }),
       })
 

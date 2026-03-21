@@ -116,7 +116,7 @@ describe('database types — row aliases', () => {
       started_at: null, ended_at: null,
       created_at: new Date().toISOString(),
       schedule_id: null, trip_date: null, trip_time: null,
-      driver_destination: null, driver_destination_name: null, driver_route_polyline: null,
+      driver_destination: null, driver_destination_name: null, route_polyline: null, driver_route_polyline: null,
       payment_status: 'pending', payment_intent_id: null, stripe_fee_cents: 0,
     }
     expect(ride.fare_cents).not.toBeNull()

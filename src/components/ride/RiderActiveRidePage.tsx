@@ -150,7 +150,12 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
       const dLng = dest.coordinates[0]
 
       async function fetchActive() {
-        const result = await getDirectionsByLatLng(pLat, pLng, dLat, dLng)
+        // Use stored polyline if available, otherwise fetch from API
+        const storedPolyline = (ride as Record<string, unknown>)['route_polyline'] as string | null
+        if (storedPolyline) {
+          setRoutePolyline(storedPolyline)
+        }
+        const result = storedPolyline ? null : await getDirectionsByLatLng(pLat, pLng, dLat, dLng)
         if (result?.polyline) setRoutePolyline(result.polyline)
         if (result?.distance_km != null && !totalDistanceFetched.current) {
           setTotalDistanceKm(result.distance_km)

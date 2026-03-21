@@ -530,7 +530,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
                 <div className="flex items-center gap-2">
                   <div className="h-2 w-2 rounded-full bg-success shrink-0" />
                   <span className="text-text-primary truncate" data-testid="pickup-address">
-                    {ride.pickup_note ?? pickupAddress ?? 'Pickup point'}
+                    {pickupAddress ?? 'Pickup point'}
                   </span>
                 </div>
               )}

@@ -79,6 +79,7 @@ interface RideRequestBody {
   destination_lng?: number
   distance_km?: number
   estimated_fare_cents?: number
+  route_polyline?: string
 }
 
 function isGeoPoint(val: unknown): val is GeoPoint {
@@ -139,6 +140,7 @@ ridesRouter.post(
         destination: destinationGeo,
         destination_name: body.destination_name ?? null,
         destination_bearing: body.destination_bearing ?? null,
+        route_polyline: typeof body.route_polyline === 'string' ? body.route_polyline : null,
         status: 'requested',
       })
       .select('id')

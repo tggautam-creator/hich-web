@@ -30,6 +30,7 @@ export default function DriverDestinationCard({
   const [selectedPlace, setSelectedPlace] = useState<PlaceSuggestion | null>(null)
   const [suggestions, setSuggestions] = useState<TransitDropoffSuggestion[]>([])
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sessionTokenRef = useRef(crypto.randomUUID())
 
   // Auto-fill from driver routines on mount
   useEffect(() => {
@@ -65,7 +66,7 @@ export default function DriverDestinationCard({
 
     debounceRef.current = setTimeout(() => {
       setSearching(true)
-      void searchPlaces(val).then((r) => {
+      void searchPlaces(val, sessionTokenRef.current).then((r) => {
         setResults(r)
         setSearching(false)
       })
@@ -84,7 +85,9 @@ export default function DriverDestinationCard({
     setError(null)
 
     try {
-      const coords = await getPlaceCoordinates(selectedPlace.placeId)
+      const coords = await getPlaceCoordinates(selectedPlace.placeId, sessionTokenRef.current)
+      // End session — regenerate token for next search
+      sessionTokenRef.current = crypto.randomUUID()
       if (!coords) {
         setError('Could not resolve place coordinates')
         setSubmitting(false)

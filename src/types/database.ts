@@ -199,6 +199,7 @@ export type Database = {
           trip_time: string | null      // HH:MM:SS
           driver_destination: GeoPoint | null
           driver_destination_name: string | null
+          route_polyline: string | null           // encoded polyline, pickup → destination
           driver_route_polyline: string | null  // encoded polyline, driver origin → driver destination
           payment_status: string | null
           payment_intent_id: string | null
@@ -228,6 +229,7 @@ export type Database = {
           trip_time?: string | null
           driver_destination?: GeoPoint | null
           driver_destination_name?: string | null
+          route_polyline?: string | null
           driver_route_polyline?: string | null
           payment_status?: string | null
           payment_intent_id?: string | null
@@ -257,6 +259,7 @@ export type Database = {
           trip_time?: string | null
           driver_destination?: GeoPoint | null
           driver_destination_name?: string | null
+          route_polyline?: string | null
           driver_route_polyline?: string | null
           payment_status?: string | null
           payment_intent_id?: string | null

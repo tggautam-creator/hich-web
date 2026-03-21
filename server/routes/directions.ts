@@ -3,6 +3,20 @@ import { validateJwt } from '../middleware/auth.ts'
 
 export const directionsRouter = Router()
 
+// ── In-memory cache (10-min TTL) ──────────────────────────────────────────────
+const CACHE_TTL_MS = 10 * 60 * 1000
+const directionsCache = new Map<string, { data: Record<string, unknown>; ts: number }>()
+
+function getCacheKey(
+  oLat: number, oLng: number,
+  dLat: number, dLng: number,
+  placeId: string | undefined,
+  mode: string,
+): string {
+  const dest = placeId ?? `${dLat.toFixed(4)},${dLng.toFixed(4)}`
+  return `${oLat.toFixed(4)},${oLng.toFixed(4)}->${dest}:${mode}`
+}
+
 interface RoutesApiResponse {
   routes?: Array<{
     distanceMeters?: number
@@ -29,6 +43,8 @@ directionsRouter.get(
     const destPlaceId = req.query['destPlaceId'] as string | undefined
     const destLat = parseFloat(req.query['destLat'] as string)
     const destLng = parseFloat(req.query['destLng'] as string)
+    const modeParam = (req.query['mode'] as string | undefined)?.toUpperCase()
+    const travelMode = modeParam === 'WALK' ? 'WALK' : 'DRIVE'
 
     const hasLatLng = !isNaN(destLat) && !isNaN(destLng)
 
@@ -47,6 +63,14 @@ directionsRouter.get(
       return
     }
 
+    // Check cache
+    const cacheKey = getCacheKey(originLat, originLng, destLat, destLng, destPlaceId, travelMode)
+    const cached = directionsCache.get(cacheKey)
+    if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+      res.json(cached.data)
+      return
+    }
+
     try {
       const destination = destPlaceId
         ? { placeId: destPlaceId }
@@ -59,8 +83,7 @@ directionsRouter.get(
           },
         },
         destination,
-        travelMode: 'DRIVE',
-        routingPreference: 'TRAFFIC_AWARE',
+        travelMode,
         computeAlternativeRoutes: false,
         languageCode: 'en-US',
       }
@@ -101,14 +124,17 @@ directionsRouter.get(
       const durationSec = parseInt(route.duration.replace('s', ''), 10)
       const endLoc = route.legs?.[0]?.endLocation?.latLng
 
-      res.json({
+      const result = {
         distance_km: route.distanceMeters / 1000,
         distance_miles: (route.distanceMeters / 1000) * 0.621371,
         duration_min: durationSec / 60,
         polyline: route.polyline?.encodedPolyline ?? '',
         destLat: endLoc?.latitude ?? 0,
         destLng: endLoc?.longitude ?? 0,
-      })
+      }
+
+      directionsCache.set(cacheKey, { data: result, ts: Date.now() })
+      res.json(result)
     } catch (err) {
       console.error('[directions] Error:', err)
       res.status(500).json({

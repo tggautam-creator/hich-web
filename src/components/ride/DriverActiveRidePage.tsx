@@ -17,6 +17,13 @@ interface DriverActiveRidePageProps {
   'data-testid'?: string
 }
 
+// Transit info from a transit_dropoff_suggestion message
+interface TransitBannerData {
+  station_name: string
+  transit_options: Array<{ icon: string; line_name: string; departure_stop?: string; arrival_stop?: string; duration_minutes?: number; total_minutes: number }>
+  total_rider_minutes: number
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function DriverActiveRidePage({ 'data-testid': testId }: DriverActiveRidePageProps) {
@@ -37,6 +44,7 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
   const [emergencyOpen, setEmergencyOpen] = useState(false)
   const [unreadChat, setUnreadChat] = useState(0)
   const signalTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [transitBanner, setTransitBanner] = useState<TransitBannerData | null>(null)
 
   // Driver GPS position
   const [driverLat, setDriverLat] = useState<number | null>(null)
@@ -85,6 +93,30 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
         .single()
 
       if (riderData) setRider(riderData)
+
+      // Check for transit dropoff suggestion (non-fatal)
+      try {
+        const { data: transitMsg } = await supabase
+          .from('messages')
+          .select('meta')
+          .eq('ride_id', rideId as string)
+          .eq('type', 'transit_dropoff_suggestion')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .single()
+
+        if (transitMsg?.meta) {
+          const m = transitMsg.meta as Record<string, unknown>
+          setTransitBanner({
+            station_name: (m['station_name'] as string) ?? 'Transit Station',
+            transit_options: (m['transit_options'] as TransitBannerData['transit_options']) ?? [],
+            total_rider_minutes: (m['total_rider_minutes'] as number) ?? 0,
+          })
+        }
+      } catch {
+        // Non-fatal — transit banner is optional
+      }
+
       setLoading(false)
     }
 
@@ -124,6 +156,11 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
       destLng = target.coordinates[0]
     } else if (isActive && ride.destination) {
       const dest = ride.destination as GeoPoint
+      // Use stored polyline if available to skip API call for the route line
+      const storedPolyline = (ride as Record<string, unknown>)['route_polyline'] as string | null
+      if (storedPolyline && !routePolyline) {
+        setRoutePolyline(storedPolyline)
+      }
       if (ride.pickup_point) {
         const pp = ride.pickup_point as GeoPoint
         originLat = pp.coordinates[1]
@@ -499,6 +536,41 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
           </div>
         )}
       </div>
+
+      {/* ── Transit banner ─────────────────────────────────────────────── */}
+      {transitBanner && (
+        <div data-testid="transit-banner" className="px-4 py-3 bg-primary/5 border-t border-border shrink-0">
+          <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">
+            Rider continues via transit after dropoff
+          </p>
+          <p className="text-sm font-semibold text-text-primary mb-1">
+            {transitBanner.station_name}
+          </p>
+          <div className="space-y-1 mt-1">
+            {transitBanner.transit_options.slice(0, 3).map((opt, idx) => (
+              <div key={`${opt.line_name}-${idx}`} className="flex items-center gap-1.5 text-[10px]">
+                <span className="shrink-0 rounded bg-primary/10 px-1 py-0.5 font-semibold text-primary">{opt.icon}</span>
+                <span className="font-semibold text-text-primary shrink-0">{opt.line_name}</span>
+                {opt.departure_stop && opt.arrival_stop ? (
+                  <>
+                    <span className="text-text-secondary truncate">{opt.departure_stop} → {opt.arrival_stop}</span>
+                    {opt.duration_minutes != null && (
+                      <span className="shrink-0 text-text-secondary">· {opt.duration_minutes} min</span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-text-secondary">{opt.total_minutes} min</span>
+                )}
+              </div>
+            ))}
+          </div>
+          {transitBanner.total_rider_minutes > 0 && (
+            <p className="text-[10px] text-text-secondary mt-1">
+              ~{transitBanner.total_rider_minutes} min total to rider&apos;s destination
+            </p>
+          )}
+        </div>
+      )}
 
       {/* ── Rider info ───────────────────────────────────────────────────── */}
       {rider && (

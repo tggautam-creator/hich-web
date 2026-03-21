@@ -51,18 +51,21 @@ const MAX_RECENT      = 5
  * Calls the Google Places New API autocomplete endpoint.
  * Returns an empty array if the API key is missing or the request fails.
  */
-export async function searchPlaces(input: string): Promise<PlaceSuggestion[]> {
+export async function searchPlaces(input: string, sessionToken?: string): Promise<PlaceSuggestion[]> {
   const key = env.GOOGLE_PLACES_KEY
   if (!key || !input.trim()) return []
 
   try {
+    const requestBody: Record<string, unknown> = { input }
+    if (sessionToken) requestBody['sessionToken'] = sessionToken
+
     const response = await fetch(PLACES_ENDPOINT, {
       method: 'POST',
       headers: {
         'Content-Type':  'application/json',
         'X-Goog-Api-Key': key,
       },
-      body: JSON.stringify({ input }),
+      body: JSON.stringify(requestBody),
     })
 
     if (!response.ok) return []
@@ -92,14 +95,16 @@ interface PlaceDetailsResponse {
  */
 export async function getPlaceCoordinates(
   placeId: string,
+  sessionToken?: string,
 ): Promise<{ lat: number; lng: number } | null> {
   const key = env.GOOGLE_PLACES_KEY
   if (!key || !placeId) return null
 
   try {
-    const resp = await fetch(
-      `https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}?fields=location&key=${encodeURIComponent(key)}`,
-    )
+    let url = `https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}?fields=location&key=${encodeURIComponent(key)}`
+    if (sessionToken) url += `&sessionToken=${encodeURIComponent(sessionToken)}`
+
+    const resp = await fetch(url)
     if (!resp.ok) return null
     const data = (await resp.json()) as PlaceDetailsResponse
     if (!data.location) return null

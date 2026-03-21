@@ -27,6 +27,7 @@ export interface TransitDropoffSuggestion {
   station_address: string
   transit_options: TransitOption[]
   ride_with_driver_minutes?: number
+  ride_distance_km?: number
   walk_to_station_minutes: number
   driver_detour_minutes: number
   transit_to_dest_minutes: number
@@ -542,8 +543,8 @@ export default function TransitSuggestionCard({
         const savedMinutes = (suggestion.full_transit_minutes ?? 0) > totalJourney
           ? (suggestion.full_transit_minutes ?? 0) - totalJourney
           : 0
-        // Estimate fare for the ride portion (pickup → station)
-        const rideDistKm = rideMin > 0 ? (rideMin / 60) * 50 : 0 // reverse of 50 km/h avg
+        // Fare for the ride portion (pickup → station) using actual distance from server
+        const rideDistKm = suggestion.ride_distance_km ?? (rideMin > 0 ? (rideMin / 60) * 80 : 0)
         const rideFare = rideDistKm > 0 ? calculateFare(rideDistKm, rideMin) : null
         return (
           <div className="mt-2 rounded-lg bg-surface/60 p-2 space-y-1.5 text-[10px]">
