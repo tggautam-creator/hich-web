@@ -13,7 +13,7 @@ module.exports = {
     {
       name: 'hich-server',
       script: './node_modules/.bin/tsx',
-      args: 'server/index.ts',
+      args: '--env-file=.env server/index.ts',
 
       // Fork mode required when using tsx as the script
       instances: 1,
