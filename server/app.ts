@@ -23,6 +23,8 @@ const ALLOWED_ORIGINS = [
   /^https:\/\/.*\.vercel\.app$/,
   /^http:\/\/localhost(:\d+)?$/,
   /^http:\/\/127\.0\.0\.1(:\d+)?$/,
+  /^http:\/\/10\.\d+\.\d+\.\d+(:\d+)?$/,
+  /^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/,
 ]
 
 app.use(cors({
