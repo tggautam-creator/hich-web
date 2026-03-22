@@ -77,6 +77,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   sessionExpired: false,
 
   initialize: () => {
+    // Reset isLoading so AuthGuard shows the spinner until onAuthStateChange fires.
+    // Critical after sign-out → re-login: without this, AuthGuard sees
+    // isLoading=false + session=null (stale from sign-out) and redirects to /signup.
+    set({ isLoading: true })
+
     // Recovery rate-limiter: allow up to 3 attempts, reset after 30 seconds
     let recoveryCount = 0
     let recoveryLastAttempt = 0
