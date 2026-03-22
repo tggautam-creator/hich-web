@@ -1,4 +1,6 @@
+import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { supabase } from '@/lib/supabase'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import SecondaryButton from '@/components/ui/SecondaryButton'
 import Logo from '@/components/ui/Logo'
@@ -9,6 +11,14 @@ interface LandingProps {
 
 export default function Landing({ 'data-testid': testId }: LandingProps) {
   const navigate = useNavigate()
+
+  // If the user already has a session (e.g. PWA reopened after force-kill),
+  // skip the landing page and go straight into the app.
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) navigate('/home/rider', { replace: true })
+    })
+  }, [navigate])
 
   return (
     <div
