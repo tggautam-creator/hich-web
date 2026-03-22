@@ -251,7 +251,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   refreshProfile: async () => {
     const { user } = get()
     if (!user) {
-      set({ isLoading: false })
+      // Do NOT set isLoading: false here — if the user became null because
+      // the session expired (auto-refresh failed), the recovery path in
+      // onAuthStateChange will handle isLoading. Setting it here races with
+      // recovery and causes AuthGuard to redirect to /signup prematurely.
       return
     }
 

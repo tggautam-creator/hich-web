@@ -261,12 +261,13 @@ describe('useAuthStore — refreshProfile()', () => {
     expect(useAuthStore.getState().isDriver).toBe(true)
   })
 
-  it('sets isLoading=false and skips DB query when there is no user', async () => {
+  it('skips DB query and preserves isLoading when there is no user', async () => {
     useAuthStore.setState({ user: null, isLoading: true })
 
     await useAuthStore.getState().refreshProfile()
 
-    expect(useAuthStore.getState().isLoading).toBe(false)
+    // isLoading stays true — recovery path handles it, not refreshProfile
+    expect(useAuthStore.getState().isLoading).toBe(true)
     expect(mockFrom).not.toHaveBeenCalled()
   })
 
