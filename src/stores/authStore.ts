@@ -59,6 +59,13 @@ export interface AuthState {
   refreshProfile: () => Promise<void>
 }
 
+// ── Diagnostic beacon (temporary) ─────────────────────────────────────────────
+
+function reportDiag(tag: string, detail: string) {
+  void fetch(`/api/auth/diag?tag=${encodeURIComponent(tag)}&detail=${encodeURIComponent(detail)}`)
+    .catch(() => { /* ignore */ })
+}
+
 // ── Store ─────────────────────────────────────────────────────────────────────
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -131,17 +138,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // Guard: prevent concurrent recovery attempts from consuming retry budget
     let recoveryInProgress = false
 
-    // Diagnostic: report auth events to server so we can debug via pm2 logs
-    function reportToServer(tag: string, detail: string) {
-      void fetch(`/api/auth/diag?tag=${encodeURIComponent(tag)}&detail=${encodeURIComponent(detail)}`)
-        .catch(() => { /* ignore */ })
-    }
-
     // Subscribe to future auth-state changes (token refresh, sign-out, new sign-in)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
         authLog('supabaseAuth', `onAuthStateChange: ${event}`, session !== null)
-        reportToServer('authChange', `event=${event} hasSession=${session !== null} hasUser=${Boolean(session?.user)} rtLen=${session?.refresh_token?.length ?? 0}`)
+        reportDiag('authChange', `event=${event} hasSession=${session !== null} hasUser=${Boolean(session?.user)} rtLen=${session?.refresh_token?.length ?? 0}`)
         set({ session, user: session?.user ?? null })
         if (session?.user) {
           // Reset counter so future losses can try recovery again
@@ -250,11 +251,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   refreshProfile: async () => {
     const { user } = get()
+    reportDiag('refreshProfile', `start user=${user?.id?.slice(0, 8) ?? 'null'}`)
     if (!user) {
       // Do NOT set isLoading: false here — if the user became null because
       // the session expired (auto-refresh failed), the recovery path in
       // onAuthStateChange will handle isLoading. Setting it here races with
       // recovery and causes AuthGuard to redirect to /signup prematurely.
+      reportDiag('refreshProfile', 'skip: no user')
       return
     }
 
@@ -265,6 +268,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       .single()
 
     if (error || !data) {
+      reportDiag('refreshProfile', `error: ${error?.message ?? 'no data'} code=${error?.code ?? 'none'}`)
       set({ profile: null, isDriver: false, isLoading: false })
       return
     }
@@ -273,6 +277,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // when the Row type contains custom shapes (e.g. GeoPoint). We know the runtime
     // shape is always User when the query succeeds and data is truthy.
     const profile = data as unknown as User
+    reportDiag('refreshProfile', `success: ${profile.full_name ?? 'no-name'} isDriver=${profile.is_driver}`)
     set({ profile, isDriver: profile.is_driver, isLoading: false })
 
     identifyUser(user.id, {
