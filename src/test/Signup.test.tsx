@@ -35,7 +35,10 @@ const { mockSignInWithOtp, mockNavigate } = vi.hoisted(() => ({
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
-    auth: { signInWithOtp: mockSignInWithOtp },
+    auth: {
+      signInWithOtp: mockSignInWithOtp,
+      getSession: vi.fn().mockResolvedValue({ data: { session: null } }),
+    },
   },
 }))
 

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { isValidEduEmail } from '@/lib/validation'
@@ -13,6 +13,13 @@ interface LoginProps {
 export default function Login({ 'data-testid': testId }: LoginProps) {
   const navigate = useNavigate()
   const location = useLocation()
+
+  // If the user already has a session, redirect into the app
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) navigate('/home/rider', { replace: true })
+    })
+  }, [navigate])
   const redirectedEmail = (location.state as { email?: string } | null)?.email ?? ''
 
   const [email,        setEmail]       = useState(redirectedEmail)

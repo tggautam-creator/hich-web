@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { isValidEduEmail } from '@/lib/validation'
@@ -13,6 +13,14 @@ interface SignupProps {
 
 export default function Signup({ 'data-testid': testId }: SignupProps) {
   const navigate = useNavigate()
+
+  // If the user already has a session (e.g. PWA reopened at /signup after
+  // force-kill), redirect into the app so AuthGuard can handle it.
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) navigate('/home/rider', { replace: true })
+    })
+  }, [navigate])
   const [email, setEmail]             = useState('')
   const [touched, setTouched]         = useState(false)
   const [isSubmitting, setSubmitting] = useState(false)

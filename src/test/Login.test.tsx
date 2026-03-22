@@ -44,6 +44,7 @@ vi.mock('@/lib/supabase', () => ({
       signInWithPassword: mockSignInWithPassword,
       signInWithOtp:      mockSignInWithOtp,
       getUser:            mockGetUser,
+      getSession:         vi.fn().mockResolvedValue({ data: { session: null } }),
     },
     from: () => ({
       select: () => ({
