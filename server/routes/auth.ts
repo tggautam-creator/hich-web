@@ -148,6 +148,17 @@ authRouter.get('/check-email', async (req: Request, res: Response) => {
 })
 
 /**
+ * GET /api/auth/diag — client-side auth event beacon (temporary debugging).
+ * Logs auth events from the client so we can diagnose via pm2 logs.
+ */
+authRouter.get('/diag', (req: Request, res: Response) => {
+  const tag = req.query['tag'] ?? 'unknown'
+  const detail = req.query['detail'] ?? ''
+  console.log(`[auth/diag] ${tag}: ${detail}`)
+  res.json({ ok: true })
+})
+
+/**
  * GET /api/auth/debug — diagnostic endpoint.
  * Returns whether the HTTP-only session cookie is present in the request.
  * Used to verify that Vercel's rewrite proxy forwards cookies correctly.

@@ -131,10 +131,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // Guard: prevent concurrent recovery attempts from consuming retry budget
     let recoveryInProgress = false
 
+    // Diagnostic: report auth events to server so we can debug via pm2 logs
+    function reportToServer(tag: string, detail: string) {
+      void fetch(`/api/auth/diag?tag=${encodeURIComponent(tag)}&detail=${encodeURIComponent(detail)}`)
+        .catch(() => { /* ignore */ })
+    }
+
     // Subscribe to future auth-state changes (token refresh, sign-out, new sign-in)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
         authLog('supabaseAuth', `onAuthStateChange: ${event}`, session !== null)
+        reportToServer('authChange', `event=${event} hasSession=${session !== null} hasUser=${Boolean(session?.user)} rtLen=${session?.refresh_token?.length ?? 0}`)
         set({ session, user: session?.user ?? null })
         if (session?.user) {
           // Reset counter so future losses can try recovery again
