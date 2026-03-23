@@ -122,6 +122,9 @@ describe('scaffold — @/ alias and database types', () => {
       origin_address: null,
       dest_address: null,
       route_polyline: null,
+      available_seats: null,
+      end_date: null,
+      note: null,
       is_active: true,
       created_at: new Date().toISOString(),
     }

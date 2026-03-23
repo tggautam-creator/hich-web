@@ -19,6 +19,8 @@ export interface ScheduledRide {
   trip_date: string
   time_type: 'departure' | 'arrival'
   trip_time: string
+  available_seats?: number | null
+  note?: string | null
   created_at: string
   poster: Poster | null
   relevance_score?: number

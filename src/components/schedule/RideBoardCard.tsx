@@ -8,6 +8,7 @@ interface RideBoardCardProps {
   onRequestClick: (ride: ScheduledRide) => void
   onDeleteClick: (scheduleId: string) => void
   onOpenMessages: (ride: ScheduledRide) => void
+  onCardClick: (ride: ScheduledRide) => void
   'data-testid'?: string
 }
 
@@ -18,6 +19,7 @@ export default function RideBoardCard({
   onRequestClick,
   onDeleteClick,
   onOpenMessages,
+  onCardClick,
 }: RideBoardCardProps) {
   const isDriverPost = ride.mode === 'driver'
   const poster = ride.poster
@@ -26,8 +28,12 @@ export default function RideBoardCard({
   return (
     <div
       data-testid="ride-card"
+      role="button"
+      tabIndex={0}
+      onClick={() => { onCardClick(ride) }}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onCardClick(ride) }}
       className={[
-        'rounded-2xl bg-white p-4 shadow-sm border',
+        'rounded-2xl bg-white p-4 shadow-sm border cursor-pointer active:bg-surface/50 transition-colors',
         isDriverPost ? 'border-success/30' : 'border-primary/30',
       ].join(' ')}
     >
@@ -75,7 +81,7 @@ export default function RideBoardCard({
       {!isOwn && !ride.already_requested && (
         <button
           data-testid="contact-button"
-          onClick={() => onRequestClick(ride)}
+          onClick={(e) => { e.stopPropagation(); onRequestClick(ride) }}
           className={[
             'w-full rounded-2xl py-2.5 text-sm font-semibold text-white active:opacity-80',
             isDriverPost ? 'bg-success' : 'bg-primary',
@@ -92,7 +98,7 @@ export default function RideBoardCard({
           </div>
           <button
             data-testid="open-messages-button"
-            onClick={() => onOpenMessages(ride)}
+            onClick={(e) => { e.stopPropagation(); onOpenMessages(ride) }}
             className="w-full rounded-2xl py-2.5 text-sm font-semibold text-primary bg-primary/10 active:bg-primary/20"
           >
             Open Messages
@@ -112,7 +118,7 @@ export default function RideBoardCard({
           <button
             data-testid="delete-schedule-button"
             disabled={deletingId === ride.id}
-            onClick={() => onDeleteClick(ride.id)}
+            onClick={(e) => { e.stopPropagation(); onDeleteClick(ride.id) }}
             className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-danger bg-danger/10 active:bg-danger/20 disabled:opacity-50"
           >
             {deletingId === ride.id ? 'Deleting…' : 'Delete'}

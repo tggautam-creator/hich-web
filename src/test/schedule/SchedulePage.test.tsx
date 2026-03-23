@@ -38,6 +38,7 @@ const mockNavigate = vi.fn()
 
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mockNavigate,
+  useLocation: () => ({ state: null, pathname: '/schedule/rider', search: '', hash: '', key: 'default' }),
 }))
 
 // ── Mock places module ────────────────────────────────────────────────────────
@@ -87,7 +88,7 @@ vi.mock('@/lib/directions', () => ({
 
 vi.mock('@/stores/authStore', () => ({
   useAuthStore: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({ user: { id: 'user-123' } }),
+    selector({ user: { id: 'user-123' }, isDriver: true }),
 }))
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -148,14 +149,20 @@ describe('SchedulePage', () => {
 
   // ── Form Fields ────────────────────────────────────────────────────────────
 
-  it('renders route name input', () => {
+  it('renders route name input when routine is selected', async () => {
+    const user = userEvent.setup()
     render(<SchedulePage mode="rider" />)
+    // Route name hidden by default (one-time)
+    expect(screen.queryByTestId('route-name-input')).not.toBeInTheDocument()
+    // Select routine to reveal it
+    await user.click(screen.getByTestId('trip-type-routine'))
     expect(screen.getByTestId('route-name-input')).toBeInTheDocument()
   })
 
   it('route name input accepts text', async () => {
     const user = userEvent.setup()
     render(<SchedulePage mode="rider" />)
+    await user.click(screen.getByTestId('trip-type-routine'))
     const input = screen.getByTestId('route-name-input')
     await user.type(input, 'Home to SF')
     expect(input).toHaveValue('Home to SF')
@@ -169,22 +176,6 @@ describe('SchedulePage', () => {
   it('renders to location input', () => {
     render(<SchedulePage mode="rider" />)
     expect(screen.getByTestId('to-location-input')).toBeInTheDocument()
-  })
-
-  // ── Direction Toggles ──────────────────────────────────────────────────────
-
-  it('defaults to one-way direction', () => {
-    render(<SchedulePage mode="rider" />)
-    const oneWayBtn = screen.getByTestId('direction-one-way')
-    expect(oneWayBtn).toHaveClass('bg-primary')
-  })
-
-  it('switches to roundtrip when clicked', async () => {
-    const user = userEvent.setup()
-    render(<SchedulePage mode="rider" />)
-    const roundtripBtn = screen.getByTestId('direction-roundtrip')
-    await user.click(roundtripBtn)
-    expect(roundtripBtn).toHaveClass('bg-primary')
   })
 
   // ── Trip Type Toggles ──────────────────────────────────────────────────────
@@ -210,54 +201,50 @@ describe('SchedulePage', () => {
     render(<SchedulePage mode="rider" />)
     const continueBtn = screen.getByTestId('continue-button')
     await user.click(continueBtn)
-    expect(screen.getByText('Please enter a route name')).toBeInTheDocument()
     expect(screen.getByText('Please select a From location')).toBeInTheDocument()
     expect(screen.getByText('Please select a To location')).toBeInTheDocument()
   })
 
-  it('shows validation error when route name empty on continue click', async () => {
+  it('allows continue without route name (route name is optional)', async () => {
     const user = userEvent.setup()
     render(<SchedulePage mode="rider" />)
-    
-    // Enable button by filling locations (but not route name)
+
+    // Fill locations but not route name
     const fromInput = screen.getByTestId('from-location-input')
     await user.type(fromInput, 'UC')
-    
+
     mockSearchPlaces.mockResolvedValue([PLACE_FROM])
-    
+
     await waitFor(() => {
       expect(screen.getByTestId('from-suggestions')).toBeInTheDocument()
     })
-    
+
     await user.click(screen.getByTestId(`from-suggestion-${PLACE_FROM.placeId}`))
-    
+
     const toInput = screen.getByTestId('to-location-input')
     await user.type(toInput, 'SF')
-    
+
     mockSearchPlaces.mockResolvedValue([PLACE_TO])
-    
+
     await waitFor(() => {
       expect(screen.getByTestId('to-suggestions')).toBeInTheDocument()
     })
-    
+
     await user.click(screen.getByTestId(`to-suggestion-${PLACE_TO.placeId}`))
-    
-    // Now click continue without route name
+
+    // Click continue without route name — should proceed
     const continueBtn = screen.getByTestId('continue-button')
     await user.click(continueBtn)
-    
-    expect(screen.getByText('Please enter a route name')).toBeInTheDocument()
+
+    // Should advance to schedule step (no validation error for route name)
+    expect(screen.getByTestId('trip-date-input')).toBeInTheDocument()
   })
 
   it('shows validation error when from location not selected on continue', async () => {
     const user = userEvent.setup()
     render(<SchedulePage mode="rider" />)
-    
-    // Fill only route name
-    const routeInput = screen.getByTestId('route-name-input')
-    await user.type(routeInput, 'Home to SF')
-    
-    // Try to continue
+
+    // Try to continue without filling locations
     const continueBtn = screen.getByTestId('continue-button')
     await user.click(continueBtn)
     
@@ -267,12 +254,8 @@ describe('SchedulePage', () => {
   it('shows validation error when to location not selected on continue', async () => {
     const user = userEvent.setup()
     render(<SchedulePage mode="rider" />)
-    
-    // Fill route name
-    const routeInput = screen.getByTestId('route-name-input')
-    await user.type(routeInput, 'Home to SF')
-    
-    // Fill from location
+
+    // Fill from location only
     const fromInput = screen.getByTestId('from-location-input')
     await user.type(fromInput, 'UC')
     
@@ -418,11 +401,7 @@ describe('SchedulePage', () => {
   it('continue button enabled when all required fields filled', async () => {
     const user = userEvent.setup()
     render(<SchedulePage mode="rider" />)
-    
-    // Fill route name
-    const routeInput = screen.getByTestId('route-name-input')
-    await user.type(routeInput, 'Home to SF')
-    
+
     // Fill from location
     const fromInput = screen.getByTestId('from-location-input')
     await user.type(fromInput, 'UC')
@@ -475,9 +454,6 @@ describe('SchedulePage', () => {
     async function goToScheduleStep() {
       const user = userEvent.setup()
       render(<SchedulePage mode="rider" />)
-
-      // Route name
-      await user.type(screen.getByTestId('route-name-input'), 'Home to SF')
 
       // From location
       mockSearchPlaces.mockResolvedValue([PLACE_FROM])
@@ -600,7 +576,7 @@ describe('SchedulePage', () => {
         expect(mockInsert).toHaveBeenCalledWith({
           user_id:          'user-123',
           mode:             'rider',
-          route_name:       'Home to SF',
+          route_name:       '',
           origin_place_id:  PLACE_FROM.placeId,
           origin_address:   PLACE_FROM.fullAddress,
           dest_place_id:    PLACE_TO.placeId,
@@ -609,6 +585,8 @@ describe('SchedulePage', () => {
           trip_date:        '2027-06-15',
           time_type:        'departure',
           trip_time:        '09:30:00',
+          available_seats:  null,
+          note:             null,
         })
       })
 
@@ -647,8 +625,8 @@ describe('SchedulePage', () => {
     it('back button returns to details step', async () => {
       const user = await goToScheduleStep()
       await user.click(screen.getByTestId('back-button'))
-      // Should see the route name input again
-      expect(screen.getByTestId('route-name-input')).toBeInTheDocument()
+      // Should see the details form again
+      expect(screen.getByTestId('from-location-input')).toBeInTheDocument()
       expect(screen.getByText('Schedule a Ride')).toBeInTheDocument()
     })
   })
@@ -660,9 +638,6 @@ describe('SchedulePage', () => {
     async function goToRoutineStep() {
       const user = userEvent.setup()
       render(<SchedulePage mode="driver" />)
-
-      // Route name
-      await user.type(screen.getByTestId('route-name-input'), 'Daily Commute')
 
       // From location
       mockSearchPlaces.mockResolvedValue([PLACE_FROM])
@@ -680,8 +655,11 @@ describe('SchedulePage', () => {
       }, { timeout: 1000 })
       await user.click(screen.getByTestId(`to-suggestion-${PLACE_TO.placeId}`))
 
-      // Select routine trip type
+      // Select routine trip type (reveals route name field)
       await user.click(screen.getByTestId('trip-type-routine'))
+
+      // Route name (only visible for routines)
+      await user.type(screen.getByTestId('route-name-input'), 'Daily Commute')
 
       // Click continue
       await user.click(screen.getByTestId('continue-button'))
@@ -833,6 +811,9 @@ describe('SchedulePage', () => {
           origin_address:      'UC Davis, Davis, CA, USA',
           dest_address:        'San Francisco, CA, USA',
           route_polyline:      'encoded_polyline_test',
+          available_seats:     1,
+          end_date:            null,
+          note:                null,
         })
       })
 

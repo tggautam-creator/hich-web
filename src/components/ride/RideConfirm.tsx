@@ -22,6 +22,7 @@ interface LocationState {
   originLng?: number
   destinationLat?: number
   destinationLng?: number
+  originName?: string
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -419,6 +420,31 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
           >
             {!selectedCard && !loadingCards ? 'Add a payment method' : 'Request Ride'}
           </PrimaryButton>
+
+          <button
+            data-testid="schedule-ride-button"
+            onClick={() => {
+              const prefillTo: PlaceSuggestion = {
+                placeId: destination.placeId,
+                mainText: destination.mainText,
+                secondaryText: destination.secondaryText,
+                fullAddress: destination.fullAddress,
+              }
+              const scheduleState: { prefillTo: PlaceSuggestion; prefillFrom?: PlaceSuggestion } = { prefillTo }
+              if (state?.originName) {
+                scheduleState.prefillFrom = {
+                  placeId: 'current-location',
+                  mainText: state.originName,
+                  secondaryText: '',
+                  fullAddress: state.originName,
+                }
+              }
+              navigate('/schedule/rider', { state: scheduleState })
+            }}
+            className="w-full rounded-2xl py-3 text-sm font-semibold text-primary border-2 border-primary bg-white active:bg-primary/5 transition-colors"
+          >
+            Schedule This Ride
+          </button>
 
           <button
             data-testid="change-destination-button"

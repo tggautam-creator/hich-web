@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
-import InputField from '@/components/ui/InputField'
+import { useNavigate, useLocation } from 'react-router-dom'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import SecondaryButton from '@/components/ui/SecondaryButton'
 import { trackEvent } from '@/lib/analytics'
@@ -24,7 +23,6 @@ interface SchedulePageProps {
   'data-testid'?: string
 }
 
-type DirectionType = 'one-way' | 'roundtrip'
 type TripType = 'one-time' | 'routine'
 type TimeType = 'departure' | 'arrival'
 type Step = 'details' | 'one-time-schedule' | 'routine-schedule'
@@ -51,19 +49,30 @@ function todayString(): string {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePageProps) {
+interface ScheduleLocationState {
+  prefillFrom?: PlaceSuggestion
+  prefillTo?: PlaceSuggestion
+}
+
+export default function SchedulePage({ mode: initialMode, 'data-testid': testId }: SchedulePageProps) {
   const navigate = useNavigate()
+  const location = useLocation()
+  const prefill = location.state as ScheduleLocationState | null
 
   // Step state
   const [step, setStep] = useState<Step>('details')
   const [showConfirmation, setShowConfirmation] = useState(false)
 
+  // Driver/rider toggle state
+  const [activeMode, setActiveMode] = useState<'driver' | 'rider'>(initialMode)
+
   // Form state
   const [routeName, setRouteName] = useState('')
-  const [fromLocation, setFromLocation] = useState<PlaceSuggestion | null>(null)
-  const [toLocation, setToLocation] = useState<PlaceSuggestion | null>(null)
-  const [directionType, setDirectionType] = useState<DirectionType>('one-way')
+  const [fromLocation, setFromLocation] = useState<PlaceSuggestion | null>(prefill?.prefillFrom ?? null)
+  const [toLocation, setToLocation] = useState<PlaceSuggestion | null>(prefill?.prefillTo ?? null)
   const [tripType, setTripType] = useState<TripType>('one-time')
+  const [availableSeats, setAvailableSeats] = useState(1)
+  const [note, setNote] = useState('')
 
   // One-time schedule state
   const [tripDate, setTripDate] = useState('')
@@ -78,11 +87,18 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
   const [sheetTime, setSheetTime] = useState('')
   const [perDayMode, setPerDayMode] = useState(false)
   const [dayTimes, setDayTimes] = useState<Map<DayIndex, DayTimeConfig>>(new Map())
+  const [endDate, setEndDate] = useState('')
 
   const user = useAuthStore((s) => s.user)
+  const isDriver = useAuthStore((s) => s.isDriver)
+
+  // Non-drivers are always locked to rider mode
+  useEffect(() => {
+    if (!isDriver && activeMode === 'driver') setActiveMode('rider')
+  }, [isDriver, activeMode])
 
   // From location autocomplete state
-  const [fromQuery, setFromQuery] = useState('')
+  const [fromQuery, setFromQuery] = useState(prefill?.prefillFrom?.mainText ?? '')
   const [fromSuggestions, setFromSuggestions] = useState<PlaceSuggestion[]>([])
   const [fromLoading, setFromLoading] = useState(false)
   const [showFromDropdown, setShowFromDropdown] = useState(false)
@@ -90,7 +106,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
   const fromSessionTokenRef = useRef(crypto.randomUUID())
 
   // To location autocomplete state
-  const [toQuery, setToQuery] = useState('')
+  const [toQuery, setToQuery] = useState(prefill?.prefillTo?.mainText ?? '')
   const [toSuggestions, setToSuggestions] = useState<PlaceSuggestion[]>([])
   const [toLoading, setToLoading] = useState(false)
   const [showToDropdown, setShowToDropdown] = useState(false)
@@ -103,7 +119,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
   // ── From location debounced search ─────────────────────────────────────────
 
   useEffect(() => {
-    if (!fromQuery.trim()) {
+    if (!fromQuery.trim() || fromLocation) {
       setFromSuggestions([])
       setFromLoading(false)
       return
@@ -118,12 +134,12 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
     }, 300)
 
     return () => { clearTimeout(timer) }
-  }, [fromQuery])
+  }, [fromQuery, fromLocation])
 
   // ── To location debounced search ───────────────────────────────────────────
 
   useEffect(() => {
-    if (!toQuery.trim()) {
+    if (!toQuery.trim() || toLocation) {
       setToSuggestions([])
       setToLoading(false)
       return
@@ -138,7 +154,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
     }, 300)
 
     return () => { clearTimeout(timer) }
-  }, [toQuery])
+  }, [toQuery, toLocation])
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -176,10 +192,6 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
 
   function validateForm(): boolean {
     const newErrors: Record<string, string> = {}
-
-    if (!routeName.trim()) {
-      newErrors.routeName = 'Please enter a route name'
-    }
 
     if (!fromLocation) {
       newErrors.fromLocation = 'Please select a From location'
@@ -236,16 +248,18 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
     try {
       const { error } = await supabase.from('ride_schedules').insert({
         user_id:          user.id,
-        mode,
+        mode:             activeMode,
         route_name:       routeName.trim(),
         origin_place_id:  fromLocation.placeId,
         origin_address:   fromLocation.fullAddress,
         dest_place_id:    toLocation.placeId,
         dest_address:     toLocation.fullAddress,
-        direction_type:   directionType === 'one-way' ? 'one_way' : 'roundtrip',
+        direction_type:   'one_way',
         trip_date:        tripDate,
         time_type:        timeType,
         trip_time:        `${tripTime}:00`,
+        available_seats:  activeMode === 'driver' ? availableSeats : null,
+        note:             note.trim() || null,
       }).select('id')
 
       if (error) {
@@ -275,7 +289,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
             trip_date:       tripDate,
             trip_time:       `${tripTime}:00`,
             time_type:       timeType,
-            mode,
+            mode: activeMode,
             ...(fromCoords ? { origin_lat: fromCoords.lat, origin_lng: fromCoords.lng } : {}),
             ...(toCoords ? { dest_lat: toCoords.lat, dest_lng: toCoords.lng } : {}),
           }),
@@ -284,7 +298,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
         // Notification failure is non-blocking
       }
 
-      trackEvent('schedule_saved', { mode, trip_type: 'one-time' })
+      trackEvent('schedule_saved', { mode: activeMode, trip_type: 'one-time' })
       setShowConfirmation(true)
     } catch {
       setSubmitError('Something went wrong. Please try again.')
@@ -400,13 +414,16 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
           origin:              { type: 'Point' as const, coordinates: [fromCoords.lng, fromCoords.lat] },
           destination:         { type: 'Point' as const, coordinates: [toCoords.lng, toCoords.lat] },
           destination_bearing: bearing,
-          direction_type:      directionType === 'one-way' ? 'one_way' as const : 'roundtrip' as const,
+          direction_type:      'one_way' as const,
           day_of_week:         group.days,
           departure_time:      group.tType === 'departure' ? `${group.time}:00` : null,
           arrival_time:        group.tType === 'arrival'   ? `${group.time}:00` : null,
           origin_address:      fromLocation.fullAddress,
           dest_address:        toLocation.fullAddress,
           route_polyline:      routePolyline,
+          available_seats:     activeMode === 'driver' ? availableSeats : null,
+          end_date:            endDate || null,
+          note:                note.trim() || null,
         })
 
         if (error) {
@@ -430,21 +447,23 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
 
         await supabase.from('ride_schedules').insert({
           user_id:          user.id,
-          mode,
+          mode:             activeMode,
           route_name:       routeName.trim(),
           origin_place_id:  fromLocation.placeId,
           origin_address:   fromLocation.fullAddress,
           dest_place_id:    toLocation.placeId,
           dest_address:     toLocation.fullAddress,
-          direction_type:   directionType === 'one-way' ? 'one_way' : 'roundtrip',
+          direction_type:   'one_way',
           trip_date:        dateStr,
           time_type:        tType,
           trip_time:        `${time}:00`,
+          available_seats:  activeMode === 'driver' ? availableSeats : null,
+          note:             note.trim() || null,
         })
         // Non-fatal if this fails — the routine is already saved
       }
 
-      trackEvent('schedule_saved', { mode, trip_type: 'routine' })
+      trackEvent('schedule_saved', { mode: activeMode, trip_type: 'routine' })
 
       // BUG-021: Notify matching drivers about the new routine rides (fire-and-forget)
       try {
@@ -467,7 +486,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
               trip_date:       new Date().toISOString().split('T')[0],
               trip_time:       notifyTime,
               time_type:       notifyTimeType,
-              mode,
+              mode: activeMode,
               origin_lat: fromCoords.lat,
               origin_lng: fromCoords.lng,
               dest_lat:   toCoords.lat,
@@ -503,11 +522,11 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
           {tripType === 'routine' ? 'Routine Saved!' : 'Ride Scheduled!'}
         </h2>
         <p className="text-sm text-text-secondary text-center max-w-xs mb-8">
-          We&apos;ll match you with {mode === 'driver' ? 'riders' : 'drivers'} heading the same way and send you a notification when there&apos;s a match.
+          We&apos;ll match you with {activeMode === 'driver' ? 'riders' : 'drivers'} heading the same way and send you a notification when there&apos;s a match.
         </p>
         <PrimaryButton
           data-testid="confirmation-done-button"
-          onClick={() => { navigate(mode === 'driver' ? '/home/driver' : '/home/rider', { replace: true }) }}
+          onClick={() => { navigate(activeMode === 'driver' ? '/home/driver' : '/home/rider', { replace: true }) }}
           className="w-full max-w-xs"
         >
           Done
@@ -551,7 +570,7 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
             ? 'Pick Date & Time'
             : step === 'routine-schedule'
               ? 'Pick Your Days'
-              : `Schedule a ${mode === 'driver' ? 'Drive' : 'Ride'}`}
+              : `Schedule a ${activeMode === 'driver' ? 'Drive' : 'Ride'}`}
         </h1>
         <p className="text-sm text-text-secondary mt-1">
           {step === 'one-time-schedule'
@@ -889,6 +908,28 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
               </div>
             )}
 
+            {/* End Date (optional) */}
+            <div>
+              <label
+                htmlFor="end-date"
+                className="block text-sm font-medium text-text-primary mb-1"
+              >
+                End Date <span className="text-text-secondary font-normal">(optional)</span>
+              </label>
+              <input
+                id="end-date"
+                data-testid="end-date-input"
+                type="date"
+                min={todayString()}
+                value={endDate}
+                onChange={(e) => { setEndDate(e.target.value) }}
+                className="w-full rounded-2xl border border-border bg-white px-4 py-3 text-base text-text-primary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
+              />
+              <p className="text-xs text-text-secondary mt-1">
+                Leave blank for an ongoing routine
+              </p>
+            </div>
+
             {/* Submit Error */}
             {submitError && (
               <p
@@ -928,18 +969,52 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
       {/* ── Form ────────────────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto px-4 py-6 space-y-6">
 
-        {/* Route Name */}
+        {/* Driver / Rider Toggle — only shown if user is a registered driver */}
+        {isDriver && (
         <div>
-          <InputField
-            data-testid="route-name-input"
-            label="Route Name"
-            placeholder="e.g. Home to SF"
-            value={routeName}
-            onChange={(e) => { setRouteName(e.target.value) }}
-            error={errors.routeName}
-            hint="Give this route a memorable name"
-          />
+          <label className="block text-sm font-medium text-text-primary mb-2">
+            I am a
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              data-testid="mode-driver"
+              onClick={() => { setActiveMode('driver') }}
+              className={[
+                'flex items-center justify-center gap-2 px-4 py-3 rounded-2xl border transition-all duration-150',
+                'font-medium text-sm',
+                activeMode === 'driver'
+                  ? 'bg-primary text-white border-primary'
+                  : 'bg-white text-text-primary border-border hover:border-primary',
+              ].join(' ')}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+                <path d="M5 17h-2a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h1l1.6-4.5A2 2 0 0 1 7.5 5h9a2 2 0 0 1 1.9 1.5L20 11h1a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-2" />
+                <circle cx="7.5" cy="17" r="2.5" />
+                <circle cx="16.5" cy="17" r="2.5" />
+                <path d="M5 11h14" />
+              </svg>
+              Driver
+            </button>
+            <button
+              data-testid="mode-rider"
+              onClick={() => { setActiveMode('rider') }}
+              className={[
+                'flex items-center justify-center gap-2 px-4 py-3 rounded-2xl border transition-all duration-150',
+                'font-medium text-sm',
+                activeMode === 'rider'
+                  ? 'bg-primary text-white border-primary'
+                  : 'bg-white text-text-primary border-border hover:border-primary',
+              ].join(' ')}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+              Rider
+            </button>
+          </div>
         </div>
+        )}
 
         {/* From Location */}
         <div className="relative">
@@ -1063,41 +1138,6 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
           )}
         </div>
 
-        {/* Direction Type */}
-        <div>
-          <label className="block text-sm font-medium text-text-primary mb-2">
-            Direction
-          </label>
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              data-testid="direction-one-way"
-              onClick={() => { setDirectionType('one-way') }}
-              className={[
-                'px-4 py-3 rounded-2xl border transition-all duration-150',
-                'font-medium text-sm',
-                directionType === 'one-way'
-                  ? 'bg-primary text-white border-primary'
-                  : 'bg-white text-text-primary border-border hover:border-primary',
-              ].join(' ')}
-            >
-              One-way
-            </button>
-            <button
-              data-testid="direction-roundtrip"
-              onClick={() => { setDirectionType('roundtrip') }}
-              className={[
-                'px-4 py-3 rounded-2xl border transition-all duration-150',
-                'font-medium text-sm',
-                directionType === 'roundtrip'
-                  ? 'bg-primary text-white border-primary'
-                  : 'bg-white text-text-primary border-border hover:border-primary',
-              ].join(' ')}
-            >
-              Roundtrip
-            </button>
-          </div>
-        </div>
-
         {/* Trip Type */}
         <div>
           <label className="block text-sm font-medium text-text-primary mb-2">
@@ -1131,6 +1171,91 @@ export default function SchedulePage({ mode, 'data-testid': testId }: SchedulePa
               Part of my routine
             </button>
           </div>
+        </div>
+
+        {/* Available Seats (driver only) — compact inline row */}
+        {activeMode === 'driver' && (
+          <div className="flex items-center justify-between rounded-2xl border border-border bg-white px-4 py-3">
+            <span className="text-sm font-medium text-text-primary">Available Seats</span>
+            <div className="flex items-center gap-3">
+              <button
+                data-testid="seats-decrease"
+                onClick={() => { setAvailableSeats((s) => Math.max(1, s - 1)) }}
+                disabled={availableSeats <= 1}
+                className={[
+                  'h-8 w-8 rounded-full border flex items-center justify-center text-sm font-bold transition-colors',
+                  availableSeats <= 1
+                    ? 'border-border text-text-secondary/40 cursor-not-allowed'
+                    : 'border-primary text-primary active:bg-primary/10',
+                ].join(' ')}
+                aria-label="Decrease seats"
+              >
+                −
+              </button>
+              <span
+                data-testid="seats-count"
+                className="text-base font-bold text-text-primary w-5 text-center"
+              >
+                {availableSeats}
+              </span>
+              <button
+                data-testid="seats-increase"
+                onClick={() => { setAvailableSeats((s) => Math.min(6, s + 1)) }}
+                disabled={availableSeats >= 6}
+                className={[
+                  'h-8 w-8 rounded-full border flex items-center justify-center text-sm font-bold transition-colors',
+                  availableSeats >= 6
+                    ? 'border-border text-text-secondary/40 cursor-not-allowed'
+                    : 'border-primary text-primary active:bg-primary/10',
+                ].join(' ')}
+                aria-label="Increase seats"
+              >
+                +
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Route Name (optional, only for routines) */}
+        {tripType === 'routine' && (
+          <div>
+            <label className="block text-sm font-medium text-text-primary mb-1">
+              Route Name <span className="text-text-secondary font-normal">(optional)</span>
+            </label>
+            <input
+              data-testid="route-name-input"
+              type="text"
+              placeholder="e.g. Home to SF"
+              value={routeName}
+              onChange={(e) => { setRouteName(e.target.value) }}
+              className="w-full rounded-2xl border border-border bg-white px-4 py-3 text-sm text-text-primary placeholder:text-text-secondary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
+            />
+          </div>
+        )}
+
+        {/* Note */}
+        <div>
+          <label
+            htmlFor="schedule-note"
+            className="block text-sm font-medium text-text-primary mb-1"
+          >
+            Note <span className="text-text-secondary font-normal">(optional)</span>
+          </label>
+          <textarea
+            id="schedule-note"
+            data-testid="note-input"
+            value={note}
+            onChange={(e) => { setNote(e.target.value) }}
+            placeholder={activeMode === 'driver'
+              ? 'e.g. No smoking, large trunk available'
+              : 'e.g. I have a suitcase, 2 passengers'}
+            maxLength={200}
+            rows={2}
+            className="w-full rounded-2xl border border-border bg-white px-4 py-3 text-sm text-text-primary placeholder:text-text-secondary resize-none transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
+          />
+          <p className="text-xs text-text-secondary mt-1 text-right">
+            {note.length}/200
+          </p>
         </div>
       </div>
 

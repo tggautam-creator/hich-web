@@ -35,11 +35,13 @@ import type { PlaceSuggestion } from '@/lib/places'
 // ── Mock places module ────────────────────────────────────────────────────────
 
 const mockSearchPlaces          = vi.fn<() => Promise<PlaceSuggestion[]>>()
+const mockGetPlaceCoordinates   = vi.fn<() => Promise<{ lat: number; lng: number } | null>>()
 const mockGetRecentDestinations = vi.fn<() => PlaceSuggestion[]>()
 const mockSaveRecentDestination = vi.fn<(place: PlaceSuggestion) => void>()
 
 vi.mock('@/lib/places', () => ({
   searchPlaces:          (...args: Parameters<typeof mockSearchPlaces>)          => mockSearchPlaces(...args),
+  getPlaceCoordinates:   (...args: Parameters<typeof mockGetPlaceCoordinates>)   => mockGetPlaceCoordinates(...args),
   getRecentDestinations: (...args: Parameters<typeof mockGetRecentDestinations>) => mockGetRecentDestinations(...args),
   saveRecentDestination: (...args: Parameters<typeof mockSaveRecentDestination>) => mockSaveRecentDestination(...args),
 }))
@@ -94,6 +96,7 @@ describe('DestinationSearch', () => {
   beforeEach(() => {
     mockNavigate.mockReset()
     mockSearchPlaces.mockResolvedValue([])
+    mockGetPlaceCoordinates.mockResolvedValue(null)
     mockGetRecentDestinations.mockReturnValue([])
     mockSaveRecentDestination.mockReset()
     mockGetDirections.mockResolvedValue(null)
@@ -247,7 +250,7 @@ describe('DestinationSearch', () => {
     await user.click(screen.getByTestId('done-button'))
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/ride/confirm', {
-        state: { destination: PLACE_A, originLat: undefined, originLng: undefined },
+        state: { destination: PLACE_A, originLat: undefined, originLng: undefined, originName: 'Current Location' },
       })
     })
   })
@@ -281,7 +284,7 @@ describe('DestinationSearch', () => {
     await user.click(screen.getByTestId('done-button'))
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith('/ride/confirm', {
-        state: { destination: PLACE_B, originLat: undefined, originLng: undefined },
+        state: { destination: PLACE_B, originLat: undefined, originLng: undefined, originName: 'Current Location' },
       })
     })
   })
@@ -331,7 +334,94 @@ describe('DestinationSearch', () => {
           polyline: 'abc',
           originLat: 38.54,
           originLng: -121.74,
+          originName: 'Davis',
         },
+      })
+    })
+  })
+
+  // ── Editable origin ──────────────────────────────────────────────────────
+
+  it('tapping "From" label shows origin input field', async () => {
+    const user = userEvent.setup()
+    renderPage({ locationName: 'Davis' })
+    await user.click(screen.getByTestId('from-label'))
+    expect(screen.getByTestId('origin-input')).toBeInTheDocument()
+  })
+
+  it('shows "Use current location" option when editing origin', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByTestId('from-label'))
+    expect(screen.getByTestId('use-current-location')).toBeInTheDocument()
+  })
+
+  it('shows origin search results after typing in origin input', async () => {
+    mockSearchPlaces.mockResolvedValue([PLACE_B])
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByTestId('from-label'))
+    await user.type(screen.getByTestId('origin-input'), 'Sac')
+    await waitFor(() => {
+      expect(screen.getByTestId('origin-search-results')).toBeInTheDocument()
+      expect(screen.getAllByTestId('origin-result-item')).toHaveLength(1)
+    }, { timeout: 1000 })
+  })
+
+  it('selecting an origin result updates the From label', async () => {
+    mockSearchPlaces.mockResolvedValue([PLACE_B])
+    mockGetPlaceCoordinates.mockResolvedValue({ lat: 38.69, lng: -121.59 })
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByTestId('from-label'))
+    await user.type(screen.getByTestId('origin-input'), 'Sac')
+    await waitFor(() => screen.getAllByTestId('origin-result-item'))
+    await user.click(screen.getAllByTestId('origin-result-item')[0])
+    // Should exit edit mode and show new name
+    expect(screen.getByTestId('from-label')).toHaveTextContent('Sacramento Airport')
+    expect(screen.queryByTestId('origin-input')).not.toBeInTheDocument()
+  })
+
+  it('"Use current location" resets origin to GPS location', async () => {
+    mockSearchPlaces.mockResolvedValue([PLACE_B])
+    mockGetPlaceCoordinates.mockResolvedValue({ lat: 38.69, lng: -121.59 })
+    const user = userEvent.setup()
+    renderPage({ locationName: 'Davis', originLat: 38.54, originLng: -121.74 })
+    // Change origin first
+    await user.click(screen.getByTestId('from-label'))
+    await user.type(screen.getByTestId('origin-input'), 'Sac')
+    await waitFor(() => screen.getAllByTestId('origin-result-item'))
+    await user.click(screen.getAllByTestId('origin-result-item')[0])
+    expect(screen.getByTestId('from-label')).toHaveTextContent('Sacramento Airport')
+    // Now reset
+    await user.click(screen.getByTestId('from-label'))
+    await user.click(screen.getByTestId('use-current-location'))
+    expect(screen.getByTestId('from-label')).toHaveTextContent('Davis')
+  })
+
+  it('Done button uses custom origin coords when origin was changed', async () => {
+    mockSearchPlaces.mockResolvedValue([PLACE_B])
+    mockGetPlaceCoordinates.mockResolvedValue({ lat: 38.69, lng: -121.59 })
+    const user = userEvent.setup()
+    renderPage({ locationName: 'Davis', originLat: 38.54, originLng: -121.74 })
+    // Change origin
+    await user.click(screen.getByTestId('from-label'))
+    await user.type(screen.getByTestId('origin-input'), 'Sac')
+    await waitFor(() => screen.getAllByTestId('origin-result-item'))
+    await user.click(screen.getAllByTestId('origin-result-item')[0])
+    // Wait for coords to resolve
+    await waitFor(() => {
+      expect(mockGetPlaceCoordinates).toHaveBeenCalledWith('place-002', expect.any(String))
+    })
+    // Select destination and done
+    mockSearchPlaces.mockResolvedValue([PLACE_A])
+    await user.type(screen.getByTestId('search-input'), 'UC')
+    await waitFor(() => screen.getAllByTestId('result-item'))
+    await user.click(screen.getAllByTestId('result-item')[0])
+    await user.click(screen.getByTestId('done-button'))
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/ride/confirm', {
+        state: { destination: PLACE_A, originLat: 38.69, originLng: -121.59, originName: 'Sacramento Airport' },
       })
     })
   })

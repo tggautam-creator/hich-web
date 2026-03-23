@@ -319,6 +319,9 @@ export type Database = {
           origin_address: string | null
           dest_address: string | null
           route_polyline: string | null
+          available_seats: number | null
+          end_date: string | null
+          note: string | null
           is_active: boolean
           created_at: string
         }
@@ -336,6 +339,9 @@ export type Database = {
           origin_address?: string | null
           dest_address?: string | null
           route_polyline?: string | null
+          available_seats?: number | null
+          end_date?: string | null
+          note?: string | null
           is_active?: boolean
           created_at?: string
         }
@@ -353,6 +359,9 @@ export type Database = {
           origin_address?: string | null
           dest_address?: string | null
           route_polyline?: string | null
+          available_seats?: number | null
+          end_date?: string | null
+          note?: string | null
           is_active?: boolean
           created_at?: string
         }
@@ -429,6 +438,8 @@ export type Database = {
           trip_date: string             // ISO date YYYY-MM-DD
           time_type: 'departure' | 'arrival'
           trip_time: string             // HH:MM:SS
+          available_seats: number | null
+          note: string | null
           is_notified: boolean
           created_at: string
         }
@@ -445,6 +456,8 @@ export type Database = {
           trip_date: string
           time_type?: 'departure' | 'arrival'
           trip_time: string
+          available_seats?: number | null
+          note?: string | null
           is_notified?: boolean
           created_at?: string
         }
@@ -461,6 +474,8 @@ export type Database = {
           trip_date?: string
           time_type?: 'departure' | 'arrival'
           trip_time?: string
+          available_seats?: number | null
+          note?: string | null
           is_notified?: boolean
           created_at?: string
         }

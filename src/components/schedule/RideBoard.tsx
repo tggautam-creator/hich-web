@@ -9,7 +9,7 @@ import RideBoardCard from './RideBoardCard'
 import RideBoardConfirmSheet from './RideBoardConfirmSheet'
 import RideBoardEmptyState from './RideBoardEmptyState'
 import PostRideFAB from './PostRideFAB'
-import { formatDays, formatTime, SHORT_DAYS } from './boardHelpers'
+import { formatDays, formatDate, formatTime, SHORT_DAYS } from './boardHelpers'
 import type { ScheduledRide, TabFilter } from './boardTypes'
 import type { DriverRoutine } from '@/types/database'
 
@@ -32,9 +32,11 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
   const [rides, setRides] = useState<ScheduledRide[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [tab, setTab] = useState<TabFilter>('all')
+  const defaultTab: TabFilter = activeNavTab === 'drive' ? 'riders' : 'drivers'
+  const [tab, setTab] = useState<TabFilter>(defaultTab)
   const [searchQuery, setSearchQuery] = useState('')
 
+  const [detailRide, setDetailRide] = useState<ScheduledRide | null>(null)
   const [confirmRide, setConfirmRide] = useState<ScheduledRide | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [requestingId, setRequestingId] = useState<string | null>(null)
@@ -421,6 +423,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                 ride={ride}
                 isOwn={ride.user_id === profile?.id}
                 deletingId={deletingId}
+                onCardClick={(r) => { setDetailRide(r) }}
                 onRequestClick={(r) => { setConfirmRide(r); setRequestError(null) }}
                 onDeleteClick={(id) => { void handleDeleteSchedule(id) }}
                 onOpenMessages={handleOpenMessages}
@@ -429,6 +432,159 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
           </div>
         )}
       </div>
+
+      {/* ── Ride detail sheet ────────────────────────────────────────────── */}
+      <BottomSheet
+        isOpen={detailRide !== null}
+        onClose={() => { setDetailRide(null) }}
+        title="Ride Details"
+        data-testid="ride-detail-sheet"
+      >
+        {detailRide && (() => {
+          const dr = detailRide
+          const isDriverPost = dr.mode === 'driver'
+          const poster = dr.poster
+          const isOwn = dr.user_id === profile?.id
+          return (
+            <div className="space-y-4">
+              {/* Poster profile */}
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-full bg-surface flex items-center justify-center overflow-hidden shrink-0">
+                  {poster?.avatar_url ? (
+                    <img src={poster.avatar_url} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="h-5 w-5 text-text-secondary" aria-hidden="true">
+                      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                      <circle cx="12" cy="7" r="4" />
+                    </svg>
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-text-primary truncate">
+                    {isOwn ? 'You' : poster?.full_name ?? 'Unknown'}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <span className={[
+                      'text-xs font-semibold px-2 py-0.5 rounded-full',
+                      isDriverPost ? 'bg-success/10 text-success' : 'bg-primary/10 text-primary',
+                    ].join(' ')}>
+                      {isDriverPost ? 'Driver' : 'Rider'}
+                    </span>
+                    {poster?.rating_avg != null && (
+                      <span className="text-xs text-text-secondary">★ {poster.rating_avg.toFixed(1)}</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Route */}
+              <div className="rounded-2xl bg-surface p-4 space-y-3">
+                <div className="flex items-start gap-3">
+                  <span className="h-2.5 w-2.5 rounded-full bg-primary shrink-0 mt-1.5" />
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-text-secondary uppercase tracking-wide">From</p>
+                    <p data-testid="detail-origin" className="text-sm font-medium text-text-primary">{dr.origin_address}</p>
+                  </div>
+                </div>
+                <div className="ml-[4.5px] h-4 border-l border-dashed border-text-secondary/30" />
+                <div className="flex items-start gap-3">
+                  <span className="h-2.5 w-2.5 rounded-full bg-success shrink-0 mt-1.5" />
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-text-secondary uppercase tracking-wide">To</p>
+                    <p data-testid="detail-dest" className="text-sm font-medium text-text-primary">{dr.dest_address}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Date, time, direction */}
+              <div className="flex flex-wrap gap-2">
+                <span className="inline-flex items-center gap-1 rounded-full bg-surface px-3 py-1.5 text-xs font-medium text-text-primary">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
+                  </svg>
+                  {formatDate(dr.trip_date)}
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-full bg-surface px-3 py-1.5 text-xs font-medium text-text-primary">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+                  </svg>
+                  {dr.time_type === 'departure' ? 'Departs' : 'Arrives'} {formatTime(dr.trip_time)}
+                </span>
+                {dr.direction_type === 'roundtrip' && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary">
+                    Roundtrip
+                  </span>
+                )}
+              </div>
+
+              {/* Seats & note */}
+              {(dr.available_seats != null || dr.note) && (
+                <div className="space-y-2">
+                  {dr.available_seats != null && (
+                    <div className="flex items-center gap-2 text-sm text-text-primary">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary" aria-hidden="true">
+                        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+                        <circle cx="9" cy="7" r="4" />
+                        <path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                      </svg>
+                      <span data-testid="detail-seats">{dr.available_seats} {dr.available_seats === 1 ? 'seat' : 'seats'} available</span>
+                    </div>
+                  )}
+                  {dr.note && (
+                    <div className="flex items-start gap-2 text-sm text-text-primary">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary shrink-0 mt-0.5" aria-hidden="true">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                      </svg>
+                      <p data-testid="detail-note" className="text-text-secondary">{dr.note}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Action button */}
+              {!isOwn && !dr.already_requested && (
+                <button
+                  data-testid="detail-request-button"
+                  onClick={() => { setDetailRide(null); setConfirmRide(dr); setRequestError(null) }}
+                  className={[
+                    'w-full rounded-2xl py-3 text-sm font-semibold text-white active:opacity-80',
+                    isDriverPost ? 'bg-success' : 'bg-primary',
+                  ].join(' ')}
+                >
+                  {isDriverPost ? 'Request This Ride' : 'Offer to Drive'}
+                </button>
+              )}
+
+              {!isOwn && dr.already_requested && (dr.ride_status === 'coordinating' || dr.ride_status === 'accepted') && dr.ride_id && (
+                <button
+                  data-testid="detail-messages-button"
+                  onClick={() => { setDetailRide(null); handleOpenMessages(dr) }}
+                  className="w-full rounded-2xl py-3 text-sm font-semibold text-primary bg-primary/10 active:bg-primary/20"
+                >
+                  Open Messages
+                </button>
+              )}
+
+              {!isOwn && dr.already_requested && dr.ride_status !== 'coordinating' && dr.ride_status !== 'accepted' && (
+                <div className="w-full rounded-2xl py-3 text-center text-sm font-semibold bg-surface text-text-secondary">
+                  Request Sent
+                </div>
+              )}
+
+              {isOwn && (
+                <button
+                  data-testid="detail-delete-button"
+                  disabled={deletingId === dr.id}
+                  onClick={() => { setDetailRide(null); void handleDeleteSchedule(dr.id) }}
+                  className="w-full rounded-2xl py-3 text-sm font-semibold text-danger bg-danger/10 active:bg-danger/20 disabled:opacity-50"
+                >
+                  {deletingId === dr.id ? 'Deleting…' : 'Delete This Ride'}
+                </button>
+              )}
+            </div>
+          )
+        })()}
+      </BottomSheet>
 
       {/* ── Confirm sheet ─────────────────────────────────────────────────── */}
       <RideBoardConfirmSheet

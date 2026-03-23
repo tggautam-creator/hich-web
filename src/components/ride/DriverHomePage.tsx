@@ -29,6 +29,8 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
   const [isOnline, setIsOnline] = useState(true)
   const [activeRideCount, setActiveRideCount] = useState(0)
   const [unreadCount, setUnreadCount] = useState(0)
+  const [statusToast, setStatusToast] = useState<string | null>(null)
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const latestCoordsRef = useRef(DEFAULT_CENTER)
   const gpsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -108,9 +110,21 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
     void ev
   }, [])
 
+  function showToast(message: string) {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current)
+    setStatusToast(message)
+    toastTimeoutRef.current = setTimeout(() => setStatusToast(null), 3000)
+  }
+
   async function handleToggleOnline() {
     const next = !isOnline
     setIsOnline(next)
+
+    showToast(
+      next
+        ? 'You are now online — ride requests will appear here'
+        : 'You are now offline — you won\'t receive ride requests',
+    )
 
     // Persist to driver_locations so the server filters offline drivers
     if (profile?.id) {
@@ -165,12 +179,11 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         className="absolute left-0 right-0 top-0 z-[1000] bg-white/90 backdrop-blur-sm border-b border-border flex items-center justify-between px-4"
         style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
       >
-        {/* Online/offline pill toggle */}
-        <button
-          data-testid="online-toggle"
-          onClick={handleToggleOnline}
+        {/* Status indicator (non-interactive — toggle is the big button below) */}
+        <div
+          data-testid="online-indicator"
           className={[
-            'flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold transition-colors',
+            'flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold',
             isOnline
               ? 'bg-success/10 text-success'
               : 'bg-border/50 text-text-secondary',
@@ -179,11 +192,11 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
           <span
             className={[
               'h-2 w-2 rounded-full',
-              isOnline ? 'bg-success' : 'bg-text-secondary',
+              isOnline ? 'bg-success animate-pulse' : 'bg-text-secondary',
             ].join(' ')}
           />
           {isOnline ? 'Online' : 'Offline'}
-        </button>
+        </div>
 
         <span className="font-bold text-sm text-text-primary tracking-wider select-none">
           HICH DRIVER
@@ -207,13 +220,29 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         </button>
       </div>
 
+      {/* ── Status toast ────────────────────────────────────────────────── */}
+      {statusToast && (
+        <div
+          data-testid="status-toast"
+          className={[
+            'absolute left-4 right-4 z-[1100] rounded-2xl px-4 py-3 shadow-lg text-sm font-medium text-center transition-all animate-slide-down',
+            isOnline
+              ? 'bg-success text-white'
+              : 'bg-text-primary text-white',
+          ].join(' ')}
+          style={{ top: 'calc(max(env(safe-area-inset-top), 0.75rem) + 4rem)' }}
+        >
+          {statusToast}
+        </div>
+      )}
+
       {/* ── Active ride banner ──────────────────────────────────────────────── */}
       {activeRideCount > 0 && (
         <button
           data-testid="active-ride-banner"
           onClick={() => navigate('/rides')}
           className="absolute left-4 right-4 z-[1000] rounded-2xl bg-primary px-4 py-3 shadow-lg flex items-center gap-3 active:opacity-90 transition-opacity"
-          style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 9.5rem)' }}
+          style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 12rem)' }}
         >
           <div className="h-8 w-8 rounded-full bg-white/20 flex items-center justify-center shrink-0">
             <span className="text-white font-bold text-sm">{activeRideCount}</span>
@@ -230,11 +259,40 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         </button>
       )}
 
-      {/* ── Ride Board card ──────────────────────────────────────────────── */}
+      {/* ── Bottom card stack ──────────────────────────────────────────── */}
       <div
-        className="absolute left-0 right-0 z-[1000] px-4"
+        className="absolute left-0 right-0 z-[1000] px-4 flex flex-col gap-3"
         style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 4.5rem)' }}
       >
+        {/* ── Online/Offline toggle ──────────────────────────────────────── */}
+        <button
+          data-testid="online-toggle"
+          onClick={() => { void handleToggleOnline() }}
+          className={[
+            'w-full rounded-2xl shadow-lg px-4 py-3 flex items-center gap-3 active:scale-[0.99] transition-all',
+            isOnline
+              ? 'bg-white border-2 border-success'
+              : 'bg-white border border-border',
+          ].join(' ')}
+        >
+          <span className={[
+            'relative flex h-3 w-3 shrink-0',
+          ].join(' ')}>
+            {isOnline && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />}
+            <span className={['relative inline-flex h-3 w-3 rounded-full', isOnline ? 'bg-success' : 'bg-text-secondary'].join(' ')} />
+          </span>
+
+          <span className={['flex-1 text-sm font-semibold text-left', isOnline ? 'text-success' : 'text-text-secondary'].join(' ')}>
+            {isOnline ? 'Online — receiving rides' : 'Offline — tap to go online'}
+          </span>
+
+          {/* Mini toggle switch */}
+          <div className={['relative h-6 w-10 rounded-full shrink-0 transition-colors', isOnline ? 'bg-success' : 'bg-border'].join(' ')}>
+            <div className={['absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform', isOnline ? 'translate-x-4' : 'translate-x-0.5'].join(' ')} />
+          </div>
+        </button>
+
+        {/* ── Ride Board card ────────────────────────────────────────────── */}
         <button
           data-testid="ride-board-button"
           onClick={() => { navigate('/rides/board', { state: { fromTab: 'drive' } }) }}
