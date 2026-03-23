@@ -30,9 +30,11 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
   const [activeRideCount, setActiveRideCount] = useState(0)
   const [unreadCount, setUnreadCount] = useState(0)
   const [statusToast, setStatusToast] = useState<string | null>(null)
+  const [userPanned, setUserPanned] = useState(false)
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const latestCoordsRef = useRef(DEFAULT_CENTER)
   const gpsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const mapRef = useRef<google.maps.Map | null>(null)
 
   // Fetch active ride count + unread notifications
   useEffect(() => {
@@ -80,9 +82,15 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
       (pos) => {
         const lat = pos.coords.latitude
         const lng = pos.coords.longitude
-        setCenter({ lat, lng })
+        const newLocation = { lat, lng }
+        setCenter(newLocation)
         setHasGps(true)
-        latestCoordsRef.current = { lat, lng }
+        latestCoordsRef.current = newLocation
+
+        // Only pan map if user hasn't manually panned
+        if (!userPanned && mapRef.current) {
+          mapRef.current.panTo(newLocation)
+        }
       },
       () => { /* denied */ },
       { enableHighAccuracy: true, timeout: 10_000, maximumAge: 5_000 },
@@ -104,10 +112,13 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         gpsIntervalRef.current = null
       }
     }
-  }, [isOnline, postLocation])
+  }, [isOnline, postLocation, userPanned])
 
-  const handleCameraChange = useCallback((ev: { detail: { center: { lat: number; lng: number }; zoom: number } }) => {
-    void ev
+  const handleCameraChange = useCallback((ev: { detail: { center: { lat: number; lng: number }; zoom: number }; map: google.maps.Map }) => {
+    // Capture map instance
+    if (!mapRef.current && ev.map) {
+      mapRef.current = ev.map
+    }
   }, [])
 
   function showToast(message: string) {
@@ -154,12 +165,11 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
           mapId={MAP_ID}
           defaultCenter={DEFAULT_CENTER}
           defaultZoom={DEFAULT_ZOOM}
-          center={center}
-          zoom={DEFAULT_ZOOM}
           gestureHandling="greedy"
           disableDefaultUI
           className="h-full w-full"
           onCameraChanged={handleCameraChange}
+          onDragstart={() => setUserPanned(true)}
         >
           {hasGps && (
             <AdvancedMarker position={center} title="Driver location">
@@ -172,6 +182,31 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
           )}
         </Map>
       </APIProvider>
+
+      {/* ── Re-center button (shown when user panned away) ──────────────────── */}
+      {userPanned && hasGps && (
+        <button
+          data-testid="recenter-button"
+          onClick={() => {
+            setUserPanned(false)
+            if (mapRef.current) {
+              mapRef.current.panTo(latestCoordsRef.current)
+            }
+          }}
+          aria-label="Re-center to my location"
+          className="absolute right-4 z-[1000] h-10 w-10 rounded-full bg-white shadow-lg flex items-center justify-center active:scale-95 transition-transform"
+          style={{ top: 'calc(max(env(safe-area-inset-top), 0.75rem) + 4rem)' }}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" />
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="2" x2="12" y2="4" />
+            <line x1="12" y1="20" x2="12" y2="22" />
+            <line x1="2" y1="12" x2="4" y2="12" />
+            <line x1="20" y1="12" x2="22" y2="12" />
+          </svg>
+        </button>
+      )}
 
       {/* ── Slim frosted top bar ──────────────────────────────────────────── */}
       <div

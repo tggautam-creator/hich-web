@@ -113,8 +113,41 @@ scheduleRouter.get(
       return
     }
 
+    // Filter out rides from today where time has passed beyond grace period (60 minutes)
+    const now = new Date()
+    const filteredSchedules = schedules.filter((s: Record<string, unknown>) => {
+      const tripDate = s['trip_date'] as string
+      const tripTime = s['trip_time'] as string
+
+      // If trip date is in the future, keep it
+      if (tripDate > today) return true
+
+      // If trip date is today, check if time has passed beyond grace period
+      if (tripDate === today && tripTime) {
+        try {
+          const rideDateTime = new Date(`${tripDate}T${tripTime}`)
+          if (isNaN(rideDateTime.getTime())) return true // Keep if invalid date
+
+          const timeDifferenceMs = now.getTime() - rideDateTime.getTime()
+          const timeDifferenceMinutes = timeDifferenceMs / (1000 * 60)
+
+          // Keep if scheduled time is in the future OR within 60 minute grace period
+          return timeDifferenceMinutes <= 60
+        } catch {
+          return true // Keep if date parsing fails
+        }
+      }
+
+      return true
+    })
+
+    if (filteredSchedules.length === 0) {
+      res.status(200).json({ rides: [] })
+      return
+    }
+
     // Step 2: fetch poster info from public.users
-    const userIds = [...new Set(schedules.map((s: Record<string, unknown>) => s['user_id'] as string))]
+    const userIds = [...new Set(filteredSchedules.map((s: Record<string, unknown>) => s['user_id'] as string))]
     const { data: users } = await supabaseAdmin
       .from('users')
       .select('id, full_name, avatar_url, rating_avg, is_driver')
@@ -158,7 +191,7 @@ scheduleRouter.get(
 
     // Step 4: check which schedules the current user already requested
     const userId = res.locals['userId'] as string
-    const scheduleIds = schedules.map((s: Record<string, unknown>) => s['id'] as string)
+    const scheduleIds = filteredSchedules.map((s: Record<string, unknown>) => s['id'] as string)
     const requestedSet = new Set<string>()
 
     const rideStatusMap = new Map<string, { status: string; ride_id: string }>()
@@ -180,7 +213,7 @@ scheduleRouter.get(
     }
 
     // Build rides with optional relevance_score
-    const rides = schedules.map((s: Record<string, unknown>) => {
+    const rides = filteredSchedules.map((s: Record<string, unknown>) => {
       const uid = s['user_id'] as string
       const poster = userMap.get(uid) ?? null
       let relevanceScore = 0
