@@ -437,6 +437,8 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
                   mainText: state.originName,
                   secondaryText: '',
                   fullAddress: state.originName,
+                  lat: state.originLat,
+                  lng: state.originLng,
                 }
               }
               navigate('/schedule/rider', { state: scheduleState })

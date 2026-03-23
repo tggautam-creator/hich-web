@@ -97,6 +97,17 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
     if (!isDriver && activeMode === 'driver') setActiveMode('rider')
   }, [isDriver, activeMode])
 
+  /** Resolve coordinates for a place — use pre-resolved lat/lng if available, otherwise geocode */
+  async function resolveCoords(
+    place: PlaceSuggestion,
+    sessionToken: string,
+  ): Promise<{ lat: number; lng: number } | null> {
+    if (place.lat != null && place.lng != null) {
+      return { lat: place.lat, lng: place.lng }
+    }
+    return getPlaceCoordinates(place.placeId, sessionToken)
+  }
+
   // From location autocomplete state
   const [fromQuery, setFromQuery] = useState(prefill?.prefillFrom?.mainText ?? '')
   const [fromSuggestions, setFromSuggestions] = useState<PlaceSuggestion[]>([])
@@ -272,8 +283,8 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
         const { data: { session } } = await supabase.auth.getSession()
         // BUG-051: Geocode places to get coordinates for proximity/bearing matching
         const [fromCoords, toCoords] = await Promise.all([
-          getPlaceCoordinates(fromLocation.placeId, fromSessionTokenRef.current),
-          getPlaceCoordinates(toLocation.placeId, toSessionTokenRef.current),
+          resolveCoords(fromLocation, fromSessionTokenRef.current),
+          resolveCoords(toLocation, toSessionTokenRef.current),
         ])
         fromSessionTokenRef.current = crypto.randomUUID()
         toSessionTokenRef.current = crypto.randomUUID()
@@ -357,8 +368,8 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
     try {
       // Geocode both places
       const [fromCoords, toCoords] = await Promise.all([
-        getPlaceCoordinates(fromLocation.placeId, fromSessionTokenRef.current),
-        getPlaceCoordinates(toLocation.placeId, toSessionTokenRef.current),
+        resolveCoords(fromLocation, fromSessionTokenRef.current),
+        resolveCoords(toLocation, toSessionTokenRef.current),
       ])
       fromSessionTokenRef.current = crypto.randomUUID()
       toSessionTokenRef.current = crypto.randomUUID()

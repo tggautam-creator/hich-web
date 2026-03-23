@@ -17,6 +17,8 @@ export interface PlaceSuggestion {
   mainText:      string   // e.g. "UC Davis Memorial Union"
   secondaryText: string   // e.g. "Davis, CA, USA"
   fullAddress:   string   // e.g. "UC Davis Memorial Union, Davis, CA, USA"
+  lat?:          number   // pre-resolved latitude (skips geocode)
+  lng?:          number   // pre-resolved longitude (skips geocode)
 }
 
 // Google Places New API (v1) — raw response shape
