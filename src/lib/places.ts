@@ -116,6 +116,29 @@ export async function getPlaceCoordinates(
   }
 }
 
+/**
+ * Geocode an address string to lat/lng using the Google Geocoding API.
+ * Used as a fallback when we have an address but no valid placeId.
+ */
+export async function geocodeAddress(
+  address: string,
+): Promise<{ lat: number; lng: number } | null> {
+  const key = env.GOOGLE_PLACES_KEY
+  if (!key || !address) return null
+
+  try {
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${encodeURIComponent(key)}`
+    const resp = await fetch(url)
+    if (!resp.ok) return null
+    const data = (await resp.json()) as { results?: { geometry?: { location?: { lat: number; lng: number } } }[] }
+    const loc = data.results?.[0]?.geometry?.location
+    if (!loc) return null
+    return { lat: loc.lat, lng: loc.lng }
+  } catch {
+    return null
+  }
+}
+
 // ── Recent destinations ───────────────────────────────────────────────────────
 
 /** Read up to MAX_RECENT recent destinations from localStorage. */

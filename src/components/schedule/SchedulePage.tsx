@@ -11,6 +11,7 @@ import { useAuthStore } from '@/stores/authStore'
 import {
   searchPlaces,
   getPlaceCoordinates,
+  geocodeAddress,
   type PlaceSuggestion,
 } from '@/lib/places'
 import { calculateBearing } from '@/lib/geo'
@@ -102,10 +103,16 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
     place: PlaceSuggestion,
     sessionToken: string,
   ): Promise<{ lat: number; lng: number } | null> {
+    // Use pre-resolved coords if available
     if (place.lat != null && place.lng != null) {
       return { lat: place.lat, lng: place.lng }
     }
-    return getPlaceCoordinates(place.placeId, sessionToken)
+    // For real Google Place IDs, use the Places API
+    if (place.placeId && !place.placeId.startsWith('current-location') && !place.placeId.startsWith('manual-')) {
+      return getPlaceCoordinates(place.placeId, sessionToken)
+    }
+    // Fallback: geocode the address string
+    return geocodeAddress(place.fullAddress)
   }
 
   // From location autocomplete state
