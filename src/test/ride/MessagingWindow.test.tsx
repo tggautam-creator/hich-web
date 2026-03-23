@@ -309,4 +309,115 @@ describe('MessagingWindow', () => {
       expect(screen.getByTestId('error-message')).toBeInTheDocument()
     })
   })
+
+  // ── Scheduled rides time-based behavior ────────────────────────────────────
+
+  it('scheduled ride shows My Rides button when not approaching', async () => {
+    // Mock current time to be far from ride time
+    vi.setSystemTime(new Date('2026-03-23T08:00:00'))
+
+    const scheduledRide = {
+      ...MOCK_RIDE,
+      schedule_id: 'sched-123',
+      trip_date: '2026-03-23',
+      trip_time: '10:00:00', // 2 hours from now
+      pickup_confirmed: true,
+      dropoff_confirmed: true,
+    }
+
+    setupMocks()
+    // Override ride mock
+    const rideSelect = vi.fn().mockReturnValue({
+      eq: vi.fn().mockReturnValue({
+        single: vi.fn().mockResolvedValue({ data: scheduledRide, error: null }),
+      }),
+    })
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'rides') return { select: rideSelect }
+      if (table === 'users') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_DRIVER, error: null }) }) }) }
+      if (table === 'vehicles') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }) }) }) }) }
+      return { select: vi.fn() }
+    })
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('back-to-rides-button')).toBeInTheDocument()
+      expect(screen.getByTestId('back-to-rides-button')).toHaveTextContent('My Rides')
+      expect(screen.getByText(/Scheduled for/)).toBeInTheDocument()
+    })
+
+    expect(screen.queryByTestId('navigate-to-pickup-button')).not.toBeInTheDocument()
+  })
+
+  it('scheduled ride shows Navigate to Pickup button when approaching', async () => {
+    // Mock current time to be 10 minutes before ride time
+    vi.setSystemTime(new Date('2026-03-23T09:50:00'))
+
+    const approachingRide = {
+      ...MOCK_RIDE,
+      schedule_id: 'sched-123',
+      trip_date: '2026-03-23',
+      trip_time: '10:00:00', // 10 minutes from now
+      pickup_confirmed: true,
+      dropoff_confirmed: true,
+    }
+
+    setupMocks()
+    // Override ride mock
+    const rideSelect = vi.fn().mockReturnValue({
+      eq: vi.fn().mockReturnValue({
+        single: vi.fn().mockResolvedValue({ data: approachingRide, error: null }),
+      }),
+    })
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'rides') return { select: rideSelect }
+      if (table === 'users') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_DRIVER, error: null }) }) }) }
+      if (table === 'vehicles') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }) }) }) }) }
+      return { select: vi.fn() }
+    })
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('navigate-to-pickup-button')).toBeInTheDocument()
+      expect(screen.getByTestId('navigate-to-pickup-button')).toHaveTextContent('Navigate to Pickup')
+      expect(screen.getByText('Both locations confirmed! Navigate when ready.')).toBeInTheDocument()
+    })
+
+    expect(screen.queryByTestId('back-to-rides-button')).not.toBeInTheDocument()
+  })
+
+  it('non-scheduled ride always shows Navigate to Pickup button', async () => {
+    const immediateRide = {
+      ...MOCK_RIDE,
+      schedule_id: null,
+      pickup_confirmed: true,
+      dropoff_confirmed: true,
+    }
+
+    setupMocks()
+    // Override ride mock
+    const rideSelect = vi.fn().mockReturnValue({
+      eq: vi.fn().mockReturnValue({
+        single: vi.fn().mockResolvedValue({ data: immediateRide, error: null }),
+      }),
+    })
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'rides') return { select: rideSelect }
+      if (table === 'users') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_DRIVER, error: null }) }) }) }
+      if (table === 'vehicles') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }) }) }) }) }
+      return { select: vi.fn() }
+    })
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('navigate-to-pickup-button')).toBeInTheDocument()
+      expect(screen.getByTestId('navigate-to-pickup-button')).toHaveTextContent('Navigate to Pickup')
+      expect(screen.getByText('Both locations confirmed! Navigate when ready.')).toBeInTheDocument()
+    })
+
+    expect(screen.queryByTestId('back-to-rides-button')).not.toBeInTheDocument()
+  })
 })

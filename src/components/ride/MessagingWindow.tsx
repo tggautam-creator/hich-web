@@ -13,6 +13,7 @@ import type { TransitDropoffSuggestion } from '@/components/ride/TransitSuggesti
 import { MAP_ID } from '@/lib/mapConstants'
 import { MapBoundsFitter, RoutePolyline } from '@/components/map/RoutePreview'
 import { getDirectionsByLatLng } from '@/lib/directions'
+import { isScheduledRideApproaching, formatScheduledRideTime } from '@/lib/datetime'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -179,6 +180,9 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const [cancelling, setCancelling] = useState(false)
   const [driverCancelledModal, setDriverCancelledModal] = useState(false)
 
+  // Time-based state for scheduled rides
+  const [isRideApproaching, setIsRideApproaching] = useState(false)
+
   // Map pin dropper state
   const [pinMode, setPinMode] = useState<PinMode | null>(null)
   const [pinLat, setPinLat] = useState<number | null>(null)
@@ -302,6 +306,23 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
 
     void fetchData()
   }, [rideId, navigate])
+
+  // ── Check if scheduled ride is approaching (15 min before) ───────────────
+  useEffect(() => {
+    const checkRideApproaching = () => {
+      setIsRideApproaching(isScheduledRideApproaching(ride))
+    }
+
+    // Check immediately
+    checkRideApproaching()
+
+    // Then check every minute
+    const interval = setInterval(checkRideApproaching, 60000)
+
+    return () => {
+      clearInterval(interval)
+    }
+  }, [ride])
 
   // ── Subscribe to new messages + cancellation + location confirmations ───
   useEffect(() => {
@@ -1433,10 +1454,10 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
       {/* ── Both confirmed: Navigate or Ride Confirmed ─────────────────────── */}
       {bothConfirmed && ride.status !== 'active' && ride.status !== 'completed' && ride.status !== 'cancelled' && (
         <div className="px-4 py-3 border-t border-border bg-success/5 shrink-0">
-          {ride.schedule_id ? (
+          {ride.schedule_id && !isRideApproaching ? (
             <>
               <p className="text-xs text-success text-center mb-2 font-semibold">
-                Ride Confirmed! You'll be notified before your ride.
+                Ride Confirmed! {formatScheduledRideTime(ride) ? `Scheduled for ${formatScheduledRideTime(ride)}.` : "You'll be notified before your ride."}
               </p>
               <div className="flex gap-2">
                 <button
