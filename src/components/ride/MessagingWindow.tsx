@@ -14,6 +14,7 @@ import { MAP_ID } from '@/lib/mapConstants'
 import { MapBoundsFitter, RoutePolyline } from '@/components/map/RoutePreview'
 import { getDirectionsByLatLng } from '@/lib/directions'
 import { isScheduledRideApproaching, formatScheduledRideTime, getMinutesUntilRide } from '@/lib/datetime'
+import { calculateFare, formatCents } from '@/lib/fare'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -43,15 +44,18 @@ type PinMode = 'pickup' | 'dropoff'
 /** Small inner component for pickup mini-map with walking + driving routes. */
 function PickupMiniMap({
   originLat, originLng, pickupLat, pickupLng, isRider, driverId,
+  destLat, destLng, originalFareCents,
 }: {
   originLat: number; originLng: number; pickupLat: number; pickupLng: number
   isRider: boolean; driverId?: string | null
+  destLat?: number | null; destLng?: number | null; originalFareCents?: number | null
 }) {
   const [walkMin, setWalkMin] = useState<number | null>(null)
   const [walkPolyline, setWalkPolyline] = useState<string | null>(null)
   const [driveMin, setDriveMin] = useState<number | null>(null)
   const [driverLat, setDriverLat] = useState<number | null>(null)
   const [driverLng, setDriverLng] = useState<number | null>(null)
+  const [estimatedFare, setEstimatedFare] = useState<number | null>(null)
 
   // Fetch driver's live location for accurate drive ETA
   useEffect(() => {
@@ -95,6 +99,18 @@ function PickupMiniMap({
       }
     })()
   }, [driveOriginLat, driveOriginLng, pickupLat, pickupLng])
+
+  // Fare recalculation: pickup → destination
+  useEffect(() => {
+    if (destLat == null || destLng == null) return
+    void (async () => {
+      const result = await getDirectionsByLatLng(pickupLat, pickupLng, destLat, destLng)
+      if (result) {
+        const fare = calculateFare(result.distance_km, result.duration_min)
+        setEstimatedFare(fare.fare_cents)
+      }
+    })()
+  }, [pickupLat, pickupLng, destLat, destLng])
 
   return (
     <>
@@ -144,6 +160,19 @@ function PickupMiniMap({
             {driveMin != null ? ` · ${driveMin} min` : ' · calculating…'}
           </span>
         </div>
+        {estimatedFare != null && (
+          <div className="flex items-center gap-1.5 pt-0.5 border-t border-border/50 mt-1">
+            <span className="inline-block w-2 h-2 rounded-full bg-[#F59E0B] shrink-0" />
+            <span className="text-text-primary font-medium">
+              Estimated fare · {formatCents(estimatedFare)}
+              {originalFareCents != null && originalFareCents !== estimatedFare && (
+                <span className={estimatedFare < originalFareCents ? ' text-success' : ' text-danger'}>
+                  {' '}({estimatedFare < originalFareCents ? '−' : '+'}{formatCents(Math.abs(estimatedFare - originalFareCents))})
+                </span>
+              )}
+            </span>
+          </div>
+        )}
       </div>
     </>
   )
@@ -1209,6 +1238,9 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                         pickupLng={meta.lng as number}
                         isRider={isRider}
                         driverId={ride.driver_id}
+                        destLat={ride.destination ? (ride.destination as { coordinates: [number, number] }).coordinates[1] : null}
+                        destLng={ride.destination ? (ride.destination as { coordinates: [number, number] }).coordinates[0] : null}
+                        originalFareCents={ride.fare_cents}
                       />
                     )}
                     {hasLocation && !ride?.origin && (
