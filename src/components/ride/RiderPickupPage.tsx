@@ -76,6 +76,11 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   // Transit banner data (from transit_dropoff_suggestion message)
   const [transitBanner, setTransitBanner] = useState<TransitBannerData | null>(null)
 
+  // Live driver location + ETA
+  const [driverLiveLat, setDriverLiveLat] = useState<number | null>(null)
+  const [driverLiveLng, setDriverLiveLng] = useState<number | null>(null)
+  const [driverEtaMin, setDriverEtaMin] = useState<number | null>(null)
+
   const isNearby = (riderLat !== null && riderLng !== null && pickupLat !== null && pickupLng !== null)
     ? haversineMetres(riderLat, riderLng, pickupLat, pickupLng) <= CLOSE_THRESHOLD_M
     : false
@@ -217,6 +222,57 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
 
     return () => { void supabase.removeChannel(channel) }
   }, [profile?.id, rideId, navigate])
+
+  // ── Realtime: listen for driver location broadcasts ───────────────────────
+  useEffect(() => {
+    if (!rideId) return
+
+    const channel = supabase
+      .channel(`ride-location:${rideId}`)
+      .on('broadcast', { event: 'driver_location' }, (msg) => {
+        const data = msg.payload as { lat?: number; lng?: number }
+        if (typeof data.lat === 'number' && typeof data.lng === 'number') {
+          setDriverLiveLat(data.lat)
+          setDriverLiveLng(data.lng)
+        }
+      })
+      .subscribe()
+
+    return () => { void supabase.removeChannel(channel) }
+  }, [rideId])
+
+  // ── Calculate driver ETA to pickup when driver location updates ──────────
+  useEffect(() => {
+    if (driverLiveLat == null || driverLiveLng == null || pickupLat == null || pickupLng == null) return
+
+    const distM = haversineMetres(driverLiveLat, driverLiveLng, pickupLat, pickupLng)
+    // If very close, show "arriving"
+    if (distM < 200) {
+      setDriverEtaMin(0)
+      return
+    }
+
+    // Estimate: avg 30 km/h in city driving
+    const etaMin = Math.max(1, Math.round((distM / 1000) / 30 * 60))
+    setDriverEtaMin(etaMin)
+  }, [driverLiveLat, driverLiveLng, pickupLat, pickupLng])
+
+  // ── Broadcast rider location to driver every 15s ───────────────────────
+  useEffect(() => {
+    if (!rideId || riderLat == null || riderLng == null) return
+
+    const broadcast = () => {
+      void supabase.channel(`ride-location:${rideId}`).send({
+        type: 'broadcast',
+        event: 'rider_location',
+        payload: { lat: riderLat, lng: riderLng },
+      })
+    }
+
+    broadcast()
+    const interval = setInterval(broadcast, 15000)
+    return () => clearInterval(interval)
+  }, [rideId, riderLat, riderLng])
 
   // ── GPS tracking for rider ───────────────────────────────────────────────
   useEffect(() => {
@@ -515,6 +571,22 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-8 w-8 text-success drop-shadow-md" aria-hidden="true">
                   <path d="M12 0C7.31 0 3.5 3.81 3.5 8.5c0 7.94 7.81 14.66 8.14 14.93a.5.5 0 0 0 .72 0C12.69 23.16 20.5 16.44 20.5 8.5 20.5 3.81 16.69 0 12 0zm0 12a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/>
                 </svg>
+              </div>
+            </AdvancedMarker>
+          )}
+
+          {/* Live driver marker with ETA badge */}
+          {driverLiveLat != null && driverLiveLng != null && (
+            <AdvancedMarker position={{ lat: driverLiveLat, lng: driverLiveLng }} title="Driver location">
+              <div data-testid="driver-live-marker" className="flex flex-col items-center">
+                <div className="bg-primary text-white rounded-full px-2 py-0.5 text-[10px] font-bold shadow-lg mb-0.5 whitespace-nowrap">
+                  {driverEtaMin === 0 ? 'Arriving!' : driverEtaMin != null ? `${driverEtaMin} min` : '…'}
+                </div>
+                <div className="h-7 w-7 rounded-full bg-primary border-2 border-white shadow-lg flex items-center justify-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-4 w-4" aria-hidden="true">
+                    <path d="M18.92 6.01C18.72 5.42 18.16 5 17.5 5h-11c-.66 0-1.21.42-1.42 1.01L3 12v8c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-8l-2.08-5.99zM6.5 16c-.83 0-1.5-.67-1.5-1.5S5.67 13 6.5 13s1.5.67 1.5 1.5S7.33 16 6.5 16zm11 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zM5 11l1.5-4.5h11L19 11H5z"/>
+                  </svg>
+                </div>
               </div>
             </AdvancedMarker>
           )}

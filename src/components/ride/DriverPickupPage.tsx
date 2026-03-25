@@ -84,6 +84,11 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
   const [enRoutePolyline, setEnRoutePolyline] = useState<string | null>(null)
   const [pickupAddress, setPickupAddress] = useState<string | null>(null)
 
+  // Live rider location + ETA
+  const [riderLiveLat, setRiderLiveLat] = useState<number | null>(null)
+  const [riderLiveLng, setRiderLiveLng] = useState<number | null>(null)
+  const [riderEtaMin, setRiderEtaMin] = useState<number | null>(null)
+
   // ── Fetch ride + rider info ──────────────────────────────────────────────
   useEffect(() => {
     if (!rideId) {
@@ -252,6 +257,54 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
 
     return () => navigator.geolocation.clearWatch(watchId)
   }, [isEnRoute])
+
+  // ── Broadcast driver location to rider every 15s ─────────────────────────
+  useEffect(() => {
+    if (!rideId || !isEnRoute || liveDriverLat == null || liveDriverLng == null) return
+
+    const broadcast = () => {
+      void supabase.channel(`ride-location:${rideId}`).send({
+        type: 'broadcast',
+        event: 'driver_location',
+        payload: { lat: liveDriverLat, lng: liveDriverLng },
+      })
+    }
+
+    broadcast()
+    const interval = setInterval(broadcast, 15000)
+    return () => clearInterval(interval)
+  }, [rideId, isEnRoute, liveDriverLat, liveDriverLng])
+
+  // ── Listen for rider location broadcasts ──────────────────────────────────
+  useEffect(() => {
+    if (!rideId || !isEnRoute) return
+
+    const channel = supabase
+      .channel(`ride-location-driver:${rideId}`)
+      .on('broadcast', { event: 'rider_location' }, (msg) => {
+        const data = msg.payload as { lat?: number; lng?: number }
+        if (typeof data.lat === 'number' && typeof data.lng === 'number') {
+          setRiderLiveLat(data.lat)
+          setRiderLiveLng(data.lng)
+        }
+      })
+      .subscribe()
+
+    return () => { void supabase.removeChannel(channel) }
+  }, [rideId, isEnRoute])
+
+  // ── Calculate rider walking ETA to pickup ─────────────────────────────────
+  useEffect(() => {
+    if (riderLiveLat == null || riderLiveLng == null || !pickupPos) return
+
+    const distM = haversineMetres(riderLiveLat, riderLiveLng, pickupPos.lat, pickupPos.lng)
+    if (distM < 100) {
+      setRiderEtaMin(0)
+      return
+    }
+    // Walking speed ~1.4 m/s
+    setRiderEtaMin(Math.max(1, Math.ceil(distM / WALKING_SPEED_MS / 60)))
+  }, [riderLiveLat, riderLiveLng, pickupPos])
 
   // ── Fetch route polyline from driver to pickup ───────────────────────────
   useEffect(() => {
@@ -471,6 +524,21 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
               <AdvancedMarker position={{ lat: liveDriverLat, lng: liveDriverLng }} title="You">
                 <div data-testid="driver-live-marker">
                   <CarMarker size={32} color="#FFFFFF" />
+                </div>
+              </AdvancedMarker>
+            )}
+
+            {/* Live rider marker with ETA badge */}
+            {riderLiveLat != null && riderLiveLng != null && (
+              <AdvancedMarker position={{ lat: riderLiveLat, lng: riderLiveLng }} title="Rider">
+                <div data-testid="rider-live-marker" className="flex flex-col items-center">
+                  <div className="bg-[#6366F1] text-white rounded-full px-2 py-0.5 text-[10px] font-bold shadow-lg mb-0.5 whitespace-nowrap">
+                    {riderEtaMin === 0 ? 'At pickup!' : riderEtaMin != null ? `${riderEtaMin} min walk` : '…'}
+                  </div>
+                  <div className="relative flex items-center justify-center">
+                    <span className="absolute h-6 w-6 rounded-full bg-[#6366F1]/30 animate-ping" />
+                    <span className="relative h-3 w-3 rounded-full bg-[#6366F1] border-2 border-white shadow-md" />
+                  </div>
                 </div>
               </AdvancedMarker>
             )}
