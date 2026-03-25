@@ -1,5 +1,5 @@
 /** Map ID required for AdvancedMarker support (Google Cloud Console). */
-export const MAP_ID = '8cb10228438378796542e8f0'
+export const MAP_ID = 'afc6d35a59fbd53d63b82275'
 
 /** Default map center — UC Davis campus area. */
 export const DEFAULT_CENTER = { lat: 38.5382, lng: -121.7617 }
