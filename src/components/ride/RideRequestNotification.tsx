@@ -77,12 +77,13 @@ export default function RideRequestNotification({
   'data-testid'?: string
 }) {
   const navigate = useNavigate()
-  const [notification, setNotification] = useState<NotificationState | null>(null)
+  const [queue, setQueue] = useState<NotificationState[]>([])
+  const notification = queue[0] ?? null
   const [secondsLeft, setSecondsLeft] = useState(DISMISS_SECONDS)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const dismiss = useCallback(() => {
-    setNotification(null)
+    setQueue((prev) => prev.slice(1))
     setSecondsLeft(DISMISS_SECONDS)
     if (timerRef.current) {
       clearInterval(timerRef.current)
@@ -111,7 +112,7 @@ export default function RideRequestNotification({
     seenRideIdsRef.current.add(data.ride_id)
 
     const earningsCents = parseInt(data.estimated_earnings_cents ?? '0', 10)
-    setNotification({
+    const entry: NotificationState = {
       rideId: data.ride_id,
       riderName: data.rider_name ?? 'A rider',
       destination: data.destination ?? 'Nearby destination',
@@ -122,8 +123,12 @@ export default function RideRequestNotification({
       destinationLat: data.destination_lat ?? '',
       destinationLng: data.destination_lng ?? '',
       isRenewal: isRenewal ?? false,
+    }
+    setQueue((prev) => {
+      // If queue is empty, reset countdown
+      if (prev.length === 0) setSecondsLeft(DISMISS_SECONDS)
+      return [...prev, entry]
     })
-    setSecondsLeft(DISMISS_SECONDS)
   }, [])
 
   // Handle incoming board request (from ride board)
@@ -136,7 +141,7 @@ export default function RideRequestNotification({
     const timeLabel = [data.trip_date, data.trip_time].filter(Boolean).join(' at ')
     const destination = routeLabel || timeLabel || ''
 
-    setNotification({
+    const entry: NotificationState = {
       rideId: data.ride_id,
       riderName: data.requester_name ?? 'Someone',
       destination,
@@ -147,8 +152,11 @@ export default function RideRequestNotification({
       destinationLat: '',
       destinationLng: '',
       isBoardRequest: true,
+    }
+    setQueue((prev) => {
+      if (prev.length === 0) setSecondsLeft(DISMISS_SECONDS)
+      return [...prev, entry]
     })
-    setSecondsLeft(DISMISS_SECONDS)
   }, [])
 
   // Handle board request accepted — show toast and navigate to messaging
@@ -167,15 +175,13 @@ export default function RideRequestNotification({
   const cancelledTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const handleRideCancelled = useCallback((data: RideCancelledData) => {
-    // If we're showing a notification for this ride, dismiss it
-    if (rideIdRef.current && rideIdRef.current === data.ride_id) {
-      dismiss()
-    }
+    // Remove this ride from the queue (wherever it is)
+    setQueue((prev) => prev.filter((n) => n.rideId !== data.ride_id))
     // Show cancellation toast
     setCancelledToast({ cancelledBy: data.cancelled_by ?? 'other party' })
     if (cancelledTimerRef.current) clearTimeout(cancelledTimerRef.current)
     cancelledTimerRef.current = setTimeout(() => setCancelledToast(null), 8000)
-  }, [dismiss])
+  }, [])
 
   // When WaitingRoom auto-selects this driver after a cancellation, navigate
   // them directly to DropoffSelection without needing to re-call /accept.
@@ -249,14 +255,14 @@ export default function RideRequestNotification({
       })
       channel.on('broadcast', { event: 'ride_cancelled' }, (msg) => {
         const data = msg.payload as { ride_id?: string }
-        if (rideIdRef.current && rideIdRef.current === data.ride_id) {
-          dismiss()
+        if (data.ride_id) {
+          setQueue((prev) => prev.filter((n) => n.rideId !== data.ride_id))
         }
       })
       channel.on('broadcast', { event: 'ride_standby' }, (msg) => {
         const data = msg.payload as { ride_id?: string }
-        if (rideIdRef.current && rideIdRef.current === data.ride_id) {
-          dismiss()
+        if (data.ride_id) {
+          setQueue((prev) => prev.filter((n) => n.rideId !== data.ride_id))
         }
       })
       channel.on('broadcast', { event: 'ride_request_renewed' }, (msg) => {
@@ -302,9 +308,10 @@ export default function RideRequestNotification({
     riderChannel.on('broadcast', { event: 'driver_cancelled' }, (msg) => {
       const data = msg.payload as Record<string, unknown>
       // driver_cancelled means re-match — don't show "Ride Cancelled" toast
-      // Just dismiss any active notification for this ride
-      if (rideIdRef.current && rideIdRef.current === data['ride_id']) {
-        dismiss()
+      // Just remove any notification for this ride from the queue
+      const cancelledRideId = data['ride_id'] as string | undefined
+      if (cancelledRideId) {
+        setQueue((prev) => prev.filter((n) => n.rideId !== cancelledRideId))
       }
     })
     riderChannel.subscribe()
@@ -314,7 +321,7 @@ export default function RideRequestNotification({
       supabase.removeChannel(boardChannel)
       supabase.removeChannel(riderChannel)
     }
-  }, [profile?.id, isDriver, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled, handleDriverSelected, dismiss])
+  }, [profile?.id, isDriver, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled, handleDriverSelected])
 
   // Fallback: FCM foreground messages
   useEffect(() => {
@@ -354,12 +361,12 @@ export default function RideRequestNotification({
     }
   }, [isDriver, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled, handleDriverSelected])
 
-  // Ref to track current notification so the polling callback can skip when
+  // Ref to track current queue so the polling callback can skip when
   // a notification is already being displayed without re-creating the effect.
-  const notificationRef = useRef<NotificationState | null>(null)
+  const queueRef = useRef<NotificationState[]>([])
   useEffect(() => {
-    notificationRef.current = notification
-  }, [notification])
+    queueRef.current = queue
+  }, [queue])
 
   // Last-resort fallback: poll unread notifications for ride_request entries.
   // Only poll for drivers — riders should never see ride request notifications.
@@ -370,7 +377,7 @@ export default function RideRequestNotification({
 
     const poll = async () => {
       // Don't poll when a notification is already showing
-      if (notificationRef.current) return
+      if (queueRef.current.length > 0) return
 
       try {
         const { data: { session } } = await supabase.auth.getSession()
@@ -632,6 +639,11 @@ export default function RideRequestNotification({
             <h3 className="text-sm font-bold text-primary">
               {notification.isBoardRequest ? 'Ride Board Match' : notification.isRenewal ? 'You\'re Back in the Running' : 'New Ride Request'}
             </h3>
+            {queue.length > 1 && (
+              <span className="ml-2 shrink-0 rounded-full bg-primary px-2 py-0.5 text-[10px] font-bold text-white" data-testid="queue-badge">
+                1 of {queue.length}
+              </span>
+            )}
           </div>
           <button
             type="button"
