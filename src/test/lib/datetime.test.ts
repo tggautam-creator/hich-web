@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { isScheduledRideApproaching, formatScheduledRideTime } from '@/lib/datetime'
+import { isScheduledRideApproaching, formatScheduledRideTime, getMinutesUntilRide } from '@/lib/datetime'
 import type { Ride } from '@/types/database'
 
 describe('datetime utilities', () => {
@@ -168,6 +168,37 @@ describe('datetime utilities', () => {
       }
 
       expect(isScheduledRideApproaching(ride as Ride)).toBe(false)
+    })
+  })
+
+  describe('getMinutesUntilRide', () => {
+    it('returns null for rides without trip data', () => {
+      expect(getMinutesUntilRide(null)).toBeNull()
+      expect(getMinutesUntilRide({ trip_date: null, trip_time: '09:00:00' } as Ride)).toBeNull()
+      expect(getMinutesUntilRide({ trip_date: '2026-03-23', trip_time: null } as Ride)).toBeNull()
+    })
+
+    it('returns positive minutes for future rides', () => {
+      vi.setSystemTime(new Date('2026-03-23T08:40:00'))
+      const ride = { trip_date: '2026-03-23', trip_time: '09:00:00' } as Ride
+      expect(getMinutesUntilRide(ride)).toBe(20)
+    })
+
+    it('returns negative minutes for past rides', () => {
+      vi.setSystemTime(new Date('2026-03-23T09:15:00'))
+      const ride = { trip_date: '2026-03-23', trip_time: '09:00:00' } as Ride
+      expect(getMinutesUntilRide(ride)).toBe(-15)
+    })
+
+    it('returns 0 at exact ride time', () => {
+      vi.setSystemTime(new Date('2026-03-23T09:00:00'))
+      const ride = { trip_date: '2026-03-23', trip_time: '09:00:00' } as Ride
+      expect(getMinutesUntilRide(ride)).toBe(0)
+    })
+
+    it('returns null for invalid date', () => {
+      const ride = { trip_date: 'invalid', trip_time: '09:00:00' } as Ride
+      expect(getMinutesUntilRide(ride)).toBeNull()
     })
   })
 

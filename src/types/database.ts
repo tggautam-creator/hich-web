@@ -204,6 +204,7 @@ export type Database = {
           payment_status: string | null
           payment_intent_id: string | null
           stripe_fee_cents: number
+          reminder_sent: boolean
         }
         Insert: {
           id?: string
@@ -234,6 +235,7 @@ export type Database = {
           payment_status?: string | null
           payment_intent_id?: string | null
           stripe_fee_cents?: number
+          reminder_sent?: boolean
         }
         Update: {
           id?: string
@@ -264,6 +266,7 @@ export type Database = {
           payment_status?: string | null
           payment_intent_id?: string | null
           stripe_fee_cents?: number
+          reminder_sent?: boolean
         }
         Relationships: never[]
       }

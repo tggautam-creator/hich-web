@@ -118,6 +118,7 @@ describe('database types — row aliases', () => {
       schedule_id: null, trip_date: null, trip_time: null,
       driver_destination: null, driver_destination_name: null, route_polyline: null, driver_route_polyline: null,
       payment_status: 'pending', payment_intent_id: null, stripe_fee_cents: 0,
+      reminder_sent: false,
     }
     expect(ride.fare_cents).not.toBeNull()
     expect(Number.isInteger(ride.fare_cents)).toBe(true)

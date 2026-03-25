@@ -95,3 +95,19 @@ export function formatScheduledRideTime(ride: Ride | null): string | null {
     return null
   }
 }
+
+/**
+ * Returns minutes until a scheduled ride, or negative if past.
+ * Returns null if ride has no schedule info.
+ */
+export function getMinutesUntilRide(ride: Ride | null): number | null {
+  if (!ride?.trip_date || !ride?.trip_time) return null
+
+  try {
+    const rideDateTime = new Date(`${ride.trip_date}T${ride.trip_time}`)
+    if (isNaN(rideDateTime.getTime())) return null
+    return Math.round((rideDateTime.getTime() - Date.now()) / (1000 * 60))
+  } catch {
+    return null
+  }
+}

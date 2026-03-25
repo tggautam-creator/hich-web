@@ -49,5 +49,33 @@ module.exports = {
         NODE_ENV: 'production',
       },
     },
+
+    // Cron worker: checks for upcoming scheduled rides every 5 minutes
+    // and sends reminder push notifications
+    {
+      name: 'hich-reminders',
+      script: './node_modules/.bin/tsx',
+      args: '--env-file=.env server/cron/reminders.ts',
+      instances: 1,
+      exec_mode: 'fork',
+      cron_restart: '*/5 * * * *',
+      autorestart: false,
+
+      // Logging
+      out_file: './logs/reminders-out.log',
+      error_file: './logs/reminders-error.log',
+      merge_logs: true,
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+
+      env_file: '.env',
+
+      env: {
+        NODE_ENV: 'development',
+      },
+
+      env_production: {
+        NODE_ENV: 'production',
+      },
+    },
   ],
 }

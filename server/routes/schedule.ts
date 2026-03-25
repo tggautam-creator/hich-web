@@ -4,6 +4,7 @@ import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
+import { checkUpcomingRides } from '../lib/scheduledReminders.ts'
 
 export const scheduleRouter = Router()
 
@@ -1237,5 +1238,19 @@ scheduleRouter.post(
 
     console.log(JSON.stringify({ type: 'sync_routines', user_id: userId, synced: inserts.length }))
     res.status(200).json({ synced: inserts.length })
+  },
+)
+
+// ── Check for upcoming scheduled rides and send reminders ──────────────────
+// Called by PM2 cron every 5 minutes (no JWT required — internal use only)
+scheduleRouter.get(
+  '/check-reminders',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await checkUpcomingRides()
+      res.json(result)
+    } catch (err) {
+      next(err)
+    }
   },
 )

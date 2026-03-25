@@ -13,7 +13,7 @@ import type { TransitDropoffSuggestion } from '@/components/ride/TransitSuggesti
 import { MAP_ID } from '@/lib/mapConstants'
 import { MapBoundsFitter, RoutePolyline } from '@/components/map/RoutePreview'
 import { getDirectionsByLatLng } from '@/lib/directions'
-import { isScheduledRideApproaching, formatScheduledRideTime } from '@/lib/datetime'
+import { isScheduledRideApproaching, formatScheduledRideTime, getMinutesUntilRide } from '@/lib/datetime'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -182,6 +182,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
 
   // Time-based state for scheduled rides
   const [isRideApproaching, setIsRideApproaching] = useState(false)
+  const [minutesUntilRide, setMinutesUntilRide] = useState<number | null>(null)
 
   // Map pin dropper state
   const [pinMode, setPinMode] = useState<PinMode | null>(null)
@@ -310,7 +311,8 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   // ── Check if scheduled ride is approaching (15 min before) ───────────────
   useEffect(() => {
     const checkRideApproaching = () => {
-      setIsRideApproaching(isScheduledRideApproaching(ride))
+      setIsRideApproaching(isScheduledRideApproaching(ride, 30))
+      setMinutesUntilRide(getMinutesUntilRide(ride))
     }
 
     // Check immediately
@@ -1479,7 +1481,11 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           ) : (
             <>
               <p className="text-xs text-success text-center mb-2 font-semibold">
-                Both locations confirmed! Navigate when ready.
+                {ride.schedule_id && minutesUntilRide != null
+                  ? minutesUntilRide > 0
+                    ? `Your ride is in ${minutesUntilRide} min! Navigate to pickup.`
+                    : 'Your ride time has arrived! Navigate to pickup now.'
+                  : 'Both locations confirmed! Navigate when ready.'}
               </p>
               <div className="flex gap-2">
                 <button

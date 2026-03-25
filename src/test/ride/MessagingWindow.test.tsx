@@ -382,7 +382,7 @@ describe('MessagingWindow', () => {
     await waitFor(() => {
       expect(screen.getByTestId('navigate-to-pickup-button')).toBeInTheDocument()
       expect(screen.getByTestId('navigate-to-pickup-button')).toHaveTextContent('Navigate to Pickup')
-      expect(screen.getByText('Both locations confirmed! Navigate when ready.')).toBeInTheDocument()
+      expect(screen.getByText(/Your ride is in 10 min/)).toBeInTheDocument()
     })
 
     expect(screen.queryByTestId('back-to-rides-button')).not.toBeInTheDocument()
