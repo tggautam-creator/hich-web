@@ -195,6 +195,7 @@ describe('RideRequestNotification', () => {
         originLng: '',
         destinationLat: '',
         destinationLng: '',
+        originAddress: '',
       },
     })
     expect(screen.queryByTestId('ride-request-content')).not.toBeInTheDocument()

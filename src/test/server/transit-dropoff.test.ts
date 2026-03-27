@@ -364,14 +364,9 @@ describe('PATCH /api/rides/:id/decline-dropoff', () => {
         }
       }
       if (table === 'users') {
-        return {
-          select: vi.fn().mockReturnValue({
-            eq: vi.fn().mockResolvedValue({
-              data: [{ id: 'other-driver-1' }, { id: 'other-driver-2' }],
-              error: null,
-            }),
-          }),
-        }
+        const eqResult = { data: [{ id: 'other-driver-1' }, { id: 'other-driver-2' }], error: null }
+        const outerEq = vi.fn().mockResolvedValue(eqResult)
+        return { select: vi.fn().mockReturnValue({ eq: outerEq }) }
       }
       if (table === 'push_tokens') {
         return { select: mockTokenSelect }

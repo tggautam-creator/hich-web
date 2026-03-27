@@ -148,7 +148,7 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
           .from('vehicles')
           .select('*')
           .eq('id', rideData.vehicle_id)
-          .single()
+          .maybeSingle()
         if (vehicleData) setVehicle(vehicleData)
       }
 

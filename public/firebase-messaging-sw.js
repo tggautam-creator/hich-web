@@ -59,6 +59,8 @@ self.addEventListener('notificationclick', (event) => {
     url = '/ride/suggestion/' + data.ride_id
   } else if (data.type === 'board_accepted' && data.ride_id) {
     url = '/ride/messaging/' + data.ride_id
+  } else if (data.type === 'ride_reminder' && data.ride_id) {
+    url = '/ride/messaging/' + data.ride_id
   }
 
   event.waitUntil(

@@ -54,6 +54,16 @@ vi.mock('@/lib/directions', () => ({
   getDirections: (...args: Parameters<typeof mockGetDirections>) => mockGetDirections(...args),
 }))
 
+// ── Mock supabase for saved addresses fetch ─────────────────────────────────
+
+vi.mock('@/lib/supabase', () => ({
+  supabase: {
+    auth: {
+      getSession: vi.fn().mockResolvedValue({ data: { session: { access_token: 'tok' } } }),
+    },
+  },
+}))
+
 // ── Mock react-router-dom navigate ───────────────────────────────────────────
 
 const { mockNavigate } = vi.hoisted(() => ({ mockNavigate: vi.fn() }))
@@ -100,6 +110,11 @@ describe('DestinationSearch', () => {
     mockGetRecentDestinations.mockReturnValue([])
     mockSaveRecentDestination.mockReset()
     mockGetDirections.mockResolvedValue(null)
+    // Mock fetch for /api/addresses
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ addresses: [] }),
+    }))
   })
 
   // ── Rendering ──────────────────────────────────────────────────────────────

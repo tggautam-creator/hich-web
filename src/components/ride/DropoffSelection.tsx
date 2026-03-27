@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
+import { useAuthStore } from '@/stores/authStore'
 import { trackEvent } from '@/lib/analytics'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
@@ -34,6 +35,7 @@ export default function DropoffSelection({
   const navigate = useNavigate()
   const location = useLocation()
   const state = location.state as DropoffLocationState | null
+  const profile = useAuthStore((s) => s.profile)
 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -115,6 +117,35 @@ export default function DropoffSelection({
       navigate('/home/driver', { replace: true })
     })()
   }, [effLat, rideId, navigate])
+
+  // ── Listen for ride cancellation ──────────────────────────────────────────
+  useEffect(() => {
+    if (!profile?.id || !rideId) return
+
+    const channel = supabase
+      .channel(`rider:${profile.id}`)
+      .on('broadcast', { event: 'ride_cancelled' }, () => {
+        navigate('/home/driver', { replace: true })
+      })
+      .subscribe()
+
+    // Polling fallback — check ride status every 5s
+    const poll = setInterval(async () => {
+      const { data } = await supabase
+        .from('rides')
+        .select('status')
+        .eq('id', rideId)
+        .single()
+      if (data?.status === 'cancelled') {
+        navigate('/home/driver', { replace: true })
+      }
+    }, 5_000)
+
+    return () => {
+      clearInterval(poll)
+      void supabase.removeChannel(channel)
+    }
+  }, [profile?.id, rideId, navigate])
 
   // Fetch transit suggestions once destination is known
   useEffect(() => {

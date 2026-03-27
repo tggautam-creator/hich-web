@@ -10,22 +10,9 @@ import QrScanner from '@/components/ride/QrScanner'
 import EmergencySheet from '@/components/ui/EmergencySheet'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
-import AppIcon from '@/components/ui/AppIcon'
-import { calculateFare, formatCents } from '@/lib/fare'
+import { getNavigationUrl } from '@/lib/pwa'
+import JourneyDrawer from '@/components/ride/JourneyDrawer'
 import type { Ride, User, Vehicle, GeoPoint } from '@/types/database'
-
-// Transit info from a transit_dropoff_suggestion message
-interface TransitBannerData {
-  station_name: string
-  transit_options: Array<{ icon: string; line_name: string; type?: string; departure_stop?: string; arrival_stop?: string; duration_minutes?: number; total_minutes: number }>
-  total_rider_minutes: number
-  ride_with_driver_minutes: number
-  walk_to_station_minutes: number
-  transit_to_dest_minutes: number
-  rider_progress_pct: number
-  full_transit_minutes: number
-  ride_distance_km: number
-}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -72,9 +59,6 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   // Rider's current GPS position
   const [riderLat, setRiderLat] = useState<number | null>(null)
   const [riderLng, setRiderLng] = useState<number | null>(null)
-
-  // Transit banner data (from transit_dropoff_suggestion message)
-  const [transitBanner, setTransitBanner] = useState<TransitBannerData | null>(null)
 
   // Live driver location + ETA
   const [driverLiveLat, setDriverLiveLat] = useState<number | null>(null)
@@ -149,40 +133,8 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
           .select('color, plate, make, model')
           .eq('user_id', rideData.driver_id)
           .eq('is_active', true)
-          .single()
+          .maybeSingle()
         if (vehicleData) setVehicle(vehicleData)
-      }
-
-      // Check for the LATEST dropoff-related message (transit suggestion OR manual counter).
-      // Only show transit journey details if the final agreed message is a transit_dropoff_suggestion.
-      // If the rider countered with a pin drop (dropoff_suggestion), don't show stale transit info.
-      try {
-        const { data: latestDropoff } = await supabase
-          .from('messages')
-          .select('type, meta')
-          .eq('ride_id', rideId as string)
-          .in('type', ['transit_dropoff_suggestion', 'dropoff_suggestion'])
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .single()
-
-        if (latestDropoff?.type === 'transit_dropoff_suggestion' && latestDropoff.meta) {
-          const m = latestDropoff.meta as Record<string, unknown>
-          setTransitBanner({
-            station_name: (m['station_name'] as string) ?? 'Transit Station',
-            transit_options: (m['transit_options'] as TransitBannerData['transit_options']) ?? [],
-            total_rider_minutes: (m['total_rider_minutes'] as number) ?? 0,
-            ride_with_driver_minutes: (m['ride_with_driver_minutes'] as number) ?? 0,
-            walk_to_station_minutes: (m['walk_to_station_minutes'] as number) ?? 0,
-            transit_to_dest_minutes: (m['transit_to_dest_minutes'] as number) ?? 0,
-            rider_progress_pct: (m['rider_progress_pct'] as number) ?? 0,
-            full_transit_minutes: (m['full_transit_minutes'] as number) ?? 0,
-            ride_distance_km: (m['ride_distance_km'] as number) ?? 0,
-          })
-        }
-        // If latest is dropoff_suggestion (manual counter), transitBanner stays null — correct
-      } catch {
-        // Non-fatal — transit banner is optional
       }
 
       setLoading(false)
@@ -261,17 +213,29 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   useEffect(() => {
     if (!rideId || riderLat == null || riderLng == null) return
 
-    const broadcast = () => {
-      void supabase.channel(`ride-location:${rideId}`).send({
+    const channel = supabase.channel(`ride-location:${rideId}`)
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        void channel.send({
+          type: 'broadcast',
+          event: 'rider_location',
+          payload: { lat: riderLat, lng: riderLng },
+        })
+      }
+    })
+
+    const interval = setInterval(() => {
+      void channel.send({
         type: 'broadcast',
         event: 'rider_location',
         payload: { lat: riderLat, lng: riderLng },
       })
-    }
+    }, 15000)
 
-    broadcast()
-    const interval = setInterval(broadcast, 15000)
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      void supabase.removeChannel(channel)
+    }
   }, [rideId, riderLat, riderLng])
 
   // ── GPS tracking for rider ───────────────────────────────────────────────
@@ -369,9 +333,8 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   // ── Open Google Maps navigation ──────────────────────────────────────────
   const openNavigation = useCallback(() => {
     if (pickupLat === null || pickupLng === null) return
-    const url = `https://www.google.com/maps/dir/?api=1&destination=${pickupLat},${pickupLng}&travelmode=walking`
-    window.open(url, '_blank')
-  }, [pickupLat, pickupLng])
+    window.open(getNavigationUrl(pickupLat, pickupLng, 'walking', riderLat ?? undefined, riderLng ?? undefined), '_blank')
+  }, [pickupLat, pickupLng, riderLat, riderLng])
 
   // ── Signal driver ────────────────────────────────────────────────────────
   const handleSignal = useCallback(async () => {
@@ -528,20 +491,10 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
           </svg>
         </button>
         <h1 className="text-base font-semibold text-text-primary flex-1">Walk to Pickup</h1>
-        <button
-          data-testid="emergency-button"
-          onClick={() => setEmergencyOpen(true)}
-          aria-label="Emergency"
-          className="flex h-9 w-9 items-center justify-center rounded-full border border-danger/30 bg-danger/10 text-danger active:bg-danger/20 transition-colors"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4.5 w-4.5" aria-hidden="true">
-            <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 6h2v2h-2V7zm0 4h2v6h-2v-6z" />
-          </svg>
-        </button>
       </div>
 
       {/* ── Map ─────────────────────────────────────────────────────────────── */}
-      <div className="relative shrink-0" style={{ height: '35dvh' }}>
+      <div className="flex-1 relative min-h-0">
         <Map
           data-testid="pickup-map"
           mapId={MAP_ID}
@@ -623,267 +576,48 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
         )}
       </div>
 
-      {/* ── Bottom info ─────────────────────────────────────────────────────── */}
-      <div className="flex-1 flex flex-col overflow-y-auto min-h-0">
-
-        {/* Waiting for pickup */}
-        {!hasPickup && (
-          <div className="px-5 pt-5 pb-4 text-center">
-            <div className="h-12 w-12 rounded-full bg-warning/10 flex items-center justify-center mx-auto mb-3">
-              <span className="text-2xl">⏳</span>
-            </div>
-            <p data-testid="waiting-for-pickup" className="text-sm font-medium text-text-primary">
-              Waiting for driver to set pickup point…
-            </p>
-            <p className="text-xs text-text-secondary mt-1">
-              Your driver is choosing the best meeting spot
-            </p>
+      {/* ── Waiting for pickup overlay ───────────────────────────────────── */}
+      {!hasPickup && (
+        <div className="absolute bottom-0 left-0 right-0 z-10 bg-white/95 backdrop-blur-sm px-5 py-5 text-center rounded-t-3xl shadow-lg">
+          <div className="h-12 w-12 rounded-full bg-warning/10 flex items-center justify-center mx-auto mb-3">
+            <span className="text-2xl">&#9203;</span>
           </div>
-        )}
+          <p data-testid="waiting-for-pickup" className="text-sm font-medium text-text-primary">
+            Waiting for driver to set pickup point&hellip;
+          </p>
+          <p className="text-xs text-text-secondary mt-1">
+            Your driver is choosing the best meeting spot
+          </p>
+        </div>
+      )}
 
-        {/* Pickup details */}
-        {hasPickup && (
-          <>
-            {/* Pickup note */}
-            {pickupNote && (
-              <div className="px-5 pt-4 pb-3 border-b border-border">
-                <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-1">
-                  Driver&apos;s note
-                </p>
-                <p data-testid="pickup-note" className="text-sm font-medium text-text-primary">
-                  {pickupNote}
-                </p>
-              </div>
-            )}
+      {error && (
+        <div className="absolute bottom-24 left-4 right-4 z-10">
+          <p data-testid="ride-error" className="text-sm text-danger text-center bg-white/90 rounded-2xl px-4 py-2 shadow">{error}</p>
+        </div>
+      )}
 
-            {/* Vehicle info */}
-            {vehicle && (
-              <div className="px-5 pt-4 pb-3 border-b border-border">
-                <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
-                  Look for this car
-                </p>
-                <div className="flex items-center gap-3" data-testid="vehicle-info">
-                  <AppIcon name="car-request" className="h-8 w-8 text-primary" />
-                  <div>
-                    <p className="text-sm font-semibold text-text-primary">
-                      {vehicle.color} {vehicle.make} {vehicle.model}
-                    </p>
-                    <p data-testid="vehicle-plate" className="text-lg font-bold text-primary tracking-wide">
-                      {vehicle.plate}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Driver info */}
-            {driver && (
-              <div className="px-5 pt-4 pb-3 border-b border-border">
-                <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
-                  Your Driver
-                </p>
-                <div className="flex items-center gap-3">
-                  {driver.avatar_url ? (
-                    <img src={driver.avatar_url} alt="" className="h-11 w-11 rounded-full object-cover shrink-0" />
-                  ) : (
-                    <div className="h-11 w-11 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-sm shrink-0">
-                      {driver.full_name?.[0]?.toUpperCase() ?? '?'}
-                    </div>
-                  )}
-                  <div>
-                    <p data-testid="driver-name" className="text-sm font-semibold text-text-primary">
-                      {driver.full_name ?? 'Driver'}
-                    </p>
-                    <div className="flex items-center gap-2 text-xs text-text-secondary">
-                      {driver.rating_avg != null && (
-                        <span className="inline-flex items-center gap-0.5"><AppIcon name="star" className="h-3 w-3 text-warning" />{driver.rating_avg.toFixed(1)}</span>
-                      )}
-                      {driver.rating_count > 0 && (
-                        <span>({driver.rating_count} {driver.rating_count === 1 ? 'ride' : 'rides'})</span>
-                      )}
-                      {(!driver.rating_count || driver.rating_count === 0) && (
-                        <span className="text-warning">New user</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </>
-        )}
-
-        {/* Transit journey breakdown */}
-        {transitBanner && (() => {
-          const rideMin = transitBanner.ride_with_driver_minutes
-          const rideDistKm = transitBanner.ride_distance_km || (rideMin > 0 ? (rideMin / 60) * 80 : 0)
-          const rideFare = rideDistKm > 0 ? calculateFare(rideDistKm, rideMin) : null
-          const totalJourney = Math.max(
-            transitBanner.total_rider_minutes,
-            rideMin + transitBanner.walk_to_station_minutes + transitBanner.transit_to_dest_minutes,
-          )
-          const savedMinutes = (transitBanner.full_transit_minutes > totalJourney)
-            ? transitBanner.full_transit_minutes - totalJourney
-            : 0
-
-          return (
-            <div data-testid="transit-banner" className="px-5 pt-3 pb-3 border-b border-border">
-              <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1.5">
-                After dropoff — continue via transit
-              </p>
-              <p className="text-sm font-semibold text-text-primary mb-0.5">
-                {transitBanner.station_name}
-              </p>
-              {transitBanner.rider_progress_pct > 0 && (
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="flex-1 h-1.5 rounded-full bg-border overflow-hidden">
-                    <div className="h-full rounded-full bg-success" style={{ width: `${transitBanner.rider_progress_pct}%` }} />
-                  </div>
-                  <span className="text-[10px] font-medium text-success shrink-0">{transitBanner.rider_progress_pct}% of the way</span>
-                </div>
-              )}
-
-              <p className="text-[9px] font-semibold text-text-secondary uppercase tracking-wider mt-2 mb-1.5">Your journey</p>
-
-              {/* Step 1: Ride with driver */}
-              <div className="flex items-start gap-2 mb-1.5">
-                <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-[#4F46E5] shrink-0" />
-                <p className="text-[10px] min-w-0">
-                  <span className="font-semibold text-text-primary">Driver drops you at {transitBanner.station_name}</span>
-                  {rideMin > 0 && <span className="text-text-secondary"> · ~{rideMin} min</span>}
-                </p>
-              </div>
-
-              {/* Step 2: Walk to station */}
-              {transitBanner.walk_to_station_minutes > 0 && (
-                <div className="flex items-start gap-2 mb-1.5">
-                  <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-text-secondary/40 shrink-0" />
-                  <span className="text-[10px] text-text-secondary">
-                    Walk to {transitBanner.station_name} station · ~{transitBanner.walk_to_station_minutes} min
-                  </span>
-                </div>
-              )}
-
-              {/* Step 3: Transit legs */}
-              {transitBanner.transit_options.filter(o => o.type !== 'WALKING').length > 0 ? (
-                transitBanner.transit_options.filter(o => o.type !== 'WALKING').map((opt, idx) => (
-                  <div key={`transit-${idx}`} className="flex items-start gap-2 mb-1.5 overflow-hidden">
-                    <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-[#10B981] shrink-0" />
-                    <div className="min-w-0 flex-1 text-[10px]">
-                      <div className="flex items-baseline gap-1">
-                        <span className="font-semibold text-text-primary shrink-0">{opt.line_name}</span>
-                        {opt.duration_minutes != null && opt.duration_minutes > 0 && (
-                          <span className="text-text-secondary shrink-0">· {opt.duration_minutes} min</span>
-                        )}
-                      </div>
-                      {opt.departure_stop && opt.arrival_stop && (
-                        <p className="text-text-secondary truncate">{opt.departure_stop} → {opt.arrival_stop}</p>
-                      )}
-                    </div>
-                  </div>
-                ))
-              ) : transitBanner.transit_to_dest_minutes > 0 ? (
-                <div className="flex items-start gap-2 mb-1.5">
-                  <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-[#10B981] shrink-0" />
-                  <div className="text-[10px]">
-                    <span className="font-semibold text-text-primary">Transit to your destination</span>
-                    <span className="text-text-secondary ml-1">~{transitBanner.transit_to_dest_minutes} min</span>
-                  </div>
-                </div>
-              ) : null}
-
-              {/* Estimated fare */}
-              {rideFare && (
-                <div className="border-t border-border pt-1.5 mt-1.5 flex items-center justify-between text-[10px]">
-                  <span className="text-text-secondary">Estimated ride fare</span>
-                  <span className="font-semibold text-text-primary">~{formatCents(rideFare.fare_cents)}</span>
-                </div>
-              )}
-
-              {/* Total */}
-              <div className={`${!rideFare ? 'border-t border-border mt-1.5' : ''} pt-1.5 flex items-center justify-between text-[10px]`}>
-                <span className="font-semibold text-text-primary">
-                  Total: ~{totalJourney} min
-                </span>
-                {savedMinutes > 0 && (
-                  <span className="font-semibold text-success text-[9px]">
-                    {savedMinutes} min faster than public transit
-                  </span>
-                )}
-              </div>
-            </div>
-          )
-        })()}
-
-        <div className="flex-1" />
-
-        {/* Action buttons */}
-        {hasPickup && (
-          <div className="px-5 pt-3 space-y-3" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 1rem)' }}>
-            {/* Signal button — above the grid */}
-            <button
-              data-testid="signal-button"
-              onClick={() => { void handleSignal() }}
-              disabled={signalling || signalled}
-              className={`w-full flex items-center justify-center gap-2 rounded-2xl py-3 text-sm font-medium transition-colors disabled:opacity-50 ${
-                signalled
-                  ? 'bg-success/10 text-success'
-                  : 'bg-warning/10 text-warning active:bg-warning/20'
-              }`}
-            >
-              {signalled ? '✓ Driver notified' : signalling ? 'Signalling…' : 'Signal Driver — I\'m Close'}
-            </button>
-
-            {/* Scan QR — prominent full-width button */}
-            <button
-              data-testid="scan-qr-button"
-              onClick={() => { setScanning(true); setError(null) }}
-              className="w-full flex items-center justify-center gap-2.5 rounded-2xl bg-primary py-4 text-base font-semibold text-white active:bg-primary/90 transition-colors shadow-sm"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
-                <rect x="3" y="3" width="7" height="7" rx="1" />
-                <rect x="14" y="3" width="7" height="7" rx="1" />
-                <rect x="3" y="14" width="7" height="7" rx="1" />
-                <rect x="14" y="14" width="4" height="4" rx="0.5" />
-                <line x1="21" y1="14" x2="21" y2="21" />
-                <line x1="14" y1="21" x2="21" y2="21" />
-              </svg>
-              Scan QR to Start Ride
-            </button>
-
-            {/* Navigate + Chat grid */}
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                data-testid="navigate-button"
-                onClick={openNavigation}
-                className="flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3.5 active:bg-border transition-colors"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-                  <polygon points="3 11 22 2 13 21 11 13 3 11" />
-                </svg>
-                <span className="text-xs font-medium text-text-primary">Navigate</span>
-              </button>
-
-              <button
-                data-testid="message-driver-button"
-                onClick={() => { setUnreadChat(0); navigate(`/ride/messaging/${rideId as string}`) }}
-                className="relative flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3.5 active:bg-border transition-colors"
-              >
-                {unreadChat > 0 && (
-                  <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-danger text-[10px] font-bold text-white shadow">{unreadChat}</span>
-                )}
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-                <span className="text-xs font-medium text-text-primary">Chat</span>
-              </button>
-            </div>
-
-            {error && (
-              <p data-testid="ride-error" className="text-sm text-danger text-center">{error}</p>
-            )}
-          </div>
-        )}
-      </div>
+      {hasPickup && (
+        <JourneyDrawer
+          ride={ride}
+          driver={driver}
+          vehicle={vehicle}
+          isRider
+          estimatedFare={ride.fare_cents}
+          etaMinutes={driverEtaMin}
+          distanceKm={walkDistM != null ? walkDistM / 1000 : null}
+          onShowQr={() => { setScanning(true); setError(null) }}
+          onNavigate={openNavigation}
+          onChat={() => { setUnreadChat(0); navigate(`/ride/messaging/${rideId as string}`) }}
+          onEmergency={() => setEmergencyOpen(true)}
+          unreadChat={unreadChat}
+          startRideLabel="Scan QR to Start Ride"
+          onSignal={() => { void handleSignal() }}
+          signalled={signalled}
+          signalling={signalling}
+          pickupNote={pickupNote}
+        />
+      )}
 
       <EmergencySheet
         isOpen={emergencyOpen}

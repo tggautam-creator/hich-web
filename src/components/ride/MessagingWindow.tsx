@@ -314,7 +314,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             .select('color, plate, make, model')
             .eq('user_id', otherId)
             .eq('is_active', true)
-            .single()
+            .maybeSingle()
           if (vehicleData) setOtherVehicle(vehicleData)
         }
       }

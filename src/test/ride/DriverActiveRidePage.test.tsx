@@ -90,6 +90,11 @@ vi.mock('react-router-dom', async () => {
   }
 })
 
+vi.mock('@/lib/fare', () => ({
+  formatCents: (cents: number) => `$${(cents / 100).toFixed(2)}`,
+  calculateFare: vi.fn(),
+}))
+
 // ── Mock QR Sheet ─────────────────────────────────────────────────────────────
 
 vi.mock('@/components/ride/DriverQrSheet', () => ({
@@ -137,6 +142,12 @@ function renderPage(rideId = 'ride-001') {
 describe('DriverActiveRidePage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // Ensure portal target exists for JourneyDrawer
+    if (!document.getElementById('portal-root')) {
+      const el = document.createElement('div')
+      el.id = 'portal-root'
+      document.body.appendChild(el)
+    }
     let callIdx = 0
     mockSingle.mockImplementation(() => {
       callIdx++
@@ -191,40 +202,40 @@ describe('DriverActiveRidePage', () => {
     })
   })
 
-  it('has action grid with QR, Chat, and End Ride buttons', async () => {
+  it('has drawer with QR, Chat, and End Ride buttons', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('action-grid')).toBeInTheDocument()
+      expect(screen.getByTestId('journey-drawer')).toBeInTheDocument()
     })
-    expect(screen.getByTestId('show-qr-button')).toBeInTheDocument()
-    expect(screen.getByTestId('chat-button')).toBeInTheDocument()
-    expect(screen.getByTestId('end-ride-button')).toBeInTheDocument()
+    expect(screen.getByTestId('drawer-qr-button')).toBeInTheDocument()
+    expect(screen.getByTestId('drawer-chat-button')).toBeInTheDocument()
+    expect(screen.getByTestId('drawer-end-ride-button')).toBeInTheDocument()
   })
 
   it('Show QR opens QR sheet', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('show-qr-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-qr-button')).toBeInTheDocument()
     })
-    fireEvent.click(screen.getByTestId('show-qr-button'))
+    fireEvent.click(screen.getByTestId('drawer-qr-button'))
     expect(screen.getByTestId('driver-qr-sheet')).toBeInTheDocument()
   })
 
   it('Chat button navigates to messaging', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('chat-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-chat-button')).toBeInTheDocument()
     })
-    fireEvent.click(screen.getByTestId('chat-button'))
+    fireEvent.click(screen.getByTestId('drawer-chat-button'))
     expect(mockNavigate).toHaveBeenCalledWith('/ride/messaging/ride-001')
   })
 
   it('End Ride shows "Rider Must Scan QR" modal', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('end-ride-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-end-ride-button')).toBeInTheDocument()
     })
-    fireEvent.click(screen.getByTestId('end-ride-button'))
+    fireEvent.click(screen.getByTestId('drawer-end-ride-button'))
     expect(screen.getByTestId('end-ride-modal')).toBeInTheDocument()
     expect(screen.getByText('Rider Must Scan QR')).toBeInTheDocument()
   })
@@ -232,9 +243,9 @@ describe('DriverActiveRidePage', () => {
   it('Modal Show QR button opens QR sheet', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('end-ride-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-end-ride-button')).toBeInTheDocument()
     })
-    fireEvent.click(screen.getByTestId('end-ride-button'))
+    fireEvent.click(screen.getByTestId('drawer-end-ride-button'))
     fireEvent.click(screen.getByTestId('modal-show-qr'))
     expect(screen.getByTestId('driver-qr-sheet')).toBeInTheDocument()
   })
@@ -242,9 +253,9 @@ describe('DriverActiveRidePage', () => {
   it('Modal cancel closes modal', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('end-ride-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-end-ride-button')).toBeInTheDocument()
     })
-    fireEvent.click(screen.getByTestId('end-ride-button'))
+    fireEvent.click(screen.getByTestId('drawer-end-ride-button'))
     expect(screen.getByTestId('end-ride-modal')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('modal-cancel'))
     expect(screen.queryByTestId('end-ride-modal')).not.toBeInTheDocument()
@@ -278,8 +289,8 @@ describe('DriverActiveRidePage', () => {
 
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('show-qr-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-qr-button')).toBeInTheDocument()
     })
-    expect(screen.queryByTestId('end-ride-button')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('drawer-end-ride-button')).not.toBeInTheDocument()
   })
 })

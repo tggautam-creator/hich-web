@@ -49,7 +49,7 @@ export default function VehicleEditPage({
         .eq('user_id', userId)
         .eq('is_active', true)
         .limit(1)
-        .single()
+        .maybeSingle()
       const v = data as Vehicle | null
       setVehicle(v)
       if (v) {

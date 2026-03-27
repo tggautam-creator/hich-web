@@ -8,20 +8,14 @@ import EmergencySheet from '@/components/ui/EmergencySheet'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
 import CarMarker from '@/components/map/CarMarker'
 import { MAP_ID } from '@/lib/mapConstants'
-import AppIcon from '@/components/ui/AppIcon'
+import { getNavigationUrl } from '@/lib/pwa'
+import JourneyDrawer from '@/components/ride/JourneyDrawer'
 import type { Ride, User, GeoPoint } from '@/types/database'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface DriverActiveRidePageProps {
   'data-testid'?: string
-}
-
-// Transit info from a transit_dropoff_suggestion message
-interface TransitBannerData {
-  station_name: string
-  transit_options: Array<{ icon: string; line_name: string; departure_stop?: string; arrival_stop?: string; duration_minutes?: number; total_minutes: number }>
-  total_rider_minutes: number
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -44,7 +38,6 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
   const [emergencyOpen, setEmergencyOpen] = useState(false)
   const [unreadChat, setUnreadChat] = useState(0)
   const signalTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [transitBanner, setTransitBanner] = useState<TransitBannerData | null>(null)
 
   // Driver GPS position
   const [driverLat, setDriverLat] = useState<number | null>(null)
@@ -93,30 +86,6 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
         .single()
 
       if (riderData) setRider(riderData)
-
-      // Check for the LATEST dropoff-related message. Only show transit banner
-      // if the final agreed message is a transit_dropoff_suggestion (not a manual counter).
-      try {
-        const { data: latestDropoff } = await supabase
-          .from('messages')
-          .select('type, meta')
-          .eq('ride_id', rideId as string)
-          .in('type', ['transit_dropoff_suggestion', 'dropoff_suggestion'])
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .single()
-
-        if (latestDropoff?.type === 'transit_dropoff_suggestion' && latestDropoff.meta) {
-          const m = latestDropoff.meta as Record<string, unknown>
-          setTransitBanner({
-            station_name: (m['station_name'] as string) ?? 'Transit Station',
-            transit_options: (m['transit_options'] as TransitBannerData['transit_options']) ?? [],
-            total_rider_minutes: (m['total_rider_minutes'] as number) ?? 0,
-          })
-        }
-      } catch {
-        // Non-fatal — transit banner is optional
-      }
 
       setLoading(false)
     }
@@ -292,7 +261,7 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
           return prev
         })
       }
-    }, 15_000)
+    }, 5_000)
 
     return () => clearInterval(poll)
   }, [rideId, navigate])
@@ -316,6 +285,18 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
   const progress = (totalDistanceKm && remainingDistanceKm != null)
     ? Math.min(100, Math.max(0, Math.round((1 - remainingDistanceKm / totalDistanceKm) * 100)))
     : null
+
+  // ── Persist progress_pct to ride record ───────────────────────────────
+  const lastSavedProgress = useRef<number>(0)
+  useEffect(() => {
+    if (!rideId || progress == null || !isActive) return
+    if (Math.abs(progress - lastSavedProgress.current) < 5) return
+    const timer = setTimeout(() => {
+      lastSavedProgress.current = progress
+      void supabase.from('rides').update({ progress_pct: progress }).eq('id', rideId as string)
+    }, 5000)
+    return () => clearTimeout(timer)
+  }, [rideId, progress, isActive])
 
   // ── Cancel ride ────────────────────────────────────────────────────────
   const handleCancel = useCallback(async () => {
@@ -453,16 +434,6 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
               </>
             )}
           </div>
-          <button
-            data-testid="emergency-button"
-            onClick={() => setEmergencyOpen(true)}
-            aria-label="Emergency"
-            className="ml-1 flex h-9 w-9 items-center justify-center rounded-full border border-danger/30 bg-danger/10 text-danger active:bg-danger/20 transition-colors"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4.5 w-4.5" aria-hidden="true">
-              <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 6h2v2h-2V7zm0 4h2v6h-2v-6z" />
-            </svg>
-          </button>
         </div>
       </div>
 
@@ -538,165 +509,6 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
         )}
       </div>
 
-      {/* ── Transit banner ─────────────────────────────────────────────── */}
-      {transitBanner && (
-        <div data-testid="transit-banner" className="px-4 py-3 bg-primary/5 border-t border-border shrink-0">
-          <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">
-            Rider continues via transit after dropoff
-          </p>
-          <p className="text-sm font-semibold text-text-primary mb-1">
-            {transitBanner.station_name}
-          </p>
-          <div className="space-y-1 mt-1">
-            {transitBanner.transit_options.slice(0, 3).map((opt, idx) => (
-              <div key={`${opt.line_name}-${idx}`} className="flex items-center gap-1.5 text-[10px]">
-                <span className="shrink-0 rounded bg-primary/10 px-1 py-0.5 font-semibold text-primary">{opt.icon}</span>
-                <span className="font-semibold text-text-primary shrink-0">{opt.line_name}</span>
-                {opt.departure_stop && opt.arrival_stop ? (
-                  <>
-                    <span className="text-text-secondary truncate">{opt.departure_stop} → {opt.arrival_stop}</span>
-                    {opt.duration_minutes != null && (
-                      <span className="shrink-0 text-text-secondary">· {opt.duration_minutes} min</span>
-                    )}
-                  </>
-                ) : (
-                  <span className="text-text-secondary">{opt.total_minutes} min</span>
-                )}
-              </div>
-            ))}
-          </div>
-          {transitBanner.total_rider_minutes > 0 && (
-            <p className="text-[10px] text-text-secondary mt-1">
-              ~{transitBanner.total_rider_minutes} min total to rider&apos;s destination
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* ── Rider info ───────────────────────────────────────────────────── */}
-      {rider && (
-        <div className="px-4 py-3 border-t border-border shrink-0 flex items-center gap-3">
-          {rider.avatar_url ? (
-            <img src={rider.avatar_url} alt="" className="h-10 w-10 rounded-full object-cover shrink-0" />
-          ) : (
-            <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-sm shrink-0">
-              {rider.full_name?.[0]?.toUpperCase() ?? '?'}
-            </div>
-          )}
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-text-primary truncate">{rider.full_name ?? 'Rider'}</p>
-            <div className="flex items-center gap-2 text-xs text-text-secondary">
-              {rider.rating_avg != null && <span className="inline-flex items-center gap-0.5"><AppIcon name="star" className="h-3 w-3 text-warning" />{rider.rating_avg.toFixed(1)}</span>}
-              {rider.rating_count != null && rider.rating_count > 0 && (
-                <span>({rider.rating_count} {rider.rating_count === 1 ? 'ride' : 'rides'})</span>
-              )}
-              {(!rider.rating_count || rider.rating_count === 0) && (
-                <span className="text-warning">New user</span>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Journey progress bar ──────────────────────────────────────────── */}
-      {isActive && progress !== null && (
-        <div className="px-4 py-3 border-t border-border shrink-0">
-          <div className="h-1.5 rounded-full bg-border overflow-hidden mb-2">
-            <div
-              data-testid="journey-progress"
-              className="h-full rounded-full bg-primary transition-all duration-500"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-          <div className="flex justify-between text-xs">
-            <span className="text-text-secondary">{progress}% complete</span>
-            <span className="font-semibold text-text-primary">{routeEta ?? '--'} remaining</span>
-          </div>
-        </div>
-      )}
-
-      {/* ── Action Buttons ──────────────────────────────────────────────── */}
-      <div className="px-4 py-3 space-y-3" data-testid="action-grid">
-        {/* Row 1: Navigate + QR + Chat */}
-        <div className="grid grid-cols-3 gap-3">
-          <button
-            data-testid="navigate-button"
-            onClick={() => {
-              const dest = isCoordinating ? pickupPos : destPos
-              if (!dest) return
-              const url = `https://www.google.com/maps/dir/?api=1&destination=${dest.lat},${dest.lng}&travelmode=driving`
-              window.open(url, '_blank')
-            }}
-            className="flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3.5 active:bg-border transition-colors"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-              <polygon points="3 11 22 2 13 21 11 13 3 11" />
-            </svg>
-            <span className="text-xs font-medium text-text-primary">{isCoordinating ? 'Navigate to Pickup' : 'Navigate to Drop Off'}</span>
-          </button>
-
-          <button
-            data-testid="show-qr-button"
-            onClick={() => setQrOpen(true)}
-            className="flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3.5 active:bg-border transition-colors"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-              <rect x="3" y="3" width="7" height="7" rx="1" />
-              <rect x="14" y="3" width="7" height="7" rx="1" />
-              <rect x="3" y="14" width="7" height="7" rx="1" />
-              <rect x="14" y="14" width="4" height="4" rx="0.5" />
-            </svg>
-            <span className="text-xs font-medium text-text-primary">Show QR</span>
-          </button>
-
-          <button
-            data-testid="chat-button"
-            onClick={() => { setUnreadChat(0); navigate(`/ride/messaging/${rideId as string}`) }}
-            className="relative flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3.5 active:bg-border transition-colors"
-          >
-            {unreadChat > 0 && (
-              <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-danger text-[10px] font-bold text-white shadow">{unreadChat}</span>
-            )}
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-            </svg>
-            <span className="text-xs font-medium text-text-primary">Chat</span>
-          </button>
-        </div>
-
-        {/* Row 2: End Ride (only in active phase) */}
-        {isActive && (
-          <button
-            data-testid="end-ride-button"
-            onClick={() => setEndModal(true)}
-            className="w-full flex items-center justify-center gap-2 rounded-2xl bg-danger/10 py-3.5 active:bg-danger/20 transition-colors"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-danger" aria-hidden="true">
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-              <line x1="9" y1="9" x2="15" y2="15" />
-              <line x1="15" y1="9" x2="9" y2="15" />
-            </svg>
-            <span className="text-sm font-medium text-danger">End Ride</span>
-          </button>
-        )}
-
-        {/* Row 2b: Cancel Ride (coordinating phase only — before ride starts) */}
-        {isCoordinating && (
-          <button
-            data-testid="cancel-ride-button"
-            onClick={() => setCancelModal(true)}
-            className="w-full flex items-center justify-center gap-2 rounded-2xl bg-danger/10 py-3.5 active:bg-danger/20 transition-colors"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-danger" aria-hidden="true">
-              <circle cx="12" cy="12" r="10" />
-              <line x1="15" y1="9" x2="9" y2="15" />
-              <line x1="9" y1="9" x2="15" y2="15" />
-            </svg>
-            <span className="text-sm font-medium text-danger">Cancel Ride</span>
-          </button>
-        )}
-      </div>
-
       {/* ── Cancel Ride Modal ──────────────────────────────────────────── */}
       {cancelModal && (
         <div
@@ -750,7 +562,7 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
       {endModal && (
         <div
           data-testid="end-ride-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-6"
+          className="fixed inset-0 z-[950] flex items-center justify-center bg-black/50 px-6"
           onClick={() => setEndModal(false)}
         >
           <div
@@ -792,6 +604,30 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
           </div>
         </div>
       )}
+
+      <JourneyDrawer
+        ride={ride}
+        rider={rider}
+        isRider={false}
+        estimatedFare={ride.fare_cents}
+        etaMinutes={routeEta ? parseInt(routeEta, 10) || null : null}
+        distanceKm={remainingDistanceKm}
+        onShowQr={() => setQrOpen(true)}
+        onNavigate={() => {
+          const dest = isCoordinating ? pickupPos : destPos
+          if (!dest) return
+          window.open(getNavigationUrl(dest.lat, dest.lng, 'driving', driverPos?.lat, driverPos?.lng), '_blank')
+        }}
+        onChat={() => { setUnreadChat(0); navigate(`/ride/messaging/${rideId as string}`) }}
+        onEmergency={() => setEmergencyOpen(true)}
+        unreadChat={unreadChat}
+        onEndRide={isActive ? () => setEndModal(true) : undefined}
+        onCancelRide={isCoordinating ? () => setCancelModal(true) : undefined}
+        endRideLabel="End Ride"
+        hideEta
+        progress={isActive ? progress : null}
+        remainingLabel={routeEta ? `${routeEta} remaining` : undefined}
+      />
 
       <EmergencySheet
         isOpen={emergencyOpen}

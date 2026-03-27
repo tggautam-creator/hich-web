@@ -1,9 +1,12 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import SecondaryButton from '@/components/ui/SecondaryButton'
 import Logo from '@/components/ui/Logo'
+import PwaInstallPrompt from '@/components/PwaInstallPrompt'
+import { isStandalone, isMobile } from '@/lib/pwa'
+import { usePwaStore } from '@/stores/pwaStore'
 
 interface LandingProps {
   'data-testid'?: string
@@ -11,6 +14,8 @@ interface LandingProps {
 
 export default function Landing({ 'data-testid': testId }: LandingProps) {
   const navigate = useNavigate()
+  const hasSeenFullPrompt = usePwaStore((s) => s.hasSeenFullPrompt)
+  const [showPwaPrompt, setShowPwaPrompt] = useState(false)
 
   // If the user already has a session (e.g. PWA reopened after force-kill),
   // skip the landing page and go straight into the app.
@@ -19,6 +24,18 @@ export default function Landing({ 'data-testid': testId }: LandingProps) {
       if (session) navigate('/home/rider', { replace: true })
     })
   }, [navigate])
+
+  // Show PWA install prompt on mobile, non-standalone, first visit
+  useEffect(() => {
+    if (!hasSeenFullPrompt && !isStandalone() && isMobile()) {
+      setShowPwaPrompt(true)
+    }
+  }, [hasSeenFullPrompt])
+
+  // Show PWA prompt overlay before landing content
+  if (showPwaPrompt) {
+    return <PwaInstallPrompt onDismiss={() => setShowPwaPrompt(false)} />
+  }
 
   return (
     <div

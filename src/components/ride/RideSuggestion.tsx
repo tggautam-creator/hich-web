@@ -29,6 +29,7 @@ interface NotificationState {
   originLng?: string
   destinationLat?: string
   destinationLng?: string
+  originAddress?: string
   /** When true, this was a ride_request_renewed — show standby screen immediately */
   isStandbyRenewal?: boolean
   /** When true, driver was on standby and previous driver cancelled — WaitingRoom is auto-selecting */
@@ -675,6 +676,62 @@ export default function RideSuggestion({
           )}
         </div>
       </div>
+
+      {/* ── Route & ride stats ────────────────────────────────────────────────── */}
+      {(() => {
+        const pickupAddr = ns?.originAddress || null
+        const destAddr = ride.destination_name || ns?.destination || null
+        const hasRoute = pickupAddr || destAddr
+        const hasStats = ns?.estimatedEarnings || ns?.distanceKm
+        if (!hasRoute && !hasStats) return null
+        return (
+        <div className="mx-4 mt-3 rounded-2xl bg-white p-4 shadow-sm space-y-3" data-testid="ride-info-card">
+          {/* Pickup → Destination addresses */}
+          {hasRoute && (
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2.5">
+                <span className="h-2.5 w-2.5 rounded-full bg-success shrink-0" />
+                <p className="text-xs text-text-primary truncate">{pickupAddr ? `Near ${pickupAddr}` : 'Nearby pickup'}</p>
+              </div>
+              <div className="ml-[4.5px] h-2.5 border-l border-dashed border-text-secondary/30" />
+              <div className="flex items-center gap-2.5">
+                <span className="h-2.5 w-2.5 rounded-full bg-primary shrink-0" />
+                <p className="text-xs font-medium text-text-primary truncate">{destAddr ?? 'Destination'}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Stats row: earnings / distance / est. time */}
+          {(() => {
+            const distKm = Number(navState?.distanceKm)
+            const distMi = isNaN(distKm) ? null : distKm * 0.621371
+            const etaMin = distMi != null ? Math.max(1, Math.round(distMi / 35 * 60)) : null
+            const earnings = navState?.estimatedEarnings
+            if (!earnings && distMi == null) return null
+            return (
+              <div className="grid grid-cols-3 gap-1 rounded-2xl bg-surface p-2.5">
+                <div className="text-center">
+                  <p className="text-lg font-bold text-success">{earnings ?? '\u2013'}</p>
+                  <p className="text-[10px] text-text-secondary">You earn</p>
+                </div>
+                <div className="text-center">
+                  <p className="text-lg font-bold text-text-primary">{distMi != null ? `${distMi.toFixed(1)} mi` : '\u2013'}</p>
+                  <p className="text-[10px] text-text-secondary">Distance</p>
+                </div>
+                <div className="text-center">
+                  <p className="text-lg font-bold text-text-primary">{etaMin != null ? `~${etaMin}m` : '\u2013'}</p>
+                  <p className="text-[10px] text-text-secondary">Est. time</p>
+                </div>
+              </div>
+            )
+          })()}
+
+          <p className="text-[10px] text-text-secondary italic">
+            Fare may vary based on actual route. You can set your own drop-off point after accepting.
+          </p>
+        </div>
+        )
+      })()}
 
       {/* ── Driver destination input ──────────────────────────────────────────── */}
       <div className="mx-4 mt-3 rounded-2xl bg-primary/5 border border-primary/20 p-4 shadow-sm" data-testid="driver-destination-card">

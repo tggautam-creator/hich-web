@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { APIProvider, Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { env } from '@/lib/env'
-import { colors } from '@/lib/tokens'
+
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { MAP_ID, DEFAULT_CENTER, DEFAULT_ZOOM } from '@/lib/mapConstants'
 import BottomNav from '@/components/ui/BottomNav'
+import PwaInstallBanner from '@/components/ui/PwaInstallBanner'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -22,6 +23,7 @@ const GPS_INTERVAL_MS = 30_000
 
 export default function DriverHomePage({ 'data-testid': testId }: DriverHomePageProps) {
   const profile = useAuthStore((s) => s.profile)
+  const refreshProfile = useAuthStore((s) => s.refreshProfile)
   const navigate = useNavigate()
 
   const [center, setCenter] = useState(DEFAULT_CENTER)
@@ -31,6 +33,9 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
   const [unreadCount, setUnreadCount] = useState(0)
   const [statusToast, setStatusToast] = useState<string | null>(null)
   const [userPanned, setUserPanned] = useState(false)
+  const [onboarding, setOnboarding] = useState(false)
+
+  const hasBank = profile?.stripe_onboarding_complete === true
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const latestCoordsRef = useRef(DEFAULT_CENTER)
   const gpsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -127,7 +132,60 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
     toastTimeoutRef.current = setTimeout(() => setStatusToast(null), 3000)
   }
 
+  // ── Stripe return handler ──────────────────────────────────────────────
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    if (searchParams.get('stripe_return') !== '1') return
+    async function completeOnboarding() {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) return
+        await fetch('/api/connect/onboard/complete', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+        await refreshProfile()
+      } catch {
+        // non-fatal
+      }
+    }
+    void completeOnboarding()
+    // Remove query param
+    searchParams.delete('stripe_return')
+    setSearchParams(searchParams, { replace: true })
+  }, [searchParams, setSearchParams, refreshProfile])
+
+  async function handleStripeOnboard() {
+    setOnboarding(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) return
+      const returnUrl = `${window.location.origin}/drive?stripe_return=1`
+      const resp = await fetch('/api/connect/onboard', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ return_url: returnUrl, refresh_url: returnUrl }),
+      })
+      if (!resp.ok) return
+      const body = (await resp.json()) as { url?: string; already_complete?: boolean }
+      if (body.already_complete) {
+        await refreshProfile()
+        return
+      }
+      if (body.url) {
+        window.location.href = body.url
+      }
+    } finally {
+      setOnboarding(false)
+    }
+  }
+
   async function handleToggleOnline() {
+    if (!hasBank) {
+      showToast('Tip: Set up your bank account to receive payouts')
+    }
     const next = !isOnline
     setIsOnline(next)
 
@@ -158,6 +216,9 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
       data-testid={testId ?? 'driver-home-page'}
       className="relative h-dvh w-full overflow-hidden font-sans"
     >
+      {/* ── PWA install banner ──────────────────────────────────────────── */}
+      <PwaInstallBanner />
+
       {/* ── Full-screen map ────────────────────────────────────────────────── */}
       <APIProvider apiKey={apiKey}>
         <Map
@@ -173,11 +234,10 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         >
           {hasGps && (
             <AdvancedMarker position={center} title="Driver location">
-              <div
-                data-testid="green-dot-marker"
-                className="h-5 w-5 rounded-full border-[3px] border-white shadow-md"
-                style={{ backgroundColor: colors.success }}
-              />
+              <div data-testid="green-dot-marker" className="relative flex items-center justify-center">
+                <span className="absolute h-6 w-6 rounded-full bg-success/30 animate-ping" />
+                <span className="relative h-3 w-3 rounded-full bg-success border-2 border-white shadow-md" />
+              </div>
             </AdvancedMarker>
           )}
         </Map>
@@ -299,6 +359,39 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         className="absolute left-0 right-0 z-[1000] px-4 flex flex-col gap-3"
         style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 4.5rem)' }}
       >
+        {/* ── Bank setup banner ──────────────────────────────────────────── */}
+        {!hasBank && (
+          <div
+            data-testid="bank-setup-banner"
+            className="w-full bg-white rounded-2xl shadow-lg px-4 py-4 flex flex-col gap-3"
+          >
+            <div className="flex items-center gap-3">
+              <div className="h-9 w-9 rounded-full bg-warning/10 flex items-center justify-center shrink-0">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-warning" aria-hidden="true">
+                  <rect x="2" y="6" width="20" height="14" rx="2" />
+                  <path d="M2 10h20" />
+                  <path d="M6 14h.01" />
+                  <path d="M10 14h4" />
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-text-primary">Add your bank to get paid</p>
+                <p className="text-xs text-text-secondary mt-0.5">
+                  Set up your bank account to receive payouts for every ride and to receive real-time ride requests.
+                </p>
+              </div>
+            </div>
+            <button
+              data-testid="setup-bank-button"
+              onClick={() => { void handleStripeOnboard() }}
+              disabled={onboarding}
+              className="w-full rounded-xl bg-primary py-2.5 text-sm font-semibold text-white active:opacity-90 transition-opacity disabled:opacity-60"
+            >
+              {onboarding ? 'Redirecting…' : 'Set Up Bank Account'}
+            </button>
+          </div>
+        )}
+
         {/* ── Online/Offline toggle ──────────────────────────────────────── */}
         <button
           data-testid="online-toggle"

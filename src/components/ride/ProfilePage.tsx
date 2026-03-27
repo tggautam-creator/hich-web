@@ -7,7 +7,8 @@ import BottomNav from '@/components/ui/BottomNav'
 import DriverQrSheet from '@/components/ride/DriverQrSheet'
 import AppIcon from '@/components/ui/AppIcon'
 import VehicleIcon from '@/components/ui/VehicleIcon'
-import type { Ride, DriverRoutine, Vehicle } from '@/types/database'
+import type { Ride, DriverRoutine, Vehicle, SavedAddress } from '@/types/database'
+import AddressPickerModal from '@/components/ride/AddressPickerModal'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -52,6 +53,13 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
 
   // QR sheet state
   const [qrOpen, setQrOpen] = useState(false)
+
+  // Saved addresses state
+  const [savedAddresses, setSavedAddresses] = useState<SavedAddress[]>([])
+  const [loadingAddresses, setLoadingAddresses] = useState(true)
+  const [addressPickerOpen, setAddressPickerOpen] = useState(false)
+  const [addressPresetLabel, setAddressPresetLabel] = useState<'home' | 'work' | null>(null)
+  const [deletingAddress, setDeletingAddress] = useState<string | null>(null)
 
   // Avatar upload state
   const avatarInputRef = useRef<HTMLInputElement>(null)
@@ -141,12 +149,46 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
         .eq('user_id', userId)
         .eq('is_active', true)
         .limit(1)
-        .single()
+        .maybeSingle()
       setVehicle(data as Vehicle | null)
       setLoadingVehicle(false)
     }
     void loadVehicle()
   }, [profile?.id, profile?.is_driver])
+
+  // ── Load saved addresses ────────────────────────────────────────────
+  const loadAddresses = useCallback(async () => {
+    if (!profile?.id) return
+    setLoadingAddresses(true)
+    const { data: { session } } = await supabase.auth.getSession()
+    const token = session?.access_token
+    if (!token) { setLoadingAddresses(false); return }
+
+    const resp = await fetch('/api/addresses', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (resp.ok) {
+      const body = await resp.json() as { addresses: SavedAddress[] }
+      setSavedAddresses(body.addresses ?? [])
+    }
+    setLoadingAddresses(false)
+  }, [profile?.id])
+
+  useEffect(() => { void loadAddresses() }, [loadAddresses])
+
+  const handleDeleteAddress = async (id: string) => {
+    setDeletingAddress(id)
+    const { data: { session } } = await supabase.auth.getSession()
+    const token = session?.access_token
+    if (token) {
+      await fetch(`/api/addresses/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    }
+    await loadAddresses()
+    setDeletingAddress(null)
+  }
 
   // ── Avatar upload ────────────────────────────────────────────────────
   const handleAvatarUpload = async (file: File) => {
@@ -398,6 +440,127 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
           </div>
         )}
       </div>
+
+      {/* ── Saved Places ────────────────────────────────────────────────── */}
+      <div className="mx-4 mt-4" data-testid="saved-places-section">
+        <h2 className="text-sm font-semibold text-text-primary mb-3">Saved Places</h2>
+        {loadingAddresses ? (
+          <div className="flex justify-center py-4">
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          </div>
+        ) : (
+          <div className="bg-white rounded-2xl border border-border divide-y divide-border">
+            {/* Home preset */}
+            {(() => {
+              const home = savedAddresses.find((a) => a.label === 'home')
+              return (
+                <div className="flex items-center gap-3 px-4 py-3">
+                  <span className="text-lg">🏠</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-text-primary">Home</p>
+                    {home ? (
+                      <p className="text-xs text-text-secondary truncate">{home.main_text}</p>
+                    ) : (
+                      <button
+                        onClick={() => { setAddressPresetLabel('home'); setAddressPickerOpen(true) }}
+                        className="text-xs text-primary font-medium"
+                        data-testid="add-home-address"
+                      >
+                        + Add home address
+                      </button>
+                    )}
+                  </div>
+                  {home && (
+                    <button
+                      onClick={() => handleDeleteAddress(home.id)}
+                      disabled={deletingAddress === home.id}
+                      className="p-1.5 text-text-secondary hover:text-danger transition-colors disabled:opacity-50"
+                      data-testid="delete-home-address"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                    </button>
+                  )}
+                </div>
+              )
+            })()}
+
+            {/* Work preset */}
+            {(() => {
+              const work = savedAddresses.find((a) => a.label === 'work')
+              return (
+                <div className="flex items-center gap-3 px-4 py-3">
+                  <span className="text-lg">💼</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-text-primary">Work</p>
+                    {work ? (
+                      <p className="text-xs text-text-secondary truncate">{work.main_text}</p>
+                    ) : (
+                      <button
+                        onClick={() => { setAddressPresetLabel('work'); setAddressPickerOpen(true) }}
+                        className="text-xs text-primary font-medium"
+                        data-testid="add-work-address"
+                      >
+                        + Add work address
+                      </button>
+                    )}
+                  </div>
+                  {work && (
+                    <button
+                      onClick={() => handleDeleteAddress(work.id)}
+                      disabled={deletingAddress === work.id}
+                      className="p-1.5 text-text-secondary hover:text-danger transition-colors disabled:opacity-50"
+                      data-testid="delete-work-address"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                    </button>
+                  )}
+                </div>
+              )
+            })()}
+
+            {/* Custom addresses */}
+            {savedAddresses
+              .filter((a) => !a.is_preset)
+              .map((addr) => (
+                <div key={addr.id} className="flex items-center gap-3 px-4 py-3">
+                  <span className="text-lg">📍</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-text-primary">{addr.label}</p>
+                    <p className="text-xs text-text-secondary truncate">{addr.main_text}</p>
+                  </div>
+                  <button
+                    onClick={() => handleDeleteAddress(addr.id)}
+                    disabled={deletingAddress === addr.id}
+                    className="p-1.5 text-text-secondary hover:text-danger transition-colors disabled:opacity-50"
+                    data-testid={`delete-address-${addr.id}`}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </button>
+                </div>
+              ))}
+
+            {/* Add custom address */}
+            {savedAddresses.length < 10 && (
+              <button
+                onClick={() => { setAddressPresetLabel(null); setAddressPickerOpen(true) }}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 text-sm font-medium text-primary hover:bg-primary/5 transition-colors rounded-b-2xl"
+                data-testid="add-custom-address"
+              >
+                <span className="text-base font-bold leading-none">+</span>
+                Add Address
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Address picker modal */}
+      <AddressPickerModal
+        isOpen={addressPickerOpen}
+        onClose={() => setAddressPickerOpen(false)}
+        onSaved={() => void loadAddresses()}
+        presetLabel={addressPresetLabel}
+      />
 
       {/* ── My Vehicle ──────────────────────────────────────────────────── */}
       {profile?.is_driver && (

@@ -166,8 +166,9 @@ ridesRouter.post(
     let stage: number
 
     if (hasNearby) {
-      driverIds = (nearbyRows as Array<{ user_id: string }>).map((r) => r.user_id)
+      const nearbyIds = (nearbyRows as Array<{ user_id: string }>).map((r) => r.user_id)
         .filter((id) => id !== riderId)
+      driverIds = nearbyIds
       stage = 2
     } else {
       // Stage 1 fallback — notify all online drivers
@@ -213,10 +214,10 @@ ridesRouter.post(
     const platformFee = Math.round(fareCents * 0.15)
     const driverEarns = fareCents - platformFee
 
-    // Fetch rider name for notifications and broadcasts
+    // Fetch rider name + rating for notifications and broadcasts
     const riderProfile = await supabaseAdmin
       .from('users')
-      .select('full_name')
+      .select('full_name, rating_avg, rating_count')
       .eq('id', riderId)
       .single()
     const riderName = riderProfile.data?.full_name ?? 'A rider'
@@ -239,6 +240,8 @@ ridesRouter.post(
           origin_lng: String(body.origin.coordinates[0]),
           destination_lat: typeof body.destination_lat === 'number' ? String(body.destination_lat) : '',
           destination_lng: typeof body.destination_lng === 'number' ? String(body.destination_lng) : '',
+          rider_rating: String(riderProfile.data?.rating_avg ?? ''),
+          rider_rating_count: String(riderProfile.data?.rating_count ?? '0'),
         },
       }))
 
@@ -264,6 +267,8 @@ ridesRouter.post(
       origin_lng: String(body.origin.coordinates[0]),
       destination_lat: typeof body.destination_lat === 'number' ? String(body.destination_lat) : '',
       destination_lng: typeof body.destination_lng === 'number' ? String(body.destination_lng) : '',
+      rider_rating: String(riderProfile.data?.rating_avg ?? ''),
+      rider_rating_count: String(riderProfile.data?.rating_count ?? '0'),
     }
 
     const realtimeResults = await Promise.all(
@@ -2111,7 +2116,11 @@ ridesRouter.post(
 
     // Broadcast to driver via Realtime
     if (ride.driver_id) {
-      await realtimeBroadcast(`rider:${ride.driver_id}`, 'rider_signal', { type: 'rider_signal', ride_id: rideId })
+      await realtimeBroadcastMany(
+        [`rider:${ride.driver_id}`, `rider-signal:${ride.driver_id}`],
+        'rider_signal',
+        { type: 'rider_signal', ride_id: rideId },
+      )
 
       // Send FCM push to driver
       const { data: driverTokens } = await supabaseAdmin
@@ -2705,6 +2714,18 @@ ridesRouter.post(
 
     if (updateErr) { next(updateErr); return }
 
+    // Broadcast ride_ended immediately so both rider & driver transition fast
+    const scanEndChannels = [
+      ...[ride.rider_id, ride.driver_id].filter(Boolean).map((uid) => `rider:${uid}`),
+      ...(ride.rider_id ? [`rider-active:${ride.rider_id}`] : []),
+    ]
+    await realtimeBroadcastMany(scanEndChannels, 'ride_ended', {
+      type: 'ride_ended',
+      ride_id: ride.id,
+      fare_cents: fareCents,
+      driver_earns_cents: driverEarnsCents,
+    })
+
     // Charge rider's card and route to driver via Stripe Connect
     let scanPaymentStatus = 'pending'
     let scanPaymentIntentId: string | undefined
@@ -2755,18 +2776,6 @@ ridesRouter.post(
         })
         .eq('id', ride.id)
     }
-
-    // Broadcast ride_ended to both parties + component-specific channels
-    const scanEndChannels = [
-      ...[ride.rider_id, ride.driver_id].filter(Boolean).map((uid) => `rider:${uid}`),
-      ...(ride.rider_id ? [`rider-active:${ride.rider_id}`] : []),
-    ]
-    await realtimeBroadcastMany(scanEndChannels, 'ride_ended', {
-      type: 'ride_ended',
-      ride_id: ride.id,
-      fare_cents: fareCents,
-      driver_earns_cents: driverEarnsCents,
-    })
 
     // FCM push to driver
     const { data: driverTokens2 } = await supabaseAdmin

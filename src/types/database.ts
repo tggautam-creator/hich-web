@@ -205,6 +205,7 @@ export type Database = {
           payment_intent_id: string | null
           stripe_fee_cents: number
           reminder_sent: boolean
+          progress_pct: number
         }
         Insert: {
           id?: string
@@ -236,6 +237,7 @@ export type Database = {
           payment_intent_id?: string | null
           stripe_fee_cents?: number
           reminder_sent?: boolean
+          progress_pct?: number
         }
         Update: {
           id?: string
@@ -267,6 +269,7 @@ export type Database = {
           payment_intent_id?: string | null
           stripe_fee_cents?: number
           reminder_sent?: boolean
+          progress_pct?: number
         }
         Relationships: never[]
       }
@@ -624,6 +627,50 @@ export type Database = {
         }
         Relationships: never[]
       }
+
+      // ── saved_addresses ────────────────────────────────────────────────────
+      saved_addresses: {
+        Row: {
+          id: string
+          user_id: string
+          label: string
+          place_id: string | null
+          main_text: string
+          secondary_text: string | null
+          full_address: string
+          lat: number
+          lng: number
+          is_preset: boolean
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          label: string
+          place_id?: string | null
+          main_text: string
+          secondary_text?: string | null
+          full_address: string
+          lat: number
+          lng: number
+          is_preset?: boolean
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          label?: string
+          place_id?: string | null
+          main_text?: string
+          secondary_text?: string | null
+          full_address?: string
+          lat?: number
+          lng?: number
+          is_preset?: boolean
+          created_at?: string
+        }
+        Relationships: never[]
+      }
     }
     Views: Record<string, never>
     Functions: {
@@ -660,3 +707,4 @@ export type RideSchedule   = Database['public']['Tables']['ride_schedules']['Row
 export type RideOffer      = Database['public']['Tables']['ride_offers']['Row']
 export type RideRating     = Database['public']['Tables']['ride_ratings']['Row']
 export type Notification   = Database['public']['Tables']['notifications']['Row']
+export type SavedAddress   = Database['public']['Tables']['saved_addresses']['Row']

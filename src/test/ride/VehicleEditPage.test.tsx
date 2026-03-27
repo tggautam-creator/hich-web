@@ -22,7 +22,7 @@ const mockVehicle = {
 }
 
 const mockSingle = vi.fn().mockResolvedValue({ data: mockVehicle, error: null })
-const mockLimit = vi.fn(() => ({ single: mockSingle }))
+const mockLimit = vi.fn(() => ({ maybeSingle: mockSingle }))
 const mockEqActive = vi.fn(() => ({ limit: mockLimit }))
 const mockEqUser = vi.fn(() => ({ eq: mockEqActive }))
 const mockSelect = vi.fn(() => ({ eq: mockEqUser }))

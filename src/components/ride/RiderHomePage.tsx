@@ -2,13 +2,14 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { APIProvider, Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { env } from '@/lib/env'
-import { colors } from '@/lib/tokens'
+
 import { supabase } from '@/lib/supabase'
 import { reverseGeocode } from '@/lib/geocode'
 import BottomNav from '@/components/ui/BottomNav'
 import { MAP_ID, DEFAULT_CENTER, DEFAULT_ZOOM } from '@/lib/mapConstants'
 import SpotlightOverlay from '@/components/onboarding/SpotlightOverlay'
 import { useOnboardingStore } from '@/stores/onboardingStore'
+import PwaInstallBanner from '@/components/ui/PwaInstallBanner'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -99,6 +100,9 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
       className="relative h-dvh w-full overflow-hidden font-sans"
     >
 
+      {/* ── PWA install banner ──────────────────────────────────────────── */}
+      <PwaInstallBanner />
+
       {/* ── Full-screen map ────────────────────────────────────────────────── */}
       <APIProvider apiKey={apiKey}>
         <Map
@@ -114,11 +118,10 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
         >
           {hasGps && (
             <AdvancedMarker position={center} title="You are here">
-              <div
-                data-testid="blue-dot-marker"
-                className="h-5 w-5 rounded-full border-[3px] border-white shadow-md"
-                style={{ backgroundColor: colors.primary }}
-              />
+              <div data-testid="blue-dot-marker" className="relative flex items-center justify-center">
+                <span className="absolute h-6 w-6 rounded-full bg-primary/30 animate-ping" />
+                <span className="relative h-3 w-3 rounded-full bg-primary border-2 border-white shadow-md" />
+              </div>
             </AdvancedMarker>
           )}
         </Map>

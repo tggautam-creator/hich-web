@@ -161,7 +161,7 @@ function setupMocks(opts: { routines?: typeof MOCK_ROUTINES; rides?: unknown[] }
           eq: vi.fn().mockReturnValue({
             eq: vi.fn().mockReturnValue({
               limit: vi.fn().mockReturnValue({
-                single: vi.fn().mockResolvedValue({ data: null, error: null }),
+                maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
               }),
             }),
           }),
@@ -204,6 +204,11 @@ describe('ProfilePage', () => {
     vi.clearAllMocks()
     currentProfile = { ...mockProfile }
     setupMocks()
+    // Mock fetch for /api/addresses calls
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ addresses: [] }),
+    }))
   })
 
   // ── Basic rendering ─────────────────────────────────────────────────────

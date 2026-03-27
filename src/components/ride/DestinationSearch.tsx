@@ -8,6 +8,8 @@ import {
   type PlaceSuggestion,
 } from '@/lib/places'
 import { getDirections } from '@/lib/directions'
+import { supabase } from '@/lib/supabase'
+import type { SavedAddress } from '@/types/database'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -51,9 +53,29 @@ export default function DestinationSearch({ 'data-testid': testId }: Destination
   const [resolvedOriginLat, setResolvedOriginLat] = useState(gpsOriginLat)
   const [resolvedOriginLng, setResolvedOriginLng] = useState(gpsOriginLng)
 
+  // Saved addresses state
+  const [savedAddresses, setSavedAddresses] = useState<SavedAddress[]>([])
+
   // Load recent destinations once on mount
   useEffect(() => {
     setRecent(getRecentDestinations())
+  }, [])
+
+  // Load saved addresses
+  useEffect(() => {
+    async function loadSaved() {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) return
+      const resp = await fetch('/api/addresses', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (resp.ok) {
+        const body = await resp.json() as { addresses: SavedAddress[] }
+        setSavedAddresses(body.addresses ?? [])
+      }
+    }
+    void loadSaved()
   }, [])
 
   // Auto-focus the destination input on mount (only if not editing origin)
@@ -395,6 +417,47 @@ export default function DestinationSearch({ 'data-testid': testId }: Destination
                     </svg>
                     <span className="text-sm font-medium text-text-primary truncate">
                       {place.mainText}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {/* Saved addresses — shown when input is empty */}
+        {!query.trim() && savedAddresses.length > 0 && (
+          <section data-testid="saved-section">
+            <p className="px-5 pt-2 pb-2 text-xs font-semibold text-text-secondary uppercase tracking-wider">
+              Saved
+            </p>
+            <ul>
+              {savedAddresses.map((addr) => (
+                <li key={addr.id}>
+                  <button
+                    data-testid="saved-item"
+                    onClick={() => {
+                      handleSelect({
+                        placeId: addr.place_id ?? `saved-${addr.id}`,
+                        mainText: addr.main_text,
+                        secondaryText: addr.secondary_text ?? '',
+                        fullAddress: addr.full_address,
+                        lat: addr.lat,
+                        lng: addr.lng,
+                      })
+                    }}
+                    className="w-full flex items-center gap-3 px-5 py-3.5 text-left hover:bg-white active:bg-white transition-colors border-b border-border/50"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5 shrink-0 text-warning" aria-hidden="true">
+                      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                    </svg>
+                    <span className="flex flex-col gap-0.5 min-w-0">
+                      <span className="text-sm font-medium text-text-primary truncate">
+                        {addr.label === 'home' ? '🏠 Home' : addr.label === 'work' ? '💼 Work' : addr.label}
+                      </span>
+                      <span className="text-xs text-text-secondary truncate">
+                        {addr.main_text}
+                      </span>
                     </span>
                   </button>
                 </li>

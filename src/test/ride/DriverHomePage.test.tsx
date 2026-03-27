@@ -37,10 +37,13 @@ vi.mock('@/lib/env', () => ({
 
 // ── Mock authStore ─────────────────────────────────────────────────────────────
 
+const mockRefreshProfile = vi.fn().mockResolvedValue(undefined)
+let mockProfile: { id: string; stripe_onboarding_complete?: boolean } | null = { id: 'driver-001', stripe_onboarding_complete: true }
+
 vi.mock('@/stores/authStore', () => ({
   useAuthStore: vi.fn(
-    (selector: (s: { profile: { id: string } | null }) => unknown) =>
-      selector({ profile: { id: 'driver-001' } }),
+    (selector: (s: { profile: typeof mockProfile; refreshProfile: typeof mockRefreshProfile }) => unknown) =>
+      selector({ profile: mockProfile, refreshProfile: mockRefreshProfile }),
   ),
 }))
 
@@ -129,6 +132,8 @@ describe('DriverHomePage', () => {
     vi.useFakeTimers()
     vi.clearAllMocks()
     capturedWatch = null
+    mockProfile = { id: 'driver-001', stripe_onboarding_complete: true }
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ rides: [], count: 0 }) })
   })
 
   afterEach(() => {
@@ -264,5 +269,30 @@ describe('DriverHomePage', () => {
     renderPage()
     await user.click(screen.getByTestId('profile-tab'))
     expect(mockNavigate).toHaveBeenCalledWith('/profile')
+  })
+
+  // ── Bank setup banner ──────────────────────────────────────────────────────
+
+  it('shows bank setup banner when stripe_onboarding_complete is false', () => {
+    mockProfile = { id: 'driver-001', stripe_onboarding_complete: false }
+    renderPage()
+    expect(screen.getByTestId('bank-setup-banner')).toBeInTheDocument()
+    expect(screen.getByTestId('setup-bank-button')).toBeInTheDocument()
+  })
+
+  it('hides bank setup banner when stripe_onboarding_complete is true', () => {
+    mockProfile = { id: 'driver-001', stripe_onboarding_complete: true }
+    renderPage()
+    expect(screen.queryByTestId('bank-setup-banner')).not.toBeInTheDocument()
+  })
+
+  it('allows going online without bank setup but shows tip', () => {
+    mockProfile = { id: 'driver-001', stripe_onboarding_complete: false }
+    renderPage()
+
+    // Toggle — should succeed (no hard block), not be prevented
+    act(() => { fireEvent.click(screen.getByTestId('online-toggle')) })
+    // The toast should show a status message (not a hard block error)
+    expect(screen.getByTestId('status-toast')).toBeInTheDocument()
   })
 })

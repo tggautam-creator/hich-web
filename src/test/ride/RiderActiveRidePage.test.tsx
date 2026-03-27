@@ -62,6 +62,7 @@ vi.mock('@/lib/supabase', () => {
   const eqChain = (): Record<string, unknown> => ({
     eq: eqChain,
     single: mockSingle,
+    maybeSingle: mockSingle,
     order: () => ({ limit: () => ({ single: mockSingle }) }),
   })
   return {
@@ -82,6 +83,11 @@ vi.mock('@/lib/supabase', () => {
 })
 
 // ── QR Scanner mock ───────────────────────────────────────────────────────────
+
+vi.mock('@/lib/fare', () => ({
+  formatCents: (cents: number) => `$${(cents / 100).toFixed(2)}`,
+  calculateFare: vi.fn(),
+}))
 
 vi.mock('@/components/ride/QrScanner', () => ({
   default: ({ onScan, 'data-testid': tid }: { onScan: (text: string) => void; onError?: (err: string) => void; 'data-testid'?: string }) => (
@@ -162,6 +168,12 @@ describe('RiderActiveRidePage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setupMocks()
+    // Ensure portal target exists for JourneyDrawer
+    if (!document.getElementById('portal-root')) {
+      const el = document.createElement('div')
+      el.id = 'portal-root'
+      document.body.appendChild(el)
+    }
   })
 
   it('shows loading spinner initially', () => {
@@ -208,29 +220,29 @@ describe('RiderActiveRidePage', () => {
     })
   })
 
-  it('shows Scan QR button in action grid for active ride', async () => {
+  it('shows Scan QR button in drawer for active ride', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('scan-qr-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-qr-button')).toBeInTheDocument()
     })
-    expect(screen.getByTestId('scan-qr-button')).toHaveTextContent('Scan QR')
+    expect(screen.getByTestId('drawer-qr-button')).toHaveTextContent('Scan QR')
   })
 
-  it('shows Scan QR button for coordinating ride', async () => {
+  it('shows Scan QR button in drawer for coordinating ride', async () => {
     setupMocks(RIDE_COORDINATING)
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('scan-qr-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-qr-button')).toBeInTheDocument()
     })
-    expect(screen.getByTestId('scan-qr-button')).toHaveTextContent('Scan QR')
+    expect(screen.getByTestId('drawer-qr-button')).toHaveTextContent('Scan QR')
   })
 
   it('End Ride button opens modal with QR scan option (rider must scan to end)', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('end-ride-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-end-ride-button')).toBeInTheDocument()
     })
-    fireEvent.click(screen.getByTestId('end-ride-button'))
+    fireEvent.click(screen.getByTestId('drawer-end-ride-button'))
     expect(screen.getByTestId('end-ride-modal')).toBeInTheDocument()
     expect(screen.getByTestId('modal-scan-qr')).toBeInTheDocument()
   })
@@ -238,32 +250,32 @@ describe('RiderActiveRidePage', () => {
   it('Chat button navigates to messaging', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('chat-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-chat-button')).toBeInTheDocument()
     })
-    fireEvent.click(screen.getByTestId('chat-button'))
+    fireEvent.click(screen.getByTestId('drawer-chat-button'))
     expect(mockNavigate).toHaveBeenCalledWith('/ride/messaging/ride-001')
   })
 
   it('Scan QR button opens scanner view', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('scan-qr-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-qr-button')).toBeInTheDocument()
     })
-    fireEvent.click(screen.getByTestId('scan-qr-button'))
+    fireEvent.click(screen.getByTestId('drawer-qr-button'))
     expect(screen.getByTestId('qr-scanner')).toBeInTheDocument()
   })
 
   it('Scanner back button returns to main view', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('scan-qr-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-qr-button')).toBeInTheDocument()
     })
-    fireEvent.click(screen.getByTestId('scan-qr-button'))
+    fireEvent.click(screen.getByTestId('drawer-qr-button'))
     expect(screen.getByTestId('qr-scanner')).toBeInTheDocument()
 
     fireEvent.click(screen.getByTestId('scanner-back'))
     expect(screen.queryByTestId('qr-scanner')).not.toBeInTheDocument()
-    expect(screen.getByTestId('scan-qr-button')).toBeInTheDocument()
+    expect(screen.getByTestId('drawer-qr-button')).toBeInTheDocument()
   })
 
   it('has map rendered', async () => {
@@ -276,9 +288,9 @@ describe('RiderActiveRidePage', () => {
   it('shows manual code entry field inside End Ride modal', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('end-ride-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-end-ride-button')).toBeInTheDocument()
     })
-    fireEvent.click(screen.getByTestId('end-ride-button'))
+    fireEvent.click(screen.getByTestId('drawer-end-ride-button'))
     expect(screen.getByTestId('driver-code-input')).toBeInTheDocument()
     expect(screen.getByTestId('submit-code-button')).toBeInTheDocument()
   })
@@ -286,9 +298,9 @@ describe('RiderActiveRidePage', () => {
   it('submit button is disabled when code is empty', async () => {
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('end-ride-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-end-ride-button')).toBeInTheDocument()
     })
-    fireEvent.click(screen.getByTestId('end-ride-button'))
+    fireEvent.click(screen.getByTestId('drawer-end-ride-button'))
     expect(screen.getByTestId('submit-code-button')).toBeDisabled()
   })
 
@@ -301,11 +313,11 @@ describe('RiderActiveRidePage', () => {
     renderPage()
 
     await waitFor(() => {
-      expect(screen.getByTestId('scan-qr-button')).toBeInTheDocument()
+      expect(screen.getByTestId('drawer-qr-button')).toBeInTheDocument()
     })
 
     // Coordinating ride — scan QR opens scanner directly (no modal needed)
-    fireEvent.click(screen.getByTestId('scan-qr-button'))
+    fireEvent.click(screen.getByTestId('drawer-qr-button'))
     expect(screen.getByTestId('qr-scanner')).toBeInTheDocument()
 
     fetchSpy.mockRestore()

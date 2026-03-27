@@ -5,6 +5,7 @@ import { onForegroundMessage } from '@/lib/fcm'
 import { formatCents } from '@/lib/fare'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
+import { reverseGeocode } from '@/lib/geocode'
 import AppIcon from '@/components/ui/AppIcon'
 
 // ── Dismiss callback ref (stable across renders) ──────────────────────────────
@@ -21,6 +22,8 @@ interface RideRequestData {
   origin_lng?: string
   destination_lat?: string
   destination_lng?: string
+  rider_rating?: string
+  rider_rating_count?: string
 }
 
 /** Payload shape sent by the board request push. */
@@ -56,6 +59,9 @@ interface NotificationState {
   originLng: string
   destinationLat: string
   destinationLng: string
+  riderRating: string
+  riderRatingCount: string
+  originAddress: string
   /** When true, navigate to board-review instead of ride suggestion */
   isBoardRequest?: boolean
   /** When true, this is a re-notification after the selected driver cancelled — show standby screen */
@@ -122,6 +128,9 @@ export default function RideRequestNotification({
       originLng: data.origin_lng ?? '',
       destinationLat: data.destination_lat ?? '',
       destinationLng: data.destination_lng ?? '',
+      riderRating: data.rider_rating ?? '',
+      riderRatingCount: data.rider_rating_count ?? '0',
+      originAddress: '',
       isRenewal: isRenewal ?? false,
     }
     setQueue((prev) => {
@@ -129,6 +138,17 @@ export default function RideRequestNotification({
       if (prev.length === 0) setSecondsLeft(DISMISS_SECONDS)
       return [...prev, entry]
     })
+
+    // Reverse geocode origin to get approximate area
+    const lat = parseFloat(data.origin_lat ?? '')
+    const lng = parseFloat(data.origin_lng ?? '')
+    if (!isNaN(lat) && !isNaN(lng)) {
+      void reverseGeocode(lat, lng).then((address) => {
+        setQueue((prev) =>
+          prev.map((n) => n.rideId === data.ride_id ? { ...n, originAddress: address } : n),
+        )
+      })
+    }
   }, [])
 
   // Handle incoming board request (from ride board)
@@ -151,6 +171,9 @@ export default function RideRequestNotification({
       originLng: '',
       destinationLat: '',
       destinationLng: '',
+      riderRating: '',
+      riderRatingCount: '0',
+      originAddress: '',
       isBoardRequest: true,
     }
     setQueue((prev) => {
@@ -451,9 +474,49 @@ export default function RideRequestNotification({
     }
   }, [notification, dismiss])
 
+  const [accepting, setAccepting] = useState(false)
+
+  async function handleAccept() {
+    if (!notification || accepting) return
+    setAccepting(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) return
+      const resp = await fetch(`/api/rides/${notification.rideId}/accept`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      })
+      if (resp.ok) {
+        dismiss()
+        navigate(`/ride/suggestion/${notification.rideId}`, {
+          state: {
+            riderName: notification.riderName,
+            destination: notification.destination,
+            distanceKm: notification.distanceKm,
+            estimatedEarnings: notification.estimatedEarnings,
+            originLat: notification.originLat,
+            originLng: notification.originLng,
+            destinationLat: notification.destinationLat,
+            destinationLng: notification.destinationLng,
+          },
+        })
+      } else {
+        // Ride may already be taken — silently dismiss
+        dismiss()
+      }
+    } catch {
+      dismiss()
+    } finally {
+      setAccepting(false)
+    }
+  }
+
   async function handleViewDetails() {
     if (!notification) return
-    const { rideId, riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng, isBoardRequest, isRenewal } = notification
+    const { rideId, riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng, originAddress, isBoardRequest, isRenewal } = notification
     dismiss()
 
     if (isBoardRequest) {
@@ -487,7 +550,7 @@ export default function RideRequestNotification({
         if (rideRow?.status === 'accepted' && rideRow.driver_id !== profile?.id) {
           // Someone else was auto-selected first — show standby screen
           navigate(`/ride/suggestion/${rideId}`, {
-            state: { riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng, isStandbyRenewal: true },
+            state: { riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng, originAddress, isStandbyRenewal: true },
           })
           return
         }
@@ -497,7 +560,7 @@ export default function RideRequestNotification({
       // WaitingRoom will auto-select this driver within seconds; the driver_selected
       // Realtime event will then navigate them to DropoffSelection automatically.
       navigate(`/ride/suggestion/${rideId}`, {
-        state: { riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng, isRenewalStandby: true },
+        state: { riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng, originAddress, isRenewalStandby: true },
       })
       return
     }
@@ -519,7 +582,7 @@ export default function RideRequestNotification({
     }
 
     navigate(`/ride/suggestion/${rideId}`, {
-      state: { riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng },
+      state: { riderName, destination, distanceKm, estimatedEarnings, originLat, originLng, destinationLat, destinationLng, originAddress },
     })
   }
 
@@ -619,6 +682,11 @@ export default function RideRequestNotification({
 
   if (!notification) return null
 
+  const distanceMi = isNaN(Number(notification.distanceKm)) ? null : Number(notification.distanceKm) * 0.621371
+  const estTimeMin = distanceMi != null ? Math.max(1, Math.round(distanceMi / 35 * 60)) : null
+  const ratingVal = parseFloat(notification.riderRating)
+  const ratingCount = parseInt(notification.riderRatingCount, 10)
+
   return createPortal(
     <div
       data-testid={testId}
@@ -626,7 +694,7 @@ export default function RideRequestNotification({
     >
       {/* Banner card */}
       <div
-        className="mx-2 mt-2 rounded-2xl border border-border bg-white shadow-xl"
+        className="mx-2 mt-2 rounded-2xl border border-border bg-white shadow-xl overflow-hidden"
         data-testid="ride-request-content"
       >
         {/* Header row */}
@@ -651,70 +719,137 @@ export default function RideRequestNotification({
             aria-label="Dismiss"
             className="rounded-full p-1 text-text-secondary hover:bg-surface"
           >
-            ✕
+            &#10005;
           </button>
         </div>
 
-        {/* Rider info */}
+        {/* Rider info + rating */}
         <div className="flex items-center gap-3 px-4 pb-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-light shrink-0">
-            <AppIcon name="person" className="h-4 w-4 text-text-secondary" />
+          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 shrink-0">
+            <span className="text-sm font-bold text-primary">{notification.riderName[0]?.toUpperCase() ?? '?'}</span>
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="font-semibold text-text-primary text-sm truncate" data-testid="rider-name">
               {notification.riderName}
             </p>
-            <p className="text-xs text-text-secondary">
-              {notification.isBoardRequest ? 'wants to coordinate a ride' : notification.isRenewal ? 'previous driver cancelled — your offer is active' : 'needs a ride'}
-            </p>
+            <div className="flex items-center gap-1.5 text-xs text-text-secondary">
+              {!isNaN(ratingVal) && ratingVal > 0 ? (
+                <>
+                  <span className="inline-flex items-center gap-0.5">
+                    <AppIcon name="star" className="h-3 w-3 text-warning" />
+                    <span className="font-medium">{ratingVal.toFixed(1)}</span>
+                  </span>
+                  {ratingCount > 0 && <span>({ratingCount} {ratingCount === 1 ? 'ride' : 'rides'})</span>}
+                </>
+              ) : (
+                <span className="text-warning font-medium">New rider</span>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Details row */}
-        <div className="grid grid-cols-3 gap-1 mx-3 mb-2 rounded-2xl bg-surface p-2">
-          <div className="text-center">
-            <p className="text-[10px] text-text-secondary">Destination</p>
-            <p className="text-xs font-medium text-text-primary truncate" data-testid="notification-destination">
+        {/* Route addresses */}
+        {!notification.isBoardRequest && (
+          <div className="mx-4 mb-2 space-y-1.5">
+            <div className="flex items-center gap-2.5">
+              <span className="h-2.5 w-2.5 rounded-full bg-success shrink-0" />
+              <p className="text-xs text-text-primary truncate" data-testid="notification-origin">
+                {notification.originAddress ? `Near ${notification.originAddress}` : 'Nearby pickup'}
+              </p>
+            </div>
+            <div className="ml-[4.5px] h-2.5 border-l border-dashed border-text-secondary/30" />
+            <div className="flex items-center gap-2.5">
+              <span className="h-2.5 w-2.5 rounded-full bg-primary shrink-0" />
+              <p className="text-xs font-medium text-text-primary truncate" data-testid="notification-destination">
+                {notification.destination}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Details grid */}
+        {!notification.isBoardRequest && (
+          <div className="grid grid-cols-3 gap-1 mx-3 mb-2 rounded-2xl bg-surface p-2.5">
+            <div className="text-center">
+              <p className="text-lg font-bold text-success" data-testid="notification-earnings">
+                {notification.estimatedEarnings}
+              </p>
+              <p className="text-[10px] text-text-secondary">You earn</p>
+            </div>
+            <div className="text-center">
+              <p className="text-lg font-bold text-text-primary" data-testid="notification-distance">
+                {distanceMi != null ? `${distanceMi.toFixed(1)} mi` : '\u2013'}
+              </p>
+              <p className="text-[10px] text-text-secondary">Distance</p>
+            </div>
+            <div className="text-center">
+              <p className="text-lg font-bold text-text-primary" data-testid="notification-time">
+                {estTimeMin != null ? `~${estTimeMin}m` : '\u2013'}
+              </p>
+              <p className="text-[10px] text-text-secondary">Est. time</p>
+            </div>
+          </div>
+        )}
+
+        {/* Board request destination */}
+        {notification.isBoardRequest && notification.destination && (
+          <div className="mx-3 mb-2 rounded-2xl bg-surface p-2.5 text-center">
+            <p className="text-xs text-text-secondary">Route</p>
+            <p className="text-sm font-medium text-text-primary truncate" data-testid="notification-destination">
               {notification.destination}
             </p>
           </div>
-          <div className="text-center">
-            <p className="text-[10px] text-text-secondary">Distance</p>
-            <p className="text-xs font-medium text-text-primary" data-testid="notification-distance">
-              {isNaN(Number(notification.distanceKm)) ? '–' : `${(Number(notification.distanceKm) * 0.621371).toFixed(1)} mi`}
-            </p>
+        )}
+
+        {/* Disclaimer */}
+        {!notification.isBoardRequest && (
+          <p className="mx-4 mb-2 text-[10px] text-text-secondary italic leading-tight" data-testid="notification-disclaimer">
+            Fare may vary based on actual route. You can set your own drop-off point after accepting.
+          </p>
+        )}
+
+        {/* Countdown bar */}
+        <div className="mx-3 mb-2 flex items-center gap-2">
+          <div className="h-1 flex-1 overflow-hidden rounded-full bg-border">
+            <div
+              className="h-full rounded-full bg-primary transition-all duration-1000 ease-linear"
+              style={{ width: `${(secondsLeft / DISMISS_SECONDS) * 100}%` }}
+            />
           </div>
-          <div className="text-center">
-            <p className="text-[10px] text-text-secondary">You earn</p>
-            <p className="text-xs font-medium text-success" data-testid="notification-earnings">
-              {notification.estimatedEarnings}
-            </p>
-          </div>
+          <span className="text-[10px] text-text-secondary whitespace-nowrap" data-testid="countdown">
+            {secondsLeft}s
+          </span>
         </div>
 
-        {/* Progress bar + CTA */}
-        <div className="px-3 pb-3">
-          {/* Countdown bar */}
-          <div className="mb-2 flex items-center gap-2">
-            <div className="h-1 flex-1 overflow-hidden rounded-full bg-border">
-              <div
-                className="h-full rounded-full bg-primary transition-all duration-1000 ease-linear"
-                style={{ width: `${(secondsLeft / DISMISS_SECONDS) * 100}%` }}
-              />
-            </div>
-            <span className="text-[10px] text-text-secondary whitespace-nowrap" data-testid="countdown">
-              {secondsLeft}s
-            </span>
-          </div>
-
+        {/* Action buttons */}
+        <div className="px-3 pb-3 flex gap-2">
           <button
             type="button"
-            onClick={handleViewDetails}
-            className="w-full rounded-2xl bg-primary py-2.5 text-center text-sm font-semibold text-white active:bg-primary-dark"
+            onClick={dismiss}
+            className="flex-1 rounded-2xl border border-border py-2.5 text-center text-sm font-semibold text-text-secondary active:bg-surface transition-colors"
+            data-testid="decline-button"
+          >
+            Decline
+          </button>
+          <button
+            type="button"
+            onClick={() => { void handleViewDetails() }}
+            className="flex-1 rounded-2xl border border-primary py-2.5 text-center text-sm font-semibold text-primary active:bg-primary/5 transition-colors"
             data-testid="view-details-button"
           >
-            View Details
+            Details
           </button>
+          {!notification.isBoardRequest && (
+            <button
+              type="button"
+              onClick={() => { void handleAccept() }}
+              disabled={accepting}
+              className="flex-1 rounded-2xl bg-success py-2.5 text-center text-sm font-semibold text-white active:bg-success/90 transition-colors disabled:opacity-50"
+              data-testid="accept-button"
+            >
+              {accepting ? 'Accepting\u2026' : 'Accept'}
+            </button>
+          )}
         </div>
       </div>
     </div>,

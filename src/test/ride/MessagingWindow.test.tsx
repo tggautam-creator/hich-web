@@ -124,7 +124,7 @@ function setupMocks(opts?: { rideError?: boolean }) {
   const vehicleSelect = vi.fn().mockReturnValue({
     eq: vi.fn().mockReturnValue({
       eq: vi.fn().mockReturnValue({
-        single: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }),
+        maybeSingle: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }),
       }),
     }),
   })
@@ -335,7 +335,7 @@ describe('MessagingWindow', () => {
     mockFrom.mockImplementation((table: string) => {
       if (table === 'rides') return { select: rideSelect }
       if (table === 'users') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_DRIVER, error: null }) }) }) }
-      if (table === 'vehicles') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }) }) }) }) }
+      if (table === 'vehicles') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ maybeSingle: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }) }) }) }) }
       return { select: vi.fn() }
     })
 
@@ -373,7 +373,7 @@ describe('MessagingWindow', () => {
     mockFrom.mockImplementation((table: string) => {
       if (table === 'rides') return { select: rideSelect }
       if (table === 'users') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_DRIVER, error: null }) }) }) }
-      if (table === 'vehicles') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }) }) }) }) }
+      if (table === 'vehicles') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ maybeSingle: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }) }) }) }) }
       return { select: vi.fn() }
     })
 
@@ -406,7 +406,7 @@ describe('MessagingWindow', () => {
     mockFrom.mockImplementation((table: string) => {
       if (table === 'rides') return { select: rideSelect }
       if (table === 'users') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_DRIVER, error: null }) }) }) }
-      if (table === 'vehicles') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }) }) }) }) }
+      if (table === 'vehicles') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ maybeSingle: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }) }) }) }) }
       return { select: vi.fn() }
     })
 

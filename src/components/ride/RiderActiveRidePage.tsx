@@ -9,22 +9,10 @@ import QrScanner from '@/components/ride/QrScanner'
 import EmergencySheet from '@/components/ui/EmergencySheet'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
-import AppIcon from '@/components/ui/AppIcon'
-import { calculateFare, formatCents } from '@/lib/fare'
+import { getNavigationUrl } from '@/lib/pwa'
+import JourneyDrawer from '@/components/ride/JourneyDrawer'
+import type { TransitInfoData } from '@/components/ride/JourneyDrawer'
 import type { Ride, User, GeoPoint } from '@/types/database'
-
-// Transit info from a transit_dropoff_suggestion message
-interface TransitBannerData {
-  station_name: string
-  transit_options: Array<{ icon: string; line_name: string; type?: string; departure_stop?: string; arrival_stop?: string; duration_minutes?: number; total_minutes: number }>
-  total_rider_minutes: number
-  ride_with_driver_minutes: number
-  walk_to_station_minutes: number
-  transit_to_dest_minutes: number
-  rider_progress_pct: number
-  full_transit_minutes: number
-  ride_distance_km: number
-}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -54,8 +42,10 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
   const [endRideModal, setEndRideModal] = useState(false)
   const [routePolyline, setRoutePolyline] = useState<string | null>(null)
   const [riderPos, setRiderPos] = useState<{ lat: number; lng: number } | null>(null)
-  const [transitBanner, setTransitBanner] = useState<TransitBannerData | null>(null)
   const [unreadChat, setUnreadChat] = useState(0)
+
+  // Transit remaining journey
+  const [transitInfo, setTransitInfo] = useState<TransitInfoData | null>(null)
 
   // ETA + journey progress
   const [routeEta, setRouteEta] = useState<string | null>(null)
@@ -99,38 +89,8 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
           .select('color, plate, make, model')
           .eq('user_id', rideData.driver_id)
           .eq('is_active', true)
-          .single()
+          .maybeSingle()
         if (vehicleData) setVehicle(vehicleData)
-      }
-
-      // Check for the LATEST dropoff-related message. Only show transit journey
-      // if the final agreed message is a transit_dropoff_suggestion (not a manual counter).
-      try {
-        const { data: latestDropoff } = await supabase
-          .from('messages')
-          .select('type, meta')
-          .eq('ride_id', rideId as string)
-          .in('type', ['transit_dropoff_suggestion', 'dropoff_suggestion'])
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .single()
-
-        if (latestDropoff?.type === 'transit_dropoff_suggestion' && latestDropoff.meta) {
-          const m = latestDropoff.meta as Record<string, unknown>
-          setTransitBanner({
-            station_name: (m['station_name'] as string) ?? 'Transit Station',
-            transit_options: (m['transit_options'] as TransitBannerData['transit_options']) ?? [],
-            total_rider_minutes: (m['total_rider_minutes'] as number) ?? 0,
-            ride_with_driver_minutes: (m['ride_with_driver_minutes'] as number) ?? 0,
-            walk_to_station_minutes: (m['walk_to_station_minutes'] as number) ?? 0,
-            transit_to_dest_minutes: (m['transit_to_dest_minutes'] as number) ?? 0,
-            rider_progress_pct: (m['rider_progress_pct'] as number) ?? 0,
-            full_transit_minutes: (m['full_transit_minutes'] as number) ?? 0,
-            ride_distance_km: (m['ride_distance_km'] as number) ?? 0,
-          })
-        }
-      } catch {
-        // Non-fatal — transit banner is optional
       }
 
       setLoading(false)
@@ -164,16 +124,19 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
       const dLng = dest.coordinates[0]
 
       async function fetchActive() {
-        // Use stored polyline if available, otherwise fetch from API
+        // Use stored polyline for display if available
         const storedPolyline = (ride as Record<string, unknown>)['route_polyline'] as string | null
         if (storedPolyline) {
           setRoutePolyline(storedPolyline)
         }
-        const result = storedPolyline ? null : await getDirectionsByLatLng(pLat, pLng, dLat, dLng)
-        if (result?.polyline) setRoutePolyline(result.polyline)
-        if (result?.distance_km != null && !totalDistanceFetched.current) {
-          setTotalDistanceKm(result.distance_km)
-          totalDistanceFetched.current = true
+        // Always fetch directions for total distance (needed for progress bar)
+        if (!totalDistanceFetched.current) {
+          const result = await getDirectionsByLatLng(pLat, pLng, dLat, dLng)
+          if (result?.polyline && !storedPolyline) setRoutePolyline(result.polyline)
+          if (result?.distance_km != null) {
+            setTotalDistanceKm(result.distance_km)
+            totalDistanceFetched.current = true
+          }
         }
 
         // Live ETA: rider GPS → destination
@@ -200,6 +163,41 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ride?.status, ride?.pickup_point, ride?.destination, riderPos !== null])
+
+  // ── Fetch transit remaining journey (when dropoff confirmed) ─────────────
+  useEffect(() => {
+    if (!ride?.dropoff_confirmed || !rideId) {
+      setTransitInfo(null)
+      return
+    }
+    async function fetchTransit() {
+      const { data } = await supabase
+        .from('messages')
+        .select('meta')
+        .eq('ride_id', rideId as string)
+        .eq('type', 'transit_dropoff_suggestion')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single()
+
+      if (data?.meta) {
+        const m = data.meta as Record<string, unknown>
+        setTransitInfo({
+          station_name: (m.station_name as string) ?? 'Transit Station',
+          transit_options: (m.transit_options as TransitInfoData['transit_options']) ?? [],
+          walk_to_station_minutes: (m.walk_to_station_minutes as number) ?? 0,
+          transit_to_dest_minutes: (m.transit_to_dest_minutes as number) ?? 0,
+          rider_dest_name: (m.rider_dest_name as string) ?? 'Destination',
+          total_rider_minutes: (m.total_rider_minutes as number) ?? 0,
+          dropoff_lat: (m.station_lat as number) ?? 0,
+          dropoff_lng: (m.station_lng as number) ?? 0,
+          rider_dest_lat: (m.rider_dest_lat as number) ?? 0,
+          rider_dest_lng: (m.rider_dest_lng as number) ?? 0,
+        })
+      }
+    }
+    void fetchTransit()
+  }, [ride?.dropoff_confirmed, rideId])
 
   // ── Timer ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -351,12 +349,24 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
     ? Math.min(100, Math.max(0, Math.round((1 - routeDistanceKm / totalDistanceKm) * 100)))
     : null
 
+  // ── Persist progress_pct to ride record ───────────────────────────────
+  const lastSavedProgress = useRef<number>(0)
+  useEffect(() => {
+    if (!rideId || progress == null || !isActive) return
+    if (Math.abs(progress - lastSavedProgress.current) < 5) return
+    const timer = setTimeout(() => {
+      lastSavedProgress.current = progress
+      void supabase.from('rides').update({ progress_pct: progress }).eq('id', rideId as string)
+    }, 5000)
+    return () => clearTimeout(timer)
+  }, [rideId, progress, isActive])
+
   // Open Google Maps navigation
   const openNavigation = useCallback(() => {
     const dest = isActive ? destPos : pickupPos
     if (!dest) return
-    window.open(`https://www.google.com/maps/dir/?api=1&destination=${dest.lat},${dest.lng}&travelmode=driving`, '_blank')
-  }, [isActive, destPos, pickupPos])
+    window.open(getNavigationUrl(dest.lat, dest.lng, 'driving', riderPos?.lat, riderPos?.lng), '_blank')
+  }, [isActive, destPos, pickupPos, riderPos])
 
   // Map bounds points
   const boundsPoints: Array<{ lat: number; lng: number }> = []
@@ -483,16 +493,6 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
               <p className="text-[10px] text-text-secondary uppercase tracking-wide">Ride Time</p>
             </div>
           )}
-          <button
-            data-testid="emergency-button"
-            onClick={() => setEmergencyOpen(true)}
-            aria-label="Emergency"
-            className="ml-1 flex h-9 w-9 items-center justify-center rounded-full border border-danger/30 bg-danger/10 text-danger active:bg-danger/20 transition-colors"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4.5 w-4.5" aria-hidden="true">
-              <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 6h2v2h-2V7zm0 4h2v6h-2v-6z" />
-            </svg>
-          </button>
         </div>
       </div>
 
@@ -533,219 +533,17 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
         </Map>
       </div>
 
-      {/* ── Bottom section (fixed at bottom, map fills remaining) ──── */}
-
-      {/* ── Transit journey breakdown ─────────────────────────────────── */}
-      {transitBanner && (() => {
-        const rideMin = transitBanner.ride_with_driver_minutes
-        const rideDistKm = transitBanner.ride_distance_km || (rideMin > 0 ? (rideMin / 60) * 80 : 0)
-        const rideFare = rideDistKm > 0 ? calculateFare(rideDistKm, rideMin) : null
-        const totalJourney = Math.max(
-          transitBanner.total_rider_minutes,
-          rideMin + transitBanner.walk_to_station_minutes + transitBanner.transit_to_dest_minutes,
-        )
-        const savedMinutes = (transitBanner.full_transit_minutes > totalJourney)
-          ? transitBanner.full_transit_minutes - totalJourney
-          : 0
-
-        return (
-          <div data-testid="transit-banner" className="px-4 py-3 bg-primary/5 border-t border-border shrink-0">
-            <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1">
-              After dropoff — continue via transit
-            </p>
-            <p className="text-sm font-semibold text-text-primary mb-0.5">
-              {transitBanner.station_name}
-            </p>
-            {transitBanner.rider_progress_pct > 0 && (
-              <div className="flex items-center gap-2 mb-2">
-                <div className="flex-1 h-1.5 rounded-full bg-border overflow-hidden">
-                  <div className="h-full rounded-full bg-success" style={{ width: `${transitBanner.rider_progress_pct}%` }} />
-                </div>
-                <span className="text-[10px] font-medium text-success shrink-0">{transitBanner.rider_progress_pct}% of the way</span>
-              </div>
-            )}
-
-            <p className="text-[9px] font-semibold text-text-secondary uppercase tracking-wider mt-2 mb-1.5">Your journey</p>
-
-            <div className="flex items-start gap-2 mb-1.5">
-              <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-[#4F46E5] shrink-0" />
-              <p className="text-[10px] min-w-0">
-                <span className="font-semibold text-text-primary">Driver drops you at {transitBanner.station_name}</span>
-                {rideMin > 0 && <span className="text-text-secondary"> · ~{rideMin} min</span>}
-              </p>
-            </div>
-
-            {transitBanner.walk_to_station_minutes > 0 && (
-              <div className="flex items-start gap-2 mb-1.5">
-                <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-text-secondary/40 shrink-0" />
-                <span className="text-[10px] text-text-secondary">
-                  Walk to {transitBanner.station_name} station · ~{transitBanner.walk_to_station_minutes} min
-                </span>
-              </div>
-            )}
-
-            {transitBanner.transit_options.filter(o => o.type !== 'WALKING').length > 0 ? (
-              transitBanner.transit_options.filter(o => o.type !== 'WALKING').map((opt, idx) => (
-                <div key={`transit-${idx}`} className="flex items-start gap-2 mb-1.5 overflow-hidden">
-                  <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-[#10B981] shrink-0" />
-                  <div className="min-w-0 flex-1 text-[10px]">
-                    <div className="flex items-baseline gap-1">
-                      <span className="font-semibold text-text-primary shrink-0">{opt.line_name}</span>
-                      {opt.duration_minutes != null && opt.duration_minutes > 0 && (
-                        <span className="text-text-secondary shrink-0">· {opt.duration_minutes} min</span>
-                      )}
-                    </div>
-                    {opt.departure_stop && opt.arrival_stop && (
-                      <p className="text-text-secondary truncate">{opt.departure_stop} → {opt.arrival_stop}</p>
-                    )}
-                  </div>
-                </div>
-              ))
-            ) : transitBanner.transit_to_dest_minutes > 0 ? (
-              <div className="flex items-start gap-2 mb-1.5">
-                <span className="mt-0.5 inline-block w-2 h-2 rounded-full bg-[#10B981] shrink-0" />
-                <div className="text-[10px]">
-                  <span className="font-semibold text-text-primary">Transit to your destination</span>
-                  <span className="text-text-secondary ml-1">~{transitBanner.transit_to_dest_minutes} min</span>
-                </div>
-              </div>
-            ) : null}
-
-            {rideFare && (
-              <div className="border-t border-border pt-1.5 mt-1.5 flex items-center justify-between text-[10px]">
-                <span className="text-text-secondary">Estimated ride fare</span>
-                <span className="font-semibold text-text-primary">~{formatCents(rideFare.fare_cents)}</span>
-              </div>
-            )}
-
-            <div className={`${!rideFare ? 'border-t border-border mt-1.5' : ''} pt-1.5 flex items-center justify-between text-[10px]`}>
-              <span className="font-semibold text-text-primary">
-                Total: ~{totalJourney} min
-              </span>
-              {savedMinutes > 0 && (
-                <span className="font-semibold text-success text-[9px]">
-                  {savedMinutes} min faster than public transit
-                </span>
-              )}
-            </div>
-          </div>
-        )
-      })()}
-
-      {/* ── Driver + Vehicle info ────────────────────────────────────── */}
-      {driver && (
-        <div className="px-4 py-3 border-t border-border shrink-0 flex items-center gap-3">
-          {driver.avatar_url ? (
-            <img src={driver.avatar_url} alt="" className="h-10 w-10 rounded-full object-cover shrink-0" />
-          ) : (
-            <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-sm shrink-0">
-              {driver.full_name?.[0]?.toUpperCase() ?? '?'}
-            </div>
-          )}
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-text-primary truncate">{driver.full_name ?? 'Driver'}</p>
-            <div className="flex items-center gap-2 text-xs text-text-secondary">
-              {driver.rating_avg != null && <span className="inline-flex items-center gap-0.5"><AppIcon name="star" className="h-3 w-3 text-warning" />{driver.rating_avg.toFixed(1)}</span>}
-              {vehicle && (
-                <span className="truncate">{vehicle.color} {vehicle.make} {vehicle.model}</span>
-              )}
-            </div>
-          </div>
-          {vehicle && (
-            <div className="shrink-0 rounded-lg bg-primary/10 px-2.5 py-1">
-              <p className="text-xs font-bold text-primary tracking-wide">{vehicle.plate}</p>
-            </div>
-          )}
+      {error && (
+        <div className="absolute bottom-24 left-4 right-4 z-10">
+          <p data-testid="ride-error" className="text-sm text-danger text-center bg-white/90 rounded-2xl px-4 py-2 shadow">{error}</p>
         </div>
       )}
-
-      {/* ── Journey progress bar ────────────────────────────────────── */}
-      {isActive && progress !== null && (
-        <div className="px-4 py-3 border-t border-border shrink-0">
-          <div className="h-1.5 rounded-full bg-border overflow-hidden mb-2">
-            <div
-              data-testid="journey-progress"
-              className="h-full rounded-full bg-primary transition-all duration-500"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-          <div className="flex justify-between text-xs">
-            <span className="text-text-secondary">{progress}% complete</span>
-            <span className="font-semibold text-text-primary">{routeEta ?? '--'} remaining</span>
-          </div>
-        </div>
-      )}
-
-      {/* ── Action Buttons ──────────────────────────────────────────── */}
-      <div className="px-4 py-3 space-y-3 shrink-0" data-testid="action-grid" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}>
-        {error && (
-          <p data-testid="ride-error" className="text-sm text-danger text-center">{error}</p>
-        )}
-
-        {/* Row 1: Navigate + Scan QR + Chat (3-col grid, matching driver) */}
-        <div className="grid grid-cols-3 gap-3">
-          <button
-            data-testid="navigate-button"
-            onClick={openNavigation}
-            className="flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3.5 active:bg-border transition-colors"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-              <polygon points="3 11 22 2 13 21 11 13 3 11" />
-            </svg>
-            <span className="text-xs font-medium text-text-primary">{isActive ? 'Navigate to Drop Off' : 'Navigate to Pickup'}</span>
-          </button>
-
-          <button
-            data-testid="scan-qr-button"
-            onClick={() => { setScanning(true); setError(null) }}
-            className="flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3.5 active:bg-border transition-colors"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-              <rect x="3" y="3" width="7" height="7" rx="1" />
-              <rect x="14" y="3" width="7" height="7" rx="1" />
-              <rect x="3" y="14" width="7" height="7" rx="1" />
-              <rect x="14" y="14" width="4" height="4" rx="0.5" />
-            </svg>
-            <span className="text-xs font-medium text-text-primary">Scan QR</span>
-          </button>
-
-          <button
-            data-testid="chat-button"
-            onClick={() => { setUnreadChat(0); navigate(`/ride/messaging/${rideId as string}`) }}
-            className="relative flex flex-col items-center justify-center gap-1 rounded-2xl bg-surface py-3.5 active:bg-border transition-colors"
-          >
-            {unreadChat > 0 && (
-              <span className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-danger text-[10px] font-bold text-white shadow">{unreadChat}</span>
-            )}
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-            </svg>
-            <span className="text-xs font-medium text-text-primary">Chat</span>
-          </button>
-        </div>
-
-        {/* Row 2: End Ride (active only) */}
-        {isActive && (
-          <button
-            data-testid="end-ride-button"
-            onClick={() => setEndRideModal(true)}
-            className="w-full flex items-center justify-center gap-2 rounded-2xl bg-danger/10 py-3.5 active:bg-danger/20 transition-colors"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-danger" aria-hidden="true">
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-              <line x1="9" y1="9" x2="15" y2="15" />
-              <line x1="15" y1="9" x2="9" y2="15" />
-            </svg>
-            <span className="text-sm font-medium text-danger">Scan QR to End Ride</span>
-          </button>
-        )}
-      </div>
 
       {/* ── End Ride Modal ─────────────────────────────────────────────── */}
       {endRideModal && (
         <div
           data-testid="end-ride-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-6"
+          className="fixed inset-0 z-[950] flex items-center justify-center bg-black/50 px-6"
           onClick={() => setEndRideModal(false)}
         >
           <div
@@ -812,6 +610,27 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
           </div>
         </div>
       )}
+
+      <JourneyDrawer
+        ride={ride}
+        driver={driver}
+        vehicle={vehicle}
+        isRider
+        estimatedFare={ride.fare_cents}
+        etaMinutes={routeEta ? parseInt(routeEta, 10) || null : null}
+        distanceKm={routeDistanceKm}
+        onShowQr={() => { setScanning(true); setError(null) }}
+        onNavigate={openNavigation}
+        onChat={() => { setUnreadChat(0); navigate(`/ride/messaging/${rideId as string}`) }}
+        onEmergency={() => setEmergencyOpen(true)}
+        unreadChat={unreadChat}
+        onEndRide={isActive ? () => setEndRideModal(true) : undefined}
+        endRideLabel="Scan QR to End Ride"
+        hideEta
+        transitInfo={transitInfo}
+        progress={isActive ? progress : null}
+        remainingLabel={routeEta ? `${routeEta} remaining` : undefined}
+      />
 
       <EmergencySheet
         isOpen={emergencyOpen}

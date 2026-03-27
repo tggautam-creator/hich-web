@@ -57,6 +57,10 @@ vi.mock('@/lib/supabase', () => ({
             const fn = mockSingleFns[table]
             return fn ? fn() : mockSingle()
           },
+          maybeSingle: () => {
+            const fn = mockSingleFns[table]
+            return fn ? fn() : mockSingle()
+          },
         }),
       }),
     }),
