@@ -3,12 +3,21 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { validateVin, validateYear } from '@/lib/validation'
-import { decodeVin, guessBodyType } from '@/lib/vin'
+import { guessBodyType } from '@/lib/vin'
 import type { VehicleBodyType } from '@/lib/vin'
 import { lookupFuelEconomy, DEFAULT_MPG } from '@/lib/fuelEconomy'
 import VehicleIcon from '@/components/ui/VehicleIcon'
 import InputField from '@/components/ui/InputField'
 import PrimaryButton from '@/components/ui/PrimaryButton'
+
+// ── US states ─────────────────────────────────────────────────────────────────
+const US_STATES = [
+  'AL','AK','AZ','AR','CA','CO','CT','DE','DC','FL',
+  'GA','HI','ID','IL','IN','IA','KS','KY','LA','ME',
+  'MD','MA','MI','MN','MS','MO','MT','NE','NV','NH',
+  'NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI',
+  'SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY',
+] as const
 
 // ── Body type options ─────────────────────────────────────────────────────────
 const BODY_TYPES: { value: VehicleBodyType; label: string }[] = [
@@ -36,6 +45,15 @@ const CAR_COLORS = [
   { name: 'Gold',   hex: '#FFD700' },
 ] as const
 
+// Shared input class — matches InputField exactly so the select blends in
+const INPUT_CLASS = [
+  'w-full rounded-2xl border border-border bg-white px-4 py-3',
+  'text-base text-text-primary placeholder:text-text-secondary',
+  'transition-colors duration-150',
+  'focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-0 focus:border-primary',
+  'disabled:cursor-not-allowed disabled:opacity-50',
+].join(' ')
+
 // ── Types ────────────────────────────────────────────────────────────────────
 interface FormErrors {
   vin?: string
@@ -43,14 +61,47 @@ interface FormErrors {
   model?: string
   year?: string
   plate?: string
+  state?: string
   color?: string
   carPhoto?: string
   licensePhoto?: string
   submit?: string
 }
 
+interface PlateLookupResult {
+  vin: string | null
+  year: number | null
+  make: string | null
+  model: string | null
+  trim: string | null
+  body: string | null
+}
+
 interface VehicleRegistrationPageProps {
   'data-testid'?: string
+}
+
+// ── Plate lookup helper ──────────────────────────────────────────────────────
+
+async function lookupPlate(plate: string, state: string): Promise<PlateLookupResult> {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) throw new Error('Not authenticated')
+
+  const res = await fetch('/api/vehicle/plate-lookup', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify({ plate, state }),
+  })
+
+  if (!res.ok) {
+    const body = (await res.json()) as { error?: { message?: string } }
+    throw new Error(body.error?.message ?? 'Plate lookup failed')
+  }
+
+  return (await res.json()) as PlateLookupResult
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -60,11 +111,17 @@ export default function VehicleRegistrationPage({
   const navigate = useNavigate()
   const refreshProfile = useAuthStore((s) => s.refreshProfile)
 
+  // Plate + state (top of form)
+  const [plate, setPlate]                   = useState('')
+  const [plateState, setPlateState]         = useState('CA')
+  const [plateLooking, setPlateLooking]     = useState(false)
+  const [plateFound, setPlateFound]         = useState(false)
+
+  // Vehicle details (auto-filled or manual)
   const [vin, setVin]                       = useState('')
   const [make, setMake]                     = useState('')
   const [model, setModel]                   = useState('')
   const [year, setYear]                     = useState('')
-  const [plate, setPlate]                   = useState('')
   const [color, setColor]                   = useState('')
   const [carPhoto, setCarPhoto]             = useState<File | null>(null)
   const [licensePhoto, setLicensePhoto]     = useState<File | null>(null)
@@ -72,50 +129,75 @@ export default function VehicleRegistrationPage({
   const [bodyType, setBodyType]             = useState<VehicleBodyType>('sedan')
   const [errors, setErrors]                 = useState<FormErrors>({})
   const [isLoading, setIsLoading]           = useState(false)
-  const [vinDecoding, setVinDecoding]       = useState(false)
-  const [fuelMpg, setFuelMpg]               = useState<number | null>(null)
-  const vinDecodeRef                        = useRef<AbortController | null>(null)
+  const [fuelMpg, setFuelMpg]              = useState<number | null>(null)
+  const lookupRef                           = useRef<AbortController | null>(null)
 
-  // Auto-decode VIN when it reaches 17 valid alphanumeric characters
+  // Auto-lookup plate when plate is 2-8 chars and state is set
   useEffect(() => {
-    if (!/^[A-Z0-9]{17}$/i.test(vin.trim())) return
+    const cleanPlate = plate.trim().replace(/[\s-]/g, '')
+    if (!/^[A-Z0-9]{2,8}$/i.test(cleanPlate) || !plateState) return
 
-    // Cancel any previous in-flight request
-    vinDecodeRef.current?.abort()
-    const controller = new AbortController()
-    vinDecodeRef.current = controller
+    // Debounce — wait 600ms after user stops typing
+    const timer = setTimeout(() => {
+      lookupRef.current?.abort()
+      const controller = new AbortController()
+      lookupRef.current = controller
 
-    setVinDecoding(true)
-    decodeVin(vin.trim())
-      .then(async (result) => {
-        if (controller.signal.aborted) return
-        if (result.make) setMake(result.make)
-        if (result.model) setModel(result.model)
-        if (result.year) setYear(result.year)
-        if (result.bodyType) setBodyType(result.bodyType)
-        else if (result.model) setBodyType(guessBodyType(result.model))
+      setPlateLooking(true)
+      setPlateFound(false)
+      setErrors((prev) => ({ ...prev, plate: undefined, submit: undefined }))
 
-        // Look up fuel economy from EPA database
-        if (result.year && result.make && result.model) {
-          const fuel = await lookupFuelEconomy(
-            Number(result.year),
-            result.make,
-            result.model,
-          )
-          if (!controller.signal.aborted && fuel) {
-            setFuelMpg(fuel.combined_mpg)
+      lookupPlate(cleanPlate, plateState)
+        .then(async (result) => {
+          if (controller.signal.aborted) return
+          setPlateFound(true)
+
+          if (result.vin) setVin(result.vin)
+          if (result.make) setMake(result.make)
+          if (result.model) setModel(result.model)
+          if (result.year) setYear(String(result.year))
+
+          // Map body string from API to our VehicleBodyType
+          if (result.body) {
+            const lc = result.body.toLowerCase()
+            if (lc.includes('sedan') || lc.includes('saloon')) setBodyType('sedan')
+            else if (lc.includes('suv') || lc.includes('sport utility')) setBodyType('suv')
+            else if (lc.includes('minivan') || lc.includes('mini van')) setBodyType('minivan')
+            else if (lc.includes('pickup') || lc.includes('truck')) setBodyType('pickup')
+            else if (lc.includes('hatchback')) setBodyType('hatchback')
+            else if (lc.includes('coupe') || lc.includes('convertible')) setBodyType('coupe')
+            else if (lc.includes('van') || lc.includes('cargo')) setBodyType('van')
+            else if (lc.includes('wagon') || lc.includes('crossover')) setBodyType('wagon')
+          } else if (result.model) {
+            setBodyType(guessBodyType(result.model))
           }
-        }
-      })
-      .catch(() => {
-        // Silently ignore — user can still type make/model/year manually
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setVinDecoding(false)
-      })
 
-    return () => { controller.abort() }
-  }, [vin])
+          // Look up fuel economy
+          if (result.year && result.make && result.model) {
+            const fuel = await lookupFuelEconomy(result.year, result.make, result.model)
+            if (!controller.signal.aborted && fuel) {
+              setFuelMpg(fuel.combined_mpg)
+            }
+          }
+        })
+        .catch((err: unknown) => {
+          if (controller.signal.aborted) return
+          // Not found is not an error — user can fill manually
+          const msg = err instanceof Error ? err.message : 'Lookup failed'
+          if (!msg.includes('Not authenticated')) {
+            setErrors((prev) => ({ ...prev, plate: msg }))
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setPlateLooking(false)
+        })
+    }, 600)
+
+    return () => {
+      clearTimeout(timer)
+      lookupRef.current?.abort()
+    }
+  }, [plate, plateState])
 
   function handleCarPhotoChange(e: ChangeEvent<HTMLInputElement>) {
     setCarPhoto(e.target.files?.[0] ?? null)
@@ -128,17 +210,18 @@ export default function VehicleRegistrationPage({
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
 
+    const plateErr = !plate.trim() ? 'License plate is required' : undefined
+    const stateErr = !plateState ? 'State is required' : undefined
     const vinErr   = validateVin(vin)
     const makeErr  = !make.trim() ? 'Make is required' : undefined
     const modelErr = !model.trim() ? 'Model is required' : undefined
     const yearErr  = validateYear(year)
-    const plateErr = !plate.trim() ? 'License plate is required' : undefined
     const colorErr = !color ? 'Please select a car color' : undefined
 
-    if (vinErr ?? makeErr ?? modelErr ?? yearErr ?? plateErr ?? colorErr) {
+    if (plateErr ?? stateErr ?? vinErr ?? makeErr ?? modelErr ?? yearErr ?? colorErr) {
       setErrors({
-        vin: vinErr, make: makeErr, model: modelErr, year: yearErr,
-        plate: plateErr, color: colorErr,
+        plate: plateErr, state: stateErr, vin: vinErr,
+        make: makeErr, model: modelErr, year: yearErr, color: colorErr,
       })
       return
     }
@@ -179,7 +262,7 @@ export default function VehicleRegistrationPage({
       // Insert vehicle record
       const { error: vehErr } = await supabase.from('vehicles').insert({
         user_id:                 user.id,
-        vin:                     vin.trim().toUpperCase(),
+        vin:                     vin.trim().toUpperCase() || '',
         make:                    make.trim(),
         model:                   model.trim(),
         year:                    Number(year),
@@ -243,7 +326,7 @@ export default function VehicleRegistrationPage({
 
         <h1 className="mb-2 text-2xl font-bold text-text-primary">Register your vehicle</h1>
         <p className="mb-8 text-sm text-text-secondary">
-          This info helps riders identify your car.
+          Enter your license plate to auto-fill vehicle details.
         </p>
 
         <form
@@ -251,16 +334,71 @@ export default function VehicleRegistrationPage({
           noValidate
           className="flex flex-col gap-5 pb-8"
         >
+          {/* ── License plate + state (primary input) ────────────────── */}
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium text-text-primary">
+              License plate
+            </label>
+            <div className="flex gap-2">
+              <select
+                data-testid="plate-state-select"
+                value={plateState}
+                onChange={(e) => { setPlateState(e.target.value) }}
+                className={[
+                  INPUT_CLASS,
+                  '!w-[5rem] !min-w-[5rem] !max-w-[5rem] shrink-0 cursor-pointer',
+                  errors.state ? 'border-danger focus:ring-danger' : '',
+                ].join(' ')}
+                aria-label="State"
+              >
+                {US_STATES.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+
+              <input
+                id="plate"
+                data-testid="plate-input"
+                type="text"
+                placeholder="ABC1234"
+                autoComplete="off"
+                value={plate}
+                onChange={(e) => { setPlate(e.target.value.toUpperCase()) }}
+                aria-invalid={errors.plate ? true : undefined}
+                className={[
+                  INPUT_CLASS,
+                  'flex-1 min-w-0',
+                  errors.plate ? 'border-danger focus:ring-danger' : '',
+                ].join(' ')}
+              />
+            </div>
+            {plateLooking && (
+              <p className="text-xs text-primary mt-1" data-testid="plate-looking">
+                Looking up vehicle info...
+              </p>
+            )}
+            {plateFound && !plateLooking && (
+              <p className="text-xs text-success mt-1" data-testid="plate-found">
+                Vehicle found — details auto-filled below
+              </p>
+            )}
+            {errors.plate && (
+              <p className="text-sm text-danger mt-1" role="alert">{errors.plate}</p>
+            )}
+          </div>
+
+          {/* ── VIN (auto-filled, read-only when from plate lookup) ───── */}
           <InputField
             id="vin"
             data-testid="vin-input"
-            label="VIN"
+            label={`VIN${plateFound ? '' : ' (optional)'}`}
             type="text"
             placeholder="17-character vehicle ID"
             value={vin}
             onChange={(e) => { setVin(e.target.value.toUpperCase()) }}
+            readOnly={plateFound && vin.length === 17}
             error={errors.vin}
-            hint={vinDecoding ? 'Looking up vehicle info...' : 'Enter your VIN to auto-fill make, model, and year'}
+            hint={plateFound && vin ? 'Auto-filled from plate lookup' : 'Will be filled automatically from your plate'}
           />
 
           <InputField
@@ -296,17 +434,6 @@ export default function VehicleRegistrationPage({
             value={year}
             onChange={(e) => { setYear(e.target.value) }}
             error={errors.year}
-          />
-
-          <InputField
-            id="plate"
-            data-testid="plate-input"
-            label="License plate"
-            type="text"
-            placeholder="ABC1234"
-            value={plate}
-            onChange={(e) => { setPlate(e.target.value.toUpperCase()) }}
-            error={errors.plate}
           />
 
           {/* ── Color swatch ────────────────────────────────────────── */}

@@ -37,9 +37,9 @@ export function validatePassword(password: string): string | undefined {
   return undefined
 }
 
-/** Returns an error string if VIN is not a valid 17-character alphanumeric string, else undefined. */
+/** Returns an error string if VIN is present but not a valid 17-character alphanumeric string, else undefined. */
 export function validateVin(vin: string): string | undefined {
-  if (!vin.trim()) return 'VIN is required'
+  if (!vin.trim()) return undefined // VIN is optional — plate lookup provides it
   if (!/^[A-Z0-9]{17}$/i.test(vin.trim())) return 'VIN must be 17 alphanumeric characters'
   return undefined
 }

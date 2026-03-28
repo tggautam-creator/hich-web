@@ -6,20 +6,20 @@ import { validateVin, validateYear } from '@/lib/validation'
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 const {
-  mockNavigate, mockGetUser, mockStorageUpload, mockStorageGetPublicUrl,
-  mockInsert, mockEq, mockUpdate, mockDecodeVin,
+  mockNavigate, mockGetUser, mockGetSession, mockStorageUpload, mockStorageGetPublicUrl,
+  mockInsert, mockEq, mockUpdate,
 } = vi.hoisted(() => {
   const mockEq = vi.fn()
   const mockUpdate = vi.fn().mockReturnValue({ eq: mockEq })
   return {
     mockNavigate: vi.fn(),
     mockGetUser: vi.fn(),
+    mockGetSession: vi.fn(),
     mockStorageUpload: vi.fn(),
     mockStorageGetPublicUrl: vi.fn(),
     mockInsert: vi.fn(),
     mockEq,
     mockUpdate,
-    mockDecodeVin: vi.fn(),
   }
 })
 
@@ -29,12 +29,15 @@ vi.mock('react-router-dom', async (importOriginal) => {
 })
 
 vi.mock('@/lib/vin', () => ({
-  decodeVin: mockDecodeVin,
+  guessBodyType: () => 'sedan',
 }))
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
-    auth: { getUser: mockGetUser },
+    auth: {
+      getUser: mockGetUser,
+      getSession: mockGetSession,
+    },
     from: vi.fn().mockImplementation((table: string) => {
       if (table === 'vehicles') return { insert: mockInsert }
       if (table === 'users') return { update: mockUpdate }
@@ -52,9 +55,11 @@ vi.mock('@/lib/supabase', () => ({
 // ── Helpers ──────────────────────────────────────────────────────────────────
 beforeEach(() => {
   vi.clearAllMocks()
-  mockDecodeVin.mockResolvedValue({ make: null, model: null, year: null })
   mockGetUser.mockResolvedValue({
     data: { user: { id: 'u-1', email: 'test@ucdavis.edu' } },
+  })
+  mockGetSession.mockResolvedValue({
+    data: { session: { access_token: 'test-token' } },
   })
   mockStorageUpload.mockResolvedValue({ error: null })
   mockStorageGetPublicUrl.mockReturnValue({
@@ -74,11 +79,10 @@ function renderPage() {
 
 /** Fill all required fields with valid data (photos are optional, omitted here). */
 function fillValidForm() {
-  fireEvent.change(screen.getByTestId('vin-input'), { target: { value: '1HGBH41JXMN109186' } })
+  fireEvent.change(screen.getByTestId('plate-input'), { target: { value: 'ABC1234' } })
   fireEvent.change(screen.getByTestId('make-input'), { target: { value: 'Honda' } })
   fireEvent.change(screen.getByTestId('model-input'), { target: { value: 'Accord' } })
   fireEvent.change(screen.getByTestId('year-input'), { target: { value: '2020' } })
-  fireEvent.change(screen.getByTestId('plate-input'), { target: { value: 'ABC1234' } })
   fireEvent.click(screen.getByTestId('color-blue'))
 }
 
@@ -93,11 +97,11 @@ function fillValidFormWithPhotos() {
 
 // ── Unit tests for validators ────────────────────────────────────────────────
 describe('validateVin', () => {
-  it('returns error for empty string', () => {
-    expect(validateVin('')).toBe('VIN is required')
+  it('returns undefined for empty string (VIN is optional)', () => {
+    expect(validateVin('')).toBeUndefined()
   })
 
-  it('returns error for too short', () => {
+  it('returns error for too short (non-empty)', () => {
     expect(validateVin('ABCDEF1234567890')).toBe('VIN must be 17 alphanumeric characters')
   })
 
@@ -171,11 +175,12 @@ describe('VehicleRegistrationPage', () => {
 
     it('renders all input fields', () => {
       renderPage()
+      expect(screen.getByTestId('plate-input')).toBeDefined()
+      expect(screen.getByTestId('plate-state-select')).toBeDefined()
       expect(screen.getByTestId('vin-input')).toBeDefined()
       expect(screen.getByTestId('make-input')).toBeDefined()
       expect(screen.getByTestId('model-input')).toBeDefined()
       expect(screen.getByTestId('year-input')).toBeDefined()
-      expect(screen.getByTestId('plate-input')).toBeDefined()
     })
 
     it('renders 10 color swatches', () => {
@@ -195,6 +200,11 @@ describe('VehicleRegistrationPage', () => {
     it('renders seats stepper defaulting to 2', () => {
       renderPage()
       expect(screen.getByTestId('seats-value').textContent).toBe('2')
+    })
+
+    it('renders state selector defaulting to CA', () => {
+      renderPage()
+      expect((screen.getByTestId('plate-state-select') as HTMLSelectElement).value).toBe('CA')
     })
   })
 
@@ -264,7 +274,8 @@ describe('VehicleRegistrationPage', () => {
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-button'))
       })
-      expect(screen.getByText('VIN is required')).toBeDefined()
+      // VIN is optional — no error for empty VIN
+      expect(screen.queryByText('VIN is required')).toBeNull()
       expect(screen.getByText('Make is required')).toBeDefined()
       expect(screen.getByText('Model is required')).toBeDefined()
       expect(screen.getByText('Year is required')).toBeDefined()
@@ -306,7 +317,7 @@ describe('VehicleRegistrationPage', () => {
   describe('successful submit', () => {
     it('inserts vehicle, updates user, and navigates without photos', async () => {
       renderPage()
-      fillValidForm()  // no photos
+      fillValidForm()
 
       await act(async () => {
         fireEvent.click(screen.getByTestId('submit-button'))
@@ -318,7 +329,7 @@ describe('VehicleRegistrationPage', () => {
         // Inserted vehicle
         expect(mockInsert).toHaveBeenCalledTimes(1)
         const insertArg = mockInsert.mock.calls[0][0] as Record<string, unknown>
-        expect(insertArg.vin).toBe('1HGBH41JXMN109186')
+        expect(insertArg.vin).toBeNull() // VIN not provided — stored as null
         expect(insertArg.make).toBe('Honda')
         expect(insertArg.model).toBe('Accord')
         expect(insertArg.year).toBe(2020)
@@ -438,59 +449,6 @@ describe('VehicleRegistrationPage', () => {
       const file = new File(['img'], 'plate.jpg', { type: 'image/jpeg' })
       fireEvent.change(screen.getByTestId('license-photo-input'), { target: { files: [file] } })
       expect(screen.getByTestId('license-photo-name').textContent).toBe('plate.jpg')
-    })
-  })
-
-  // ── VIN auto-decode ──────────────────────────────────────────────────────
-  describe('VIN auto-decode', () => {
-    it('calls decodeVin when a valid 17-char VIN is entered', async () => {
-      mockDecodeVin.mockResolvedValue({ make: 'Honda', model: 'Accord', year: '2020' })
-      renderPage()
-      fireEvent.change(screen.getByTestId('vin-input'), { target: { value: '1HGBH41JXMN109186' } })
-      await waitFor(() => {
-        expect(mockDecodeVin).toHaveBeenCalledWith('1HGBH41JXMN109186')
-      })
-    })
-
-    it('does not call decodeVin for incomplete VIN', () => {
-      renderPage()
-      fireEvent.change(screen.getByTestId('vin-input'), { target: { value: '1HGBH' } })
-      expect(mockDecodeVin).not.toHaveBeenCalled()
-    })
-
-    it('auto-fills make, model, and year from decoded VIN', async () => {
-      mockDecodeVin.mockResolvedValue({ make: 'Toyota', model: 'Camry', year: '2018' })
-      renderPage()
-      fireEvent.change(screen.getByTestId('vin-input'), { target: { value: 'JTDKN3DU5A0123456' } })
-      await waitFor(() => {
-        expect((screen.getByTestId('make-input') as HTMLInputElement).value).toBe('Toyota')
-        expect((screen.getByTestId('model-input') as HTMLInputElement).value).toBe('Camry')
-        expect((screen.getByTestId('year-input') as HTMLInputElement).value).toBe('2018')
-      })
-    })
-
-    it('does not overwrite fields when decode returns null', async () => {
-      mockDecodeVin.mockResolvedValue({ make: null, model: null, year: null })
-      renderPage()
-      fireEvent.change(screen.getByTestId('make-input'), { target: { value: 'Ford' } })
-      fireEvent.change(screen.getByTestId('vin-input'), { target: { value: 'AAAAAAAAAAAAAAAAA' } })
-      await waitFor(() => {
-        expect(mockDecodeVin).toHaveBeenCalled()
-      })
-      // Make should still be 'Ford' since decode returned null
-      expect((screen.getByTestId('make-input') as HTMLInputElement).value).toBe('Ford')
-    })
-
-    it('silently handles decode errors without breaking the form', async () => {
-      mockDecodeVin.mockRejectedValue(new Error('Network error'))
-      renderPage()
-      fireEvent.change(screen.getByTestId('vin-input'), { target: { value: 'AAAAAAAAAAAAAAAAA' } })
-      await waitFor(() => {
-        expect(mockDecodeVin).toHaveBeenCalled()
-      })
-      // Form should still be functional — no error shown
-      expect(screen.queryByTestId('submit-error')).toBeNull()
-      expect(screen.getByTestId('submit-button')).not.toBeDisabled()
     })
   })
 })
