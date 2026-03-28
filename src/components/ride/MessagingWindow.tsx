@@ -789,45 +789,62 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const dropoffProposedByOther = latestDropoffProposal &&
     (latestDropoffProposal.meta as Record<string, unknown> | null)?.proposed_by !== currentUserId
 
-  // ── Open pin dropper (start from previous proposal, ride data, or GPS) ──
+  // ── Open pin dropper ────────────────────────────────────────────────────
+  // Pickup: start near rider's address (origin). User drags to fine-tune.
+  // Dropoff: start at last proposed dropoff (or rider destination). User adjusts.
   const openPinDropper = useCallback((mode: PinMode) => {
     setPinMode(mode)
     setPinNote('')
+    setPinRouteInfo(null)
+    setPinDriveInfo(null)
+    setPinSearchQuery('')
+    setPinSearchResults([])
 
-    // 1. Check latest proposal message meta for coordinates (most up-to-date)
-    const latestProposal = mode === 'pickup' ? latestPickupProposal : latestDropoffProposal
-    const proposalMeta = latestProposal?.meta as { lat?: number; lng?: number } | null
-    if (proposalMeta?.lat != null && proposalMeta?.lng != null) {
-      setPinLat(proposalMeta.lat)
-      setPinLng(proposalMeta.lng)
-      return
+    if (mode === 'pickup') {
+      // Pickup: pin starts near rider's address
+      // 1. If there's an existing pickup proposal, start there (user is countering)
+      const proposalMeta = latestPickupProposal?.meta as { lat?: number; lng?: number } | null
+      if (proposalMeta?.lat != null && proposalMeta?.lng != null) {
+        setPinLat(proposalMeta.lat)
+        setPinLng(proposalMeta.lng)
+        return
+      }
+      // 2. Existing pickup point on ride
+      if (ride?.pickup_point) {
+        setPinLat(ride.pickup_point.coordinates[1])
+        setPinLng(ride.pickup_point.coordinates[0])
+        return
+      }
+      // 3. Rider's origin — the natural starting point for pickup
+      if (ride?.origin) {
+        setPinLat(ride.origin.coordinates[1])
+        setPinLng(ride.origin.coordinates[0])
+        return
+      }
+    } else {
+      // Dropoff: pin starts at last proposed dropoff location
+      // 1. Latest dropoff proposal (what the other party suggested)
+      const proposalMeta = latestDropoffProposal?.meta as { lat?: number; lng?: number } | null
+      if (proposalMeta?.lat != null && proposalMeta?.lng != null) {
+        setPinLat(proposalMeta.lat)
+        setPinLng(proposalMeta.lng)
+        return
+      }
+      // 2. Existing dropoff point on ride
+      if (ride?.dropoff_point) {
+        setPinLat(ride.dropoff_point.coordinates[1])
+        setPinLng(ride.dropoff_point.coordinates[0])
+        return
+      }
+      // 3. Rider's destination
+      if (ride?.destination) {
+        setPinLat(ride.destination.coordinates[1])
+        setPinLng(ride.destination.coordinates[0])
+        return
+      }
     }
 
-    // 2. Check ride data for existing point
-    if (mode === 'pickup' && ride?.pickup_point) {
-      setPinLat(ride.pickup_point.coordinates[1])
-      setPinLng(ride.pickup_point.coordinates[0])
-      return
-    }
-    if (mode === 'dropoff' && ride?.dropoff_point) {
-      setPinLat(ride.dropoff_point.coordinates[1])
-      setPinLng(ride.dropoff_point.coordinates[0])
-      return
-    }
-    if (mode === 'dropoff' && ride?.destination) {
-      setPinLat(ride.destination.coordinates[1])
-      setPinLng(ride.destination.coordinates[0])
-      return
-    }
-
-    // 3. Fall back to ride origin
-    if (ride?.origin) {
-      setPinLat(ride.origin.coordinates[1])
-      setPinLng(ride.origin.coordinates[0])
-      return
-    }
-
-    // 4. Last resort — use GPS, but set a default immediately so pin dropper renders
+    // Last resort — GPS or Davis default
     setPinLat(38.54)
     setPinLng(-121.76)
     if ('geolocation' in navigator) {
@@ -1000,8 +1017,6 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   // ── Pin dropper overlay ─────────────────────────────────────────────────
   if (pinMode && pinLat != null && pinLng != null) {
     const riderDestName = ride?.destination_name ?? null
-    const pickupLat = ride?.pickup_point?.coordinates?.[1] ?? ride?.origin?.coordinates?.[1] ?? null
-    const pickupLng = ride?.pickup_point?.coordinates?.[0] ?? ride?.origin?.coordinates?.[0] ?? null
 
     return (
       <div data-testid={testId ?? 'messaging-window'} className="flex h-dvh flex-col bg-white font-sans overflow-hidden">
@@ -1077,7 +1092,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           )}
         </div>
 
-        {/* Map */}
+        {/* Map — focused on the pin location only, no zoom-out */}
         <div className="flex-1 relative">
           <Map
             mapId={MAP_ID}
@@ -1095,10 +1110,10 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
               }
             }}
           >
-            {/* Draggable pin */}
+            {/* Draggable teardrop pin — the only marker on the map */}
             <AdvancedMarker
               position={{ lat: pinLat, lng: pinLng }}
-              title={pinMode === 'pickup' ? 'Pickup' : 'Dropoff'}
+              title={pinMode === 'pickup' ? 'Drag to set pickup' : 'Drag to set dropoff'}
               draggable
               onDragEnd={(e) => {
                 const pos = e.latLng
@@ -1108,54 +1123,21 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                 }
               }}
             >
-              <div className={`flex h-8 items-center justify-center rounded-full border-[3px] border-white shadow-lg px-3 text-xs font-bold text-white whitespace-nowrap ${pinMode === 'pickup' ? 'bg-success' : 'bg-danger'}`}>
-                {pinMode === 'pickup' ? 'PICKUP' : 'DROP-OFF'}
+              {/* Teardrop pin shape */}
+              <div className="flex flex-col items-center" style={{ marginBottom: '-4px' }}>
+                <div className={`relative flex h-9 w-9 items-center justify-center rounded-full shadow-lg ${pinMode === 'pickup' ? 'bg-success' : 'bg-danger'}`} style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-4.5 w-4.5" style={{ width: '18px', height: '18px' }} aria-hidden="true">
+                    {pinMode === 'pickup' ? (
+                      <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z M12 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />
+                    ) : (
+                      <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z M12 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />
+                    )}
+                  </svg>
+                </div>
+                {/* Teardrop tail */}
+                <div className={`h-3 w-3 -mt-2 rotate-45 shadow-sm ${pinMode === 'pickup' ? 'bg-success' : 'bg-danger'}`} style={{ clipPath: 'polygon(0 0, 100% 0, 100% 100%)' }} />
               </div>
             </AdvancedMarker>
-
-            {/* Show pickup marker when suggesting dropoff */}
-            {pinMode === 'dropoff' && pickupLat != null && pickupLng != null && (
-              <AdvancedMarker position={{ lat: pickupLat, lng: pickupLng }}>
-                <div className="flex h-6 items-center justify-center rounded-full border-2 border-white shadow-lg bg-success px-2 text-white text-[10px] font-bold whitespace-nowrap">
-                  PICKUP
-                </div>
-              </AdvancedMarker>
-            )}
-
-            {/* Show rider origin marker when suggesting pickup */}
-            {pinMode === 'pickup' && ride?.origin && (
-              <AdvancedMarker position={{ lat: ride.origin.coordinates[1], lng: ride.origin.coordinates[0] }}>
-                <div className="flex h-5 items-center justify-center">
-                  <span className="h-3 w-3 rounded-full bg-primary border-2 border-white shadow-md" />
-                </div>
-              </AdvancedMarker>
-            )}
-
-            {/* Show rider's final destination marker */}
-            {riderDestLat != null && riderDestLng != null && (
-              <AdvancedMarker position={{ lat: riderDestLat, lng: riderDestLng }}>
-                <div className="flex h-6 items-center justify-center rounded-full border-2 border-white shadow-lg bg-primary px-2 text-white text-[10px] font-bold whitespace-nowrap">
-                  DEST
-                </div>
-              </AdvancedMarker>
-            )}
-
-            {/* Walk polyline (origin → pickup) or drive polyline (pickup → dropoff) */}
-            {pinRouteInfo?.polyline && (
-              <RoutePolyline encodedPath={pinRouteInfo.polyline} color={pinMode === 'pickup' ? '#6366F1' : '#6366F1'} weight={4} fitBounds={false} />
-            )}
-            {/* For pickup mode: also show drive route from proposed pickup → destination */}
-            {pinMode === 'pickup' && pinDriveInfo?.polyline && (
-              <RoutePolyline encodedPath={pinDriveInfo.polyline} color="#22C55E" weight={3} fitBounds={false} />
-            )}
-
-            {/* Fit bounds to show all relevant markers */}
-            <MapBoundsFitter points={[
-              { lat: pinLat, lng: pinLng },
-              ...(pinMode === 'dropoff' && pickupLat != null && pickupLng != null ? [{ lat: pickupLat, lng: pickupLng }] : []),
-              ...(pinMode === 'pickup' && ride?.origin ? [{ lat: ride.origin.coordinates[1], lng: ride.origin.coordinates[0] }] : []),
-              ...(riderDestLat != null && riderDestLng != null ? [{ lat: riderDestLat, lng: riderDestLng }] : []),
-            ]} />
           </Map>
 
           {/* Instruction overlay */}
@@ -1849,14 +1831,65 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             )
           }
 
-          // ── Special message: location_accepted ──
+          // ── Special message: location_accepted — full journey card ──
           if (msg.type === 'location_accepted') {
-            const meta = msg.meta as { location_type?: string } | null
+            const meta = msg.meta as { location_type?: string; lat?: number; lng?: number; name?: string } | null
             const locType = meta?.location_type === 'dropoff' ? 'dropoff' : 'pickup'
+            const acceptedLat = meta?.lat
+            const acceptedLng = meta?.lng
+            const acceptedName = meta?.name
+
+            // For dropoff acceptance: show route info from pickup to accepted dropoff
+            const pLat = ride?.pickup_point?.coordinates?.[1] ?? ride?.origin?.coordinates?.[1]
+            const pLng = ride?.pickup_point?.coordinates?.[0] ?? ride?.origin?.coordinates?.[0]
+            const showRouteCard = locType === 'dropoff' && acceptedLat != null && acceptedLng != null && pLat != null && pLng != null
+
             return (
-              <div key={msg.id} data-testid={`message-${msg.id}`} className="flex justify-center">
-                <div className="rounded-full bg-success/10 px-4 py-1.5">
-                  <p className="text-xs font-medium text-success">&#x2713; {locType === 'pickup' ? 'Pickup' : 'Dropoff'} location accepted</p>
+              <div key={msg.id} data-testid={`message-${msg.id}`} className="space-y-2">
+                <div className="flex justify-center">
+                  <div className="w-full max-w-[85%] rounded-2xl border border-success/30 bg-success/5 px-4 py-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className="h-6 w-6 rounded-full bg-success/20 flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-3.5 w-3.5 text-success" aria-hidden="true">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      </div>
+                      <p className="text-sm font-semibold text-success">
+                        {locType === 'pickup' ? 'Pickup' : 'Dropoff'} Confirmed
+                      </p>
+                    </div>
+                    {acceptedName && (
+                      <p className="text-xs font-medium text-text-primary mb-2">&#x1F4CD; {acceptedName}</p>
+                    )}
+
+                    {/* Route info card for dropoff acceptance */}
+                    {showRouteCard && (
+                      <DropoffProposalInfo
+                        pickupLat={pLat}
+                        pickupLng={pLng}
+                        dropoffLat={acceptedLat}
+                        dropoffLng={acceptedLng}
+                        riderDestLat={riderDestLat}
+                        riderDestLng={riderDestLng}
+                        riderDestName={ride?.destination_name}
+                      />
+                    )}
+
+                    {/* Transit info for dropoff acceptance (rider only) */}
+                    {locType === 'dropoff' && isRider && acceptedLat != null && acceptedLng != null && riderDestLat != null && riderDestLng != null && (
+                      <TransitInfo
+                        dropoffLat={acceptedLat}
+                        dropoffLng={acceptedLng}
+                        destLat={riderDestLat}
+                        destLng={riderDestLng}
+                        data-testid={`accepted-transit-info-${msg.id}`}
+                      />
+                    )}
+
+                    <p className="text-[10px] text-text-secondary mt-1">
+                      {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </div>
                 </div>
               </div>
             )

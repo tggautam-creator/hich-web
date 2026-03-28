@@ -1943,7 +1943,7 @@ ridesRouter.post(
 
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, driver_id, status, pickup_confirmed, dropoff_confirmed, schedule_id')
+      .select('id, rider_id, driver_id, status, pickup_confirmed, dropoff_confirmed, schedule_id, pickup_point, dropoff_point, destination, destination_name')
       .eq('id', rideId)
       .single()
 
@@ -1997,9 +1997,15 @@ ridesRouter.post(
 
     if (updateErr) { next(updateErr); return }
 
-    // Insert a system message
+    // Insert a system message with accepted location details for rich UI card
     const isPickup = location_type === 'pickup'
     const accepterRole = userId === ride.rider_id ? 'Rider' : 'Driver'
+
+    // Include the accepted location's coordinates and name so the frontend can render a full info card
+    const acceptedPoint = isPickup ? ride.pickup_point : (ride.dropoff_point ?? ride.destination)
+    const acceptedCoords = acceptedPoint?.coordinates as [number, number] | undefined
+    const acceptedName = isPickup ? undefined : (ride.destination_name ?? undefined)
+
     const { data: acceptMsg } = await supabaseAdmin
       .from('messages')
       .insert({
@@ -2007,7 +2013,12 @@ ridesRouter.post(
         sender_id: userId,
         content: `${accepterRole} accepted ${isPickup ? 'pickup' : 'dropoff'} location`,
         type: 'location_accepted',
-        meta: { location_type, accepted_by: userId },
+        meta: {
+          location_type,
+          accepted_by: userId,
+          ...(acceptedCoords ? { lng: acceptedCoords[0], lat: acceptedCoords[1] } : {}),
+          ...(acceptedName ? { name: acceptedName } : {}),
+        },
       })
       .select('id, ride_id, sender_id, content, type, meta, created_at')
       .single()
