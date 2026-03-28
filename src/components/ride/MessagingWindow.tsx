@@ -1353,112 +1353,42 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         </div>
       )}
 
-      {/* ── Pending proposal banner — highly visible accept/counter UI ─── */}
-      {!pickupConfirmed && pickupProposedByOther && latestPickupProposal && (() => {
-        const meta = latestPickupProposal.meta as { lat?: number; lng?: number; note?: string; proposed_by?: string } | null
-        const pickupProposalLat = meta?.lat
-        const pickupProposalLng = meta?.lng
-        const note = meta?.note
-        const originLat = ride?.origin?.coordinates?.[1]
-        const originLng = ride?.origin?.coordinates?.[0]
-        const destLat = ride?.destination?.coordinates?.[1] ?? riderDestLat
-        const destLng = ride?.destination?.coordinates?.[0] ?? riderDestLng
-
-        return (
-          <div data-testid="pickup-proposal-banner" className="px-4 py-3 bg-success/10 border-b border-success/20 shrink-0">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="h-6 w-6 rounded-full bg-success/20 flex items-center justify-center">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-success" aria-hidden="true">
-                  <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" />
-                </svg>
-              </div>
-              <p className="text-sm font-semibold text-success">
-                {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a pickup point
-              </p>
-            </div>
-            {note && <p className="text-xs text-text-primary mb-2">Note: {String(note)}</p>}
-
-            {/* Mini map with walking + driving routes */}
-            {pickupProposalLat != null && pickupProposalLng != null && originLat != null && originLng != null && (
-              <PickupMiniMap
-                originLat={originLat}
-                originLng={originLng}
-                pickupLat={pickupProposalLat}
-                pickupLng={pickupProposalLng}
-                isRider={isRider}
-                driverId={ride?.driver_id}
-                destLat={destLat}
-                destLng={destLng}
-                originalFareCents={ride?.fare_cents}
-              />
-            )}
-
-            <div className="flex gap-2">
-              <button
-                data-testid="banner-accept-pickup"
-                onClick={() => { void handleAcceptLocation('pickup') }}
-                disabled={acceptingLocation === 'pickup'}
-                className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-white bg-success active:bg-success/90 disabled:opacity-50 transition-colors"
-              >
-                {acceptingLocation === 'pickup' ? 'Accepting...' : 'Accept Pickup'}
-              </button>
-              <button
-                data-testid="banner-counter-pickup"
-                onClick={() => openPinDropper('pickup')}
-                className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-success bg-success/10 border border-success/30 active:bg-success/20 transition-colors"
-              >
-                Counter Offer
-              </button>
-            </div>
+      {/* ── Pending pickup banner — compact: label + buttons only ─── */}
+      {!pickupConfirmed && pickupProposedByOther && latestPickupProposal && (
+        <div data-testid="pickup-proposal-banner" className="px-4 py-2.5 bg-success/10 border-b border-success/20 shrink-0">
+          <p className="text-xs font-semibold text-success mb-2">
+            {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a pickup point
+          </p>
+          <div className="flex gap-2">
+            <button
+              data-testid="banner-accept-pickup"
+              onClick={() => { void handleAcceptLocation('pickup') }}
+              disabled={acceptingLocation === 'pickup'}
+              className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-white bg-success active:bg-success/90 disabled:opacity-50 transition-colors"
+            >
+              {acceptingLocation === 'pickup' ? 'Accepting...' : 'Accept Pickup'}
+            </button>
+            <button
+              data-testid="banner-counter-pickup"
+              onClick={() => openPinDropper('pickup')}
+              className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-success bg-success/10 border border-success/30 active:bg-success/20 transition-colors"
+            >
+              Counter Offer
+            </button>
           </div>
-        )
-      })()}
+        </div>
+      )}
 
+      {/* ── Pending dropoff banner — compact: label + buttons only ─── */}
       {!dropoffConfirmed && dropoffProposedByOther && latestDropoffProposal && (() => {
-        const meta = latestDropoffProposal.meta as { lat?: number; lng?: number; name?: string; proposed_by?: string } | null
+        const meta = latestDropoffProposal.meta as { name?: string } | null
         const dropoffName = meta?.name ? String(meta.name) : null
-        const dropoffLat = meta?.lat
-        const dropoffLng = meta?.lng
-        const pLat = ride?.pickup_point?.coordinates?.[1] ?? ride?.origin?.coordinates?.[1]
-        const pLng = ride?.pickup_point?.coordinates?.[0] ?? ride?.origin?.coordinates?.[0]
-
         return (
-          <div data-testid="dropoff-proposal-banner" className="px-4 py-3 bg-primary/10 border-b border-primary/20 shrink-0">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="h-6 w-6 rounded-full bg-primary/20 flex items-center justify-center">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-primary" aria-hidden="true">
-                  <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" />
-                </svg>
-              </div>
-              <p className="text-sm font-semibold text-primary">
-                {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a dropoff point
-              </p>
-            </div>
-            {dropoffName && <p className="text-xs font-medium text-text-primary mb-2">{dropoffName}</p>}
-
-            {/* Mini map + route info */}
-            {dropoffLat != null && dropoffLng != null && pLat != null && pLng != null && (
-              <DropoffProposalInfo
-                pickupLat={pLat}
-                pickupLng={pLng}
-                dropoffLat={dropoffLat}
-                dropoffLng={dropoffLng}
-                riderDestLat={riderDestLat}
-                riderDestLng={riderDestLng}
-                riderDestName={ride?.destination_name}
-              />
-            )}
-
-            {/* Transit options from dropoff to rider's final destination */}
-            {isRider && dropoffLat != null && dropoffLng != null && riderDestLat != null && riderDestLng != null && (
-              <TransitInfo
-                dropoffLat={dropoffLat}
-                dropoffLng={dropoffLng}
-                destLat={riderDestLat}
-                destLng={riderDestLng}
-                data-testid="banner-transit-info"
-              />
-            )}
+          <div data-testid="dropoff-proposal-banner" className="px-4 py-2.5 bg-primary/10 border-b border-primary/20 shrink-0">
+            <p className="text-xs font-semibold text-primary mb-1">
+              {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a dropoff
+              {dropoffName && <span className="text-text-primary font-medium"> — {dropoffName}</span>}
+            </p>
             <div className="flex gap-2">
               <button
                 data-testid="banner-accept-dropoff"
@@ -1584,7 +1514,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         {messages.map((msg) => {
           const isMine = msg.sender_id === currentUserId
 
-          // ── Special message: pickup_suggestion ──
+          // ── Special message: pickup_suggestion — rich card with map + route info ──
           if (msg.type === 'pickup_suggestion') {
             const meta = msg.meta as { lat?: number; lng?: number; note?: string | null; proposed_by?: string } | null
             const hasLocation = meta?.lat != null && meta?.lng != null
@@ -1593,18 +1523,9 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             return (
               <div key={msg.id} data-testid={`message-${msg.id}`} className="space-y-2">
                 <div className="flex justify-center">
-                  <button
-                    type="button"
-                    disabled={!hasLocation}
-                    onClick={() => {
-                      if (hasLocation) {
-                        window.open(`https://www.google.com/maps/search/?api=1&query=${meta.lat},${meta.lng}`, '_blank', 'noopener')
-                      }
-                    }}
-                    className="w-full max-w-[85%] rounded-2xl border border-success/30 bg-success/5 px-4 py-3 text-left active:bg-success/10 transition-colors"
-                  >
+                  <div className="w-full max-w-[85%] rounded-2xl border border-success/30 bg-success/5 px-4 py-3 text-left">
                     <div className="flex items-center gap-2 mb-2">
-                      <div className="h-6 w-6 rounded-full bg-success/20 flex items-center justify-center">
+                      <div className="h-6 w-6 rounded-full bg-success/20 flex items-center justify-center shrink-0">
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-success" aria-hidden="true">
                           <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" />
                           <circle cx="12" cy="10" r="3" />
@@ -1617,7 +1538,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                     {meta?.note && (
                       <p className="text-xs text-text-secondary mb-2">&quot;{meta.note}&quot;</p>
                     )}
-                    {/* Mini-map: rider origin → pickup point with actual route */}
+                    {/* Mini-map: rider origin → pickup point with route info */}
                     {hasLocation && ride?.origin && (
                       <PickupMiniMap
                         originLat={(ride.origin as { coordinates: [number, number] }).coordinates[1]}
@@ -1631,16 +1552,13 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                         originalFareCents={ride.fare_cents}
                       />
                     )}
-                    {hasLocation && !ride?.origin && (
-                      <p className="text-xs text-success font-medium mb-1">&#x1F4CD; Tap to view on map</p>
-                    )}
                     {pickupConfirmed && isLatestPickup && (
-                      <p className="text-xs text-success font-medium">&#x2713; Accepted</p>
+                      <p className="text-xs text-success font-medium mt-1">&#x2713; Accepted</p>
                     )}
-                    <p className="text-[10px] text-text-secondary">
+                    <p className="text-[10px] text-text-secondary mt-1">
                       {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </p>
-                  </button>
+                  </div>
                 </div>
                 {/* Accept / Counter Offer buttons for the other party */}
                 {canAccept && (
@@ -1666,27 +1584,20 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             )
           }
 
-          // ── Special message: dropoff_suggestion ──
+          // ── Special message: dropoff_suggestion — rich card with map + route info ──
           if (msg.type === 'dropoff_suggestion') {
             const meta = msg.meta as { lat?: number; lng?: number; name?: string | null; proposed_by?: string } | null
             const hasLocation = meta?.lat != null && meta?.lng != null
             const isLatestDropoff = msg.id === latestDropoffProposal?.id
             const canAccept = isLatestDropoff && dropoffProposedByOther && !dropoffConfirmed
+            const pLat = ride?.pickup_point?.coordinates?.[1] ?? ride?.origin?.coordinates?.[1]
+            const pLng = ride?.pickup_point?.coordinates?.[0] ?? ride?.origin?.coordinates?.[0]
             return (
               <div key={msg.id} data-testid={`message-${msg.id}`} className="space-y-2">
                 <div className="flex justify-center">
-                  <button
-                    type="button"
-                    disabled={!hasLocation}
-                    onClick={() => {
-                      if (hasLocation) {
-                        window.open(`https://www.google.com/maps/search/?api=1&query=${meta.lat},${meta.lng}`, '_blank', 'noopener')
-                      }
-                    }}
-                    className="w-full max-w-[85%] rounded-2xl border border-primary/30 bg-primary/5 px-4 py-3 text-left active:bg-primary/10 transition-colors"
-                  >
+                  <div className="w-full max-w-[85%] rounded-2xl border border-primary/30 bg-primary/5 px-4 py-3 text-left">
                     <div className="flex items-center gap-2 mb-2">
-                      <div className="h-6 w-6 rounded-full bg-primary/20 flex items-center justify-center">
+                      <div className="h-6 w-6 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-primary" aria-hidden="true">
                           <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" />
                           <circle cx="12" cy="10" r="3" />
@@ -1697,11 +1608,22 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                       </p>
                     </div>
                     {meta?.name && (
-                      <p className="text-xs text-text-primary font-medium mb-1">&#x1F4CD; {meta.name}</p>
+                      <p className="text-sm text-text-primary font-semibold mb-2">{meta.name}</p>
                     )}
-                    {!meta?.name && hasLocation && (
-                      <p className="text-xs text-primary font-medium mb-1">&#x1F4CD; Tap to view on map</p>
+
+                    {/* Mini map + route info in chat message */}
+                    {hasLocation && pLat != null && pLng != null && (
+                      <DropoffProposalInfo
+                        pickupLat={pLat}
+                        pickupLng={pLng}
+                        dropoffLat={meta.lat as number}
+                        dropoffLng={meta.lng as number}
+                        riderDestLat={riderDestLat}
+                        riderDestLng={riderDestLng}
+                        riderDestName={ride?.destination_name}
+                      />
                     )}
+
                     {/* Transit options from dropoff (rider only) */}
                     {isRider && hasLocation && riderDestLat != null && riderDestLng != null && (
                       <TransitInfo
@@ -1713,12 +1635,12 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                       />
                     )}
                     {dropoffConfirmed && isLatestDropoff && (
-                      <p className="text-xs text-success font-medium">&#x2713; Accepted</p>
+                      <p className="text-xs text-success font-medium mt-1">&#x2713; Accepted</p>
                     )}
-                    <p className="text-[10px] text-text-secondary">
+                    <p className="text-[10px] text-text-secondary mt-1">
                       {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </p>
-                  </button>
+                  </div>
                 </div>
                 {/* Accept / Counter Offer buttons */}
                 {canAccept && (
