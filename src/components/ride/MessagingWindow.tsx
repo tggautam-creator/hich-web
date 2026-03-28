@@ -42,130 +42,156 @@ interface ChatMessage {
 
 type PinMode = 'pickup' | 'dropoff'
 
-/** Small inner component for pickup mini-map with walking + driving routes. */
-function PickupMiniMap({
-  originLat, originLng, pickupLat, pickupLng, isRider, driverId,
-  destLat, destLng, originalFareCents,
+/** Data for the full-screen map overlay */
+interface MapOverlayData {
+  type: 'pickup' | 'dropoff'
+  points: Array<{ lat: number; lng: number; label: string; color: string }>
+  polyline?: string | null
+  walkPolyline?: string | null
+}
+
+/** Full-screen interactive map overlay — shows all markers, route polylines, zoomable */
+function ProposalMapOverlay({ data, onClose }: { data: MapOverlayData; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-background flex flex-col" data-testid="proposal-map-overlay">
+      {/* Header */}
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-surface">
+        <button onClick={onClose} className="h-8 w-8 rounded-full bg-surface-alt flex items-center justify-center" data-testid="overlay-close">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-5 w-5 text-text-primary" aria-hidden="true">
+            <path d="M19 12H5M12 19l-7-7 7-7" />
+          </svg>
+        </button>
+        <h2 className="text-sm font-semibold text-text-primary">
+          {data.type === 'pickup' ? 'Pickup Location' : 'Dropoff Location'}
+        </h2>
+      </div>
+      {/* Map */}
+      <div className="flex-1">
+        <Map
+          mapId={MAP_ID}
+          defaultCenter={data.points[0] ? { lat: data.points[0].lat, lng: data.points[0].lng } : { lat: 38.54, lng: -121.75 }}
+          defaultZoom={13}
+          gestureHandling="auto"
+          disableDefaultUI={false}
+          className="w-full h-full"
+        >
+          {data.points.map((pt, i) => (
+            <AdvancedMarker key={i} position={{ lat: pt.lat, lng: pt.lng }}>
+              <div className="flex flex-col items-center">
+                <svg width="32" height="42" viewBox="0 0 36 48" aria-hidden="true">
+                  <path d="M18 0C8.06 0 0 8.06 0 18c0 12.6 16.2 28.8 17.4 30 .36.36.84.36 1.2 0C19.8 46.8 36 30.6 36 18 36 8.06 27.94 0 18 0z" fill={pt.color} />
+                  <circle cx="18" cy="18" r="7" fill="white" />
+                </svg>
+                <span className="mt-0.5 text-[10px] font-bold text-text-primary bg-white/90 px-1.5 py-0.5 rounded shadow-sm whitespace-nowrap">
+                  {pt.label}
+                </span>
+              </div>
+            </AdvancedMarker>
+          ))}
+          {data.polyline && (
+            <RoutePolyline encodedPath={data.polyline} color="#6366F1" weight={4} fitBounds={false} />
+          )}
+          {data.walkPolyline && (
+            <RoutePolyline encodedPath={data.walkPolyline} color="#8B5CF6" weight={3} fitBounds={false} />
+          )}
+          <MapBoundsFitter points={data.points.map(p => ({ lat: p.lat, lng: p.lng }))} />
+        </Map>
+      </div>
+      {/* Legend */}
+      <div className="px-4 py-3 border-t border-border bg-surface flex flex-wrap gap-3">
+        {data.points.map((pt, i) => (
+          <div key={i} className="flex items-center gap-1.5">
+            <span className="inline-block w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: pt.color }} />
+            <span className="text-xs text-text-primary font-medium">{pt.label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** Text-based pickup proposal card — replaces mini map with readable info + View on Map */
+function PickupProposalCard({
+  pickupName, originLat, originLng, pickupLat, pickupLng, isRider, driverId,
+  destLat, destLng, originalFareCents, onViewMap,
 }: {
-  originLat: number; originLng: number; pickupLat: number; pickupLng: number
+  pickupName?: string | null; originLat: number; originLng: number; pickupLat: number; pickupLng: number
   isRider: boolean; driverId?: string | null
   destLat?: number | null; destLng?: number | null; originalFareCents?: number | null
+  onViewMap: (data: MapOverlayData) => void
 }) {
   const [walkMin, setWalkMin] = useState<number | null>(null)
   const [walkPolyline, setWalkPolyline] = useState<string | null>(null)
   const [driveMin, setDriveMin] = useState<number | null>(null)
-  const [driverLat, setDriverLat] = useState<number | null>(null)
-  const [driverLng, setDriverLng] = useState<number | null>(null)
   const [estimatedFare, setEstimatedFare] = useState<number | null>(null)
 
-  // Fetch driver's live location for accurate drive ETA
   useEffect(() => {
-    if (!driverId) return
-    void (async () => {
-      const { data } = await supabase
-        .from('driver_locations')
-        .select('location')
-        .eq('user_id', driverId)
-        .single()
-      if (data?.location) {
-        const loc = data.location as unknown as { coordinates: [number, number] }
-        setDriverLat(loc.coordinates[1])
-        setDriverLng(loc.coordinates[0])
-      }
-    })()
-  }, [driverId])
-
-  // Drive origin: driver's live location if available, otherwise rider origin as fallback
-  const driveOriginLat = driverLat ?? originLat
-  const driveOriginLng = driverLng ?? originLng
-  const hasDriverLocation = driverLat != null && driverLng != null
-
-  // Fetch walking route via server-side Routes API
-  useEffect(() => {
-    void (async () => {
-      const result = await getDirectionsByLatLng(originLat, originLng, pickupLat, pickupLng, 'WALK')
+    void getDirectionsByLatLng(originLat, originLng, pickupLat, pickupLng, 'WALK').then((result) => {
       if (result) {
         setWalkMin(Math.max(1, Math.round(result.duration_min)))
         setWalkPolyline(result.polyline)
       }
-    })()
+    })
   }, [originLat, originLng, pickupLat, pickupLng])
 
-  // Fetch driving route via server-side Routes API (invisible polyline, just for ETA)
   useEffect(() => {
+    if (!driverId) return
     void (async () => {
-      const result = await getDirectionsByLatLng(driveOriginLat, driveOriginLng, pickupLat, pickupLng)
-      if (result) {
-        setDriveMin(Math.max(1, Math.round(result.duration_min)))
+      const { data } = await supabase.from('driver_locations').select('location').eq('user_id', driverId).single()
+      if (data?.location) {
+        const loc = data.location as unknown as { coordinates: [number, number] }
+        void getDirectionsByLatLng(loc.coordinates[1], loc.coordinates[0], pickupLat, pickupLng).then((r) => {
+          if (r) setDriveMin(Math.max(1, Math.round(r.duration_min)))
+        })
       }
     })()
-  }, [driveOriginLat, driveOriginLng, pickupLat, pickupLng])
+  }, [driverId, pickupLat, pickupLng])
 
-  // Fare recalculation: pickup → destination
   useEffect(() => {
     if (destLat == null || destLng == null) return
-    void (async () => {
-      const result = await getDirectionsByLatLng(pickupLat, pickupLng, destLat, destLng)
+    void getDirectionsByLatLng(pickupLat, pickupLng, destLat, destLng).then((result) => {
       if (result) {
         const fare = calculateFare(result.distance_km, result.duration_min)
         setEstimatedFare(fare.fare_cents)
       }
-    })()
+    })
   }, [pickupLat, pickupLng, destLat, destLng])
 
+  const handleViewMap = () => {
+    const points: MapOverlayData['points'] = [
+      { lat: originLat, lng: originLng, label: 'Your Location', color: '#6366F1' },
+      { lat: pickupLat, lng: pickupLng, label: 'Pickup', color: '#22C55E' },
+    ]
+    if (destLat != null && destLng != null) {
+      points.push({ lat: destLat, lng: destLng, label: 'Destination', color: '#EF4444' })
+    }
+    onViewMap({ type: 'pickup', points, walkPolyline })
+  }
+
   return (
-    <>
-      <div className="rounded-xl overflow-hidden mb-1.5" style={{ height: '120px' }}>
-        <Map
-          mapId={MAP_ID}
-          defaultCenter={{ lat: pickupLat, lng: pickupLng }}
-          defaultZoom={15}
-          gestureHandling="none"
-          disableDefaultUI
-          className="w-full h-full"
-        >
-          {/* Rider origin marker */}
-          <AdvancedMarker position={{ lat: originLat, lng: originLng }}>
-            <div className="flex items-center justify-center">
-              <span className="h-3 w-3 rounded-full bg-primary border-2 border-white shadow-md" />
-            </div>
-          </AdvancedMarker>
-          {/* Pickup marker */}
-          <AdvancedMarker position={{ lat: pickupLat, lng: pickupLng }}>
-            <div className="flex h-6 items-center justify-center rounded-full border-2 border-white shadow-lg bg-success px-2 text-white text-[10px] font-bold whitespace-nowrap">
-              PICKUP
-            </div>
-          </AdvancedMarker>
-          {/* Walking route polyline: rider → pickup */}
-          {walkPolyline && (
-            <RoutePolyline encodedPath={walkPolyline} color="#6366F1" weight={3} fitBounds={false} />
-          )}
-          <MapBoundsFitter points={[
-            { lat: originLat, lng: originLng },
-            { lat: pickupLat, lng: pickupLng },
-          ]} />
-        </Map>
-      </div>
-      <div className="rounded-lg bg-surface/60 p-2 space-y-1 mb-1.5 text-[10px]">
+    <div className="rounded-lg bg-surface/60 p-2.5 mb-1.5">
+      {pickupName && (
+        <p className="text-xs font-semibold text-text-primary mb-1.5 truncate">{pickupName}</p>
+      )}
+      <div className="space-y-1 text-[11px]">
         <div className="flex items-center gap-1.5">
           <span className="inline-block w-2 h-2 rounded-full bg-[#6366F1] shrink-0" />
           <span className="text-text-primary font-medium">
-            {isRider ? 'Your walk to pickup' : "Rider's walk to pickup"}
+            {isRider ? 'Your walk' : "Rider's walk"}
             {walkMin != null ? ` · ${walkMin} min` : ' · calculating…'}
           </span>
         </div>
         <div className="flex items-center gap-1.5">
           <span className="inline-block w-2 h-2 rounded-full bg-[#22C55E] shrink-0" />
           <span className="text-text-primary font-medium">
-            {hasDriverLocation ? "Driver's drive to pickup" : 'Drive to pickup'}
-            {driveMin != null ? ` · ${driveMin} min` : ' · calculating…'}
+            Driver to pickup{driveMin != null ? ` · ${driveMin} min` : ' · calculating…'}
           </span>
         </div>
         {estimatedFare != null && (
-          <div className="flex items-center gap-1.5 pt-0.5 border-t border-border/50 mt-1">
+          <div className="flex items-center gap-1.5 pt-1 border-t border-border/50 mt-1">
             <span className="inline-block w-2 h-2 rounded-full bg-[#F59E0B] shrink-0" />
             <span className="text-text-primary font-medium">
-              Estimated fare · {formatCents(estimatedFare)}
+              Fare · {formatCents(estimatedFare)}
               {originalFareCents != null && originalFareCents !== estimatedFare && (
                 <span className={estimatedFare < originalFareCents ? ' text-success' : ' text-danger'}>
                   {' '}({estimatedFare < originalFareCents ? '−' : '+'}{formatCents(Math.abs(estimatedFare - originalFareCents))})
@@ -175,17 +201,29 @@ function PickupMiniMap({
           </div>
         )}
       </div>
-    </>
+      <button
+        onClick={handleViewMap}
+        className="mt-2 w-full flex items-center justify-center gap-1.5 rounded-lg bg-primary/10 py-1.5 text-xs font-semibold text-primary active:bg-primary/20"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5" aria-hidden="true">
+          <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6" />
+          <line x1="8" y1="2" x2="8" y2="18" />
+          <line x1="16" y1="6" x2="16" y2="22" />
+        </svg>
+        View on Map
+      </button>
+    </div>
   )
 }
 
-/** Mini map + route info for dropoff proposal banners. */
-function DropoffProposalInfo({
-  pickupLat, pickupLng, dropoffLat, dropoffLng,
-  riderDestLat, riderDestLng, riderDestName,
+/** Text-based dropoff proposal card — replaces mini map with readable info + View on Map */
+function DropoffProposalCard({
+  dropoffName, pickupLat, pickupLng, dropoffLat, dropoffLng,
+  riderDestLat, riderDestLng, riderDestName, onViewMap,
 }: {
-  pickupLat: number; pickupLng: number; dropoffLat: number; dropoffLng: number
+  dropoffName?: string | null; pickupLat: number; pickupLng: number; dropoffLat: number; dropoffLng: number
   riderDestLat?: number | null; riderDestLng?: number | null; riderDestName?: string | null
+  onViewMap: (data: MapOverlayData) => void
 }) {
   const [routeInfo, setRouteInfo] = useState<{ distance_km: number; duration_min: number; fare_cents: number; polyline: string } | null>(null)
 
@@ -203,38 +241,22 @@ function DropoffProposalInfo({
     })
   }, [pickupLat, pickupLng, dropoffLat, dropoffLng])
 
+  const handleViewMap = () => {
+    const points: MapOverlayData['points'] = [
+      { lat: pickupLat, lng: pickupLng, label: 'Pickup', color: '#22C55E' },
+      { lat: dropoffLat, lng: dropoffLng, label: 'Dropoff', color: '#EF4444' },
+    ]
+    if (riderDestLat != null && riderDestLng != null) {
+      points.push({ lat: riderDestLat, lng: riderDestLng, label: riderDestName ?? 'Final Destination', color: '#6366F1' })
+    }
+    onViewMap({ type: 'dropoff', points, polyline: routeInfo?.polyline })
+  }
+
   return (
-    <>
-      <div className="rounded-xl overflow-hidden mb-1.5" style={{ height: '100px' }}>
-        <Map
-          mapId={MAP_ID}
-          defaultCenter={{ lat: (pickupLat + dropoffLat) / 2, lng: (pickupLng + dropoffLng) / 2 }}
-          defaultZoom={13}
-          gestureHandling="none"
-          disableDefaultUI
-          className="w-full h-full"
-        >
-          <AdvancedMarker position={{ lat: pickupLat, lng: pickupLng }}>
-            <div className="flex h-5 items-center justify-center rounded-full border-2 border-white shadow-lg bg-success px-1.5 text-white text-[8px] font-bold">P</div>
-          </AdvancedMarker>
-          <AdvancedMarker position={{ lat: dropoffLat, lng: dropoffLng }}>
-            <div className="flex h-5 items-center justify-center rounded-full border-2 border-white shadow-lg bg-danger px-1.5 text-white text-[8px] font-bold">D</div>
-          </AdvancedMarker>
-          {riderDestLat != null && riderDestLng != null && (
-            <AdvancedMarker position={{ lat: riderDestLat, lng: riderDestLng }}>
-              <div className="flex h-5 items-center justify-center rounded-full border-2 border-white shadow-lg bg-primary px-1.5 text-white text-[8px] font-bold">F</div>
-            </AdvancedMarker>
-          )}
-          {routeInfo?.polyline && (
-            <RoutePolyline encodedPath={routeInfo.polyline} color="#6366F1" weight={3} fitBounds={false} />
-          )}
-          <MapBoundsFitter points={[
-            { lat: pickupLat, lng: pickupLng },
-            { lat: dropoffLat, lng: dropoffLng },
-            ...(riderDestLat != null && riderDestLng != null ? [{ lat: riderDestLat, lng: riderDestLng }] : []),
-          ]} />
-        </Map>
-      </div>
+    <div className="rounded-lg bg-surface/60 p-2.5 mb-1.5">
+      {dropoffName && (
+        <p className="text-xs font-semibold text-text-primary mb-1.5 truncate">{dropoffName}</p>
+      )}
       {routeInfo ? (
         <div className="flex items-center gap-3 text-[11px] mb-1.5">
           <span className="font-medium text-text-primary">
@@ -256,11 +278,22 @@ function DropoffProposalInfo({
         </div>
       )}
       {riderDestName && (
-        <p className="text-[11px] text-text-secondary mb-1.5 truncate">
+        <p className="text-[10px] text-text-secondary mb-1.5 truncate">
           Rider&apos;s destination: {riderDestName}
         </p>
       )}
-    </>
+      <button
+        onClick={handleViewMap}
+        className="w-full flex items-center justify-center gap-1.5 rounded-lg bg-primary/10 py-1.5 text-xs font-semibold text-primary active:bg-primary/20"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5" aria-hidden="true">
+          <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6" />
+          <line x1="8" y1="2" x2="8" y2="18" />
+          <line x1="16" y1="6" x2="16" y2="22" />
+        </svg>
+        View on Map
+      </button>
+    </div>
   )
 }
 
@@ -300,6 +333,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const [minutesUntilRide, setMinutesUntilRide] = useState<number | null>(null)
 
   // Map pin dropper state
+  const [mapOverlay, setMapOverlay] = useState<MapOverlayData | null>(null)
   const [pinMode, setPinMode] = useState<PinMode | null>(null)
   const [pinLat, setPinLat] = useState<number | null>(null)
   const [pinLng, setPinLng] = useState<number | null>(null)
@@ -1253,6 +1287,11 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   return (
     <div data-testid={testId ?? 'messaging-window'} className="flex h-dvh flex-col bg-white font-sans overflow-hidden">
 
+      {/* ── Full-screen map overlay ──────────────────────────────────────── */}
+      {mapOverlay && (
+        <ProposalMapOverlay data={mapOverlay} onClose={() => setMapOverlay(null)} />
+      )}
+
       {/* ── Header (fixed) ─────────────────────────────────────────────────── */}
       <div
         className="flex items-center gap-3 px-4 border-b border-border bg-white z-10 shrink-0"
@@ -1538,9 +1577,9 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                     {meta?.note && (
                       <p className="text-xs text-text-secondary mb-2">&quot;{meta.note}&quot;</p>
                     )}
-                    {/* Mini-map: rider origin → pickup point with route info */}
+                    {/* Route info card + View on Map */}
                     {hasLocation && ride?.origin && (
-                      <PickupMiniMap
+                      <PickupProposalCard
                         originLat={(ride.origin as { coordinates: [number, number] }).coordinates[1]}
                         originLng={(ride.origin as { coordinates: [number, number] }).coordinates[0]}
                         pickupLat={meta.lat as number}
@@ -1550,6 +1589,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                         destLat={ride.destination ? (ride.destination as { coordinates: [number, number] }).coordinates[1] : null}
                         destLng={ride.destination ? (ride.destination as { coordinates: [number, number] }).coordinates[0] : null}
                         originalFareCents={ride.fare_cents}
+                        onViewMap={setMapOverlay}
                       />
                     )}
                     {pickupConfirmed && isLatestPickup && (
@@ -1607,13 +1647,10 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                         {isMine ? 'You suggested a dropoff point' : `${otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a dropoff point`}
                       </p>
                     </div>
-                    {meta?.name && (
-                      <p className="text-sm text-text-primary font-semibold mb-2">{meta.name}</p>
-                    )}
-
-                    {/* Mini map + route info in chat message */}
+                    {/* Route info card + View on Map */}
                     {hasLocation && pLat != null && pLng != null && (
-                      <DropoffProposalInfo
+                      <DropoffProposalCard
+                        dropoffName={meta?.name}
                         pickupLat={pLat}
                         pickupLng={pLng}
                         dropoffLat={meta.lat as number}
@@ -1621,6 +1658,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                         riderDestLat={riderDestLat}
                         riderDestLng={riderDestLng}
                         riderDestName={ride?.destination_name}
+                        onViewMap={setMapOverlay}
                       />
                     )}
 
@@ -1779,7 +1817,8 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
 
                     {/* Route info card for dropoff acceptance */}
                     {showRouteCard && (
-                      <DropoffProposalInfo
+                      <DropoffProposalCard
+                        dropoffName={acceptedName}
                         pickupLat={pLat}
                         pickupLng={pLng}
                         dropoffLat={acceptedLat}
@@ -1787,6 +1826,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                         riderDestLat={riderDestLat}
                         riderDestLng={riderDestLng}
                         riderDestName={ride?.destination_name}
+                        onViewMap={setMapOverlay}
                       />
                     )}
 
