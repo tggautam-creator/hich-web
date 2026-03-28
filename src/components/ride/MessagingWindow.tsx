@@ -4,6 +4,7 @@ import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
 import type { Ride, User, Vehicle } from '@/types/database'
 import { trackEvent } from '@/lib/analytics'
+import { searchPlaces, getPlaceCoordinates } from '@/lib/places'
 import type { PlaceSuggestion } from '@/lib/places'
 import { useAuthStore } from '@/stores/authStore'
 import TransitInfo from '@/components/ride/TransitInfo'
@@ -178,6 +179,91 @@ function PickupMiniMap({
   )
 }
 
+/** Mini map + route info for dropoff proposal banners. */
+function DropoffProposalInfo({
+  pickupLat, pickupLng, dropoffLat, dropoffLng,
+  riderDestLat, riderDestLng, riderDestName,
+}: {
+  pickupLat: number; pickupLng: number; dropoffLat: number; dropoffLng: number
+  riderDestLat?: number | null; riderDestLng?: number | null; riderDestName?: string | null
+}) {
+  const [routeInfo, setRouteInfo] = useState<{ distance_km: number; duration_min: number; fare_cents: number; polyline: string } | null>(null)
+
+  useEffect(() => {
+    void getDirectionsByLatLng(pickupLat, pickupLng, dropoffLat, dropoffLng).then((result) => {
+      if (result) {
+        const fare = calculateFare(result.distance_km, result.duration_min)
+        setRouteInfo({
+          distance_km: result.distance_km,
+          duration_min: result.duration_min,
+          fare_cents: fare.fare_cents,
+          polyline: result.polyline,
+        })
+      }
+    })
+  }, [pickupLat, pickupLng, dropoffLat, dropoffLng])
+
+  return (
+    <>
+      <div className="rounded-xl overflow-hidden mb-1.5" style={{ height: '100px' }}>
+        <Map
+          mapId={MAP_ID}
+          defaultCenter={{ lat: (pickupLat + dropoffLat) / 2, lng: (pickupLng + dropoffLng) / 2 }}
+          defaultZoom={13}
+          gestureHandling="none"
+          disableDefaultUI
+          className="w-full h-full"
+        >
+          <AdvancedMarker position={{ lat: pickupLat, lng: pickupLng }}>
+            <div className="flex h-5 items-center justify-center rounded-full border-2 border-white shadow-lg bg-success px-1.5 text-white text-[8px] font-bold">P</div>
+          </AdvancedMarker>
+          <AdvancedMarker position={{ lat: dropoffLat, lng: dropoffLng }}>
+            <div className="flex h-5 items-center justify-center rounded-full border-2 border-white shadow-lg bg-danger px-1.5 text-white text-[8px] font-bold">D</div>
+          </AdvancedMarker>
+          {riderDestLat != null && riderDestLng != null && (
+            <AdvancedMarker position={{ lat: riderDestLat, lng: riderDestLng }}>
+              <div className="flex h-5 items-center justify-center rounded-full border-2 border-white shadow-lg bg-primary px-1.5 text-white text-[8px] font-bold">F</div>
+            </AdvancedMarker>
+          )}
+          {routeInfo?.polyline && (
+            <RoutePolyline encodedPath={routeInfo.polyline} color="#6366F1" weight={3} fitBounds={false} />
+          )}
+          <MapBoundsFitter points={[
+            { lat: pickupLat, lng: pickupLng },
+            { lat: dropoffLat, lng: dropoffLng },
+            ...(riderDestLat != null && riderDestLng != null ? [{ lat: riderDestLat, lng: riderDestLng }] : []),
+          ]} />
+        </Map>
+      </div>
+      {routeInfo ? (
+        <div className="flex items-center gap-3 text-[11px] mb-1.5">
+          <span className="font-medium text-text-primary">
+            {Math.round(routeInfo.duration_min)} min
+          </span>
+          <span className="text-text-secondary">&middot;</span>
+          <span className="font-medium text-text-primary">
+            {(routeInfo.distance_km * 0.621371).toFixed(1)} mi
+          </span>
+          <span className="text-text-secondary">&middot;</span>
+          <span className="font-semibold text-success">
+            {formatCents(routeInfo.fare_cents)}
+          </span>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 mb-1.5">
+          <div className="h-2.5 w-2.5 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
+          <span className="text-[11px] text-text-secondary">Calculating route...</span>
+        </div>
+      )}
+      {riderDestName && (
+        <p className="text-[11px] text-text-secondary mb-1.5 truncate">
+          Rider&apos;s destination: {riderDestName}
+        </p>
+      )}
+    </>
+  )
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function MessagingWindow({ 'data-testid': testId }: MessagingWindowProps) {
@@ -220,6 +306,17 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const [pinNote, setPinNote] = useState('')
   const [submittingPin, setSubmittingPin] = useState(false)
   const [pinError, setPinError] = useState<string | null>(null)
+
+  // Pin dropper address search state
+  const [pinSearchQuery, setPinSearchQuery] = useState('')
+  const [pinSearchResults, setPinSearchResults] = useState<PlaceSuggestion[]>([])
+  const [pinSearching, setPinSearching] = useState(false)
+  const pinSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Pin dropper route info state
+  const [pinRouteInfo, setPinRouteInfo] = useState<{ distance_km: number; duration_min: number; fare_cents: number; polyline: string } | null>(null)
+  const [pinRouteLoading, setPinRouteLoading] = useState(false)
+  const pinRouteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Location acceptance state
   const [acceptingLocation, setAcceptingLocation] = useState<string | null>(null) // 'pickup' or 'dropoff'
@@ -740,6 +837,99 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
     }
   }, [ride, latestPickupProposal, latestDropoffProposal])
 
+  // ── Pin dropper: debounced address search ─────────────────────────────────
+  const handlePinSearch = useCallback((query: string) => {
+    setPinSearchQuery(query)
+    if (pinSearchTimer.current) clearTimeout(pinSearchTimer.current)
+    if (!query.trim()) {
+      setPinSearchResults([])
+      return
+    }
+    setPinSearching(true)
+    pinSearchTimer.current = setTimeout(() => {
+      void searchPlaces(query).then((results) => {
+        setPinSearchResults(results)
+        setPinSearching(false)
+      })
+    }, 300)
+  }, [])
+
+  // ── Pin dropper: select a search result ───────────────────────────────────
+  const handlePinSearchSelect = useCallback(async (suggestion: PlaceSuggestion) => {
+    setPinSearchQuery(suggestion.mainText)
+    setPinSearchResults([])
+    setPinNote(suggestion.mainText)
+    if (suggestion.lat != null && suggestion.lng != null) {
+      setPinLat(suggestion.lat)
+      setPinLng(suggestion.lng)
+    } else {
+      const coords = await getPlaceCoordinates(suggestion.placeId)
+      if (coords) {
+        setPinLat(coords.lat)
+        setPinLng(coords.lng)
+      }
+    }
+  }, [])
+
+  // ── Pin dropper: fetch route info when pin moves ──────────────────────────
+  useEffect(() => {
+    if (!pinMode || pinLat == null || pinLng == null) return
+
+    // Determine origin for route calculation
+    const pickupCoords = ride?.pickup_point?.coordinates
+    const originCoords = ride?.origin?.coordinates
+    let routeOriginLat: number | null = null
+    let routeOriginLng: number | null = null
+
+    if (pinMode === 'dropoff') {
+      // For dropoff: route from pickup point (or origin if no pickup set)
+      if (pickupCoords) {
+        routeOriginLat = pickupCoords[1]
+        routeOriginLng = pickupCoords[0]
+      } else if (originCoords) {
+        routeOriginLat = originCoords[1]
+        routeOriginLng = originCoords[0]
+      }
+    } else {
+      // For pickup: route from rider origin to proposed pickup
+      if (originCoords) {
+        routeOriginLat = originCoords[1]
+        routeOriginLng = originCoords[0]
+      }
+    }
+
+    if (routeOriginLat == null || routeOriginLng == null) return
+
+    // Debounce route fetch while dragging
+    if (pinRouteTimer.current) clearTimeout(pinRouteTimer.current)
+    setPinRouteLoading(true)
+
+    const oLat = routeOriginLat
+    const oLng = routeOriginLng
+    const dLat = pinLat
+    const dLng = pinLng
+    const mode = pinMode
+
+    pinRouteTimer.current = setTimeout(() => {
+      void getDirectionsByLatLng(oLat, oLng, dLat, dLng, mode === 'pickup' ? 'WALK' : 'DRIVE').then((result) => {
+        if (result) {
+          const fare = calculateFare(result.distance_km, result.duration_min)
+          setPinRouteInfo({
+            distance_km: result.distance_km,
+            duration_min: result.duration_min,
+            fare_cents: fare.fare_cents,
+            polyline: result.polyline,
+          })
+        }
+        setPinRouteLoading(false)
+      })
+    }, 500)
+
+    return () => {
+      if (pinRouteTimer.current) clearTimeout(pinRouteTimer.current)
+    }
+  }, [pinMode, pinLat, pinLng, ride?.pickup_point?.coordinates, ride?.origin?.coordinates])
+
   // ── Loading ────────────────────────────────────────────────────────────────
   if (loading) {
     return (
@@ -784,6 +974,10 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
 
   // ── Pin dropper overlay ─────────────────────────────────────────────────
   if (pinMode && pinLat != null && pinLng != null) {
+    const riderDestName = ride?.destination_name ?? null
+    const pickupLat = ride?.pickup_point?.coordinates?.[1] ?? ride?.origin?.coordinates?.[1] ?? null
+    const pickupLng = ride?.pickup_point?.coordinates?.[0] ?? ride?.origin?.coordinates?.[0] ?? null
+
     return (
       <div data-testid={testId ?? 'messaging-window'} className="flex h-dvh flex-col bg-white font-sans overflow-hidden">
         {/* Header */}
@@ -793,7 +987,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         >
           <button
             data-testid="pin-back-button"
-            onClick={() => setPinMode(null)}
+            onClick={() => { setPinMode(null); setPinSearchQuery(''); setPinSearchResults([]); setPinRouteInfo(null) }}
             className="p-1 shrink-0 text-text-primary active:opacity-60"
             aria-label="Cancel"
           >
@@ -805,6 +999,57 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           <h2 className="text-sm font-bold text-text-primary">
             {pinMode === 'pickup' ? 'Suggest Pickup Point' : 'Suggest Dropoff Point'}
           </h2>
+        </div>
+
+        {/* Address search bar */}
+        <div className="relative px-4 py-2 bg-white border-b border-border shrink-0 z-20">
+          <div className="relative">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-secondary pointer-events-none" aria-hidden="true">
+              <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
+            </svg>
+            <input
+              data-testid="pin-search-input"
+              type="text"
+              value={pinSearchQuery}
+              onChange={(e) => handlePinSearch(e.target.value)}
+              placeholder="Search an address..."
+              className="w-full rounded-2xl border border-border bg-surface pl-10 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
+              autoComplete="off"
+            />
+            {pinSearchQuery && (
+              <button
+                onClick={() => { setPinSearchQuery(''); setPinSearchResults([]) }}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-0.5 text-text-secondary active:opacity-60"
+                aria-label="Clear search"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4" aria-hidden="true">
+                  <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
+
+          {/* Search results dropdown */}
+          {pinSearchResults.length > 0 && (
+            <div className="absolute left-4 right-4 top-full mt-1 bg-white rounded-xl border border-border shadow-lg max-h-48 overflow-y-auto z-30">
+              {pinSearchResults.map((s) => (
+                <button
+                  key={s.placeId}
+                  data-testid={`pin-search-result-${s.placeId}`}
+                  onClick={() => { void handlePinSearchSelect(s) }}
+                  className="w-full text-left px-4 py-3 border-b border-border/50 last:border-b-0 active:bg-surface transition-colors"
+                >
+                  <p className="text-sm font-medium text-text-primary truncate">{s.mainText}</p>
+                  <p className="text-xs text-text-secondary truncate">{s.secondaryText}</p>
+                </button>
+              ))}
+            </div>
+          )}
+          {pinSearching && pinSearchQuery.trim() && pinSearchResults.length === 0 && (
+            <div className="absolute left-4 right-4 top-full mt-1 bg-white rounded-xl border border-border shadow-lg px-4 py-3 z-30">
+              <p className="text-xs text-text-secondary">Searching...</p>
+            </div>
+          )}
         </div>
 
         {/* Map */}
@@ -821,9 +1066,11 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
               if (latLng) {
                 setPinLat(latLng.lat)
                 setPinLng(latLng.lng)
+                setPinSearchResults([])
               }
             }}
           >
+            {/* Draggable pin */}
             <AdvancedMarker
               position={{ lat: pinLat, lng: pinLng }}
               title={pinMode === 'pickup' ? 'Pickup' : 'Dropoff'}
@@ -840,17 +1087,80 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                 {pinMode === 'pickup' ? 'PICKUP' : 'DROP-OFF'}
               </div>
             </AdvancedMarker>
+
+            {/* Show pickup marker on map when suggesting dropoff */}
+            {pinMode === 'dropoff' && pickupLat != null && pickupLng != null && (
+              <AdvancedMarker position={{ lat: pickupLat, lng: pickupLng }}>
+                <div className="flex h-6 items-center justify-center rounded-full border-2 border-white shadow-lg bg-success px-2 text-white text-[10px] font-bold whitespace-nowrap">
+                  PICKUP
+                </div>
+              </AdvancedMarker>
+            )}
+
+            {/* Show rider's final destination marker */}
+            {riderDestLat != null && riderDestLng != null && (
+              <AdvancedMarker position={{ lat: riderDestLat, lng: riderDestLng }}>
+                <div className="flex h-6 items-center justify-center rounded-full border-2 border-white shadow-lg bg-primary px-2 text-white text-[10px] font-bold whitespace-nowrap">
+                  DEST
+                </div>
+              </AdvancedMarker>
+            )}
+
+            {/* Route polyline from pickup to proposed dropoff */}
+            {pinRouteInfo?.polyline && (
+              <RoutePolyline encodedPath={pinRouteInfo.polyline} color={pinMode === 'pickup' ? '#22C55E' : '#6366F1'} weight={4} fitBounds={false} />
+            )}
+
+            {/* Fit bounds to show all markers */}
+            <MapBoundsFitter points={[
+              { lat: pinLat, lng: pinLng },
+              ...(pinMode === 'dropoff' && pickupLat != null && pickupLng != null ? [{ lat: pickupLat, lng: pickupLng }] : []),
+              ...(riderDestLat != null && riderDestLng != null ? [{ lat: riderDestLat, lng: riderDestLng }] : []),
+            ]} />
           </Map>
 
           {/* Instruction overlay */}
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-sm rounded-full px-4 py-2 shadow-lg">
-            <p className="text-xs font-medium text-text-primary">Tap the map to move the pin</p>
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-sm rounded-full px-3 py-1.5 shadow-lg">
+            <p className="text-[11px] font-medium text-text-primary">Tap map or search to set location</p>
           </div>
         </div>
 
-        {/* Transit info for dropoff mode — helps driver choose a point near transit */}
+        {/* Route info card */}
+        <div className="px-4 pt-2.5 border-t border-border bg-white shrink-0">
+          {pinRouteLoading && !pinRouteInfo && (
+            <div className="flex items-center gap-2 py-1.5">
+              <div className="h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+              <span className="text-xs text-text-secondary">Calculating route...</span>
+            </div>
+          )}
+          {pinRouteInfo && (
+            <div className="space-y-1.5 pb-1">
+              <div className="flex items-center gap-4 text-xs">
+                <span className="flex items-center gap-1 text-text-primary font-medium">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-primary" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                  {Math.round(pinRouteInfo.duration_min)} min
+                </span>
+                <span className="flex items-center gap-1 text-text-primary font-medium">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-primary" aria-hidden="true"><path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                  {(pinRouteInfo.distance_km * 0.621371).toFixed(1)} mi
+                </span>
+                <span className="flex items-center gap-1 text-text-primary font-semibold">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-success" aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                  {formatCents(pinRouteInfo.fare_cents)}
+                </span>
+              </div>
+              {riderDestName && (
+                <p className="text-[11px] text-text-secondary truncate">
+                  Rider&apos;s destination: {riderDestName}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Transit info for dropoff mode */}
         {pinMode === 'dropoff' && riderDestLat != null && riderDestLng != null && (
-          <div className="px-4 pt-2 border-t border-border bg-white shrink-0">
+          <div className="px-4 pt-1 border-t border-border/50 bg-white shrink-0">
             <TransitInfo
               dropoffLat={pinLat}
               dropoffLng={pinLng}
@@ -872,14 +1182,14 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             value={pinNote}
             onChange={(e) => setPinNote(e.target.value)}
             placeholder={pinMode === 'pickup' ? 'Add a note (e.g. "By the fountain")' : 'Location name (optional)'}
-            className="w-full rounded-2xl border border-border bg-surface px-4 py-2.5 text-base text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
+            className="w-full rounded-2xl border border-border bg-surface px-4 py-2.5 text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
           />
           {pinError && (
             <p className="text-sm text-danger text-center" role="alert">{pinError}</p>
           )}
           <div className="flex gap-2">
             <button
-              onClick={() => { setPinMode(null); setPinError(null) }}
+              onClick={() => { setPinMode(null); setPinError(null); setPinSearchQuery(''); setPinSearchResults([]); setPinRouteInfo(null) }}
               className="flex-1 rounded-2xl py-3 text-sm font-semibold text-text-secondary bg-surface active:bg-border transition-colors"
             >
               Cancel
@@ -1003,94 +1313,131 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
       )}
 
       {/* ── Pending proposal banner — highly visible accept/counter UI ─── */}
-      {!pickupConfirmed && pickupProposedByOther && latestPickupProposal && (
-        <div data-testid="pickup-proposal-banner" className="px-4 py-3 bg-success/10 border-b border-success/20 shrink-0">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="h-6 w-6 rounded-full bg-success/20 flex items-center justify-center">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-success" aria-hidden="true">
-                <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" />
-              </svg>
-            </div>
-            <p className="text-sm font-semibold text-success">
-              {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a pickup point
-            </p>
-          </div>
-          {(() => {
-            const meta = latestPickupProposal.meta as Record<string, unknown> | null
-            const note = meta?.note
-            return note ? <p className="text-xs text-text-primary mb-2">Note: {String(note)}</p> : null
-          })()}
-          <div className="flex gap-2">
-            <button
-              data-testid="banner-accept-pickup"
-              onClick={() => { void handleAcceptLocation('pickup') }}
-              disabled={acceptingLocation === 'pickup'}
-              className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-white bg-success active:bg-success/90 disabled:opacity-50 transition-colors"
-            >
-              {acceptingLocation === 'pickup' ? 'Accepting...' : 'Accept Pickup'}
-            </button>
-            <button
-              data-testid="banner-counter-pickup"
-              onClick={() => openPinDropper('pickup')}
-              className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-success bg-success/10 border border-success/30 active:bg-success/20 transition-colors"
-            >
-              Counter Offer
-            </button>
-          </div>
-        </div>
-      )}
+      {!pickupConfirmed && pickupProposedByOther && latestPickupProposal && (() => {
+        const meta = latestPickupProposal.meta as { lat?: number; lng?: number; note?: string; proposed_by?: string } | null
+        const pickupProposalLat = meta?.lat
+        const pickupProposalLng = meta?.lng
+        const note = meta?.note
+        const originLat = ride?.origin?.coordinates?.[1]
+        const originLng = ride?.origin?.coordinates?.[0]
+        const destLat = ride?.destination?.coordinates?.[1] ?? riderDestLat
+        const destLng = ride?.destination?.coordinates?.[0] ?? riderDestLng
 
-      {!dropoffConfirmed && dropoffProposedByOther && latestDropoffProposal && (
-        <div data-testid="dropoff-proposal-banner" className="px-4 py-3 bg-primary/10 border-b border-primary/20 shrink-0">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="h-6 w-6 rounded-full bg-primary/20 flex items-center justify-center">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-primary" aria-hidden="true">
-                <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" />
-              </svg>
+        return (
+          <div data-testid="pickup-proposal-banner" className="px-4 py-3 bg-success/10 border-b border-success/20 shrink-0">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="h-6 w-6 rounded-full bg-success/20 flex items-center justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-success" aria-hidden="true">
+                  <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" />
+                </svg>
+              </div>
+              <p className="text-sm font-semibold text-success">
+                {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a pickup point
+              </p>
             </div>
-            <p className="text-sm font-semibold text-primary">
-              {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a dropoff point
-            </p>
+            {note && <p className="text-xs text-text-primary mb-2">Note: {String(note)}</p>}
+
+            {/* Mini map with walking + driving routes */}
+            {pickupProposalLat != null && pickupProposalLng != null && originLat != null && originLng != null && (
+              <PickupMiniMap
+                originLat={originLat}
+                originLng={originLng}
+                pickupLat={pickupProposalLat}
+                pickupLng={pickupProposalLng}
+                isRider={isRider}
+                driverId={ride?.driver_id}
+                destLat={destLat}
+                destLng={destLng}
+                originalFareCents={ride?.fare_cents}
+              />
+            )}
+
+            <div className="flex gap-2">
+              <button
+                data-testid="banner-accept-pickup"
+                onClick={() => { void handleAcceptLocation('pickup') }}
+                disabled={acceptingLocation === 'pickup'}
+                className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-white bg-success active:bg-success/90 disabled:opacity-50 transition-colors"
+              >
+                {acceptingLocation === 'pickup' ? 'Accepting...' : 'Accept Pickup'}
+              </button>
+              <button
+                data-testid="banner-counter-pickup"
+                onClick={() => openPinDropper('pickup')}
+                className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-success bg-success/10 border border-success/30 active:bg-success/20 transition-colors"
+              >
+                Counter Offer
+              </button>
+            </div>
           </div>
-          {(() => {
-            const meta = latestDropoffProposal.meta as Record<string, unknown> | null
-            const name = meta?.name
-            return name ? <p className="text-xs text-text-primary mb-2">{String(name)}</p> : null
-          })()}
-          {/* Transit options from dropoff to rider's final destination */}
-          {isRider && (() => {
-            const meta = latestDropoffProposal.meta as { lat?: number; lng?: number } | null
-            if (meta?.lat == null || meta?.lng == null) return null
-            if (riderDestLat == null || riderDestLng == null) return null
-            return (
+        )
+      })()}
+
+      {!dropoffConfirmed && dropoffProposedByOther && latestDropoffProposal && (() => {
+        const meta = latestDropoffProposal.meta as { lat?: number; lng?: number; name?: string; proposed_by?: string } | null
+        const dropoffName = meta?.name ? String(meta.name) : null
+        const dropoffLat = meta?.lat
+        const dropoffLng = meta?.lng
+        const pLat = ride?.pickup_point?.coordinates?.[1] ?? ride?.origin?.coordinates?.[1]
+        const pLng = ride?.pickup_point?.coordinates?.[0] ?? ride?.origin?.coordinates?.[0]
+
+        return (
+          <div data-testid="dropoff-proposal-banner" className="px-4 py-3 bg-primary/10 border-b border-primary/20 shrink-0">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="h-6 w-6 rounded-full bg-primary/20 flex items-center justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-primary" aria-hidden="true">
+                  <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" />
+                </svg>
+              </div>
+              <p className="text-sm font-semibold text-primary">
+                {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a dropoff point
+              </p>
+            </div>
+            {dropoffName && <p className="text-xs font-medium text-text-primary mb-2">{dropoffName}</p>}
+
+            {/* Mini map + route info */}
+            {dropoffLat != null && dropoffLng != null && pLat != null && pLng != null && (
+              <DropoffProposalInfo
+                pickupLat={pLat}
+                pickupLng={pLng}
+                dropoffLat={dropoffLat}
+                dropoffLng={dropoffLng}
+                riderDestLat={riderDestLat}
+                riderDestLng={riderDestLng}
+                riderDestName={ride?.destination_name}
+              />
+            )}
+
+            {/* Transit options from dropoff to rider's final destination */}
+            {isRider && dropoffLat != null && dropoffLng != null && riderDestLat != null && riderDestLng != null && (
               <TransitInfo
-                dropoffLat={meta.lat}
-                dropoffLng={meta.lng}
+                dropoffLat={dropoffLat}
+                dropoffLng={dropoffLng}
                 destLat={riderDestLat}
                 destLng={riderDestLng}
                 data-testid="banner-transit-info"
               />
-            )
-          })()}
-          <div className="flex gap-2">
-            <button
-              data-testid="banner-accept-dropoff"
-              onClick={() => { void handleAcceptLocation('dropoff') }}
-              disabled={acceptingLocation === 'dropoff'}
-              className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-white bg-primary active:bg-primary/90 disabled:opacity-50 transition-colors"
-            >
-              {acceptingLocation === 'dropoff' ? 'Accepting...' : 'Accept Dropoff'}
-            </button>
-            <button
-              data-testid="banner-counter-dropoff"
-              onClick={() => openPinDropper('dropoff')}
-              className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-primary bg-primary/10 border border-primary/30 active:bg-primary/20 transition-colors"
-            >
-              Counter Offer
-            </button>
+            )}
+            <div className="flex gap-2">
+              <button
+                data-testid="banner-accept-dropoff"
+                onClick={() => { void handleAcceptLocation('dropoff') }}
+                disabled={acceptingLocation === 'dropoff'}
+                className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-white bg-primary active:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                {acceptingLocation === 'dropoff' ? 'Accepting...' : 'Accept Dropoff'}
+              </button>
+              <button
+                data-testid="banner-counter-dropoff"
+                onClick={() => openPinDropper('dropoff')}
+                className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-primary bg-primary/10 border border-primary/30 active:bg-primary/20 transition-colors"
+              >
+                Counter Offer
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* ── Vehicle info bar (rider side only — no duplicate name) ──────── */}
       {otherVehicle && (
