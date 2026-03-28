@@ -1,7 +1,9 @@
-import express from 'express'
+import express, { type Request, type Response } from 'express'
 import cors from 'cors'
 import cookieParser from 'cookie-parser'
 import rateLimit from 'express-rate-limit'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import { ridesRouter } from './routes/rides.ts'
 import { notificationsRouter } from './routes/notifications.ts'
 import { scheduleRouter } from './routes/schedule.ts'
@@ -76,3 +78,14 @@ app.use('/api/gas-price', gasPriceRouter)
 app.use('/api/addresses', addressesRouter)
 
 app.use(errorHandler)
+
+// ── SPA fallback — serve built frontend in production ─────────────────────
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const distPath = path.resolve(__dirname, '../dist')
+
+app.use(express.static(distPath))
+
+// All non-API routes fall through to index.html for client-side routing
+app.use((_req: Request, res: Response) => {
+  res.sendFile(path.join(distPath, 'index.html'))
+})
