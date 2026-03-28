@@ -52,11 +52,26 @@ interface MapOverlayData {
 
 /** Full-screen interactive map overlay — shows all markers, route polylines, zoomable */
 function ProposalMapOverlay({ data, onClose }: { data: MapOverlayData; onClose: () => void }) {
+  const [visible, setVisible] = useState(false)
+  useEffect(() => {
+    // Trigger slide-up animation on next frame
+    requestAnimationFrame(() => setVisible(true))
+  }, [])
+
+  const handleClose = () => {
+    setVisible(false)
+    setTimeout(onClose, 250)
+  }
+
   return (
-    <div className="fixed inset-0 z-50 bg-background flex flex-col" data-testid="proposal-map-overlay">
+    <div
+      className="fixed inset-0 z-50 bg-background flex flex-col transition-transform duration-250 ease-out"
+      style={{ transform: visible ? 'translateY(0)' : 'translateY(100%)' }}
+      data-testid="proposal-map-overlay"
+    >
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-surface">
-        <button onClick={onClose} className="h-8 w-8 rounded-full bg-surface-alt flex items-center justify-center" data-testid="overlay-close">
+        <button onClick={handleClose} className="h-8 w-8 rounded-full bg-surface-alt flex items-center justify-center" data-testid="overlay-close">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-5 w-5 text-text-primary" aria-hidden="true">
             <path d="M19 12H5M12 19l-7-7 7-7" />
           </svg>
@@ -70,7 +85,7 @@ function ProposalMapOverlay({ data, onClose }: { data: MapOverlayData; onClose: 
         <Map
           mapId={MAP_ID}
           defaultCenter={data.points[0] ? { lat: data.points[0].lat, lng: data.points[0].lng } : { lat: 38.54, lng: -121.75 }}
-          defaultZoom={13}
+          defaultZoom={15}
           gestureHandling="auto"
           disableDefaultUI={false}
           className="w-full h-full"
@@ -158,14 +173,14 @@ function PickupProposalCard({
   }, [pickupLat, pickupLng, destLat, destLng])
 
   const handleViewMap = () => {
-    const points: MapOverlayData['points'] = [
-      { lat: originLat, lng: originLng, label: 'Your Location', color: '#6366F1' },
-      { lat: pickupLat, lng: pickupLng, label: 'Pickup', color: '#22C55E' },
-    ]
-    if (destLat != null && destLng != null) {
-      points.push({ lat: destLat, lng: destLng, label: 'Destination', color: '#EF4444' })
-    }
-    onViewMap({ type: 'pickup', points, walkPolyline })
+    onViewMap({
+      type: 'pickup',
+      points: [
+        { lat: originLat, lng: originLng, label: 'Your Location', color: '#6366F1' },
+        { lat: pickupLat, lng: pickupLng, label: 'Pickup', color: '#22C55E' },
+      ],
+      walkPolyline,
+    })
   }
 
   return (
