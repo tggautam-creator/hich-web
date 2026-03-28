@@ -60,6 +60,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
   const [toastType, setToastType] = useState<'error' | 'success'>('error')
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [cancelledMsg, setCancelledMsg] = useState<string | null>(null)
+  const [riderArriving, setRiderArriving] = useState(false)
 
   // Rider position (from ride origin)
   const riderPos = useMemo(() => ride?.origin
@@ -213,10 +214,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
     const riderChannel = supabase
       .channel(`rider-signal:${profile.id}`)
       .on('broadcast', { event: 'rider_signal' }, () => {
-        setToastMsg('Your rider is at the pickup point!')
-        setToastType('success')
-        if (toastTimer.current) clearTimeout(toastTimer.current)
-        toastTimer.current = setTimeout(() => setToastMsg(null), 5000)
+        setRiderArriving(true)
       })
       .subscribe()
 
@@ -505,9 +503,16 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
             {/* Rider origin — blue dot */}
             {riderPos && (
               <AdvancedMarker position={riderPos} title="Rider location">
-                <div data-testid="rider-marker" className="relative flex items-center justify-center">
-                  <span className="absolute h-6 w-6 rounded-full bg-primary/30 animate-ping" />
-                  <span className="relative h-3 w-3 rounded-full bg-primary border-2 border-white shadow-md" />
+                <div data-testid="rider-marker" className="flex flex-col items-center">
+                  {riderArriving && (
+                    <div className="bg-success text-white rounded-full px-2 py-0.5 text-[10px] font-bold shadow-lg mb-0.5 whitespace-nowrap animate-pulse">
+                      Arriving!
+                    </div>
+                  )}
+                  <div className="relative flex items-center justify-center">
+                    <span className="absolute h-6 w-6 rounded-full bg-primary/30 animate-ping" />
+                    <span className="relative h-3 w-3 rounded-full bg-primary border-2 border-white shadow-md" />
+                  </div>
                 </div>
               </AdvancedMarker>
             )}
@@ -525,8 +530,8 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
             {riderLiveLat != null && riderLiveLng != null && (
               <AdvancedMarker position={{ lat: riderLiveLat, lng: riderLiveLng }} title="Rider">
                 <div data-testid="rider-live-marker" className="flex flex-col items-center">
-                  <div className="bg-[#6366F1] text-white rounded-full px-2 py-0.5 text-[10px] font-bold shadow-lg mb-0.5 whitespace-nowrap">
-                    {riderEtaMin === 0 ? 'At pickup!' : riderEtaMin != null ? `${riderEtaMin} min walk` : '…'}
+                  <div className={`${riderArriving ? 'bg-success animate-pulse' : 'bg-[#6366F1]'} text-white rounded-full px-2 py-0.5 text-[10px] font-bold shadow-lg mb-0.5 whitespace-nowrap`}>
+                    {riderArriving ? 'Arriving!' : riderEtaMin === 0 ? 'At pickup!' : riderEtaMin != null ? `${riderEtaMin} min walk` : '…'}
                   </div>
                   <div className="relative flex items-center justify-center">
                     <span className="absolute h-6 w-6 rounded-full bg-[#6366F1]/30 animate-ping" />
@@ -555,7 +560,17 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
             )}
           </Map>
 
-          {/* Toast notification (rider signal, errors, etc.) */}
+          {/* Rider arriving banner — persistent until ride starts */}
+          {riderArriving && (
+            <div
+              data-testid="rider-arriving-banner"
+              className="absolute top-3 left-3 right-3 bg-success text-white rounded-2xl px-4 py-3 text-sm font-semibold text-center shadow-lg z-10 animate-pulse"
+            >
+              Rider is at the pickup point!
+            </div>
+          )}
+
+          {/* Toast notification (errors, etc.) */}
           {toastMsg && (
             <div
               data-testid="toast"
