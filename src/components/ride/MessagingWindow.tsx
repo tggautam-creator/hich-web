@@ -1123,19 +1123,12 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                 }
               }}
             >
-              {/* Teardrop pin shape */}
-              <div className="flex flex-col items-center" style={{ marginBottom: '-4px' }}>
-                <div className={`relative flex h-9 w-9 items-center justify-center rounded-full shadow-lg ${pinMode === 'pickup' ? 'bg-success' : 'bg-danger'}`} style={{ boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-4.5 w-4.5" style={{ width: '18px', height: '18px' }} aria-hidden="true">
-                    {pinMode === 'pickup' ? (
-                      <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z M12 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />
-                    ) : (
-                      <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z M12 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />
-                    )}
-                  </svg>
-                </div>
-                {/* Teardrop tail */}
-                <div className={`h-3 w-3 -mt-2 rotate-45 shadow-sm ${pinMode === 'pickup' ? 'bg-success' : 'bg-danger'}`} style={{ clipPath: 'polygon(0 0, 100% 0, 100% 100%)' }} />
+              {/* Map pin — proper teardrop SVG */}
+              <div className="flex flex-col items-center" style={{ filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))' }}>
+                <svg width="36" height="48" viewBox="0 0 36 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path d="M18 0C8.06 0 0 8.06 0 18c0 12.6 16.2 28.8 17.4 30 .36.36.84.36 1.2 0C19.8 46.8 36 30.6 36 18 36 8.06 27.94 0 18 0z" fill={pinMode === 'pickup' ? '#22C55E' : '#EF4444'} />
+                  <circle cx="18" cy="18" r="7" fill="white" />
+                </svg>
               </div>
             </AdvancedMarker>
           </Map>
