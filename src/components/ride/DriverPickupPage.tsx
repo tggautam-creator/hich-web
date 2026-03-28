@@ -128,6 +128,18 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
 
       if (riderData) setRider(riderData)
 
+      // Check if rider already signalled they're close
+      const { data: signalMsg } = await supabase
+        .from('messages')
+        .select('id')
+        .eq('ride_id', rideId as string)
+        .eq('type', 'rider_signal')
+        .limit(1)
+
+      if (signalMsg && signalMsg.length > 0) {
+        setRiderArriving(true)
+      }
+
       // If pickup is already confirmed, skip pin calculation
       if (rideData.pickup_confirmed) {
         setLoading(false)

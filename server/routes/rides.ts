@@ -2125,6 +2125,15 @@ ridesRouter.post(
       return
     }
 
+    // Persist signal as a chat message so driver page can detect it on load
+    await supabaseAdmin.from('messages').insert({
+      ride_id: rideId,
+      sender_id: riderId,
+      type: 'rider_signal',
+      content: 'Rider is at the pickup point!',
+      meta: { type: 'rider_signal' },
+    })
+
     // Broadcast to driver via Realtime
     if (ride.driver_id) {
       await realtimeBroadcastMany(
