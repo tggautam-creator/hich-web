@@ -77,15 +77,20 @@ app.use('/api/auth', authRouter)
 app.use('/api/gas-price', gasPriceRouter)
 app.use('/api/addresses', addressesRouter)
 
-app.use(errorHandler)
-
 // ── SPA fallback — serve built frontend in production ─────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const distPath = path.resolve(__dirname, '../dist')
 
 app.use(express.static(distPath))
 
-// All non-API routes fall through to index.html for client-side routing
-app.use((_req: Request, res: Response) => {
+// Catch-all for non-API routes → serve index.html for client-side routing
+// API routes that don't match any handler get a proper 404 JSON response
+app.use((req: Request, res: Response) => {
+  if (req.path.startsWith('/api/')) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: `${req.method} ${req.path} not found` } })
+    return
+  }
   res.sendFile(path.join(distPath, 'index.html'))
 })
+
+app.use(errorHandler)
