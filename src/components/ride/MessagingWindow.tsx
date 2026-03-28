@@ -317,6 +317,8 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const [pinRouteInfo, setPinRouteInfo] = useState<{ distance_km: number; duration_min: number; fare_cents: number; polyline: string } | null>(null)
   const [pinRouteLoading, setPinRouteLoading] = useState(false)
   const pinRouteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // For pickup mode: additional drive route from pickup → destination
+  const [pinDriveInfo, setPinDriveInfo] = useState<{ distance_km: number; duration_min: number; fare_cents: number; polyline: string } | null>(null)
 
   // Location acceptance state
   const [acceptingLocation, setAcceptingLocation] = useState<string | null>(null) // 'pickup' or 'dropoff'
@@ -875,14 +877,17 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   useEffect(() => {
     if (!pinMode || pinLat == null || pinLng == null) return
 
-    // Determine origin for route calculation
-    const pickupCoords = ride?.pickup_point?.coordinates
     const originCoords = ride?.origin?.coordinates
+    const pickupCoords = ride?.pickup_point?.coordinates
+    const destCoords = ride?.destination?.coordinates
+    const rDestLat = riderDestLat ?? destCoords?.[1] ?? null
+    const rDestLng = riderDestLng ?? destCoords?.[0] ?? null
+
     let routeOriginLat: number | null = null
     let routeOriginLng: number | null = null
 
     if (pinMode === 'dropoff') {
-      // For dropoff: route from pickup point (or origin if no pickup set)
+      // For dropoff: route from pickup point (or origin) to proposed dropoff
       if (pickupCoords) {
         routeOriginLat = pickupCoords[1]
         routeOriginLng = pickupCoords[0]
@@ -891,7 +896,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         routeOriginLng = originCoords[0]
       }
     } else {
-      // For pickup: route from rider origin to proposed pickup
+      // For pickup: walk route from rider origin to proposed pickup
       if (originCoords) {
         routeOriginLat = originCoords[1]
         routeOriginLng = originCoords[0]
@@ -900,7 +905,6 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
 
     if (routeOriginLat == null || routeOriginLng == null) return
 
-    // Debounce route fetch while dragging
     if (pinRouteTimer.current) clearTimeout(pinRouteTimer.current)
     setPinRouteLoading(true)
 
@@ -911,7 +915,10 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
     const mode = pinMode
 
     pinRouteTimer.current = setTimeout(() => {
-      void getDirectionsByLatLng(oLat, oLng, dLat, dLng, mode === 'pickup' ? 'WALK' : 'DRIVE').then((result) => {
+      const walkOrDrive = mode === 'pickup' ? 'WALK' as const : 'DRIVE' as const
+
+      // Primary route: origin → pin (walk for pickup, drive for dropoff)
+      const primaryPromise = getDirectionsByLatLng(oLat, oLng, dLat, dLng, walkOrDrive).then((result) => {
         if (result) {
           const fare = calculateFare(result.distance_km, result.duration_min)
           setPinRouteInfo({
@@ -921,14 +928,32 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             polyline: result.polyline,
           })
         }
-        setPinRouteLoading(false)
       })
+
+      // For pickup mode: also fetch drive route from proposed pickup → destination (for fare estimate)
+      const drivePromise = mode === 'pickup' && rDestLat != null && rDestLng != null
+        ? getDirectionsByLatLng(dLat, dLng, rDestLat, rDestLng, 'DRIVE').then((result) => {
+            if (result) {
+              const fare = calculateFare(result.distance_km, result.duration_min)
+              setPinDriveInfo({
+                distance_km: result.distance_km,
+                duration_min: result.duration_min,
+                fare_cents: fare.fare_cents,
+                polyline: result.polyline,
+              })
+            } else {
+              setPinDriveInfo(null)
+            }
+          })
+        : Promise.resolve(setPinDriveInfo(null))
+
+      void Promise.all([primaryPromise, drivePromise]).then(() => setPinRouteLoading(false))
     }, 500)
 
     return () => {
       if (pinRouteTimer.current) clearTimeout(pinRouteTimer.current)
     }
-  }, [pinMode, pinLat, pinLng, ride?.pickup_point?.coordinates, ride?.origin?.coordinates])
+  }, [pinMode, pinLat, pinLng, ride?.pickup_point?.coordinates, ride?.origin?.coordinates, ride?.destination?.coordinates, riderDestLat, riderDestLng])
 
   // ── Loading ────────────────────────────────────────────────────────────────
   if (loading) {
@@ -1088,11 +1113,20 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
               </div>
             </AdvancedMarker>
 
-            {/* Show pickup marker on map when suggesting dropoff */}
+            {/* Show pickup marker when suggesting dropoff */}
             {pinMode === 'dropoff' && pickupLat != null && pickupLng != null && (
               <AdvancedMarker position={{ lat: pickupLat, lng: pickupLng }}>
                 <div className="flex h-6 items-center justify-center rounded-full border-2 border-white shadow-lg bg-success px-2 text-white text-[10px] font-bold whitespace-nowrap">
                   PICKUP
+                </div>
+              </AdvancedMarker>
+            )}
+
+            {/* Show rider origin marker when suggesting pickup */}
+            {pinMode === 'pickup' && ride?.origin && (
+              <AdvancedMarker position={{ lat: ride.origin.coordinates[1], lng: ride.origin.coordinates[0] }}>
+                <div className="flex h-5 items-center justify-center">
+                  <span className="h-3 w-3 rounded-full bg-primary border-2 border-white shadow-md" />
                 </div>
               </AdvancedMarker>
             )}
@@ -1106,15 +1140,20 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
               </AdvancedMarker>
             )}
 
-            {/* Route polyline from pickup to proposed dropoff */}
+            {/* Walk polyline (origin → pickup) or drive polyline (pickup → dropoff) */}
             {pinRouteInfo?.polyline && (
-              <RoutePolyline encodedPath={pinRouteInfo.polyline} color={pinMode === 'pickup' ? '#22C55E' : '#6366F1'} weight={4} fitBounds={false} />
+              <RoutePolyline encodedPath={pinRouteInfo.polyline} color={pinMode === 'pickup' ? '#6366F1' : '#6366F1'} weight={4} fitBounds={false} />
+            )}
+            {/* For pickup mode: also show drive route from proposed pickup → destination */}
+            {pinMode === 'pickup' && pinDriveInfo?.polyline && (
+              <RoutePolyline encodedPath={pinDriveInfo.polyline} color="#22C55E" weight={3} fitBounds={false} />
             )}
 
-            {/* Fit bounds to show all markers */}
+            {/* Fit bounds to show all relevant markers */}
             <MapBoundsFitter points={[
               { lat: pinLat, lng: pinLng },
               ...(pinMode === 'dropoff' && pickupLat != null && pickupLng != null ? [{ lat: pickupLat, lng: pickupLng }] : []),
+              ...(pinMode === 'pickup' && ride?.origin ? [{ lat: ride.origin.coordinates[1], lng: ride.origin.coordinates[0] }] : []),
               ...(riderDestLat != null && riderDestLng != null ? [{ lat: riderDestLat, lng: riderDestLng }] : []),
             ]} />
           </Map>
@@ -1135,20 +1174,47 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           )}
           {pinRouteInfo && (
             <div className="space-y-1.5 pb-1">
-              <div className="flex items-center gap-4 text-xs">
-                <span className="flex items-center gap-1 text-text-primary font-medium">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-primary" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                  {Math.round(pinRouteInfo.duration_min)} min
-                </span>
-                <span className="flex items-center gap-1 text-text-primary font-medium">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-primary" aria-hidden="true"><path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-                  {(pinRouteInfo.distance_km * 0.621371).toFixed(1)} mi
-                </span>
-                <span className="flex items-center gap-1 text-text-primary font-semibold">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-success" aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                  {formatCents(pinRouteInfo.fare_cents)}
-                </span>
-              </div>
+              {/* Pickup mode: show walk to pickup + drive to destination */}
+              {pinMode === 'pickup' ? (
+                <>
+                  <div className="flex items-center gap-1.5 text-[11px]">
+                    <span className="inline-block w-2 h-2 rounded-full bg-[#6366F1] shrink-0" />
+                    <span className="text-text-primary font-medium">
+                      Walk to pickup &middot; {Math.round(pinRouteInfo.duration_min)} min
+                    </span>
+                  </div>
+                  {pinDriveInfo && (
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span className="inline-block w-2 h-2 rounded-full bg-success shrink-0" />
+                      <span className="text-text-primary font-medium">
+                        Drive to destination &middot; {Math.round(pinDriveInfo.duration_min)} min &middot; {(pinDriveInfo.distance_km * 0.621371).toFixed(1)} mi
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-1.5 text-[11px] pt-0.5 border-t border-border/50">
+                    <span className="inline-block w-2 h-2 rounded-full bg-[#F59E0B] shrink-0" />
+                    <span className="text-text-primary font-semibold">
+                      Est. fare &middot; {formatCents(pinDriveInfo?.fare_cents ?? pinRouteInfo.fare_cents)}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                /* Dropoff mode: show single drive route */
+                <div className="flex items-center gap-4 text-xs">
+                  <span className="flex items-center gap-1 text-text-primary font-medium">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-primary" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    {Math.round(pinRouteInfo.duration_min)} min
+                  </span>
+                  <span className="flex items-center gap-1 text-text-primary font-medium">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-primary" aria-hidden="true"><path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                    {(pinRouteInfo.distance_km * 0.621371).toFixed(1)} mi
+                  </span>
+                  <span className="flex items-center gap-1 text-text-primary font-semibold">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-success" aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                    {formatCents(pinRouteInfo.fare_cents)}
+                  </span>
+                </div>
+              )}
               {riderDestName && (
                 <p className="text-[11px] text-text-secondary truncate">
                   Rider&apos;s destination: {riderDestName}
