@@ -43,6 +43,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   const [cancelledMsg, setCancelledMsg] = useState<string | null>(null)
 
   // QR scanning / manual code entry state
+  const [startRideModal, setStartRideModal] = useState(false)
   const [scanning, setScanning] = useState(false)
   const [manualCode, setManualCode] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -401,7 +402,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
         >
           <button
             data-testid="scanner-back"
-            onClick={() => { setScanning(false); setError(null) }}
+            onClick={() => { setScanning(false) }}
             className="p-1 shrink-0 text-white active:opacity-60"
             aria-label="Close scanner"
           >
@@ -606,7 +607,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
           estimatedFare={ride.fare_cents}
           etaMinutes={driverEtaMin}
           distanceKm={walkDistM != null ? walkDistM / 1000 : null}
-          onShowQr={() => { setScanning(true); setError(null) }}
+          onShowQr={() => { setStartRideModal(true); setError(null) }}
           onNavigate={openNavigation}
           onChat={() => { setUnreadChat(0); navigate(`/ride/messaging/${rideId as string}`) }}
           onEmergency={() => setEmergencyOpen(true)}
@@ -617,6 +618,78 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
           signalling={signalling}
           pickupNote={pickupNote}
         />
+      )}
+
+      {/* ── Start Ride Modal — code entry + scan option ────────────────── */}
+      {startRideModal && !scanning && (
+        <div
+          data-testid="start-ride-modal"
+          className="fixed inset-0 z-[950] flex items-center justify-center bg-black/50 px-6"
+          onClick={() => setStartRideModal(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex flex-col items-center text-center">
+              <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-success/10">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-8 w-8 text-success" aria-hidden="true">
+                  <rect x="3" y="3" width="7" height="7" rx="1" />
+                  <rect x="14" y="3" width="7" height="7" rx="1" />
+                  <rect x="3" y="14" width="7" height="7" rx="1" />
+                  <rect x="14" y="14" width="4" height="4" rx="0.5" />
+                </svg>
+              </div>
+
+              <h3 className="text-lg font-bold text-text-primary mb-2">Scan Driver&apos;s QR Code</h3>
+              <p className="text-sm text-text-secondary mb-4">
+                Scan the driver&apos;s QR code or enter their code to start the ride.
+              </p>
+
+              {/* Manual code entry */}
+              <div className="flex gap-2 w-full mb-4">
+                <input
+                  data-testid="driver-code-input"
+                  type="text"
+                  value={manualCode}
+                  onChange={(e) => setManualCode(e.target.value.toUpperCase())}
+                  placeholder="Driver's code"
+                  maxLength={8}
+                  className="flex-1 rounded-2xl border border-border bg-surface px-4 py-3 text-center font-mono text-base font-bold tracking-widest text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+                <button
+                  data-testid="submit-code-button"
+                  onClick={handleManualSubmit}
+                  disabled={submitting || manualCode.trim().length === 0}
+                  className="rounded-2xl bg-primary px-5 py-3 font-semibold text-white disabled:opacity-50 active:bg-primary/90 transition-colors"
+                >
+                  {submitting ? '…' : 'Go'}
+                </button>
+              </div>
+
+              {error && (
+                <p data-testid="modal-error" className="text-sm text-danger text-center mb-3">{error}</p>
+              )}
+
+              <div className="flex w-full gap-3">
+                <button
+                  data-testid="modal-cancel"
+                  onClick={() => setStartRideModal(false)}
+                  className="flex-1 rounded-2xl border border-border py-3 text-sm font-semibold text-text-primary active:bg-surface transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  data-testid="modal-scan-qr"
+                  onClick={() => { setScanning(true); setError(null) }}
+                  className="flex-1 rounded-2xl bg-success py-3 text-sm font-semibold text-white active:bg-success/90 transition-colors"
+                >
+                  Scan QR
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       <EmergencySheet
