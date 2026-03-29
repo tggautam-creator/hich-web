@@ -64,78 +64,153 @@ export default function StripeOnboardingPage({
       data-testid={testId}
       className="flex min-h-dvh flex-col bg-surface font-sans"
     >
-      <div className="flex flex-1 flex-col items-center justify-center px-6">
-        {/* Icon */}
-        <div className="mb-6 flex h-24 w-24 items-center justify-center rounded-full bg-success/10">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-12 w-12 text-success" aria-hidden="true">
-            <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
-            <line x1="1" y1="10" x2="23" y2="10" />
-          </svg>
+      <div className="flex flex-1 flex-col px-6 py-8">
+        {/* Header */}
+        <div className="flex flex-col items-center mb-8">
+          <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-8 w-8 text-primary" aria-hidden="true">
+              <rect x="2" y="5" width="20" height="14" rx="2" />
+              <line x1="2" y1="10" x2="22" y2="10" />
+            </svg>
+          </div>
+          <h1 className="text-2xl font-bold text-text-primary text-center">
+            How do you want to get paid?
+          </h1>
+          <p className="mt-2 text-center text-text-secondary max-w-sm text-sm">
+            Choose the option that works best for you. You&apos;ll set up the details in the next step on Stripe&apos;s secure platform.
+          </p>
         </div>
 
-        <h1 className="mb-2 text-center text-2xl font-bold text-text-primary">
-          Connect your bank account
-        </h1>
-        <p className="mb-8 text-center text-text-secondary max-w-sm">
-          We use Stripe to securely handle payments. You&apos;ll be redirected to Stripe to verify your identity and connect your bank account.
-        </p>
+        {/* Option cards */}
+        <div className="space-y-4 max-w-sm w-full mx-auto mb-6">
+          {/* Bank Account */}
+          <div
+            data-testid="bank-option-card"
+            className="rounded-2xl bg-white border-2 border-success/30 p-4 shadow-sm"
+          >
+            <div className="flex items-start gap-3 mb-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-success/10">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-success" aria-hidden="true">
+                  <rect x="3" y="11" width="18" height="10" rx="1" />
+                  <path d="M12 2L3 7h18L12 2z" />
+                  <line x1="7" y1="11" x2="7" y2="21" />
+                  <line x1="12" y1="11" x2="12" y2="21" />
+                  <line x1="17" y1="11" x2="17" y2="21" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <p className="font-semibold text-text-primary">Bank Account</p>
+                  <span className="rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success">
+                    Recommended
+                  </span>
+                </div>
+                <p className="text-xs text-text-secondary">Works with any US bank</p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5 text-success shrink-0" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+                <p className="text-sm text-text-secondary"><span className="font-medium text-text-primary">Free forever</span> — no payout fees</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5 text-success shrink-0" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+                <p className="text-sm text-text-secondary">Arrives in <span className="font-medium text-text-primary">1–2 business days</span></p>
+              </div>
+              <div className="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5 text-success shrink-0" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+                <p className="text-sm text-text-secondary">Best for most drivers</p>
+              </div>
+            </div>
+          </div>
 
-        {/* Benefits */}
-        <div className="mb-10 w-full max-w-sm space-y-4">
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 h-5 w-5 rounded-full bg-success/20 flex items-center justify-center shrink-0">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3 text-success" aria-hidden="true">
-                <polyline points="20 6 9 17 4 12" />
-              </svg>
+          {/* Debit Card */}
+          <div
+            data-testid="debit-option-card"
+            className="rounded-2xl bg-white border-2 border-primary/20 p-4 shadow-sm"
+          >
+            <div className="flex items-start gap-3 mb-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
+                  <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
+                  <line x1="1" y1="10" x2="23" y2="10" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <p className="font-semibold text-text-primary">Debit Card</p>
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                    Instant
+                  </span>
+                </div>
+                <p className="text-xs text-text-secondary">Visa or Mastercard debit</p>
+              </div>
             </div>
-            <p className="text-sm text-text-secondary">
-              <span className="font-medium text-text-primary">Instant payouts</span> — ride earnings go directly to your bank
-            </p>
-          </div>
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 h-5 w-5 rounded-full bg-success/20 flex items-center justify-center shrink-0">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3 text-success" aria-hidden="true">
-                <polyline points="20 6 9 17 4 12" />
-              </svg>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5 text-success shrink-0" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+                <p className="text-sm text-text-secondary">Arrives in <span className="font-medium text-text-primary">minutes</span> after each ride</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5 text-success shrink-0" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+                <p className="text-sm text-text-secondary">Best for quick access to earnings</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="h-3.5 w-3.5 shrink-0 flex items-center justify-center">
+                  <div className="h-1.5 w-1.5 rounded-full bg-warning" />
+                </div>
+                <p className="text-sm text-text-secondary"><span className="font-medium text-warning">1.5% fee</span> deducted per payout (e.g. $0.15 on a $10 ride)</p>
+              </div>
             </div>
-            <p className="text-sm text-text-secondary">
-              <span className="font-medium text-text-primary">Secure</span> — we never see your bank details
-            </p>
           </div>
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 h-5 w-5 rounded-full bg-success/20 flex items-center justify-center shrink-0">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3 text-success" aria-hidden="true">
-                <polyline points="20 6 9 17 4 12" />
-              </svg>
-            </div>
-            <p className="text-sm text-text-secondary">
-              <span className="font-medium text-text-primary">Zero commission</span> — you keep 100% of every fare
-            </p>
-          </div>
+        </div>
+
+        {/* Info note */}
+        <div className="max-w-sm w-full mx-auto mb-6 flex items-start gap-2 rounded-xl bg-primary/5 border border-primary/15 px-4 py-3">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary shrink-0 mt-0.5" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="16" x2="12" y2="12" />
+            <line x1="12" y1="8" x2="12.01" y2="8" />
+          </svg>
+          <p className="text-xs text-text-secondary">
+            You&apos;ll pick your specific bank or card in the next step. You can switch at any time from your Stripe dashboard.
+          </p>
         </div>
 
         {error && (
-          <p data-testid="onboard-error" className="mb-4 text-sm text-danger text-center">
+          <p data-testid="onboard-error" className="mb-4 text-sm text-danger text-center max-w-sm mx-auto">
             {error}
           </p>
         )}
 
-        <PrimaryButton
-          data-testid="start-onboarding-button"
-          onClick={handleOnboard}
-          disabled={loading}
-          className="w-full max-w-sm"
-        >
-          {loading ? 'Connecting...' : 'Connect with Stripe'}
-        </PrimaryButton>
+        <div className="max-w-sm w-full mx-auto space-y-3">
+          <PrimaryButton
+            data-testid="start-onboarding-button"
+            onClick={handleOnboard}
+            disabled={loading}
+            className="w-full"
+          >
+            {loading ? 'Connecting...' : 'Continue with Stripe'}
+          </PrimaryButton>
 
-        <SecondaryButton
-          data-testid="skip-onboarding-button"
-          onClick={() => { navigate('/home/driver', { replace: true }) }}
-          className="w-full max-w-sm mt-3"
-        >
-          I&apos;ll do this later
-        </SecondaryButton>
+          <SecondaryButton
+            data-testid="skip-onboarding-button"
+            onClick={() => { navigate('/home/driver', { replace: true }) }}
+            className="w-full"
+          >
+            I&apos;ll do this later
+          </SecondaryButton>
+        </div>
       </div>
     </div>
   )

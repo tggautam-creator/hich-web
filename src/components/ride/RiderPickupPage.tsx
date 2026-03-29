@@ -296,7 +296,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
           'Content-Type': 'application/json',
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ driver_code: driverCode }),
+        body: JSON.stringify({ driver_code: driverCode, lat: riderLat, lng: riderLng }),
       })
 
       const body = (await resp.json()) as { action?: string; ride_id?: string; error?: { message?: string } }
@@ -319,7 +319,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
       setSubmitting(false)
       setScanning(false)
     }
-  }, [submitting, rideId, navigate])
+  }, [submitting, rideId, navigate, riderLat, riderLng])
 
   const handleScan = useCallback((text: string) => {
     void submitDriverCode(text)

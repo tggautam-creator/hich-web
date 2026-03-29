@@ -67,7 +67,7 @@ export default function StripeOnboardingCompletePage({
               You&apos;re all set!
             </h1>
             <p className="mb-8 text-center text-text-secondary max-w-sm">
-              Your bank account is connected. Ride earnings will be deposited directly to your bank.
+              Your payout method is connected. Ride earnings will be deposited automatically after each ride.
             </p>
             <PrimaryButton
               data-testid="go-home-button"

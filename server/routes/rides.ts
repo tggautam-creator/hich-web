@@ -38,7 +38,7 @@ function haversineMetres(lat1: number, lng1: number, lat2: number, lng2: number)
 }
 
 function computeRideFare(
-  ride: { origin: GeoPoint; pickup_point: GeoPoint | null; dropoff_point: GeoPoint | null; destination: GeoPoint | null; started_at: string | null },
+  ride: { pickup_point: GeoPoint | null; dropoff_point: GeoPoint | null; started_at: string | null },
   endedAt: string,
 ): { fare_cents: number; platform_fee_cents: number; driver_earns_cents: number; distance_miles: number; duration_min: number } {
   // Duration from actual ride timestamps
@@ -46,14 +46,13 @@ function computeRideFare(
   const endMs = new Date(endedAt).getTime()
   const durationMin = Math.max(0, Math.round((endMs - startMs) / 60000))
 
-  // Distance: pickup_point → dropoff_point, falling back to origin → destination
-  const from = ride.pickup_point ?? ride.origin
-  const to = ride.dropoff_point ?? ride.destination
+  // Distance: actual pickup GPS → actual dropoff GPS only.
+  // Never fall back to planned origin/destination — fare must reflect real travel.
   let distanceM = 0
-  if (from && to) {
+  if (ride.pickup_point && ride.dropoff_point) {
     distanceM = haversineMetres(
-      from.coordinates[1], from.coordinates[0],
-      to.coordinates[1], to.coordinates[0],
+      ride.pickup_point.coordinates[1], ride.pickup_point.coordinates[0],
+      ride.dropoff_point.coordinates[1], ride.dropoff_point.coordinates[0],
     )
   }
   const distanceMiles = (distanceM / 1000) * KM_TO_MILES
@@ -2213,7 +2212,7 @@ ridesRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     const riderId = res.locals['userId'] as string
     const rideId = req.params['id'] as string
-    const { token } = req.body as { token?: string }
+    const { token, lat, lng } = req.body as { token?: string; lat?: number; lng?: number }
 
     if (!token || typeof token !== 'string') {
       res.status(400).json({
@@ -2269,9 +2268,18 @@ ridesRouter.post(
       return
     }
 
+    // Save rider's actual GPS as pickup_point (where ride truly starts)
+    const startUpdate: Record<string, unknown> = {
+      status: 'active',
+      started_at: new Date().toISOString(),
+    }
+    if (typeof lat === 'number' && typeof lng === 'number') {
+      startUpdate.pickup_point = { type: 'Point', coordinates: [lng, lat] }
+    }
+
     const { error: updateErr } = await supabaseAdmin
       .from('rides')
-      .update({ status: 'active', started_at: new Date().toISOString() })
+      .update(startUpdate)
       .eq('id', rideId)
 
     if (updateErr) {
@@ -2404,18 +2412,28 @@ ridesRouter.post(
       }
     }
 
-    // Calculate fare from actual ride distance and duration
+    // Calculate fare from actual GPS distance and duration
     // Build dropoff point from rider's current GPS if provided
-    const dropoffGeo: GeoPoint | null =
+    let dropoffGeo: GeoPoint | null =
       typeof lat === 'number' && typeof lng === 'number'
         ? { type: 'Point', coordinates: [lng, lat] }
         : null
 
+    // Fallback: use driver's last known GPS from driver_locations table
+    if (!dropoffGeo && ride.driver_id) {
+      const { data: driverLoc } = await supabaseAdmin
+        .from('driver_locations')
+        .select('location')
+        .eq('user_id', ride.driver_id)
+        .single()
+      if (driverLoc?.location) {
+        dropoffGeo = driverLoc.location as unknown as GeoPoint
+      }
+    }
+
     const rideForFare = {
-      origin: ride.origin as GeoPoint,
       pickup_point: (ride.pickup_point ?? null) as GeoPoint | null,
-      dropoff_point: dropoffGeo ?? (ride.dropoff_point as GeoPoint | null),
-      destination: (ride.destination ?? null) as GeoPoint | null,
+      dropoff_point: dropoffGeo,
       started_at: ride.started_at as string | null,
     }
 
@@ -2639,9 +2657,18 @@ ridesRouter.post(
 
     // ── Coordinating → start ride ──────────────────────────────────────────
     if (ride.status === 'coordinating') {
+      // Save rider's actual GPS as pickup_point (where ride truly starts)
+      const scanStartUpdate: Record<string, unknown> = {
+        status: 'active',
+        started_at: new Date().toISOString(),
+      }
+      if (typeof lat === 'number' && typeof lng === 'number') {
+        scanStartUpdate.pickup_point = { type: 'Point', coordinates: [lng, lat] }
+      }
+
       const { error: updateErr } = await supabaseAdmin
         .from('rides')
-        .update({ status: 'active', started_at: new Date().toISOString() })
+        .update(scanStartUpdate)
         .eq('id', ride.id)
 
       if (updateErr) { next(updateErr); return }
@@ -2705,16 +2732,26 @@ ridesRouter.post(
     }
 
     // Build dropoff point from rider's current GPS if provided
-    const dropoffGeo: GeoPoint | null =
+    let scanDropoffGeo: GeoPoint | null =
       typeof lat === 'number' && typeof lng === 'number'
         ? { type: 'Point', coordinates: [lng, lat] }
         : null
 
+    // Fallback: use driver's last known GPS from driver_locations table
+    if (!scanDropoffGeo && ride.driver_id) {
+      const { data: driverLoc } = await supabaseAdmin
+        .from('driver_locations')
+        .select('location')
+        .eq('user_id', ride.driver_id)
+        .single()
+      if (driverLoc?.location) {
+        scanDropoffGeo = driverLoc.location as unknown as GeoPoint
+      }
+    }
+
     const rideForFare = {
-      origin: ride.origin as GeoPoint,
       pickup_point: (ride.pickup_point ?? null) as GeoPoint | null,
-      dropoff_point: dropoffGeo ?? (ride.dropoff_point as GeoPoint | null),
-      destination: (ride.destination ?? null) as GeoPoint | null,
+      dropoff_point: scanDropoffGeo,
       started_at: ride.started_at as string | null,
     }
 
@@ -2728,7 +2765,7 @@ ridesRouter.post(
         status: 'completed',
         ended_at: endedAt,
         fare_cents: fareCents,
-        ...(dropoffGeo ? { dropoff_point: dropoffGeo } : {}),
+        ...(scanDropoffGeo ? { dropoff_point: scanDropoffGeo } : {}),
       })
       .eq('id', ride.id)
 

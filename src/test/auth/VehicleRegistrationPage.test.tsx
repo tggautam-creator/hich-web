@@ -329,7 +329,7 @@ describe('VehicleRegistrationPage', () => {
         // Inserted vehicle
         expect(mockInsert).toHaveBeenCalledTimes(1)
         const insertArg = mockInsert.mock.calls[0][0] as Record<string, unknown>
-        expect(insertArg.vin).toBeNull() // VIN not provided — stored as null
+        expect(insertArg.vin).toBe('') // VIN not provided — stored as empty string
         expect(insertArg.make).toBe('Honda')
         expect(insertArg.model).toBe('Accord')
         expect(insertArg.year).toBe(2020)

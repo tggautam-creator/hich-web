@@ -175,18 +175,44 @@ connectRouter.get('/status', validateJwt, async (_req: Request, res: Response, n
     }
 
     if (!user.stripe_account_id) {
-      res.json({ has_account: false, onboarding_complete: false, charges_enabled: false, payouts_enabled: false })
+      res.json({ has_account: false, onboarding_complete: false, charges_enabled: false, payouts_enabled: false, payout_method_type: null, payout_method_last4: null, payout_method_label: null })
       return
     }
 
     const stripe = getStripe()
-    const account = await stripe.accounts.retrieve(user.stripe_account_id as string)
+    const account = await stripe.accounts.retrieve(user.stripe_account_id as string, {
+      expand: ['external_accounts'],
+    })
+
+    // Extract connected payout method details
+    let payoutMethodType: 'bank_account' | 'card' | null = null
+    let payoutMethodLast4: string | null = null
+    let payoutMethodLabel: string | null = null
+
+    const extList = account.external_accounts
+    if (extList && extList.data.length > 0) {
+      const ext = extList.data[0]
+      if (ext.object === 'bank_account') {
+        const ba = ext as Stripe.BankAccount
+        payoutMethodType = 'bank_account'
+        payoutMethodLast4 = ba.last4
+        payoutMethodLabel = ba.bank_name ?? 'Bank Account'
+      } else if (ext.object === 'card') {
+        const card = ext as Stripe.Card
+        payoutMethodType = 'card'
+        payoutMethodLast4 = card.last4
+        payoutMethodLabel = card.brand ?? 'Debit Card'
+      }
+    }
 
     res.json({
       has_account: true,
       onboarding_complete: user.stripe_onboarding_complete ?? false,
       charges_enabled: account.charges_enabled,
       payouts_enabled: account.payouts_enabled,
+      payout_method_type: payoutMethodType,
+      payout_method_last4: payoutMethodLast4,
+      payout_method_label: payoutMethodLabel,
     })
   } catch (err) {
     next(err)

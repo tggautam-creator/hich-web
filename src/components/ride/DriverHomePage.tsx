@@ -159,7 +159,7 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
     try {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) return
-      const returnUrl = `${window.location.origin}/drive?stripe_return=1`
+      const returnUrl = `${window.location.origin}/home/driver?stripe_return=1`
       const resp = await fetch('/api/connect/onboard', {
         method: 'POST',
         headers: {
@@ -184,7 +184,7 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
 
   async function handleToggleOnline() {
     if (!hasBank) {
-      showToast('Tip: Set up your bank account to receive payouts')
+      showToast('Tip: Set up your payout method to receive earnings')
     }
     const next = !isOnline
     setIsOnline(next)
@@ -375,9 +375,9 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
                 </svg>
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-text-primary">Add your bank to get paid</p>
+                <p className="text-sm font-semibold text-text-primary">Set up payouts to get paid</p>
                 <p className="text-xs text-text-secondary mt-0.5">
-                  Set up your bank account to receive payouts for every ride and to receive real-time ride requests.
+                  Connect a bank account or debit card to receive earnings for every ride.
                 </p>
               </div>
             </div>
@@ -387,7 +387,7 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
               disabled={onboarding}
               className="w-full rounded-xl bg-primary py-2.5 text-sm font-semibold text-white active:opacity-90 transition-opacity disabled:opacity-60"
             >
-              {onboarding ? 'Redirecting…' : 'Set Up Bank Account'}
+              {onboarding ? 'Redirecting…' : 'Set Up Payouts'}
             </button>
           </div>
         )}
