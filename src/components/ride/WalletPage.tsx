@@ -71,7 +71,7 @@ export default function WalletPage() {
   }
 
   return (
-    <div className="min-h-screen bg-surface pb-20" data-testid="wallet-page">
+    <div className="min-h-screen bg-surface pb-20 safe-top" data-testid="wallet-page">
       {/* Header */}
       <div className="bg-primary px-6 pb-8 pt-12 text-white">
         <p className="text-sm text-white/80">Your balance</p>

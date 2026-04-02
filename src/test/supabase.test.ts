@@ -100,9 +100,9 @@ describe('database types — row aliases', () => {
   it('Ride Row type status is narrowed to RideStatus union', () => {
     const statuses: RideStatus[] = [
       'requested', 'accepted', 'coordinating',
-      'active', 'completed', 'cancelled',
+      'active', 'completed', 'cancelled', 'expired',
     ]
-    expect(statuses).toHaveLength(6)
+    expect(statuses).toHaveLength(7)
   })
 
   it('Ride fare_cents is in cents (null or integer)', () => {
@@ -120,6 +120,13 @@ describe('database types — row aliases', () => {
       payment_status: 'pending', payment_intent_id: null, stripe_fee_cents: 0,
       reminder_sent: false,
       progress_pct: 0,
+      requester_destination: null,
+      requester_destination_name: null,
+      requester_note: null,
+      destination_flexible: false,
+      gps_distance_metres: 0,
+      last_gps_lat: null,
+      last_gps_lng: null,
     }
     expect(ride.fare_cents).not.toBeNull()
     expect(Number.isInteger(ride.fare_cents)).toBe(true)

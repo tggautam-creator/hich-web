@@ -1,6 +1,7 @@
 import { Router } from 'express'
-import type { Request, Response } from 'express'
+import type { Request, Response, NextFunction } from 'express'
 import { validateJwt } from '../middleware/auth.ts'
+import { computeTransitDropoffSuggestions } from '../lib/transitSuggestions.ts'
 
 export const transitRouter = Router()
 
@@ -195,6 +196,71 @@ transitRouter.get(
       res.status(502).json({
         error: { code: 'UPSTREAM_ERROR', message: 'Failed to fetch transit directions' },
       })
+    }
+  },
+)
+
+// ── POST /api/transit/preview ─────────────────────────────────────────────────
+/**
+ * Rider proactive transit suggestion.
+ * Given the driver's route (polyline or origin+dest) and the rider's destination,
+ * returns top 3 transit dropoff suggestions along the driver's route.
+ *
+ * Body: {
+ *   driver_origin_lat, driver_origin_lng,
+ *   driver_dest_lat, driver_dest_lng,
+ *   rider_dest_lat, rider_dest_lng,
+ *   driver_route_polyline? (optional, saves an API call)
+ * }
+ */
+transitRouter.post(
+  '/preview',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const body = req.body as Record<string, unknown>
+    const driverOriginLat = Number(body['driver_origin_lat'])
+    const driverOriginLng = Number(body['driver_origin_lng'])
+    const driverDestLat = Number(body['driver_dest_lat'])
+    const driverDestLng = Number(body['driver_dest_lng'])
+    const riderDestLat = Number(body['rider_dest_lat'])
+    const riderDestLng = Number(body['rider_dest_lng'])
+    const existingPolyline = typeof body['driver_route_polyline'] === 'string'
+      ? body['driver_route_polyline']
+      : undefined
+
+    if (
+      [driverOriginLat, driverOriginLng, driverDestLat, driverDestLng, riderDestLat, riderDestLng].some(isNaN)
+    ) {
+      res.status(400).json({
+        error: {
+          code: 'INVALID_BODY',
+          message: 'driver_origin_lat/lng, driver_dest_lat/lng, rider_dest_lat/lng are required',
+        },
+      })
+      return
+    }
+
+    const apiKey = process.env['GOOGLE_DIRECTIONS_KEY'] ?? process.env['GOOGLE_MAPS_KEY']
+    if (!apiKey) {
+      res.status(500).json({
+        error: { code: 'CONFIG_ERROR', message: 'Google API key not configured on server' },
+      })
+      return
+    }
+
+    try {
+      const { suggestions } = await computeTransitDropoffSuggestions(
+        driverOriginLat, driverOriginLng,
+        driverDestLat, driverDestLng,
+        riderDestLat, riderDestLng,
+        apiKey,
+        existingPolyline,
+      )
+
+      // Return top 3 suggestions
+      res.status(200).json({ suggestions: suggestions.slice(0, 3) })
+    } catch (err) {
+      next(err)
     }
   },
 )

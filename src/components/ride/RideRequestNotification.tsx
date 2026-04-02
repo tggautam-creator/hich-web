@@ -64,6 +64,9 @@ interface NotificationState {
   originAddress: string
   /** When true, navigate to board-review instead of ride suggestion */
   isBoardRequest?: boolean
+  /** Trip date/time for board requests (e.g. "2026-04-01", "08:30:00") */
+  boardTripDate?: string
+  boardTripTime?: string
   /** When true, this is a re-notification after the selected driver cancelled — show standby screen */
   isRenewal?: boolean
 }
@@ -161,6 +164,12 @@ export default function RideRequestNotification({
     const timeLabel = [data.trip_date, data.trip_time].filter(Boolean).join(' at ')
     const destination = routeLabel || timeLabel || ''
 
+    // Auto-dismiss if trip time has already passed
+    if (data.trip_date && data.trip_time) {
+      const tripDateTime = new Date(`${data.trip_date}T${data.trip_time}`)
+      if (!isNaN(tripDateTime.getTime()) && tripDateTime.getTime() < Date.now()) return
+    }
+
     const entry: NotificationState = {
       rideId: data.ride_id,
       riderName: data.requester_name ?? 'Someone',
@@ -175,6 +184,8 @@ export default function RideRequestNotification({
       riderRatingCount: '0',
       originAddress: '',
       isBoardRequest: true,
+      boardTripDate: data.trip_date,
+      boardTripTime: data.trip_time,
     }
     setQueue((prev) => {
       if (prev.length === 0) setSecondsLeft(DISMISS_SECONDS)
@@ -452,9 +463,24 @@ export default function RideRequestNotification({
     }
   }, [profile?.id, isDriver, handleRideRequest])
 
-  // Countdown timer — auto-dismiss after 90s
+  // Countdown timer — auto-dismiss after 90s (on-demand only, not board requests)
   useEffect(() => {
     if (!notification) return
+
+    // Board requests don't use the 90s countdown — they stay until trip time passes
+    if (notification.isBoardRequest) {
+      // Check every 60s if trip time has passed
+      const checkExpiry = () => {
+        if (notification.boardTripDate && notification.boardTripTime) {
+          const tripDateTime = new Date(`${notification.boardTripDate}T${notification.boardTripTime}`)
+          if (!isNaN(tripDateTime.getTime()) && tripDateTime.getTime() < Date.now()) {
+            dismiss()
+          }
+        }
+      }
+      const intervalId = setInterval(checkExpiry, 60_000)
+      return () => clearInterval(intervalId)
+    }
 
     timerRef.current = setInterval(() => {
       setSecondsLeft((prev) => {
@@ -808,18 +834,31 @@ export default function RideRequestNotification({
           </p>
         )}
 
-        {/* Countdown bar */}
-        <div className="mx-3 mb-2 flex items-center gap-2">
-          <div className="h-1 flex-1 overflow-hidden rounded-full bg-border">
-            <div
-              className="h-full rounded-full bg-primary transition-all duration-1000 ease-linear"
-              style={{ width: `${(secondsLeft / DISMISS_SECONDS) * 100}%` }}
-            />
+        {/* Countdown bar (on-demand) or trip time label (board requests) */}
+        {notification.isBoardRequest ? (
+          notification.boardTripDate && notification.boardTripTime && (
+            <div className="mx-3 mb-2 flex items-center justify-center gap-1.5" data-testid="board-trip-time">
+              <span className="text-[10px] text-text-secondary">Ride at</span>
+              <span className="text-[10px] font-semibold text-text-primary">
+                {new Date(`${notification.boardTripDate}T${notification.boardTripTime}`).toLocaleString('en-US', {
+                  month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true,
+                })}
+              </span>
+            </div>
+          )
+        ) : (
+          <div className="mx-3 mb-2 flex items-center gap-2">
+            <div className="h-1 flex-1 overflow-hidden rounded-full bg-border">
+              <div
+                className="h-full rounded-full bg-primary transition-all duration-1000 ease-linear"
+                style={{ width: `${(secondsLeft / DISMISS_SECONDS) * 100}%` }}
+              />
+            </div>
+            <span className="text-[10px] text-text-secondary whitespace-nowrap" data-testid="countdown">
+              {secondsLeft}s
+            </span>
           </div>
-          <span className="text-[10px] text-text-secondary whitespace-nowrap" data-testid="countdown">
-            {secondsLeft}s
-          </span>
-        </div>
+        )}
 
         {/* Action buttons */}
         <div className="px-3 pb-3 flex gap-2">

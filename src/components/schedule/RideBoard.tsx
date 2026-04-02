@@ -7,6 +7,7 @@ import BottomSheet from '@/components/ui/BottomSheet'
 import RideBoardSearchBar from './RideBoardSearchBar'
 import RideBoardCard from './RideBoardCard'
 import RideBoardConfirmSheet from './RideBoardConfirmSheet'
+import type { RequestEnrichment } from './RideBoardConfirmSheet'
 import RideBoardEmptyState from './RideBoardEmptyState'
 import PostRideFAB from './PostRideFAB'
 import { formatDays, formatDate, formatTime, SHORT_DAYS } from './boardHelpers'
@@ -42,6 +43,9 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
   const [requestingId, setRequestingId] = useState<string | null>(null)
   const [requestError, setRequestError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [editingSeats, setEditingSeats] = useState(false)
+  const [seatEditValue, setSeatEditValue] = useState(1)
+  const [savingSeats, setSavingSeats] = useState(false)
   const userLocationRef = useRef<{ lat: number; lng: number } | null>(null)
 
   // Routines sheet state
@@ -84,7 +88,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
   }, [])
 
   // ── Send ride request ───────────────────────────────────────────────────────
-  const handleConfirmRequest = useCallback(async () => {
+  const handleConfirmRequest = useCallback(async (enrichment?: RequestEnrichment) => {
     if (!confirmRide) return
     setRequestingId(confirmRide.id)
     setRequestError(null)
@@ -107,6 +111,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
         body: JSON.stringify({
           schedule_id: confirmRide.id,
           ...(loc ? { origin_lat: loc.lat, origin_lng: loc.lng } : {}),
+          ...(enrichment ?? {}),
         }),
       })
 
@@ -155,6 +160,34 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       setRequestError('Network error — please try again.')
     } finally {
       setDeletingId(null)
+    }
+  }, [])
+
+  // ── Update seats on own schedule ────────────────────────────────────────────
+  const handleSaveSeats = useCallback(async (scheduleId: string, seats: number) => {
+    setSavingSeats(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) return
+      const resp = await fetch(`/api/schedule/${scheduleId}/seats`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ available_seats: seats }),
+      })
+      if (resp.ok) {
+        setRides((prev) => prev.map((r) => r.id === scheduleId ? { ...r, available_seats: seats } : r))
+        setDetailRide((prev) => prev ? { ...prev, available_seats: seats } : prev)
+        setEditingSeats(false)
+        setSuccessMessage('Seats updated.')
+        setTimeout(() => setSuccessMessage(null), 3000)
+      } else {
+        const body = (await resp.json()) as { error?: { message?: string } }
+        setRequestError(body.error?.message ?? 'Failed to update seats')
+      }
+    } catch {
+      setRequestError('Network error — please try again.')
+    } finally {
+      setSavingSeats(false)
     }
   }, [])
 
@@ -436,7 +469,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       {/* ── Ride detail sheet ────────────────────────────────────────────── */}
       <BottomSheet
         isOpen={detailRide !== null}
-        onClose={() => { setDetailRide(null) }}
+        onClose={() => { setDetailRide(null); setEditingSeats(false) }}
         title="Ride Details"
         data-testid="ride-detail-sheet"
       >
@@ -542,7 +575,15 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
               )}
 
               {/* Action button */}
-              {!isOwn && !dr.already_requested && (
+              {!isOwn && !dr.already_requested && isDriverPost && dr.available_seats != null && dr.available_seats <= 0 && (
+                <div
+                  data-testid="detail-full-badge"
+                  className="w-full rounded-2xl py-3 text-center text-sm font-semibold bg-border/50 text-text-secondary"
+                >
+                  Full — No Seats Available
+                </div>
+              )}
+              {!isOwn && !dr.already_requested && !(isDriverPost && dr.available_seats != null && dr.available_seats <= 0) && (
                 <button
                   data-testid="detail-request-button"
                   onClick={() => { setDetailRide(null); setConfirmRide(dr); setRequestError(null) }}
@@ -571,7 +612,46 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                 </div>
               )}
 
-              {isOwn && (
+              {isOwn && !editingSeats && (
+                <button
+                  data-testid="detail-edit-seats-button"
+                  onClick={() => { setSeatEditValue(dr.available_seats ?? 1); setEditingSeats(true) }}
+                  className="w-full rounded-2xl py-3 text-sm font-semibold text-primary bg-primary/10 active:bg-primary/20"
+                >
+                  Edit Seats ({dr.available_seats ?? 0} available)
+                </button>
+              )}
+
+              {isOwn && editingSeats && (
+                <div className="space-y-3">
+                  <p className="text-sm font-semibold text-text-primary text-center">How many seats are available?</p>
+                  <div className="flex items-center justify-center gap-6">
+                    <button
+                      onClick={() => setSeatEditValue((v) => Math.max(0, v - 1))}
+                      className="h-10 w-10 rounded-full bg-border text-xl font-bold text-text-primary flex items-center justify-center active:opacity-70"
+                    >−</button>
+                    <span className="text-2xl font-bold text-text-primary w-6 text-center">{seatEditValue}</span>
+                    <button
+                      onClick={() => setSeatEditValue((v) => Math.min(8, v + 1))}
+                      className="h-10 w-10 rounded-full bg-border text-xl font-bold text-text-primary flex items-center justify-center active:opacity-70"
+                    >+</button>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setEditingSeats(false)}
+                      className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-text-secondary bg-border active:opacity-70"
+                    >Cancel</button>
+                    <button
+                      data-testid="detail-save-seats-button"
+                      disabled={savingSeats}
+                      onClick={() => { void handleSaveSeats(dr.id, seatEditValue) }}
+                      className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-white bg-primary active:opacity-80 disabled:opacity-50"
+                    >{savingSeats ? 'Saving…' : 'Save'}</button>
+                  </div>
+                </div>
+              )}
+
+              {isOwn && !editingSeats && (
                 <button
                   data-testid="detail-delete-button"
                   disabled={deletingId === dr.id}
@@ -590,7 +670,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       <RideBoardConfirmSheet
         ride={confirmRide}
         isRequesting={requestingId === confirmRide?.id}
-        onConfirm={() => { void handleConfirmRequest() }}
+        onConfirm={(enrichment) => { void handleConfirmRequest(enrichment) }}
         onCancel={() => setConfirmRide(null)}
       />
 

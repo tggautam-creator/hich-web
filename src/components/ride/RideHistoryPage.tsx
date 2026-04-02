@@ -111,7 +111,7 @@ export default function RideHistoryPage({ 'data-testid': testId }: RideHistoryPa
   return (
     <div className="flex min-h-screen flex-col bg-surface pb-20" data-testid={testId ?? 'ride-history'}>
       {/* Header */}
-      <div className="flex items-center gap-3 px-6 pt-12 pb-4">
+      <div className="flex items-center gap-3 px-6 pb-4" style={{ paddingTop: 'max(env(safe-area-inset-top), 1rem)' }}>
         <button
           onClick={() => navigate(-1)}
           className="flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-sm"

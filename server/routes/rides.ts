@@ -37,24 +37,96 @@ function haversineMetres(lat1: number, lng1: number, lat2: number, lng2: number)
   return EARTH_RADIUS_M * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
-function computeRideFare(
-  ride: { pickup_point: GeoPoint | null; dropoff_point: GeoPoint | null; started_at: string | null },
+/**
+ * Fetch actual road distance (metres) from Google Routes API.
+ * Falls back to haversine * 1.3 correction factor if API fails.
+ */
+async function getRoadDistanceMetres(
+  lat1: number, lng1: number,
+  lat2: number, lng2: number,
+): Promise<number> {
+  const apiKey = process.env['GOOGLE_MAPS_KEY']
+  if (!apiKey) {
+    // No API key — use haversine with 1.3x road correction factor
+    return haversineMetres(lat1, lng1, lat2, lng2) * 1.3
+  }
+
+  try {
+    const body = {
+      origin: { location: { latLng: { latitude: lat1, longitude: lng1 } } },
+      destination: { location: { latLng: { latitude: lat2, longitude: lng2 } } },
+      travelMode: 'DRIVE',
+      routingPreference: 'TRAFFIC_AWARE',
+    }
+
+    const resp = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': 'routes.distanceMeters',
+      },
+      body: JSON.stringify(body),
+    })
+
+    if (resp.ok) {
+      const data = (await resp.json()) as { routes?: Array<{ distanceMeters?: number }> }
+      const distM = data.routes?.[0]?.distanceMeters
+      if (distM && distM > 0) {
+        console.log(`[fare] Road distance: ${(distM / 1000).toFixed(2)} km (vs haversine: ${(haversineMetres(lat1, lng1, lat2, lng2) / 1000).toFixed(2)} km)`)
+        return distM
+      }
+    }
+  } catch (err) {
+    console.error('[fare] Google Routes API failed, falling back to corrected haversine:', err)
+  }
+
+  // Fallback: haversine with 1.3x road correction factor
+  return haversineMetres(lat1, lng1, lat2, lng2) * 1.3
+}
+
+async function computeRideFare(
+  ride: { pickup_point: GeoPoint | null; dropoff_point: GeoPoint | null; started_at: string | null; gps_distance_metres?: number },
   endedAt: string,
-): { fare_cents: number; platform_fee_cents: number; driver_earns_cents: number; distance_miles: number; duration_min: number } {
+): Promise<{ fare_cents: number; platform_fee_cents: number; driver_earns_cents: number; distance_miles: number; duration_min: number; distance_source: string }> {
   // Duration from actual ride timestamps
   const startMs = ride.started_at ? new Date(ride.started_at).getTime() : Date.now()
   const endMs = new Date(endedAt).getTime()
   const durationMin = Math.max(0, Math.round((endMs - startMs) / 60000))
 
-  // Distance: actual pickup GPS → actual dropoff GPS only.
-  // Never fall back to planned origin/destination — fare must reflect real travel.
-  let distanceM = 0
+  // Distance: Uber/Lyft approach — use the LOWER of:
+  //   1) GPS-tracked actual distance (accumulated during ride)
+  //   2) Google Routes API shortest road distance (pickup → dropoff)
+  // This protects riders from driver detours while being fair to drivers who take shortcuts.
+  let routesDistanceM = 0
   if (ride.pickup_point && ride.dropoff_point) {
-    distanceM = haversineMetres(
+    routesDistanceM = await getRoadDistanceMetres(
       ride.pickup_point.coordinates[1], ride.pickup_point.coordinates[0],
       ride.dropoff_point.coordinates[1], ride.dropoff_point.coordinates[0],
     )
   }
+
+  const gpsDistanceM = ride.gps_distance_metres ?? 0
+
+  // Pick the distance source:
+  // - If GPS tracked distance exists (> 100m to avoid jitter-only readings), use MIN(GPS, Routes)
+  // - If no GPS data, fall back to Routes API distance
+  let distanceM: number
+  let distanceSource: string
+  if (gpsDistanceM > 100 && routesDistanceM > 0) {
+    distanceM = Math.min(gpsDistanceM, routesDistanceM)
+    distanceSource = gpsDistanceM <= routesDistanceM ? 'gps' : 'routes'
+    console.log(`[fare] GPS: ${(gpsDistanceM / 1000).toFixed(2)} km, Routes: ${(routesDistanceM / 1000).toFixed(2)} km → using ${distanceSource} (${(distanceM / 1000).toFixed(2)} km)`)
+  } else if (gpsDistanceM > 100) {
+    distanceM = gpsDistanceM
+    distanceSource = 'gps'
+    console.log(`[fare] GPS only: ${(gpsDistanceM / 1000).toFixed(2)} km`)
+  } else {
+    distanceM = routesDistanceM
+    distanceSource = 'routes'
+    console.log(`[fare] Routes only: ${(routesDistanceM / 1000).toFixed(2)} km`)
+  }
+
   const distanceMiles = (distanceM / 1000) * KM_TO_MILES
 
   // Gas cost
@@ -67,7 +139,7 @@ function computeRideFare(
   const platformFeeCents = Math.round(fareCents * PLATFORM_FEE_RATE)
   const driverEarnsCents = fareCents - platformFeeCents
 
-  return { fare_cents: fareCents, platform_fee_cents: platformFeeCents, driver_earns_cents: driverEarnsCents, distance_miles: distanceMiles, duration_min: durationMin }
+  return { fare_cents: fareCents, platform_fee_cents: platformFeeCents, driver_earns_cents: driverEarnsCents, distance_miles: distanceMiles, duration_min: durationMin, distance_source: distanceSource }
 }
 
 interface RideRequestBody {
@@ -2435,11 +2507,12 @@ ridesRouter.post(
       pickup_point: (ride.pickup_point ?? null) as GeoPoint | null,
       dropoff_point: dropoffGeo,
       started_at: ride.started_at as string | null,
+      gps_distance_metres: (ride as Record<string, unknown>).gps_distance_metres as number | undefined,
     }
 
     const endedAt = new Date().toISOString()
     const { fare_cents: fareCents, platform_fee_cents: platformFeeCents, driver_earns_cents: driverEarnsCents, distance_miles, duration_min } =
-      computeRideFare(rideForFare, endedAt)
+      await computeRideFare(rideForFare, endedAt)
 
     const { error: updateErr } = await supabaseAdmin
       .from('rides')
@@ -2673,6 +2746,14 @@ ridesRouter.post(
 
       if (updateErr) { next(updateErr); return }
 
+      // Lock seats on the schedule so no new riders can be accepted after ride starts
+      if (ride.schedule_id) {
+        await supabaseAdmin
+          .from('ride_schedules')
+          .update({ seats_locked: true })
+          .eq('id', ride.schedule_id)
+      }
+
       // Release standby offers now that the ride has started
       const { data: scanStandbyOffers } = await supabaseAdmin
         .from('ride_offers')
@@ -2753,11 +2834,12 @@ ridesRouter.post(
       pickup_point: (ride.pickup_point ?? null) as GeoPoint | null,
       dropoff_point: scanDropoffGeo,
       started_at: ride.started_at as string | null,
+      gps_distance_metres: (ride as Record<string, unknown>).gps_distance_metres as number | undefined,
     }
 
     const endedAt = new Date().toISOString()
     const { fare_cents: fareCents, platform_fee_cents: platformFeeCents, driver_earns_cents: driverEarnsCents, distance_miles, duration_min } =
-      computeRideFare(rideForFare, endedAt)
+      await computeRideFare(rideForFare, endedAt)
 
     const { error: updateErr } = await supabaseAdmin
       .from('rides')
@@ -2771,11 +2853,34 @@ ridesRouter.post(
 
     if (updateErr) { next(updateErr); return }
 
-    // Broadcast ride_ended immediately so both rider & driver transition fast
+    // Multi-rider check: if other active rides exist for same schedule, only
+    // broadcast ride_ended to rider channels so driver stays on active page.
+    let hasOtherActiveRides = false
+    if (ride.schedule_id) {
+      const { data: otherActive } = await supabaseAdmin
+        .from('rides')
+        .select('id')
+        .eq('schedule_id', ride.schedule_id)
+        .eq('status', 'active')
+        .neq('id', ride.id)
+        .limit(1)
+      hasOtherActiveRides = (otherActive?.length ?? 0) > 0
+    }
+
+    // Broadcast ride_ended — rider always gets notified; driver only when no active rides remain
     const scanEndChannels = [
-      ...[ride.rider_id, ride.driver_id].filter(Boolean).map((uid) => `rider:${uid}`),
-      ...(ride.rider_id ? [`rider-active:${ride.rider_id}`] : []),
+      ...(ride.rider_id ? [`rider:${ride.rider_id}`, `rider-active:${ride.rider_id}`] : []),
+      ...(!hasOtherActiveRides && ride.driver_id ? [`rider:${ride.driver_id}`] : []),
     ]
+    // Always notify driver of individual ride completion (for multi-rider page update)
+    if (hasOtherActiveRides && ride.driver_id) {
+      void realtimeBroadcast(`driver-active:${ride.driver_id}`, 'rider_ride_ended', {
+        type: 'rider_ride_ended',
+        ride_id: ride.id,
+        fare_cents: fareCents,
+        driver_earns_cents: driverEarnsCents,
+      })
+    }
     await realtimeBroadcastMany(scanEndChannels, 'ride_ended', {
       type: 'ride_ended',
       ride_id: ride.id,
@@ -2834,18 +2939,20 @@ ridesRouter.post(
         .eq('id', ride.id)
     }
 
-    // FCM push to driver
-    const { data: driverTokens2 } = await supabaseAdmin
-      .from('push_tokens')
-      .select('token')
-      .eq('user_id', driverId)
-    const tokens2 = (driverTokens2 ?? []).map((t: { token: string }) => t.token)
-    if (tokens2.length > 0) {
-      await sendFcmPush(tokens2, {
-        title: 'Ride completed!',
-        body: `You earned $${(driverEarnsCents / 100).toFixed(2)} — great driving!`,
-        data: { type: 'ride_ended', ride_id: ride.id },
-      })
+    // FCM push to driver — only send "Ride completed" when no more active rides
+    if (!hasOtherActiveRides) {
+      const { data: driverTokens2 } = await supabaseAdmin
+        .from('push_tokens')
+        .select('token')
+        .eq('user_id', driverId)
+      const tokens2 = (driverTokens2 ?? []).map((t: { token: string }) => t.token)
+      if (tokens2.length > 0) {
+        await sendFcmPush(tokens2, {
+          title: 'Ride completed!',
+          body: `You earned $${(driverEarnsCents / 100).toFixed(2)} — great driving!`,
+          data: { type: 'ride_ended', ride_id: ride.id },
+        })
+      }
     }
 
     console.log(`[rides/scan-driver] rideId=${ride.id} ended via driver code, fare=${fareCents} stripeFee=${scanStripeFeeCents} dist=${distance_miles.toFixed(1)}mi dur=${duration_min}min payment=${scanPaymentStatus}`)
@@ -3001,6 +3108,74 @@ ridesRouter.post(
   },
 )
 
+// ── POST /api/rides/:id/gps-ping ─────────────────────────────────────────────
+/**
+ * Driver sends GPS coordinates during an active ride every 5-10 seconds.
+ * Server accumulates haversine distance between consecutive pings on the ride.
+ * This gives actual distance traveled for accurate fare calculation.
+ */
+ridesRouter.post(
+  '/:id/gps-ping',
+  validateJwt,
+  async (req: Request, res: Response) => {
+    const driverId = res.locals['userId'] as string
+    const rideId = req.params['id'] as string
+    const { lat, lng } = req.body as { lat?: number; lng?: number }
+
+    if (typeof lat !== 'number' || typeof lng !== 'number') {
+      res.status(400).json({ error: { code: 'INVALID_BODY', message: 'lat and lng are required numbers' } })
+      return
+    }
+
+    // Fetch ride — must be active and owned by this driver
+    const { data: ride, error: fetchErr } = await supabaseAdmin
+      .from('rides')
+      .select('id, driver_id, status, gps_distance_metres, last_gps_lat, last_gps_lng')
+      .eq('id', rideId)
+      .single()
+
+    if (fetchErr || !ride) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Ride not found' } })
+      return
+    }
+
+    if (ride.driver_id !== driverId) {
+      res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Not your ride' } })
+      return
+    }
+
+    if (ride.status !== 'active') {
+      // Silently accept pings for non-active rides (e.g. race condition at ride end)
+      res.status(200).json({ gps_distance_metres: ride.gps_distance_metres ?? 0 })
+      return
+    }
+
+    // Calculate delta distance from last ping
+    let deltaM = 0
+    if (ride.last_gps_lat != null && ride.last_gps_lng != null) {
+      deltaM = haversineMetres(ride.last_gps_lat, ride.last_gps_lng, lat, lng)
+
+      // Ignore GPS jitter — skip deltas under 5m or impossibly fast (>50m/s ≈ 112mph)
+      if (deltaM < 5 || deltaM > 500) {
+        deltaM = 0
+      }
+    }
+
+    const newTotal = (ride.gps_distance_metres ?? 0) + deltaM
+
+    await supabaseAdmin
+      .from('rides')
+      .update({
+        gps_distance_metres: newTotal,
+        last_gps_lat: lat,
+        last_gps_lng: lng,
+      })
+      .eq('id', rideId)
+
+    res.status(200).json({ gps_distance_metres: newTotal })
+  },
+)
+
 // ── GET /api/rides/active ──────────────────────────────────────────────────────
 /**
  * Returns the user's rides with status in (accepted, coordinating, active).
@@ -3106,7 +3281,7 @@ ridesRouter.patch(
     // Verify ride exists and driver is assigned
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, driver_id, rider_id, status, origin, destination')
+      .select('id, driver_id, rider_id, status, origin, destination, requester_destination')
       .eq('id', rideId)
       .single()
 
@@ -3156,8 +3331,9 @@ ridesRouter.patch(
     const driverLat = driverOrigin.coordinates[1]
     const driverLng = driverOrigin.coordinates[0]
 
-    // Get rider's destination (may be null for bearing-only rides)
-    const riderDest = ride.destination as unknown as GeoPoint | null
+    // Get rider's destination — prefer requester_destination (board rides) over destination
+    const reqDest = ride.requester_destination as unknown as GeoPoint | null
+    const riderDest = reqDest ?? (ride.destination as unknown as GeoPoint | null)
     const riderDestLat = riderDest?.coordinates?.[1] ?? null
     const riderDestLng = riderDest?.coordinates?.[0] ?? null
 

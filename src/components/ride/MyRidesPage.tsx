@@ -28,12 +28,19 @@ interface ActiveRide {
   rider_id: string
   driver_id: string | null
   status: string
+  schedule_id: string | null
   destination_name: string | null
   trip_date: string | null
   trip_time: string | null
   created_at: string
   my_role: 'rider' | 'driver'
   other_user: OtherUser | null
+  schedule: Schedule | null
+}
+
+interface MultiRiderGroup {
+  schedule_id: string
+  rides: ActiveRide[]
   schedule: Schedule | null
 }
 
@@ -179,6 +186,48 @@ export default function MyRidesPage({
     }
   }
 
+  function handleTapGroup(group: MultiRiderGroup) {
+    // Use the most progressed ride's status to decide navigation
+    const statusOrder = ['active', 'coordinating', 'accepted', 'requested']
+    const lead = group.rides.sort(
+      (a, b) => statusOrder.indexOf(a.status) - statusOrder.indexOf(b.status),
+    )[0]
+    if (!lead) return
+    if (lead.status === 'active') {
+      navigate(`/ride/driver-multi/${group.schedule_id}`)
+    } else {
+      navigate(`/ride/driver-multi/${group.schedule_id}`)
+    }
+  }
+
+  // Group driver rides that share a schedule_id (multi-rider trips)
+  const driverGroups = new Map<string, MultiRiderGroup>()
+  const ungroupedRides: ActiveRide[] = []
+
+  for (const ride of rides) {
+    if (ride.my_role === 'driver' && ride.schedule_id) {
+      const existing = driverGroups.get(ride.schedule_id)
+      if (existing) {
+        existing.rides.push(ride)
+      } else {
+        driverGroups.set(ride.schedule_id, {
+          schedule_id: ride.schedule_id,
+          rides: [ride],
+          schedule: ride.schedule,
+        })
+      }
+    } else {
+      ungroupedRides.push(ride)
+    }
+  }
+
+  // Flatten: multi-rider groups + ungrouped rides, sorted by created_at descending
+  type ListItem = { type: 'group'; group: MultiRiderGroup } | { type: 'single'; ride: ActiveRide }
+  const listItems: ListItem[] = [
+    ...Array.from(driverGroups.values()).map((g): ListItem => ({ type: 'group', group: g })),
+    ...ungroupedRides.map((r): ListItem => ({ type: 'single', ride: r })),
+  ]
+
   return (
     <div
       data-testid={testId}
@@ -245,7 +294,107 @@ export default function MyRidesPage({
 
         {!loading && rides.length > 0 && (
           <div className="space-y-3">
-            {rides.map((ride) => {
+            {listItems.map((item) => {
+              if (item.type === 'group') {
+                const { group } = item
+                const sched = group.schedule
+                const tripDate = sched?.trip_date
+                const tripTime = sched?.trip_time
+                // Worst-case status badge: prefer active > coordinating > accepted > requested
+                const statusOrder = ['active', 'coordinating', 'accepted', 'requested']
+                const worstStatus = group.rides.reduce((best, r) => {
+                  return statusOrder.indexOf(r.status) < statusOrder.indexOf(best) ? r.status : best
+                }, group.rides[0]?.status ?? 'requested')
+                const badge = getStatusBadge(worstStatus, 'driver', true)
+                const riderNames = group.rides
+                  .map((r) => r.other_user?.full_name ?? 'Rider')
+                  .join(' & ')
+
+                return (
+                  <button
+                    key={group.schedule_id}
+                    data-testid="ride-card-group"
+                    onClick={() => handleTapGroup(group)}
+                    className="w-full rounded-2xl bg-white p-4 shadow-sm border border-border text-left active:bg-surface/50 transition-colors"
+                  >
+                    {/* Top: multi-rider label + badge */}
+                    <div className="flex items-center gap-3 mb-3">
+                      {/* Stacked avatars */}
+                      <div className="relative h-11 w-14 shrink-0">
+                        {group.rides.slice(0, 2).map((r, i) => {
+                          const u = r.other_user
+                          const init = u?.full_name?.[0]?.toUpperCase() ?? '?'
+                          return u?.avatar_url ? (
+                            <img
+                              key={r.id}
+                              src={u.avatar_url}
+                              alt=""
+                              className={`absolute h-9 w-9 rounded-full object-cover border-2 border-white ${i === 0 ? 'left-0 top-0' : 'left-4 top-2'}`}
+                            />
+                          ) : (
+                            <div
+                              key={r.id}
+                              className={`absolute flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 border-2 border-white text-primary font-bold text-xs ${i === 0 ? 'left-0 top-0' : 'left-4 top-2'}`}
+                            >
+                              {init}
+                            </div>
+                          )
+                        })}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-text-primary truncate">
+                          {riderNames}
+                        </p>
+                        <p className="text-xs text-text-secondary">
+                          You are the driver · {group.rides.length} riders
+                        </p>
+                      </div>
+                      <span className={`text-xs font-semibold px-2.5 py-1 rounded-full shrink-0 ${badge.className}`}>
+                        {badge.label}
+                      </span>
+                    </div>
+
+                    {/* Route */}
+                    {sched && (
+                      <div className="mb-2 space-y-1">
+                        <div className="flex items-start gap-2">
+                          <span className="text-success mt-0.5 text-xs">●</span>
+                          <p className="text-xs text-text-primary truncate">{sched.origin_address}</p>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span className="text-danger mt-0.5 text-xs">●</span>
+                          <p className="text-xs text-text-primary truncate">{sched.dest_address}</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Date / time */}
+                    {(tripDate ?? tripTime) && (
+                      <div className="flex items-center gap-3 text-xs text-text-secondary mb-2">
+                        {tripDate && <span>{formatDate(tripDate)}</span>}
+                        {tripTime && <span>{formatTime(tripTime)}</span>}
+                      </div>
+                    )}
+
+                    {/* Per-rider status pills */}
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {group.rides.map((r) => {
+                        const rb = getStatusBadge(r.status, 'driver', true)
+                        return (
+                          <span key={r.id} className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${rb.className}`}>
+                            {r.other_user?.full_name?.split(' ')[0] ?? 'Rider'}: {rb.label}
+                          </span>
+                        )
+                      })}
+                    </div>
+
+                    <p className="text-xs text-primary font-medium">Tap to manage riders →</p>
+                  </button>
+                )
+              }
+
+              // Single ride card
+              const { ride } = item
               const other = ride.other_user
               const initial = other?.full_name?.[0]?.toUpperCase() ?? '?'
               const badge = getStatusBadge(ride.status, ride.my_role, !!ride.schedule)

@@ -261,7 +261,7 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
       <Confetti />
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div className="flex flex-col items-center gap-3 px-6 pt-12 pb-6">
+      <div className="flex flex-col items-center gap-3 px-6 pb-6" style={{ paddingTop: 'max(env(safe-area-inset-top), 1rem)' }}>
         {/* Green checkmark */}
         <div
           className="flex h-20 w-20 items-center justify-center rounded-full bg-success"

@@ -231,7 +231,7 @@ export default function AddFundsPage() {
   return (
     <div className="min-h-screen bg-surface pb-20" data-testid="add-funds-page">
       {/* Header */}
-      <div className="border-b border-border bg-white px-6 pb-4 pt-12">
+      <div className="border-b border-border bg-white px-6 pb-4" style={{ paddingTop: 'max(env(safe-area-inset-top), 1rem)' }}>
         <button
           onClick={() => navigate('/wallet')}
           className="mb-2 text-sm text-text-secondary"

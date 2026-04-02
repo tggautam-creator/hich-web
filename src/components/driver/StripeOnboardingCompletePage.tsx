@@ -47,6 +47,7 @@ export default function StripeOnboardingCompletePage({
     <div
       data-testid={testId}
       className="flex min-h-dvh flex-col bg-surface font-sans"
+      style={{ paddingTop: 'max(env(safe-area-inset-top), 1rem)' }}
     >
       <div className="flex flex-1 flex-col items-center justify-center px-6">
         {status === 'checking' && (

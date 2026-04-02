@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
+import { Map, AdvancedMarker, useMap } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
 import type { Ride, User, Vehicle } from '@/types/database'
 import { trackEvent } from '@/lib/analytics'
@@ -361,6 +361,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const [pinSearchResults, setPinSearchResults] = useState<PlaceSuggestion[]>([])
   const [pinSearching, setPinSearching] = useState(false)
   const pinSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pinSearchMovedRef = useRef(false) // tracks whether pin moved due to search (triggers map pan)
 
   // Pin dropper route info state
   const [pinRouteInfo, setPinRouteInfo] = useState<{ distance_km: number; duration_min: number; fare_cents: number; polyline: string } | null>(null)
@@ -368,6 +369,10 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const pinRouteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // For pickup mode: additional drive route from pickup → destination
   const [pinDriveInfo, setPinDriveInfo] = useState<{ distance_km: number; duration_min: number; fare_cents: number; polyline: string } | null>(null)
+
+  // Pin dropper map ref — used to pan map when search selects a location
+  const PIN_DROPPER_MAP_ID = 'pin-dropper-map'
+  const pinDropperMap = useMap(PIN_DROPPER_MAP_ID)
 
   // Location acceptance state
   const [acceptingLocation, setAcceptingLocation] = useState<string | null>(null) // 'pickup' or 'dropoff'
@@ -772,7 +777,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
       })
 
       if (resp.ok) {
-        trackEvent(locationType === 'dropoff' ? 'dropoff_accepted' : 'dropoff_accepted', { ride_id: rideId })
+        trackEvent(locationType === 'dropoff' ? 'dropoff_accepted' : 'pickup_accepted', { ride_id: rideId })
         const body = (await resp.json()) as { both_confirmed: boolean }
         // Refresh ride data
         const { data: updated } = await supabase.from('rides').select('*').eq('id', rideId).single()
@@ -928,16 +933,20 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
     setPinSearchResults([])
     setPinNote(suggestion.mainText)
     if (suggestion.lat != null && suggestion.lng != null) {
+      pinSearchMovedRef.current = true
       setPinLat(suggestion.lat)
       setPinLng(suggestion.lng)
+      pinDropperMap?.panTo({ lat: suggestion.lat, lng: suggestion.lng })
     } else {
       const coords = await getPlaceCoordinates(suggestion.placeId)
       if (coords) {
+        pinSearchMovedRef.current = true
         setPinLat(coords.lat)
         setPinLng(coords.lng)
+        pinDropperMap?.panTo({ lat: coords.lat, lng: coords.lng })
       }
     }
-  }, [])
+  }, [pinDropperMap])
 
   // ── Pin dropper: fetch route info when pin moves ──────────────────────────
   useEffect(() => {
@@ -1144,6 +1153,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         {/* Map — focused on the pin location only, no zoom-out */}
         <div className="flex-1 relative">
           <Map
+            id={PIN_DROPPER_MAP_ID}
             mapId={MAP_ID}
             defaultCenter={{ lat: pinLat, lng: pinLng }}
             defaultZoom={16}

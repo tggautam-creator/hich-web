@@ -436,14 +436,14 @@ describe('SchedulePage', () => {
   it('cancel button calls window.history.back', async () => {
     const user = userEvent.setup()
     const backSpy = vi.spyOn(window.history, 'back')
-    
+
     render(<SchedulePage mode="rider" />)
-    
+
     const cancelBtn = screen.getByTestId('cancel-button')
     await user.click(cancelBtn)
-    
+
     expect(backSpy).toHaveBeenCalled()
-    
+
     backSpy.mockRestore()
   })
 

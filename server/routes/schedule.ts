@@ -4,7 +4,7 @@ import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
-import { checkUpcomingRides } from '../lib/scheduledReminders.ts'
+import { checkUpcomingRides, expireStaleRequests } from '../lib/scheduledReminders.ts'
 
 export const scheduleRouter = Router()
 
@@ -254,6 +254,11 @@ scheduleRouter.get(
         already_requested: requestedSet.has(schedId),
         ride_status: rideInfo?.status ?? null,
         ride_id: rideInfo?.ride_id ?? null,
+        // Include driver's route coords for transit preview (if available)
+        driver_origin_lat: coords?.originLat ?? null,
+        driver_origin_lng: coords?.originLng ?? null,
+        driver_dest_lat: coords?.destLat ?? null,
+        driver_dest_lng: coords?.destLng ?? null,
       }
     })
 
@@ -470,6 +475,11 @@ interface ScheduleRequestBody {
   schedule_id: string
   origin_lat?: number
   origin_lng?: number
+  destination_lat?: number
+  destination_lng?: number
+  destination_name?: string
+  destination_flexible?: boolean
+  note?: string
 }
 
 scheduleRouter.post(
@@ -496,6 +506,22 @@ scheduleRouter.post(
     if (schedErr || !schedule) {
       res.status(404).json({
         error: { code: 'SCHEDULE_NOT_FOUND', message: 'Schedule not found' },
+      })
+      return
+    }
+
+    // Reject if no seats available
+    if (schedule.available_seats != null && schedule.available_seats <= 0) {
+      res.status(409).json({
+        error: { code: 'NO_SEATS', message: 'This ride is full — no seats available' },
+      })
+      return
+    }
+
+    // Reject if seats are locked (a ride already started for this schedule)
+    if (schedule.seats_locked) {
+      res.status(409).json({
+        error: { code: 'SEATS_LOCKED', message: 'This ride has already started' },
       })
       return
     }
@@ -617,6 +643,15 @@ scheduleRouter.post(
       originGeo = { type: 'Point', coordinates: [0, 0] }
     }
 
+    // Build requester destination from body fields
+    let requesterDestGeo: { type: 'Point'; coordinates: [number, number] } | null = null
+    if (typeof body.destination_lat === 'number' && typeof body.destination_lng === 'number') {
+      requesterDestGeo = { type: 'Point', coordinates: [body.destination_lng, body.destination_lat] }
+    }
+
+    // Truncate note to 200 chars
+    const requesterNote = body.note ? body.note.slice(0, 200) : null
+
     // Create ride with status='requested' — poster must accept before coordination
     const { data: ride, error: rideErr } = await supabaseAdmin
       .from('rides')
@@ -630,6 +665,10 @@ scheduleRouter.post(
         schedule_id: schedule.id,
         trip_date: schedule.trip_date,
         trip_time: schedule.trip_time,
+        requester_destination: requesterDestGeo,
+        requester_destination_name: body.destination_name ?? null,
+        requester_note: requesterNote,
+        destination_flexible: body.destination_flexible ?? false,
       })
       .select('id')
       .single()
@@ -661,6 +700,9 @@ scheduleRouter.post(
       route: `${schedule.origin_address} → ${schedule.dest_address}`,
       trip_date: schedule.trip_date,
       trip_time: schedule.trip_time,
+      requester_destination_name: body.destination_name ?? null,
+      destination_flexible: body.destination_flexible ?? false,
+      requester_note: requesterNote,
     })
 
     // Persist notification in the notifications table (non-blocking)
@@ -677,6 +719,9 @@ scheduleRouter.post(
         route: `${schedule.origin_address} → ${schedule.dest_address}`,
         trip_date: schedule.trip_date,
         trip_time: schedule.trip_time,
+        requester_destination_name: body.destination_name ?? null,
+        destination_flexible: body.destination_flexible ?? false,
+        requester_note: requesterNote,
       },
     }).then(({ error: notifErr }) => {
       if (notifErr) console.error('Failed to persist notification:', notifErr.message)
@@ -848,16 +893,25 @@ scheduleRouter.patch(
     // BUG-022: Verify caller is the original poster, not the requester.
     // The poster is the person who created the schedule. The requester is the
     // other party who sent the board request. Only the poster should accept.
+    let sched: { user_id: string; seats_locked: boolean | null; dest_address: string | null } | null = null
     if (ride.schedule_id) {
-      const { data: sched } = await supabaseAdmin
+      const { data: schedData } = await supabaseAdmin
         .from('ride_schedules')
-        .select('user_id')
+        .select('user_id, seats_locked, dest_address')
         .eq('id', ride.schedule_id)
         .single()
+      sched = schedData
 
       if (sched && sched.user_id !== userId) {
         res.status(403).json({
           error: { code: 'FORBIDDEN', message: 'Only the poster can accept board requests' },
+        })
+        return
+      }
+
+      if (sched?.seats_locked) {
+        res.status(409).json({
+          error: { code: 'SEATS_LOCKED', message: 'This ride has already started — no more riders can be accepted' },
         })
         return
       }
@@ -883,37 +937,81 @@ scheduleRouter.patch(
       return
     }
 
-    // BUG-049: Auto-decline all other requested rides for the same schedule
-    if (ride.schedule_id) {
-      const { data: otherRides } = await supabaseAdmin
-        .from('rides')
-        .select('id, rider_id, driver_id')
-        .eq('schedule_id', ride.schedule_id)
-        .eq('status', 'requested')
-        .neq('id', rideId)
+    // Write driver's destination from routine onto ride so DropoffSelection finds it
+    if (ride.schedule_id && sched) {
+      const { data: routine } = await supabaseAdmin
+        .from('driver_routines')
+        .select('destination')
+        .eq('user_id', sched.user_id)
+        .eq('is_active', true)
+        .limit(1)
+        .maybeSingle()
 
-      if (otherRides && otherRides.length > 0) {
-        const otherIds = otherRides.map((r: { id: string }) => r.id)
-        await supabaseAdmin
+      if (routine?.destination) {
+        void supabaseAdmin
           .from('rides')
-          .update({ status: 'cancelled' })
-          .in('id', otherIds)
+          .update({
+            driver_destination: routine.destination,
+            driver_destination_name: sched.dest_address ?? null,
+          })
+          .eq('id', rideId)
+      }
+    }
 
-        // Notify each declined requester
-        for (const other of otherRides as Array<{ id: string; rider_id: string; driver_id: string }>) {
-          const declinedId = other.rider_id === userId ? other.driver_id : other.rider_id
-          if (declinedId) {
-            void realtimeBroadcast(`board:${declinedId}`, 'board_declined', { type: 'board_declined', ride_id: other.id })
-            void realtimeBroadcast(`myrides:${declinedId}`, 'ride_status_changed', { ride_id: other.id, status: 'cancelled' })
-            supabaseAdmin.from('notifications').insert({
-              user_id: declinedId,
-              type: 'board_declined',
-              title: 'Request Declined',
-              body: 'The poster accepted another request. Try another ride on the board!',
-              data: { ride_id: other.id },
-            }).then(({ error: notifErr }) => {
-              if (notifErr) console.error('Failed to persist auto-decline notification:', notifErr.message)
-            })
+    // Decrement available seats on the schedule.
+    // Only auto-cancel remaining requests when seats reach 0 (multi-accept).
+    // The .gt('available_seats', 0) guard prevents over-decrementing on concurrent accepts.
+    if (ride.schedule_id) {
+      const { data: seatSched } = await supabaseAdmin
+        .from('ride_schedules')
+        .select('available_seats')
+        .eq('id', ride.schedule_id)
+        .single()
+
+      const seatsAfter = (seatSched?.available_seats != null && seatSched.available_seats > 0)
+        ? seatSched.available_seats - 1
+        : 0
+
+      if (seatSched && seatSched.available_seats != null && seatSched.available_seats > 0) {
+        await supabaseAdmin
+          .from('ride_schedules')
+          .update({ available_seats: seatsAfter })
+          .eq('id', ride.schedule_id)
+          .gt('available_seats', 0)
+      }
+
+      // Only auto-decline remaining requests when all seats are filled
+      if (seatsAfter <= 0) {
+        const { data: otherRides } = await supabaseAdmin
+          .from('rides')
+          .select('id, rider_id, driver_id')
+          .eq('schedule_id', ride.schedule_id)
+          .eq('status', 'requested')
+          .neq('id', rideId)
+
+        if (otherRides && otherRides.length > 0) {
+          const otherIds = otherRides.map((r: { id: string }) => r.id)
+          await supabaseAdmin
+            .from('rides')
+            .update({ status: 'cancelled' })
+            .in('id', otherIds)
+
+          // Notify each declined requester
+          for (const other of otherRides as Array<{ id: string; rider_id: string; driver_id: string }>) {
+            const declinedId = other.rider_id === userId ? other.driver_id : other.rider_id
+            if (declinedId) {
+              void realtimeBroadcast(`board:${declinedId}`, 'board_declined', { type: 'board_declined', ride_id: other.id })
+              void realtimeBroadcast(`myrides:${declinedId}`, 'ride_status_changed', { ride_id: other.id, status: 'cancelled' })
+              supabaseAdmin.from('notifications').insert({
+                user_id: declinedId,
+                type: 'board_declined',
+                title: 'Request Declined',
+                body: 'All seats are now filled. Try another ride on the board!',
+                data: { ride_id: other.id },
+              }).then(({ error: notifErr }) => {
+                if (notifErr) console.error('Failed to persist auto-decline notification:', notifErr.message)
+              })
+            }
           }
         }
       }
@@ -1084,6 +1182,58 @@ scheduleRouter.patch(
   },
 )
 
+// ── PATCH /api/schedule/:id/seats ─────────────────────────────────────────────
+/**
+ * Poster updates available_seats on their own schedule.
+ * Used by drivers to add/reduce seats from the board detail view.
+ */
+scheduleRouter.patch(
+  '/:id/seats',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const userId = res.locals['userId'] as string
+    const scheduleId = req.params['id'] as string
+    const { available_seats } = req.body as { available_seats?: number }
+
+    if (typeof available_seats !== 'number' || available_seats < 0 || available_seats > 8 || !Number.isInteger(available_seats)) {
+      res.status(400).json({
+        error: { code: 'INVALID_BODY', message: 'available_seats must be an integer between 0 and 8' },
+      })
+      return
+    }
+
+    const { data: sched, error: fetchErr } = await supabaseAdmin
+      .from('ride_schedules')
+      .select('user_id, seats_locked')
+      .eq('id', scheduleId)
+      .single()
+
+    if (fetchErr || !sched) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Schedule not found' } })
+      return
+    }
+
+    if (sched.user_id !== userId) {
+      res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only the poster can edit seats' } })
+      return
+    }
+
+    if (sched.seats_locked) {
+      res.status(409).json({ error: { code: 'SEATS_LOCKED', message: 'Cannot modify seats after ride has started' } })
+      return
+    }
+
+    const { error: updateErr } = await supabaseAdmin
+      .from('ride_schedules')
+      .update({ available_seats })
+      .eq('id', scheduleId)
+
+    if (updateErr) { next(updateErr); return }
+
+    res.status(200).json({ id: scheduleId, available_seats })
+  },
+)
+
 // ── POST /api/schedule/sync-routines ──────────────────────────────────────────
 /**
  * Ensures each active driver_routine has upcoming ride_schedule entries
@@ -1247,8 +1397,11 @@ scheduleRouter.get(
   '/check-reminders',
   async (_req: Request, res: Response, next: NextFunction) => {
     try {
-      const result = await checkUpcomingRides()
-      res.json(result)
+      const [reminders, expiry] = await Promise.all([
+        checkUpcomingRides(),
+        expireStaleRequests(),
+      ])
+      res.json({ reminders, expiry })
     } catch (err) {
       next(err)
     }

@@ -347,7 +347,7 @@ export default function DropoffSelection({
   return (
     <div
       data-testid={testId}
-      className="flex h-dvh flex-col bg-surface overflow-hidden"
+      className="flex h-dvh flex-col bg-surface overflow-hidden safe-top"
     >
       {/* ── Route map ───────────────────────────────────────────────────────── */}
       <div className="relative w-full shrink-0" style={{ height: '30dvh' }}>

@@ -39,6 +39,9 @@ const MultiDriverMap = lazy(() => import('@/components/ride/MultiDriverMap'))
 const DriverPickupPage = lazy(() => import('@/components/ride/DriverPickupPage'))
 const RiderPickupPage = lazy(() => import('@/components/ride/RiderPickupPage'))
 const DriverActiveRidePage = lazy(() => import('@/components/ride/DriverActiveRidePage'))
+const DriverMultiRidePage = lazy(() => import('@/components/ride/DriverMultiRidePage'))
+const DriverGroupChatPage = lazy(() => import('@/components/ride/DriverGroupChatPage'))
+const DriverMultiSummaryFlow = lazy(() => import('@/components/ride/DriverMultiSummaryFlow'))
 const RiderActiveRidePage = lazy(() => import('@/components/ride/RiderActiveRidePage'))
 const RideSummaryPage = lazy(() => import('@/components/ride/RideSummaryPage'))
 const RateRidePage = lazy(() => import('@/components/ride/RateRidePage'))
@@ -129,6 +132,9 @@ createRoot(rootEl).render(
               <Route path="/ride/pickup-driver/:rideId" element={<Suspense fallback={<MapPageSkeleton />}><DriverPickupPage /></Suspense>} />
               <Route path="/ride/pickup-rider/:rideId" element={<Suspense fallback={<MapPageSkeleton />}><RiderPickupPage /></Suspense>} />
               <Route path="/ride/active-driver/:rideId" element={<Suspense fallback={<MapPageSkeleton />}><DriverActiveRidePage /></Suspense>} />
+              <Route path="/ride/driver-multi/:scheduleId" element={<Suspense fallback={<MapPageSkeleton />}><DriverMultiRidePage /></Suspense>} />
+              <Route path="/ride/group-chat/:scheduleId" element={<Suspense fallback={<MapPageSkeleton />}><DriverGroupChatPage /></Suspense>} />
+              <Route path="/ride/multi-summary/:scheduleId" element={<Suspense fallback={<FormPageSkeleton />}><DriverMultiSummaryFlow /></Suspense>} />
               <Route path="/ride/active-rider/:rideId" element={<Suspense fallback={<MapPageSkeleton />}><RiderActiveRidePage /></Suspense>} />
 
               {/* Rides hub & Notifications */}

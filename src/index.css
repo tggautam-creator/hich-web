@@ -32,3 +32,12 @@ body {
     min-height: calc(100% + env(safe-area-inset-top));
   }
 }
+
+/* Universal safe-area utilities — env() resolves to 0 on non-PWA browsers,
+ * so these are safe to apply unconditionally. */
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}

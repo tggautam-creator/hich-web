@@ -28,6 +28,7 @@ export type RideStatus =
   | 'active'
   | 'completed'
   | 'cancelled'
+  | 'expired'
 
 // ── Supabase Database schema ──────────────────────────────────────────────────
 
@@ -206,6 +207,13 @@ export type Database = {
           stripe_fee_cents: number
           reminder_sent: boolean
           progress_pct: number
+          requester_destination: GeoPoint | null
+          requester_destination_name: string | null
+          requester_note: string | null
+          destination_flexible: boolean
+          gps_distance_metres: number
+          last_gps_lat: number | null
+          last_gps_lng: number | null
         }
         Insert: {
           id?: string
@@ -238,6 +246,13 @@ export type Database = {
           stripe_fee_cents?: number
           reminder_sent?: boolean
           progress_pct?: number
+          requester_destination?: GeoPoint | null
+          requester_destination_name?: string | null
+          requester_note?: string | null
+          destination_flexible?: boolean
+          gps_distance_metres?: number
+          last_gps_lat?: number | null
+          last_gps_lng?: number | null
         }
         Update: {
           id?: string
@@ -270,6 +285,13 @@ export type Database = {
           stripe_fee_cents?: number
           reminder_sent?: boolean
           progress_pct?: number
+          requester_destination?: GeoPoint | null
+          requester_destination_name?: string | null
+          requester_note?: string | null
+          destination_flexible?: boolean
+          gps_distance_metres?: number
+          last_gps_lat?: number | null
+          last_gps_lng?: number | null
         }
         Relationships: never[]
       }
@@ -447,6 +469,7 @@ export type Database = {
           available_seats: number | null
           note: string | null
           is_notified: boolean
+          seats_locked: boolean
           created_at: string
         }
         Insert: {
@@ -465,6 +488,7 @@ export type Database = {
           available_seats?: number | null
           note?: string | null
           is_notified?: boolean
+          seats_locked?: boolean
           created_at?: string
         }
         Update: {
@@ -483,6 +507,7 @@ export type Database = {
           available_seats?: number | null
           note?: string | null
           is_notified?: boolean
+          seats_locked?: boolean
           created_at?: string
         }
         Relationships: never[]

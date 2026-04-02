@@ -64,7 +64,7 @@ export default function StripeOnboardingPage({
       data-testid={testId}
       className="flex min-h-dvh flex-col bg-surface font-sans"
     >
-      <div className="flex flex-1 flex-col px-6 py-8">
+      <div className="flex flex-1 flex-col px-6 pb-8" style={{ paddingTop: 'max(env(safe-area-inset-top), 1rem)' }}>
         {/* Header */}
         <div className="flex flex-col items-center mb-8">
           <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">

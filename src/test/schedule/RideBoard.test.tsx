@@ -217,9 +217,10 @@ describe('RideBoard', () => {
 
     await user.click(screen.getByText('Request This Ride'))
 
-    // Confirmation sheet should appear
+    // Confirmation sheet should appear with enrichment fields
     expect(screen.getByTestId('confirm-sheet')).toBeInTheDocument()
-    expect(screen.getByText('Request This Ride?')).toBeInTheDocument()
+    expect(screen.getByTestId('mode-destination')).toBeInTheDocument()
+    expect(screen.getByTestId('mode-flexible')).toBeInTheDocument()
     expect(screen.getByTestId('confirm-send-button')).toHaveTextContent('Send Request')
   })
 
@@ -252,6 +253,9 @@ describe('RideBoard', () => {
       }
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) })
     })
+
+    // Select flexible mode so button is enabled
+    await user.click(screen.getByTestId('mode-flexible'))
 
     // Click "Send Request" in the confirmation sheet
     await user.click(screen.getByTestId('confirm-send-button'))
@@ -289,6 +293,9 @@ describe('RideBoard', () => {
       }
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) })
     })
+
+    // Select flexible mode so button is enabled
+    await user.click(screen.getByTestId('mode-flexible'))
 
     // Click "Send Request"
     await user.click(screen.getByTestId('confirm-send-button'))

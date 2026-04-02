@@ -1,7 +1,10 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
+import { haversineMetres } from '@/lib/geo'
+import { reverseGeocode } from '@/lib/geocode'
+import { formatDate, formatTime } from '@/components/schedule/boardHelpers'
 import type { Ride, User } from '@/types/database'
 
 interface ScheduleInfo {
@@ -17,19 +20,11 @@ interface BoardRequestReviewProps {
   'data-testid'?: string
 }
 
-/** Format "2026-03-15" → "Mar 15" */
-function formatDate(dateStr: string): string {
-  const d = new Date(dateStr + 'T00:00:00')
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-}
-
-/** Format "14:30:00" → "2:30 PM" */
-function formatTime(timeStr: string): string {
-  const [h, m] = timeStr.split(':').map(Number)
-  if (h === undefined || m === undefined) return timeStr
-  const ampm = h >= 12 ? 'PM' : 'AM'
-  const h12 = h % 12 || 12
-  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`
+/** Convert metres to a human string */
+function formatDistance(metres: number): string {
+  const miles = metres / 1609.34
+  if (miles < 0.1) return 'on your route'
+  return `${miles.toFixed(1)} mi from your route`
 }
 
 export default function BoardRequestReview({
@@ -46,11 +41,28 @@ export default function BoardRequestReview({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [pickupAddress, setPickupAddress] = useState<string | null>(null)
 
   const currentUserId = profile?.id ?? null
 
   // Determine if the poster is the driver or rider in this ride
   const posterIsDriver = currentUserId === ride?.driver_id
+
+  // Compute distance from driver's destination to rider's requested destination
+  const distanceInfo = useMemo(() => {
+    if (!ride?.requester_destination) return null
+    // For board rides, driver_destination may be null — fall back to ride.destination
+    const driverGeo = ride.driver_destination ?? ride.destination
+    if (!driverGeo) return null
+    const riderCoords = ride.requester_destination.coordinates
+    const driverCoords = driverGeo.coordinates
+    // GeoJSON is [lng, lat]
+    const metres = haversineMetres(
+      riderCoords[1], riderCoords[0],
+      driverCoords[1], driverCoords[0],
+    )
+    return { metres, label: formatDistance(metres) }
+  }, [ride?.requester_destination, ride?.driver_destination, ride?.destination])
 
   // ── Fetch ride + requester info ──────────────────────────────────────────
   useEffect(() => {
@@ -98,6 +110,14 @@ export default function BoardRequestReview({
           .single()
 
         if (userData) setOtherUser(userData)
+      }
+
+      // Reverse-geocode rider pickup point for display
+      const origin = rideData.origin as { coordinates: [number, number] } | null
+      if (origin) {
+        void reverseGeocode(origin.coordinates[1], origin.coordinates[0]).then((addr) => {
+          if (addr) setPickupAddress(addr)
+        })
       }
 
       setLoading(false)
@@ -152,6 +172,53 @@ export default function BoardRequestReview({
       }
 
       navigate(`/ride/messaging/${rideId}`, { replace: true })
+    } catch {
+      setError('Network error — could not accept')
+      setSubmitting(false)
+    }
+  }
+
+  // ── Counter (accept + navigate to dropoff selection) ─────────────────────
+  async function handleCounter() {
+    if (!rideId || submitting) return
+    setSubmitting(true)
+
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token
+      const res = await fetch('/api/schedule/accept-board', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token ?? ''}`,
+        },
+        body: JSON.stringify({ ride_id: rideId }),
+      })
+
+      if (!res.ok) {
+        const body = (await res.json()) as { error?: { message?: string } }
+        setError(body.error?.message ?? 'Failed to accept')
+        setSubmitting(false)
+        return
+      }
+
+      // Navigate to dropoff selection with location context
+      // For board rides, driver_destination may be null — fall back to ride.destination
+      // (which is the driver's schedule destination set during request creation)
+      const driverDest = ride?.driver_destination?.coordinates ?? ride?.destination?.coordinates
+      const riderDest = ride?.requester_destination?.coordinates
+      const pickup = ride?.origin?.coordinates
+
+      navigate(`/ride/dropoff/${rideId}`, {
+        replace: true,
+        state: {
+          ...(driverDest ? { driverDestLat: driverDest[1], driverDestLng: driverDest[0] } : {}),
+          driverDestName: scheduleInfo?.dest_address ?? ride?.destination_name ?? '',
+          ...(riderDest ? { riderDestLat: riderDest[1], riderDestLng: riderDest[0] } : {}),
+          riderDestName: ride?.requester_destination_name ?? null,
+          riderName: otherUser?.full_name ?? null,
+          ...(pickup ? { pickupLat: pickup[1], pickupLng: pickup[0] } : {}),
+        },
+      })
     } catch {
       setError('Network error — could not accept')
       setSubmitting(false)
@@ -215,87 +282,173 @@ export default function BoardRequestReview({
         </p>
       </div>
 
-      {/* ── Requester card ──────────────────────────────────────────────────── */}
-      <div className="mx-4 mt-4 rounded-2xl bg-white p-4 shadow-sm" data-testid="requester-card">
-        <div className="flex items-center gap-3">
-          {otherUser?.avatar_url ? (
-            <img
-              src={otherUser.avatar_url}
-              alt=""
-              className="h-14 w-14 rounded-full object-cover"
-            />
-          ) : (
-            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary font-bold text-xl">
-              {initial}
+      <div className="flex-1 overflow-y-auto pb-4">
+        {/* ── Requester card ──────────────────────────────────────────────── */}
+        <div className="mx-4 mt-4 rounded-2xl bg-white p-4 shadow-sm" data-testid="requester-card">
+          <div className="flex items-center gap-3">
+            {otherUser?.avatar_url ? (
+              <img
+                src={otherUser.avatar_url}
+                alt=""
+                className="h-14 w-14 rounded-full object-cover"
+              />
+            ) : (
+              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary font-bold text-xl">
+                {initial}
+              </div>
+            )}
+            <div className="flex-1">
+              <p className="font-semibold text-text-primary text-base" data-testid="requester-name">
+                {otherUser?.full_name ?? (posterIsDriver ? 'Rider' : 'Driver')}
+              </p>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className="text-warning">★</span>
+                <span className="text-sm text-text-secondary" data-testid="requester-rating">
+                  {otherRating}
+                </span>
+                <span className="text-xs text-text-secondary">
+                  ({otherRideCount} rides)
+                </span>
+              </div>
             </div>
-          )}
-          <div className="flex-1">
-            <p className="font-semibold text-text-primary text-base" data-testid="requester-name">
-              {otherUser?.full_name ?? (posterIsDriver ? 'Rider' : 'Driver')}
-            </p>
-            <div className="flex items-center gap-1.5 mt-0.5">
-              <span className="text-warning">★</span>
-              <span className="text-sm text-text-secondary" data-testid="requester-rating">
-                {otherRating}
-              </span>
-              <span className="text-xs text-text-secondary">
-                ({otherRideCount} rides)
-              </span>
+            <div className={[
+              'px-3 py-1.5 rounded-full text-xs font-semibold',
+              posterIsDriver ? 'bg-primary/10 text-primary' : 'bg-success/10 text-success',
+            ].join(' ')}>
+              {posterIsDriver ? 'Rider' : 'Driver'}
             </div>
-          </div>
-          <div className={[
-            'px-3 py-1.5 rounded-full text-xs font-semibold',
-            posterIsDriver ? 'bg-primary/10 text-primary' : 'bg-success/10 text-success',
-          ].join(' ')}>
-            {posterIsDriver ? 'Rider' : 'Driver'}
-          </div>
-        </div>
-      </div>
-
-      {/* ── Route info ──────────────────────────────────────────────────────── */}
-      <div className="mx-4 mt-3 rounded-2xl bg-white p-4 shadow-sm" data-testid="ride-details">
-        <p className="text-xs text-text-secondary font-semibold uppercase tracking-wider mb-3">Ride Details</p>
-
-        {scheduleInfo?.route_name && (
-          <p className="text-sm font-semibold text-text-primary mb-3">{scheduleInfo.route_name}</p>
-        )}
-
-        <div className="space-y-1.5 mb-3">
-          <div className="flex items-start gap-2">
-            <span className="text-success mt-0.5 text-sm">●</span>
-            <p className="text-sm text-text-primary">{scheduleInfo?.origin_address ?? 'Origin TBD'}</p>
-          </div>
-          <div className="ml-[5px] h-3 border-l border-dashed border-text-secondary/30" />
-          <div className="flex items-start gap-2">
-            <span className="text-danger mt-0.5 text-sm">●</span>
-            <p className="text-sm text-text-primary">{scheduleInfo?.dest_address ?? ride.destination_name ?? 'Destination TBD'}</p>
           </div>
         </div>
 
-        {(scheduleInfo?.trip_date ?? ride.trip_date) && (
-          <div className="flex items-center gap-3 text-xs text-text-secondary">
-            <span>{formatDate(scheduleInfo?.trip_date ?? ride.trip_date ?? '')}</span>
-            {(scheduleInfo?.trip_time ?? ride.trip_time) && (
-              <span>
-                {scheduleInfo?.time_type === 'arrival' ? 'Arrives' : 'Departs'}{' '}
-                {formatTime(scheduleInfo?.trip_time ?? ride.trip_time ?? '')}
-              </span>
+        {/* ── Rider context (destination, note, pickup) ───────────────────── */}
+        {posterIsDriver && (
+          <div className="mx-4 mt-3 rounded-2xl bg-white p-4 shadow-sm" data-testid="rider-context">
+            <p className="text-xs text-text-secondary font-semibold uppercase tracking-wider mb-3">Rider Details</p>
+
+            {/* Rider pickup location */}
+            {ride.origin && (
+              <div className="flex items-start gap-2 mb-3" data-testid="rider-pickup">
+                <div className="mt-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-success/10">
+                  <span className="text-success text-xs">●</span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-text-secondary font-medium">Pickup</p>
+                  <p className="text-sm text-text-primary">
+                    {pickupAddress ?? 'Rider\'s current location'}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Rider destination */}
+            <div className="flex items-start gap-2 mb-3" data-testid="rider-destination">
+              <div className="mt-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-danger/10">
+                <span className="text-danger text-xs">●</span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-text-secondary font-medium">Destination</p>
+                {ride.destination_flexible ? (
+                  <div className="mt-1 flex items-center gap-1.5 rounded-xl bg-primary/5 border border-primary/15 px-2.5 py-1.5">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5 text-primary shrink-0" aria-hidden="true">
+                      <circle cx="12" cy="12" r="10" />
+                      <line x1="12" y1="16" x2="12" y2="12" />
+                      <line x1="12" y1="8" x2="12.01" y2="8" />
+                    </svg>
+                    <p className="text-xs text-primary font-medium" data-testid="destination-flexible-badge">Flexible — will discuss in chat</p>
+                  </div>
+                ) : ride.requester_destination_name ? (
+                  <p className="text-sm text-text-primary" data-testid="destination-name">{ride.requester_destination_name}</p>
+                ) : (
+                  <p className="text-sm text-text-secondary italic">Not specified</p>
+                )}
+              </div>
+            </div>
+
+            {/* Distance from route */}
+            {distanceInfo && (
+              <div className="flex items-center gap-2 mb-3 rounded-xl bg-surface px-3 py-2" data-testid="distance-info">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
+                  <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                  <circle cx="12" cy="10" r="3" />
+                </svg>
+                <p className="text-xs text-text-secondary">{distanceInfo.label}</p>
+              </div>
+            )}
+
+            {/* Rider note */}
+            {ride.requester_note && (
+              <div className="rounded-xl bg-surface border border-border/50 px-3 py-2.5" data-testid="rider-note">
+                <p className="text-xs text-text-secondary font-medium mb-1">Note from rider</p>
+                <p className="text-sm text-text-primary">{ride.requester_note}</p>
+              </div>
             )}
           </div>
         )}
+
+        {/* ── Route info ──────────────────────────────────────────────────── */}
+        <div className="mx-4 mt-3 rounded-2xl bg-white p-4 shadow-sm" data-testid="ride-details">
+          <p className="text-xs text-text-secondary font-semibold uppercase tracking-wider mb-3">
+            {posterIsDriver ? 'Your Posted Route' : 'Ride Details'}
+          </p>
+
+          {scheduleInfo?.route_name && (
+            <p className="text-sm font-semibold text-text-primary mb-3">{scheduleInfo.route_name}</p>
+          )}
+
+          <div className="space-y-1.5 mb-3">
+            <div className="flex items-start gap-2">
+              <span className="text-success mt-0.5 text-sm">●</span>
+              <p className="text-sm text-text-primary">{scheduleInfo?.origin_address ?? 'Origin TBD'}</p>
+            </div>
+            <div className="ml-[5px] h-3 border-l border-dashed border-text-secondary/30" />
+            <div className="flex items-start gap-2">
+              <span className="text-danger mt-0.5 text-sm">●</span>
+              <p className="text-sm text-text-primary">{scheduleInfo?.dest_address ?? ride.destination_name ?? 'Destination TBD'}</p>
+            </div>
+          </div>
+
+          {(scheduleInfo?.trip_date ?? ride.trip_date) && (
+            <div className="flex items-center gap-3 text-xs text-text-secondary">
+              <span>{formatDate(scheduleInfo?.trip_date ?? ride.trip_date ?? '')}</span>
+              {(scheduleInfo?.trip_time ?? ride.trip_time) && (
+                <span>
+                  {scheduleInfo?.time_type === 'arrival' ? 'Arrives' : 'Departs'}{' '}
+                  {formatTime(scheduleInfo?.trip_time ?? ride.trip_time ?? '')}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── Actions ─────────────────────────────────────────────────────────── */}
-      <div className="mt-auto px-4 pb-8 pt-4">
+      <div
+        className="bg-white border-t border-border px-4 pt-4"
+        style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 2rem)' }}
+      >
         <button
           type="button"
           onClick={() => void handleAccept()}
           disabled={submitting}
-          className="mb-3 w-full rounded-2xl bg-success py-3.5 text-center font-semibold text-white active:opacity-90 disabled:opacity-50"
+          className="mb-2.5 w-full rounded-2xl bg-success py-3.5 text-center font-semibold text-white active:opacity-90 disabled:opacity-50"
           data-testid="accept-button"
         >
           {submitting ? 'Accepting…' : posterIsDriver ? 'Accept Rider' : 'Accept Ride'}
         </button>
+
+        {/* Counter button — only for drivers who can suggest a transit drop-off */}
+        {posterIsDriver && (
+          <button
+            type="button"
+            onClick={() => void handleCounter()}
+            disabled={submitting}
+            className="mb-2.5 w-full rounded-2xl border-2 border-primary py-3 text-center font-semibold text-primary active:bg-primary active:text-white disabled:opacity-50"
+            data-testid="counter-button"
+          >
+            Suggest Drop-off
+          </button>
+        )}
+
         <button
           type="button"
           onClick={() => void handleDecline()}

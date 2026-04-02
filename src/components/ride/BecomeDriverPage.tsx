@@ -15,6 +15,7 @@ export default function BecomeDriverPage({
     <div
       data-testid={testId}
       className="flex min-h-dvh flex-col bg-surface font-sans pb-16"
+      style={{ paddingTop: 'max(env(safe-area-inset-top), 1rem)' }}
     >
       {/* ── Content ─────────────────────────────────────────────────────────── */}
       <div className="flex flex-1 flex-col items-center justify-center px-6">

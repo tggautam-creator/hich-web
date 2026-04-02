@@ -276,7 +276,7 @@ export default function RateRidePage({ 'data-testid': testId }: RateRidePageProp
   return (
     <div className="flex min-h-screen flex-col bg-surface" data-testid={testId ?? 'rate-ride'}>
       {/* Header */}
-      <div className="flex flex-col items-center gap-3 px-6 pt-12 pb-4">
+      <div className="flex flex-col items-center gap-3 px-6 pb-4" style={{ paddingTop: 'max(env(safe-area-inset-top), 1rem)' }}>
         {otherUser && (
           <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary-light text-primary text-2xl font-bold">
             {otherUser.full_name?.charAt(0)?.toUpperCase() ?? '?'}

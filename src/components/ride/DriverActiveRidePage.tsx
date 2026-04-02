@@ -79,6 +79,22 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
 
       setRide(rideData)
 
+      // Multi-rider detection: if schedule has other active/coordinating rides, redirect
+      if (rideData.schedule_id) {
+        const { data: siblingRides } = await supabase
+          .from('rides')
+          .select('id')
+          .eq('schedule_id', rideData.schedule_id)
+          .in('status', ['coordinating', 'accepted', 'active'])
+          .neq('id', rideData.id)
+          .limit(1)
+
+        if (siblingRides && siblingRides.length > 0) {
+          navigate(`/ride/driver-multi/${rideData.schedule_id}`, { replace: true })
+          return
+        }
+      }
+
       const { data: riderData } = await supabase
         .from('users')
         .select('id, full_name, avatar_url, rating_avg, rating_count')
@@ -108,6 +124,34 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
 
     return () => navigator.geolocation.clearWatch(watchId)
   }, [])
+
+  // ── Send GPS pings to server for distance tracking (fare accuracy) ──────
+  useEffect(() => {
+    if (!isActive || !rideId || driverLat === null || driverLng === null) return
+
+    // Send initial ping immediately, then every 10 seconds
+    const sendPing = async () => {
+      if (driverLat === null || driverLng === null) return
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) return
+        await fetch(`/api/rides/${rideId}/gps-ping`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ lat: driverLat, lng: driverLng }),
+        })
+      } catch {
+        // Silently fail — GPS pings are best-effort
+      }
+    }
+
+    void sendPing()
+    const interval = setInterval(() => { void sendPing() }, 10_000)
+    return () => clearInterval(interval)
+  }, [isActive, rideId, driverLat, driverLng])
 
   // ── Fetch directions for route polyline ──────────────────────────────────
   useEffect(() => {
