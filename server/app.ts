@@ -29,6 +29,7 @@ app.set('trust proxy', 1)
 
 // CORS — allow Vercel production, preview deploys, and localhost dev
 const ALLOWED_ORIGINS = [
+  /^https:\/\/(www\.)?tagorides\.com$/,
   /^https:\/\/.*\.vercel\.app$/,
   /^http:\/\/localhost(:\d+)?$/,
   /^http:\/\/127\.0\.0\.1(:\d+)?$/,
