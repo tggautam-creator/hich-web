@@ -1,7 +1,7 @@
 /**
  * RiderHomePage tests
  *
- * Layout: frosted top bar (HICH wordmark + notifications bell)
+ * Layout: frosted top bar (TAGO wordmark + notifications bell)
  *         full-screen map with GPS blue dot
  *         stacked search card + ride board button above bottom nav
  *         bottom nav: Home (active) | Drive | Wallet | Profile

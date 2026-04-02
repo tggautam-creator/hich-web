@@ -87,7 +87,7 @@ export default function LocationPermissionsPage({
                 Location access was denied
               </p>
               <p className="text-sm text-text-secondary mb-3">
-                To use HICH, please enable location in your browser settings:
+                TAGO needs your location to find rides near you. Please enable location in your browser settings:
               </p>
               <ol className="text-sm text-text-secondary space-y-1 list-decimal list-inside">
                 <li>Open your browser settings</li>

@@ -92,7 +92,7 @@ vi.mock('@/lib/fare', () => ({
 vi.mock('@/components/ride/QrScanner', () => ({
   default: ({ onScan, 'data-testid': tid }: { onScan: (text: string) => void; onError?: (err: string) => void; 'data-testid'?: string }) => (
     <div data-testid={tid ?? 'qr-scanner'}>
-      <button data-testid="mock-scan-trigger" onClick={() => onScan('hich:driver-001')}>
+      <button data-testid="mock-scan-trigger" onClick={() => onScan('tago:driver-001')}>
         Simulate Scan
       </button>
     </div>

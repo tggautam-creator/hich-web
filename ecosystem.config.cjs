@@ -1,5 +1,5 @@
 /**
- * PM2 Ecosystem Config — HICH Server
+ * PM2 Ecosystem Config — TAGO Server
  *
  * Usage:
  *   pm2 start ecosystem.config.cjs --env production
@@ -11,7 +11,7 @@
 module.exports = {
   apps: [
     {
-      name: 'hich-server',
+      name: 'tago-server',
       script: './node_modules/.bin/tsx',
       args: '--env-file=.env server/index.ts',
 
@@ -53,7 +53,7 @@ module.exports = {
     // Cron worker: checks for upcoming scheduled rides every 5 minutes
     // and sends reminder push notifications
     {
-      name: 'hich-reminders',
+      name: 'tago-reminders',
       script: './node_modules/.bin/tsx',
       args: '--env-file=.env server/cron/reminders.ts',
       instances: 1,

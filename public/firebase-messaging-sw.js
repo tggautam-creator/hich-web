@@ -35,7 +35,7 @@ self.addEventListener('push', (event) => {
 messaging.onBackgroundMessage((payload) => {
   console.log('[SW] Background message received:', payload)
   const data  = payload.data ?? {}
-  const title = data.title ?? 'HICH'
+  const title = data.title ?? 'TAGO'
   const body  = data.body  ?? 'You have a new notification'
 
   self.registration.showNotification(title, {

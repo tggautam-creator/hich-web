@@ -13,7 +13,7 @@ process.on('unhandledRejection', (reason) => {
 })
 
 const server = app.listen(PORT, () => {
-  console.log(`HICH server listening on port ${PORT}`)
+  console.log(`TAGO server listening on port ${PORT}`)
 })
 
 process.on('SIGTERM', () => {

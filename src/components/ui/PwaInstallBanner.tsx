@@ -29,7 +29,7 @@ export default function PwaInstallBanner({
     >
       <div className="flex items-center justify-between px-4 py-2.5">
         <p className="text-xs font-medium flex-1">
-          Install HICH for a better experience
+          Install TAGO for the best ride experience
         </p>
         <button
           onClick={setDismissedBanner}

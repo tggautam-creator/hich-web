@@ -9,7 +9,7 @@
 
 import { authLog } from '@/lib/authLogger'
 
-const DB_NAME = 'hich-auth'
+const DB_NAME = 'tago-auth'
 const STORE_NAME = 'session'
 const DB_VERSION = 1
 

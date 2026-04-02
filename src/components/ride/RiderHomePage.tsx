@@ -159,7 +159,7 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
         style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
       >
         <span className="font-bold text-lg text-primary tracking-widest select-none">
-          HICH
+          TAGO
         </span>
 
         <button

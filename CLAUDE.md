@@ -1,4 +1,4 @@
-# HICH — Claude Code Context
+# TAGO — Claude Code Context
 
 ## What This App Is
 Carpooling PWA for university students. `.edu` email is the trust layer. Riders request rides, drivers get push notifications and accept. A QR code scan starts the ride and a second QR scan ends it and triggers payment. No driver needs to manually post anything.

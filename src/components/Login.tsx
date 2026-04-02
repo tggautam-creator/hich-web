@@ -218,7 +218,7 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
         </form>
 
         <p className="text-sm text-text-secondary text-center">
-          New to HICH?{' '}
+          New to TAGO?{' '}
           <button
             onClick={() => { navigate('/signup') }}
             className="text-primary font-medium underline"

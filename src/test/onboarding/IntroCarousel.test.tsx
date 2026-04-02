@@ -61,7 +61,7 @@ describe('IntroCarousel', () => {
 
   it('shows selling points across slides', () => {
     render(<IntroCarousel />)
-    // First slide mentions verified profiles
-    expect(screen.getByText(/Verified profiles/)).toBeDefined()
+    // First slide mentions going the same way
+    expect(screen.getByText(/Going the same way/)).toBeDefined()
   })
 })

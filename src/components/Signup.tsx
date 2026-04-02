@@ -94,7 +94,7 @@ export default function Signup({ 'data-testid': testId }: SignupProps) {
 
       <main className="flex-1 flex flex-col justify-center px-6 gap-8">
         <div className="space-y-2">
-          <h1 className="text-3xl font-bold text-text-primary">Join HICH</h1>
+          <h1 className="text-3xl font-bold text-text-primary">Join TAGO</h1>
           <p className="text-text-secondary">
             Enter your university email to get started.
           </p>
@@ -157,7 +157,7 @@ export default function Signup({ 'data-testid': testId }: SignupProps) {
 
         <p className="text-sm text-text-secondary text-center">
           Only <span className="font-semibold">.edu</span> emails accepted.
-          HICH is for university students only.
+          TAGO is for verified university students only.
         </p>
 
         <p className="text-sm text-text-secondary text-center">

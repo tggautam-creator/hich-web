@@ -16,6 +16,6 @@ export const usePwaStore = create<PwaState>()(
       setSeenFullPrompt: () => set({ hasSeenFullPrompt: true }),
       setDismissedBanner: () => set({ hasDismissedBanner: true }),
     }),
-    { name: 'hich-pwa' },
+    { name: 'tago-pwa' },
   ),
 )

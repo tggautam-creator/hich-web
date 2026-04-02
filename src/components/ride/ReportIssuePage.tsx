@@ -16,7 +16,7 @@ const CATEGORIES = [
   { value: 'other', label: 'Other' },
 ] as const
 
-const SUPPORT_EMAIL = 'hichrides@gmail.com'
+const SUPPORT_EMAIL = 'tagorides@gmail.com'
 
 export default function ReportIssuePage({
   'data-testid': testId = 'report-issue-page',
@@ -35,7 +35,7 @@ export default function ReportIssuePage({
     if (!canSubmit) return
 
     const categoryLabel = CATEGORIES.find((c) => c.value === category)?.label ?? category
-    const subject = encodeURIComponent(`[HICH] ${categoryLabel}`)
+    const subject = encodeURIComponent(`[TAGO] ${categoryLabel}`)
     const body = encodeURIComponent(
       `Category: ${categoryLabel}\n` +
       `User: ${profile?.email ?? 'unknown'}\n` +

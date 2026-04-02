@@ -2,7 +2,7 @@
  * Landing page tests
  *
  * Verifies:
- *  1. HICH brand renders
+ *  1. TAGO brand renders
  *  2. "Sign up" CTA button renders
  *  3. "Log in" CTA button renders
  *  4. Trust strip renders with all three claims
@@ -37,10 +37,10 @@ describe('Landing page', () => {
     mockNavigate.mockClear()
   })
 
-  it('renders the HICH brand name', () => {
+  it('renders the TAGO brand name', () => {
     renderLanding()
     expect(screen.getByTestId('landing-logo')).toBeInTheDocument()
-    expect(screen.getByTestId('landing-logo').textContent).toContain('HICH')
+    expect(screen.getByTestId('landing-logo').textContent).toContain('TAGO')
   })
 
   it('renders "Get started" CTA button', () => {

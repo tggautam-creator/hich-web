@@ -61,10 +61,10 @@ export default function PwaInstallPrompt({
       <main className="flex-1 flex flex-col justify-center px-6 gap-8">
         <div className="space-y-4">
           <h1 className="text-3xl font-bold text-text-primary leading-tight">
-            Install HICH for the best experience
+            Install TAGO for the best experience
           </h1>
           <p className="text-base text-text-secondary leading-relaxed">
-            Add HICH to your home screen for instant access, push notifications, and a full-screen experience.
+            Add TAGO to your home screen for instant access, push notifications, and a full-screen experience.
           </p>
         </div>
 
@@ -100,7 +100,7 @@ export default function PwaInstallPrompt({
               disabled={installing}
               data-testid="pwa-native-install"
             >
-              {installing ? 'Installing...' : 'Install HICH'}
+              {installing ? 'Installing...' : 'Install TAGO'}
             </PrimaryButton>
           </div>
         ) : (

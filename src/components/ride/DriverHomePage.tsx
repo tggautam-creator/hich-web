@@ -265,7 +265,7 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         </div>
 
         <span className="font-bold text-sm text-text-primary tracking-wider select-none">
-          HICH DRIVER
+          TAGO DRIVER
         </span>
 
         <button

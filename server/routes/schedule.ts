@@ -438,7 +438,7 @@ scheduleRouter.post(
 
     const notifiedCount = await sendFcmPush(tokens, {
       title: 'Scheduled ride match',
-      body: `A ${body.mode} has a trip on ${body.trip_date} — check HICH.`,
+      body: `A ${body.mode} has a trip on ${body.trip_date} — check TAGO.`,
       data: {
         type: 'schedule_match',
         trip_date: body.trip_date,

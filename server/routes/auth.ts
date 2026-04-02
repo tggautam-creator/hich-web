@@ -22,7 +22,7 @@ import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 
 export const authRouter = Router()
 
-const COOKIE_NAME = 'hich_rt'
+const COOKIE_NAME = 'tago_rt'
 const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000 // 30 days — outlasts Supabase refresh token for reliability
 
 function cookieOpts() {

@@ -228,7 +228,7 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
         <section className="mb-6">
           <h2 className="text-sm font-semibold text-text-primary mb-3">About</h2>
           <div className="bg-white rounded-2xl border border-border p-4 space-y-2">
-            <p className="text-xs text-text-secondary">HICH — Community Rideshare</p>
+            <p className="text-xs text-text-secondary">TAGO — Tag Along. Go Smarter.</p>
             <p className="text-xs text-text-secondary">Version 1.0.0</p>
             <p className="text-xs text-text-secondary mt-2">Made with love in Davis, CA</p>
           </div>

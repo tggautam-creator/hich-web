@@ -11,8 +11,8 @@
 
 import { authLog } from '@/lib/authLogger'
 
-const CACHE_NAME = 'hich-auth-v1'
-const CACHE_KEY = '/hich-auth-token'
+const CACHE_NAME = 'tago-auth-v1'
+const CACHE_KEY = '/tago-auth-token'
 
 /**
  * Request persistent storage from the browser.

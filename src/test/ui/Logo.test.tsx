@@ -23,13 +23,13 @@ describe('Logo', () => {
     const logo = screen.getByTestId('logo')
     const img = logo.querySelector('img')
     expect(img?.getAttribute('width')).toBe('80')
-    expect(logo.textContent).toContain('HICH')
+    expect(logo.textContent).toContain('TAGO')
   })
 
   it('does not show text at medium size', () => {
     render(<Logo />)
     const logo = screen.getByTestId('logo')
-    expect(logo.textContent).not.toContain('HICH')
+    expect(logo.textContent).not.toContain('TAGO')
   })
 
   it('accepts custom data-testid', () => {

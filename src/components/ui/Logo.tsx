@@ -13,14 +13,14 @@ export default function Logo({ size = 'md', 'data-testid': testId = 'logo' }: Lo
     <div data-testid={testId} className="flex items-center gap-3" style={{ height: px }}>
       <img
         src="/icon-512x512.png"
-        alt="HICH"
+        alt="TAGO"
         width={px}
         height={px}
         aria-hidden="true"
       />
       {showText && (
         <span className="text-3xl font-extrabold tracking-tight text-primary">
-          HICH
+          TAGO
         </span>
       )}
     </div>

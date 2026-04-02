@@ -18,6 +18,6 @@ export const useOnboardingStore = create<OnboardingState>()(
       setWalkthroughSeen: () => set({ hasSeenWalkthrough: true }),
       resetTour: () => set({ hasSeenIntro: false, hasSeenWalkthrough: false }),
     }),
-    { name: 'hich-onboarding' },
+    { name: 'tago-onboarding' },
   ),
 )

@@ -9,7 +9,7 @@ const SLIDES: readonly { id: string; title: string; description: string; image: 
   {
     id: 'welcome',
     title: 'Going the same way?',
-    description: 'HICH matches you with people already headed your direction. Verified profiles, real savings, zero hassle.',
+    description: 'TAGO connects you with drivers already headed your way. Tag along on routes that exist — no detours, no waiting.',
     image: '/onboarding/slide-welcome.png',
   },
   {
@@ -21,7 +21,7 @@ const SLIDES: readonly { id: string; title: string; description: string; image: 
   {
     id: 'safety',
     title: 'Rides from people you know',
-    description: 'Everyone on HICH is verified. You\'ll see their name, photo, and rating before you ride. Emergency help is always one tap away.',
+    description: 'Every TAGO rider and driver is verified with a .edu email. Your campus community, your trusted rides.',
     image: '/onboarding/slide-safety.png',
   },
   {

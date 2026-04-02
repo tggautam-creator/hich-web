@@ -15,7 +15,7 @@ This file is a **self-contained implementation guide** for the Ride Board UX ove
 
 ## Product Context
 
-Hich is a carpooling PWA for university students. The **Ride Board** is the scheduling feature where:
+Tago is a carpooling PWA for university students. The **Ride Board** is the scheduling feature where:
 - **Drivers** post upcoming trips (origin, destination, date, time, seats)
 - **Riders** browse the board and request to join a driver's trip
 - **Drivers** receive a push notification and review the request on the `BoardRequestReview` screen

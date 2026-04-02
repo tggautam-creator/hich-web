@@ -1,5 +1,5 @@
 /**
- * Clean, professional icon set for the HICH app.
+ * Clean, professional icon set for the TAGO app.
  * Filled style with consistent weight — no emojis, no outlines.
  * Matches the visual language of Uber/Lyft.
  */

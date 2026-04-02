@@ -12,7 +12,7 @@ interface DriverQrSheetProps {
 
 /**
  * Bottom sheet displaying the driver's permanent QR code.
- * The QR encodes "hich:{driverId}" — riders scan this to start/end rides.
+ * The QR encodes "tago:{driverId}" — riders scan this to start/end rides.
  * The short code (first 8 chars of UUID) is shown for manual entry.
  */
 export default function DriverQrSheet({
@@ -35,7 +35,7 @@ export default function DriverQrSheet({
       setLoading(true)
 
       try {
-        const dataUrl = await QRCode.toDataURL(`hich:${driverId}`, {
+        const dataUrl = await QRCode.toDataURL(`tago:${driverId}`, {
           width: 256,
           margin: 2,
           color: { dark: '#000000', light: '#ffffff' },

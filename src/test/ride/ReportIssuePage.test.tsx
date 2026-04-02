@@ -61,7 +61,7 @@ describe('ReportIssuePage', () => {
     })
     fireEvent.click(screen.getByTestId('submit-button'))
     expect(window.open).toHaveBeenCalledWith(
-      expect.stringContaining('mailto:hichrides@gmail.com'),
+      expect.stringContaining('mailto:tagorides@gmail.com'),
       '_self',
     )
   })

@@ -277,7 +277,7 @@ ridesRouter.post(
     console.log(`[rides/request] Found ${tokens.length} push tokens for ${driverIds.length} drivers`)
     const notifiedCount = await sendFcmPush(tokens, {
       title: 'New ride request nearby',
-      body: 'A rider needs a lift — open HICH to view.',
+      body: 'A rider needs a lift — open TAGO to check.',
       data: { type: 'ride_request', ride_id: ride.id },
     })
 
@@ -299,7 +299,7 @@ ridesRouter.post(
         user_id: driverId,
         type: 'ride_request',
         title: 'New ride request nearby',
-        body: 'A rider needs a lift — open HICH to view.',
+        body: 'A rider needs a lift — open TAGO to check.',
         data: {
           type: 'ride_request',
           ride_id: ride.id,
@@ -647,7 +647,7 @@ ridesRouter.patch(
           if (tokens.length > 0) {
             await sendFcmPush(tokens, {
               title: 'New ride request nearby',
-              body: 'A rider needs a lift — open HICH to view.',
+              body: 'A rider needs a lift — open TAGO to check.',
               data: { type: 'ride_request', ride_id: rideId },
             })
           }
@@ -1236,7 +1236,7 @@ ridesRouter.patch(
       const tokens = (tokenRows ?? []).map((t: { token: string }) => t.token)
       await sendFcmPush(tokens, {
         title: 'New ride request nearby',
-        body: 'A rider needs a lift — open HICH to view.',
+        body: 'A rider needs a lift — open TAGO to check.',
         data: { type: 'ride_request', ride_id: rideId },
       })
     }
@@ -1361,7 +1361,7 @@ ridesRouter.patch(
     if (selTokens.length > 0) {
       await sendFcmPush(selTokens, {
         title: 'You were selected!',
-        body: 'The rider chose you — open HICH to start.',
+        body: 'The rider chose you — open TAGO to start.',
         data: { type: 'driver_selected', ride_id: rideId },
       })
     }
@@ -1777,7 +1777,7 @@ ridesRouter.patch(
       if (tokens.length > 0) {
         await sendFcmPush(tokens, {
           title: 'Pickup point suggested!',
-          body: `${proposerRole} suggested a pickup point — open HICH to review.`,
+          body: `${proposerRole} suggested a pickup point — open TAGO to review.`,
           data: { type: 'pickup_set', ride_id: rideId },
         })
       }
@@ -1889,7 +1889,7 @@ ridesRouter.patch(
       if (tokens.length > 0) {
         await sendFcmPush(tokens, {
           title: 'Dropoff location suggested!',
-          body: `${dropProposerRole} suggested a dropoff point — open HICH to review.`,
+          body: `${dropProposerRole} suggested a dropoff point — open TAGO to review.`,
           data: { type: 'dropoff_set', ride_id: rideId },
         })
       }
@@ -2629,7 +2629,7 @@ ridesRouter.post(
  * POST /api/rides/scan-driver — rider scans driver QR (or enters code) to start/end ride.
  *
  * The driver_code is the first 8 characters of the driver's user UUID.
- * The QR encodes the full driver UUID prefixed with "hich:".
+ * The QR encodes the full driver UUID prefixed with "tago:".
  *
  * Flow:
  *  1. Resolve the driver from driver_code (full UUID or first 8 chars)
@@ -2661,8 +2661,8 @@ ridesRouter.post(
       return
     }
 
-    // Strip "hich:" prefix if present (from QR scan)
-    const code = driver_code.startsWith('hich:') ? driver_code.slice(5) : driver_code
+    // Strip "tago:" prefix if present (from QR scan)
+    const code = driver_code.startsWith('tago:') ? driver_code.slice(5) : driver_code
 
     // Resolve driver — try full UUID first, then prefix range match
     let driverId: string | null = null
@@ -3733,7 +3733,7 @@ ridesRouter.post(
       if (tokens.length > 0) {
         await sendFcmPush(tokens, {
           title: 'Transit dropoff suggested!',
-          body: `Driver suggests dropping you at ${station_name} — open HICH to review transit options.`,
+          body: `Driver suggests dropping you at ${station_name} — open TAGO to review transit options.`,
           data: { type: 'transit_dropoff', ride_id: rideId },
         })
       }

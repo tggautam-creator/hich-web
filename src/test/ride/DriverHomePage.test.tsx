@@ -1,7 +1,7 @@
 /**
  * DriverHomePage tests
  *
- * Layout: frosted top bar (online/offline pill + HICH DRIVER + bell)
+ * Layout: frosted top bar (online/offline pill + TAGO DRIVER + bell)
  *         full-screen map with GPS green dot
  *         ride board button
  *         bottom nav
@@ -224,10 +224,10 @@ describe('DriverHomePage', () => {
 
   // ── Top bar ────────────────────────────────────────────────────────────────
 
-  it('renders the top bar with HICH DRIVER wordmark', () => {
+  it('renders the top bar with TAGO DRIVER wordmark', () => {
     renderPage()
     expect(screen.getByTestId('top-bar')).toBeInTheDocument()
-    expect(screen.getByTestId('top-bar').textContent).toContain('HICH DRIVER')
+    expect(screen.getByTestId('top-bar').textContent).toContain('TAGO DRIVER')
   })
 
   it('does not have a hamburger menu', () => {

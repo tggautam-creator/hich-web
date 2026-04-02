@@ -1,5 +1,5 @@
 /**
- * Custom Google Maps style for HICH brand
+ * Custom Google Maps style for TAGO brand
  * Applies brand colors and clean aesthetic
  */
 

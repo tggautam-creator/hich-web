@@ -44,7 +44,7 @@ interface PlacesApiResponse {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const PLACES_ENDPOINT = 'https://places.googleapis.com/v1/places:autocomplete'
-const RECENT_KEY      = 'hich:recent-destinations'
+const RECENT_KEY      = 'tago:recent-destinations'
 const MAX_RECENT      = 5
 
 // ── Search ────────────────────────────────────────────────────────────────────
