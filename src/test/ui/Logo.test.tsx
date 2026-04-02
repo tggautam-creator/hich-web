@@ -37,9 +37,9 @@ describe('Logo', () => {
     expect(screen.getByTestId('custom-logo')).toBeDefined()
   })
 
-  it('uses /icon-512x512.png as image source', () => {
+  it('uses /logo-transparent.png as image source', () => {
     render(<Logo />)
     const img = screen.getByTestId('logo').querySelector('img')
-    expect(img?.getAttribute('src')).toBe('/icon-512x512.png')
+    expect(img?.getAttribute('src')).toBe('/logo-transparent.png')
   })
 })

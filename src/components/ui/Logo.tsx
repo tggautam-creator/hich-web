@@ -12,7 +12,7 @@ export default function Logo({ size = 'md', 'data-testid': testId = 'logo' }: Lo
   return (
     <div data-testid={testId} className="flex items-center gap-3" style={{ height: px }}>
       <img
-        src="/icon-512x512.png"
+        src="/logo-transparent.png"
         alt="TAGO"
         width={px}
         height={px}
