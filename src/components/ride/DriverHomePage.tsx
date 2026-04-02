@@ -33,7 +33,6 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
   const [unreadCount, setUnreadCount] = useState(0)
   const [statusToast, setStatusToast] = useState<string | null>(null)
   const [userPanned, setUserPanned] = useState(false)
-  const [onboarding, setOnboarding] = useState(false)
 
   const hasBank = profile?.stripe_onboarding_complete === true
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -153,34 +152,6 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
     searchParams.delete('stripe_return')
     setSearchParams(searchParams, { replace: true })
   }, [searchParams, setSearchParams, refreshProfile])
-
-  async function handleStripeOnboard() {
-    setOnboarding(true)
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) return
-      const returnUrl = `${window.location.origin}/home/driver?stripe_return=1`
-      const resp = await fetch('/api/connect/onboard', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ return_url: returnUrl, refresh_url: returnUrl }),
-      })
-      if (!resp.ok) return
-      const body = (await resp.json()) as { url?: string; already_complete?: boolean }
-      if (body.already_complete) {
-        await refreshProfile()
-        return
-      }
-      if (body.url) {
-        window.location.href = body.url
-      }
-    } finally {
-      setOnboarding(false)
-    }
-  }
 
   async function handleToggleOnline() {
     if (!hasBank) {
@@ -383,11 +354,10 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
             </div>
             <button
               data-testid="setup-bank-button"
-              onClick={() => { void handleStripeOnboard() }}
-              disabled={onboarding}
-              className="w-full rounded-xl bg-primary py-2.5 text-sm font-semibold text-white active:opacity-90 transition-opacity disabled:opacity-60"
+              onClick={() => { navigate('/stripe/payouts') }}
+              className="w-full rounded-xl bg-primary py-2.5 text-sm font-semibold text-white active:opacity-90 transition-opacity"
             >
-              {onboarding ? 'Redirecting…' : 'Set Up Payouts'}
+              Set Up Payouts
             </button>
           </div>
         )}
