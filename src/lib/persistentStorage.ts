@@ -13,6 +13,8 @@ import { authLog } from '@/lib/authLogger'
 
 const CACHE_NAME = 'tago-auth-v1'
 const CACHE_KEY = '/tago-auth-token'
+const OLD_CACHE_NAME = 'hich-auth-v1' // migration fallback
+const OLD_CACHE_KEY = '/hich-auth-token'
 
 /**
  * Request persistent storage from the browser.
@@ -67,7 +69,22 @@ export async function getCachedRefreshToken(): Promise<string | null> {
       return null
     }
     const cache = await caches.open(CACHE_NAME)
-    const response = await cache.match(CACHE_KEY)
+    let response = await cache.match(CACHE_KEY)
+    // Migration: try old cache name for users who haven't re-logged after rebrand
+    if (!response) {
+      try {
+        const oldCache = await caches.open(OLD_CACHE_NAME)
+        response = (await oldCache.match(OLD_CACHE_KEY)) ?? undefined
+        if (response) {
+          // Migrate to new cache so this only happens once
+          const token = await response.clone().text()
+          await cache.put(new Request(CACHE_KEY), new Response(token, {
+            headers: { 'Content-Type': 'text/plain', 'X-Timestamp': Date.now().toString() },
+          }))
+          authLog('cacheStorage', 'getCachedRefreshToken', true, 'migrated from hich-auth-v1')
+        }
+      } catch { /* old cache not available */ }
+    }
     if (!response) {
       authLog('cacheStorage', 'getCachedRefreshToken', false, 'no cached token found')
       return null

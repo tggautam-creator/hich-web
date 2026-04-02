@@ -131,10 +131,10 @@ describe('EmergencySheet', () => {
     })
 
     expect(screen.getByTestId('emergency-share-link')).toHaveTextContent(
-      `https://tago.app/track/${mockToken}`,
+      `https://tagorides.com/track/${mockToken}`,
     )
 
-    expect(writeText).toHaveBeenCalledWith(`https://tago.app/track/${mockToken}`)
+    expect(writeText).toHaveBeenCalledWith(`https://tagorides.com/track/${mockToken}`)
   })
 
   it('shows error state on API failure', async () => {

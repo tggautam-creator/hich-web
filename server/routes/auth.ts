@@ -57,7 +57,8 @@ authRouter.post('/session', validateJwt, (req: Request, res: Response) => {
  * has lost its tokens (iOS force-kill).
  */
 authRouter.get('/session', async (req: Request, res: Response) => {
-  const refreshToken = req.cookies?.[COOKIE_NAME]
+  // Read new cookie name, fall back to old name for users who haven't re-logged after rebrand
+  const refreshToken = req.cookies?.[COOKIE_NAME] ?? req.cookies?.['hich_rt']
   console.log(`[auth/session GET] hasCookie=${Boolean(refreshToken)} cookieLength=${typeof refreshToken === 'string' ? refreshToken.length : 0}`)
   if (!refreshToken) {
     res.json({ session: null })

@@ -48,7 +48,7 @@ export default function EmergencySheet({
       }
 
       const body = (await res.json()) as { token: string }
-      const link = `https://tago.app/track/${body.token}`
+      const link = `https://tagorides.com/track/${body.token}`
       setShareLink(link)
       setShareStatus('shared')
 

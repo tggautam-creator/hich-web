@@ -10,6 +10,7 @@
 import { authLog } from '@/lib/authLogger'
 
 const DB_NAME = 'tago-auth'
+const OLD_DB_NAME = 'hich-auth' // migration: read from old DB if new one is empty
 const STORE_NAME = 'session'
 const DB_VERSION = 1
 
@@ -81,8 +82,33 @@ export const idbStorage = {
     }
     // Fallback to localStorage
     const lsValue = localStorage.getItem(key)
-    authLog('localStorage', `getItem(${key.slice(0, 30)})`, lsValue !== null, lsValue ? 'source=localStorage' : 'not found in any store')
-    return lsValue
+    if (lsValue) {
+      authLog('localStorage', `getItem(${key.slice(0, 30)})`, true, 'source=localStorage')
+      return lsValue
+    }
+    // Migration: try old hich-auth DB for users who haven't re-logged after rebrand
+    try {
+      const oldValue = await new Promise<string | null>((resolve, reject) => {
+        const req = indexedDB.open(OLD_DB_NAME, 1)
+        req.onsuccess = () => {
+          const db = req.result
+          if (!db.objectStoreNames.contains(STORE_NAME)) { db.close(); resolve(null); return }
+          const tx = db.transaction(STORE_NAME, 'readonly')
+          const getReq = tx.objectStore(STORE_NAME).get(key)
+          getReq.onsuccess = () => { db.close(); resolve((getReq.result as string) ?? null) }
+          getReq.onerror = () => { db.close(); reject(getReq.error) }
+        }
+        req.onerror = () => resolve(null)
+      })
+      if (oldValue) {
+        authLog('idb', `getItem(${key.slice(0, 30)})`, true, 'source=hich-auth-migration')
+        // Migrate to new DB so this only happens once
+        void idbSet(key, oldValue).catch(() => {})
+        return oldValue
+      }
+    } catch { /* old DB not available, ignore */ }
+    authLog('localStorage', `getItem(${key.slice(0, 30)})`, false, 'not found in any store')
+    return null
   },
 
   async setItem(key: string, value: string): Promise<void> {
