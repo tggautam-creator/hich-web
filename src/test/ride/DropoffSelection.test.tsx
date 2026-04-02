@@ -204,7 +204,7 @@ describe('DropoffSelection', () => {
     })
   })
 
-  it('selecting rider\'s destination navigates to messaging', async () => {
+  it('selecting rider\'s destination opens confirmation modal', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({ suggestions: MOCK_SUGGESTIONS, polyline: null }),
@@ -217,10 +217,11 @@ describe('DropoffSelection', () => {
 
     fireEvent.click(screen.getByTestId('rider-dest-option'))
 
-    expect(mockNavigate).toHaveBeenCalledWith(
-      '/ride/messaging/ride-123',
-      { replace: true, state: { driverDestinationSet: true } },
-    )
+    // Should show confirmation modal with confirm button, not navigate immediately
+    await waitFor(() => {
+      expect(screen.getByText('Confirm Dropoff')).toBeInTheDocument()
+      expect(screen.getByText('Go Back')).toBeInTheDocument()
+    })
   })
 
   it('selecting a station calls suggest-transit-dropoff', async () => {

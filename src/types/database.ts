@@ -214,6 +214,14 @@ export type Database = {
           gps_distance_metres: number
           last_gps_lat: number | null
           last_gps_lng: number | null
+          last_driver_gps_lat: number | null
+          last_driver_gps_lng: number | null
+          last_rider_gps_lat: number | null
+          last_rider_gps_lng: number | null
+          last_driver_ping_at: string | null
+          last_rider_ping_at: string | null
+          dropoff_reminder_sent: boolean
+          auto_ended: boolean
         }
         Insert: {
           id?: string
@@ -253,6 +261,14 @@ export type Database = {
           gps_distance_metres?: number
           last_gps_lat?: number | null
           last_gps_lng?: number | null
+          last_driver_gps_lat?: number | null
+          last_driver_gps_lng?: number | null
+          last_rider_gps_lat?: number | null
+          last_rider_gps_lng?: number | null
+          last_driver_ping_at?: string | null
+          last_rider_ping_at?: string | null
+          dropoff_reminder_sent?: boolean
+          auto_ended?: boolean
         }
         Update: {
           id?: string
@@ -292,6 +308,14 @@ export type Database = {
           gps_distance_metres?: number
           last_gps_lat?: number | null
           last_gps_lng?: number | null
+          last_driver_gps_lat?: number | null
+          last_driver_gps_lng?: number | null
+          last_rider_gps_lat?: number | null
+          last_rider_gps_lng?: number | null
+          last_driver_ping_at?: string | null
+          last_rider_ping_at?: string | null
+          dropoff_reminder_sent?: boolean
+          auto_ended?: boolean
         }
         Relationships: never[]
       }

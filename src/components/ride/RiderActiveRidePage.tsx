@@ -110,6 +110,33 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
     return () => navigator.geolocation.clearWatch(watcher)
   }, [])
 
+  // ── Send GPS pings to server for fare distance tracking (rider backup) ──
+  useEffect(() => {
+    if (ride?.status !== 'active' || !rideId || !riderPos) return
+
+    const sendPing = async () => {
+      if (!riderPos) return
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) return
+        await fetch(`/api/rides/${rideId}/gps-ping`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ lat: riderPos.lat, lng: riderPos.lng }),
+        })
+      } catch {
+        // Best-effort — driver pings are primary, rider is backup
+      }
+    }
+
+    void sendPing()
+    const interval = setInterval(() => { void sendPing() }, 10_000)
+    return () => clearInterval(interval)
+  }, [ride?.status, rideId, riderPos])
+
   // ── Fetch route polyline + live ETA ─────────────────────────────────────
   useEffect(() => {
     if (!ride) return

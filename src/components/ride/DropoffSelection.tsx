@@ -45,6 +45,10 @@ export default function DropoffSelection({
   const [picking, setPicking] = useState(false)
   const [cancelModal, setCancelModal] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const [directDropoffModal, setDirectDropoffModal] = useState(false)
+  const [directDropoffLoading, setDirectDropoffLoading] = useState(false)
+  const [fareEstimate, setFareEstimate] = useState<number | null>(null)
+  const [fareLoading, setFareLoading] = useState(false)
   const cardRefs = useRef<globalThis.Map<number, HTMLDivElement>>(new globalThis.Map())
   const fetchedRef = useRef(false)
 
@@ -235,14 +239,64 @@ export default function DropoffSelection({
     } catch { /* non-fatal */ }
   }, [rideId])
 
-  // Select rider's final destination (no transit suggestion needed)
-  function handlePickRiderDest() {
-    trackEvent('driver_picked_rider_dest', { ride_id: rideId })
-    void broadcastDropoffDone()
-    navigate(`/ride/messaging/${rideId}`, {
-      replace: true,
-      state: { driverDestinationSet: true },
-    })
+  // Show confirmation modal for direct dropoff at rider's destination
+  async function handlePickRiderDest() {
+    setDirectDropoffModal(true)
+    setFareLoading(true)
+    setFareEstimate(null)
+
+    // Client-side fare estimate from coords we already have
+    if (state?.pickupLat && state?.pickupLng && state?.riderDestLat && state?.riderDestLng) {
+      const R = 6371
+      const dLat = ((state.riderDestLat - state.pickupLat) * Math.PI) / 180
+      const dLng = ((state.riderDestLng - state.pickupLng) * Math.PI) / 180
+      const a = Math.sin(dLat / 2) ** 2 + Math.cos((state.pickupLat * Math.PI) / 180) * Math.cos((state.riderDestLat * Math.PI) / 180) * Math.sin(dLng / 2) ** 2
+      const distKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 1.3 // road correction
+      const distMiles = distKm * 0.621371
+      const gallons = distMiles / 25
+      const gasCents = Math.round(gallons * 3.5 * 100)
+      const estMin = Math.round(distKm / 40 * 60)
+      const timeCents = Math.round(estMin * 5)
+      const fare = Math.max(200, Math.min(4000, 100 + gasCents + timeCents))
+      setFareEstimate(fare)
+    }
+    setFareLoading(false)
+  }
+
+  // Confirm direct dropoff — call server endpoint
+  async function handleConfirmDirectDropoff() {
+    setDirectDropoffLoading(true)
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token
+      if (!token || !rideId) return
+
+      const resp = await fetch(`/api/rides/${rideId}/confirm-direct-dropoff`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+
+      if (!resp.ok) {
+        const body = (await resp.json().catch(() => null)) as { error?: { message?: string } } | null
+        setError(body?.error?.message ?? 'Failed to confirm dropoff')
+        setDirectDropoffLoading(false)
+        setDirectDropoffModal(false)
+        return
+      }
+
+      const result = (await resp.json()) as { fare_estimate_cents?: number }
+      if (result.fare_estimate_cents) setFareEstimate(result.fare_estimate_cents)
+
+      trackEvent('driver_picked_rider_dest', { ride_id: rideId })
+
+      navigate(`/ride/messaging/${rideId}`, {
+        replace: true,
+        state: { driverDestinationSet: true },
+      })
+    } catch {
+      setError('Network error')
+      setDirectDropoffLoading(false)
+      setDirectDropoffModal(false)
+    }
   }
 
   // Pick a transit station
@@ -662,6 +716,59 @@ export default function DropoffSelection({
           Cancel Ride
         </button>
       </div>
+
+      {/* Direct dropoff confirmation modal */}
+      {directDropoffModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="mx-6 w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl">
+            <h3 className="text-base font-bold text-text-primary text-center mb-1">Drop off at rider&apos;s destination?</h3>
+            <p className="text-sm text-text-secondary text-center mb-4">
+              You will take the rider all the way to their requested destination.
+            </p>
+
+            {/* Destination */}
+            <div className="rounded-xl bg-surface p-3 mb-3">
+              <div className="flex items-start gap-2">
+                <span className="text-danger mt-0.5 text-xs">●</span>
+                <p className="text-sm font-medium text-text-primary">{riderDestName}</p>
+              </div>
+            </div>
+
+            {/* Fare estimate */}
+            <div className="rounded-xl bg-success/5 border border-success/20 p-3 mb-5">
+              <p className="text-xs text-text-secondary mb-0.5">Estimated fare</p>
+              {fareLoading ? (
+                <div className="h-5 w-16 bg-surface animate-pulse rounded" />
+              ) : fareEstimate ? (
+                <p className="text-lg font-bold text-success">
+                  ${(fareEstimate / 100).toFixed(2)}
+                </p>
+              ) : (
+                <p className="text-sm text-text-secondary italic">Estimated at ride end</p>
+              )}
+              <p className="text-[10px] text-text-secondary mt-1">Final fare is based on actual distance & time</p>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => { setDirectDropoffModal(false); setFareEstimate(null) }}
+                className="flex-1 rounded-2xl py-3 text-sm font-semibold text-text-primary bg-surface active:bg-border transition-colors"
+              >
+                Go Back
+              </button>
+              <button
+                type="button"
+                onClick={() => { void handleConfirmDirectDropoff() }}
+                disabled={directDropoffLoading}
+                className="flex-1 rounded-2xl py-3 text-sm font-semibold text-white bg-success active:bg-success/90 transition-colors disabled:opacity-50"
+              >
+                {directDropoffLoading ? 'Confirming...' : 'Confirm Dropoff'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Cancel confirmation modal */}
       {cancelModal && (

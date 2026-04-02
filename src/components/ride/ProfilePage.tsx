@@ -18,6 +18,8 @@ interface ProfilePageProps {
 
 interface RideWithRole extends Ride {
   role: 'rider' | 'driver'
+  other_name?: string
+  other_avatar_url?: string | null
 }
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
@@ -112,7 +114,36 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
         (a, b) => new Date(b.ended_at ?? b.created_at).getTime() - new Date(a.ended_at ?? a.created_at).getTime(),
       )
 
-      setRides(sorted)
+      const otherUserIds = sorted
+        .map((ride) => (ride.role === 'driver' ? ride.rider_id : ride.driver_id))
+        .filter((id): id is string => Boolean(id))
+      const uniqueOtherIds = [...new Set(otherUserIds)]
+
+      let userLookup: Record<string, { full_name: string | null; avatar_url: string | null }> = {}
+      if (uniqueOtherIds.length > 0) {
+        const { data: users } = await supabase
+          .from('users')
+          .select('id, full_name, avatar_url')
+          .in('id', uniqueOtherIds)
+
+        if (users) {
+          userLookup = Object.fromEntries(
+            users.map((u) => [u.id, { full_name: u.full_name, avatar_url: u.avatar_url }]),
+          )
+        }
+      }
+
+      const enriched = sorted.map((ride) => {
+        const otherId = ride.role === 'driver' ? ride.rider_id : ride.driver_id
+        const other = otherId ? userLookup[otherId] : undefined
+        return {
+          ...ride,
+          other_name: other?.full_name ?? undefined,
+          other_avatar_url: other?.avatar_url ?? null,
+        }
+      })
+
+      setRides(enriched)
       setLoadingRides(false)
     }
 
@@ -768,6 +799,7 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
               const isDriverRole = ride.role === 'driver'
               const platformFee = Math.round(fare * 0.15)
               const earned = fare - platformFee
+              const otherInitial = ride.other_name?.charAt(0)?.toUpperCase() ?? (isDriverRole ? 'R' : 'D')
 
               return (
                 <button
@@ -777,7 +809,17 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
                   className="w-full px-4 py-2.5 text-left active:bg-surface transition-colors flex items-center justify-between gap-2"
                 >
                   <div className="flex items-center gap-2 min-w-0">
-                    <AppIcon name={isDriverRole ? 'steering-wheel' : 'person'} className="h-4 w-4 text-text-secondary shrink-0" />
+                    {ride.other_avatar_url ? (
+                      <img
+                        src={ride.other_avatar_url}
+                        alt=""
+                        className="h-6 w-6 rounded-full object-cover shrink-0"
+                      />
+                    ) : (
+                      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary-light text-primary text-[11px] font-bold shrink-0">
+                        {otherInitial}
+                      </div>
+                    )}
                     <div className="min-w-0">
                       <p className="text-xs font-medium text-text-primary truncate">
                         {ride.destination_name ?? (isDriverRole ? 'Driver' : 'Rider')}

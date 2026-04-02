@@ -302,34 +302,32 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         </div>
       )}
 
-      {/* ── Active ride banner ──────────────────────────────────────────────── */}
-      {activeRideCount > 0 && (
-        <button
-          data-testid="active-ride-banner"
-          onClick={() => navigate('/rides')}
-          className="absolute left-4 right-4 z-[1000] rounded-2xl bg-primary px-4 py-3 shadow-lg flex items-center gap-3 active:opacity-90 transition-opacity"
-          style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 12rem)' }}
-        >
-          <div className="h-8 w-8 rounded-full bg-white/20 flex items-center justify-center shrink-0">
-            <span className="text-white font-bold text-sm">{activeRideCount}</span>
-          </div>
-          <div className="flex-1 min-w-0 text-left">
-            <p className="text-sm font-semibold text-white">
-              {activeRideCount === 1 ? 'You have an active ride' : `You have ${activeRideCount} active rides`}
-            </p>
-            <p className="text-xs text-white/70">Tap to view</p>
-          </div>
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-white/70 shrink-0" aria-hidden="true">
-            <path d="M9 18l6-6-6-6" />
-          </svg>
-        </button>
-      )}
-
       {/* ── Bottom card stack ──────────────────────────────────────────── */}
       <div
         className="absolute left-0 right-0 z-[1000] px-4 flex flex-col gap-3"
         style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 4.5rem)' }}
       >
+        {activeRideCount > 0 && (
+          <button
+            data-testid="active-ride-banner"
+            onClick={() => navigate('/rides')}
+            className="w-full rounded-2xl bg-primary px-4 py-3 shadow-lg flex items-center gap-3 active:opacity-90 transition-opacity"
+          >
+            <div className="h-8 w-8 rounded-full bg-white/20 flex items-center justify-center shrink-0">
+              <span className="text-white font-bold text-sm">{activeRideCount}</span>
+            </div>
+            <div className="flex-1 min-w-0 text-left">
+              <p className="text-sm font-semibold text-white">
+                {activeRideCount === 1 ? 'You have an active ride' : `You have ${activeRideCount} active rides`}
+              </p>
+              <p className="text-xs text-white/70">Tap to view</p>
+            </div>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-white/70 shrink-0" aria-hidden="true">
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+          </button>
+        )}
+
         {/* ── Bank setup banner ──────────────────────────────────────────── */}
         {!hasBank && (
           <div

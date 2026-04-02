@@ -3110,15 +3110,22 @@ ridesRouter.post(
 
 // ── POST /api/rides/:id/gps-ping ─────────────────────────────────────────────
 /**
- * Driver sends GPS coordinates during an active ride every 5-10 seconds.
+ * Either driver or rider sends GPS coordinates during an active ride every 10s.
  * Server accumulates haversine distance between consecutive pings on the ride.
- * This gives actual distance traveled for accurate fare calculation.
+ * Both parties send pings for redundancy — if driver closes the app, rider's
+ * pings keep the distance tracker alive.
+ *
+ * Also stores per-party GPS for divergence detection (forgotten QR scan safety net).
+ * When driver and rider GPS diverge >500m for 2+ min, a cron job auto-ends the ride.
+ *
+ * Approaching-dropoff reminder: if driver is within 500m of the dropoff point
+ * and no reminder has been sent yet, push a notification to both.
  */
 ridesRouter.post(
   '/:id/gps-ping',
   validateJwt,
   async (req: Request, res: Response) => {
-    const driverId = res.locals['userId'] as string
+    const userId = res.locals['userId'] as string
     const rideId = req.params['id'] as string
     const { lat, lng } = req.body as { lat?: number; lng?: number }
 
@@ -3127,10 +3134,9 @@ ridesRouter.post(
       return
     }
 
-    // Fetch ride — must be active and owned by this driver
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, driver_id, status, gps_distance_metres, last_gps_lat, last_gps_lng')
+      .select('id, rider_id, driver_id, status, gps_distance_metres, last_gps_lat, last_gps_lng, dropoff_point, dropoff_reminder_sent')
       .eq('id', rideId)
       .single()
 
@@ -3139,23 +3145,23 @@ ridesRouter.post(
       return
     }
 
-    if (ride.driver_id !== driverId) {
+    if (ride.driver_id !== userId && ride.rider_id !== userId) {
       res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Not your ride' } })
       return
     }
 
     if (ride.status !== 'active') {
-      // Silently accept pings for non-active rides (e.g. race condition at ride end)
       res.status(200).json({ gps_distance_metres: ride.gps_distance_metres ?? 0 })
       return
     }
 
-    // Calculate delta distance from last ping
+    const isDriver = userId === ride.driver_id
+    const now = new Date().toISOString()
+
+    // ── Accumulate distance from last shared ping ──
     let deltaM = 0
     if (ride.last_gps_lat != null && ride.last_gps_lng != null) {
       deltaM = haversineMetres(ride.last_gps_lat, ride.last_gps_lng, lat, lng)
-
-      // Ignore GPS jitter — skip deltas under 5m or impossibly fast (>50m/s ≈ 112mph)
       if (deltaM < 5 || deltaM > 500) {
         deltaM = 0
       }
@@ -3163,14 +3169,65 @@ ridesRouter.post(
 
     const newTotal = (ride.gps_distance_metres ?? 0) + deltaM
 
+    // ── Build update payload ──
+    const updatePayload: Record<string, unknown> = {
+      gps_distance_metres: newTotal,
+      last_gps_lat: lat,
+      last_gps_lng: lng,
+    }
+
+    // Store per-party GPS for divergence detection
+    if (isDriver) {
+      updatePayload.last_driver_gps_lat = lat
+      updatePayload.last_driver_gps_lng = lng
+      updatePayload.last_driver_ping_at = now
+    } else {
+      updatePayload.last_rider_gps_lat = lat
+      updatePayload.last_rider_gps_lng = lng
+      updatePayload.last_rider_ping_at = now
+    }
+
     await supabaseAdmin
       .from('rides')
-      .update({
-        gps_distance_metres: newTotal,
-        last_gps_lat: lat,
-        last_gps_lng: lng,
-      })
+      .update(updatePayload)
       .eq('id', rideId)
+
+    // ── Approaching-dropoff reminder ──
+    // If driver is within 500m of confirmed dropoff and reminder not yet sent
+    if (
+      isDriver &&
+      !ride.dropoff_reminder_sent &&
+      ride.dropoff_point
+    ) {
+      const dropoff = ride.dropoff_point as unknown as { coordinates: [number, number] }
+      const distToDropoff = haversineMetres(lat, lng, dropoff.coordinates[1], dropoff.coordinates[0])
+
+      if (distToDropoff < 500) {
+        // Mark reminder sent
+        void supabaseAdmin
+          .from('rides')
+          .update({ dropoff_reminder_sent: true })
+          .eq('id', rideId)
+
+        // Push to both driver and rider
+        const userIds = [ride.driver_id, ride.rider_id].filter(Boolean) as string[]
+        const { data: tokens } = await supabaseAdmin
+          .from('push_tokens')
+          .select('token')
+          .in('user_id', userIds)
+
+        if (tokens && tokens.length > 0) {
+          void sendFcmPush(
+            tokens.map((t: { token: string }) => t.token),
+            {
+              title: 'Approaching dropoff!',
+              body: 'You\'re near the dropoff point — don\'t forget to scan the QR code to end the ride.',
+              data: { type: 'dropoff_reminder', ride_id: rideId },
+            },
+          )
+        }
+      }
+    }
 
     res.status(200).json({ gps_distance_metres: newTotal })
   },
@@ -3688,6 +3745,156 @@ ridesRouter.post(
 
     console.log(`[rides/suggest-transit-dropoff] rideId=${rideId} station=${station_name}`)
     res.status(200).json({ ride_id: rideId, station_name, message: msg ?? null })
+  },
+)
+
+/**
+ * POST /api/rides/:id/confirm-direct-dropoff — driver confirms 100% dropoff
+ * at rider's requested destination. Sets dropoff_point + dropoff_confirmed,
+ * inserts a location_accepted message in chat, and returns a fare estimate.
+ */
+ridesRouter.post(
+  '/:id/confirm-direct-dropoff',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const driverId = res.locals['userId'] as string
+    const rideId = req.params['id'] as string
+
+    const { data: ride, error: fetchErr } = await supabaseAdmin
+      .from('rides')
+      .select('id, rider_id, driver_id, status, pickup_confirmed, dropoff_confirmed, requester_destination, requester_destination_name, destination, destination_name, origin, pickup_point, schedule_id')
+      .eq('id', rideId)
+      .single()
+
+    if (fetchErr || !ride) {
+      res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+      return
+    }
+
+    if (ride.driver_id !== driverId) {
+      res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Not the driver for this ride' } })
+      return
+    }
+
+    if (!['accepted', 'requested', 'coordinating'].includes(ride.status)) {
+      res.status(409).json({ error: { code: 'INVALID_STATUS', message: `Ride status is '${ride.status}'` } })
+      return
+    }
+
+    // Rider's destination: prefer requester_destination (board rides), fall back to destination (on-demand)
+    const riderDest = (ride.requester_destination ?? ride.destination) as { type: string; coordinates: [number, number] } | null
+    const riderDestName = (ride.requester_destination_name ?? ride.destination_name) as string | null
+
+    if (!riderDest) {
+      res.status(400).json({ error: { code: 'NO_DESTINATION', message: 'Rider has no destination set' } })
+      return
+    }
+
+    // Set dropoff to rider's destination and confirm it
+    const dropoffGeo: GeoPoint = { type: 'Point', coordinates: riderDest.coordinates }
+
+    const updateFields: Record<string, unknown> = {
+      dropoff_point: dropoffGeo,
+      dropoff_confirmed: true,
+    }
+
+    // If pickup is also already confirmed, transition to coordinating
+    const bothConfirmed = ride.pickup_confirmed === true
+    if (bothConfirmed && ride.status === 'accepted') {
+      updateFields.status = 'coordinating'
+    }
+
+    const { error: updateErr } = await supabaseAdmin
+      .from('rides')
+      .update(updateFields)
+      .eq('id', rideId)
+
+    if (updateErr) { next(updateErr); return }
+
+    // Insert location_accepted message in chat
+    const { data: acceptMsg } = await supabaseAdmin
+      .from('messages')
+      .insert({
+        ride_id: rideId,
+        sender_id: driverId,
+        content: 'Driver confirmed dropoff at rider\'s destination',
+        type: 'location_accepted',
+        meta: {
+          location_type: 'dropoff',
+          accepted_by: driverId,
+          lat: riderDest.coordinates[1],
+          lng: riderDest.coordinates[0],
+          name: riderDestName ?? undefined,
+          direct_dropoff: true,
+        },
+      })
+      .select('id, ride_id, sender_id, content, type, meta, created_at')
+      .single()
+
+    // Broadcast to chat
+    if (acceptMsg) {
+      void realtimeBroadcast(`chat:${rideId}`, 'new_message', acceptMsg as Record<string, unknown>)
+      void realtimeBroadcast(`chat-badge:${rideId}`, 'new_message', acceptMsg as Record<string, unknown>)
+    }
+
+    // Broadcast dropoff_done for WaitingRoom listener
+    if (ride.rider_id) {
+      void realtimeBroadcast(`waiting:${ride.rider_id}`, 'dropoff_done', { ride_id: rideId })
+      void realtimeBroadcast(`rider:${ride.rider_id}`, 'dropoff_done', { ride_id: rideId })
+    }
+
+    // If both confirmed, send locations_confirmed
+    if (bothConfirmed) {
+      const confirmPayload = { type: 'locations_confirmed', ride_id: rideId, is_scheduled: !!ride.schedule_id }
+      const channels = [ride.driver_id, ride.rider_id].filter(Boolean).flatMap(
+        (uid) => [`rider:${uid}`, `msg-driver:${uid}`],
+      )
+      await realtimeBroadcastMany(channels, 'locations_confirmed', confirmPayload)
+    }
+
+    // Compute fare estimate for the response
+    let fareEstimateCents: number | null = null
+    const pickupGeo = (ride.pickup_point ?? ride.origin) as { coordinates: [number, number] } | null
+    if (pickupGeo) {
+      try {
+        const distM = await getRoadDistanceMetres(
+          pickupGeo.coordinates[1], pickupGeo.coordinates[0],
+          riderDest.coordinates[1], riderDest.coordinates[0],
+        )
+        const distMiles = (distM / 1000) * KM_TO_MILES
+        const gallons = distMiles / DEFAULT_MPG
+        const gasCents = Math.round(gallons * DEFAULT_GAS_PRICE_PER_GALLON * 100)
+        const estDurationMin = Math.round(distM / 1000 / 40 * 60) // ~40km/h average
+        const timeCents = Math.round(estDurationMin * PER_MIN_CENTS)
+        fareEstimateCents = Math.max(MIN_FARE_CENTS, Math.min(MAX_FARE_CENTS, BASE_CENTS + gasCents + timeCents))
+      } catch { /* non-fatal */ }
+    }
+
+    // Push notification to rider
+    if (ride.rider_id) {
+      const { data: riderTokens } = await supabaseAdmin
+        .from('push_tokens')
+        .select('token')
+        .eq('user_id', ride.rider_id)
+      const tokens = (riderTokens ?? []).map((t: { token: string }) => t.token)
+      if (tokens.length > 0) {
+        void sendFcmPush(tokens, {
+          title: 'Dropoff confirmed!',
+          body: `Driver will drop you off at ${riderDestName ?? 'your destination'}.`,
+          data: { type: 'dropoff_confirmed', ride_id: rideId },
+        })
+      }
+    }
+
+    console.log(`[rides/confirm-direct-dropoff] rideId=${rideId} driver=${driverId} dest=${riderDestName}`)
+    res.status(200).json({
+      ride_id: rideId,
+      dropoff_confirmed: true,
+      pickup_confirmed: ride.pickup_confirmed,
+      both_confirmed: bothConfirmed,
+      destination_name: riderDestName,
+      fare_estimate_cents: fareEstimateCents,
+    })
   },
 )
 

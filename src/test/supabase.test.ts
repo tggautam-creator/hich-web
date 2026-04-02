@@ -127,6 +127,14 @@ describe('database types — row aliases', () => {
       gps_distance_metres: 0,
       last_gps_lat: null,
       last_gps_lng: null,
+      last_driver_gps_lat: null,
+      last_driver_gps_lng: null,
+      last_rider_gps_lat: null,
+      last_rider_gps_lng: null,
+      last_driver_ping_at: null,
+      last_rider_ping_at: null,
+      dropoff_reminder_sent: false,
+      auto_ended: false,
     }
     expect(ride.fare_cents).not.toBeNull()
     expect(Number.isInteger(ride.fare_cents)).toBe(true)
