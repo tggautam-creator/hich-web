@@ -616,14 +616,15 @@ export default function RideSuggestion({
         )}
 
         {/* Countdown overlay */}
-        <div className="absolute top-3 right-3 flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 shadow-md backdrop-blur-sm">
+        <div className="absolute right-3 flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 shadow-md backdrop-blur-sm" style={{ top: 'max(0.75rem, calc(env(safe-area-inset-top) + 0.75rem))' }}>
           <span className="text-sm font-semibold text-warning" data-testid="countdown-text">{secondsLeft}s</span>
         </div>
         {/* Back button overlay */}
         <button
           type="button"
           onClick={() => void handleDecline()}
-          className="absolute top-3 left-3 flex items-center gap-1 rounded-full bg-white/90 px-3 py-1.5 shadow-md backdrop-blur-sm text-sm text-text-secondary"
+          className="absolute left-3 flex items-center gap-1 rounded-full bg-white/90 px-3 py-1.5 shadow-md backdrop-blur-sm text-sm text-text-secondary"
+          style={{ top: 'max(0.75rem, calc(env(safe-area-inset-top) + 0.75rem))' }}
           data-testid="back-button"
         >
           &larr; Back

@@ -70,7 +70,7 @@ function ProposalMapOverlay({ data, onClose }: { data: MapOverlayData; onClose: 
       data-testid="proposal-map-overlay"
     >
       {/* Header */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-surface">
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-surface" style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)' }}>
         <button onClick={handleClose} className="h-8 w-8 rounded-full bg-surface-alt flex items-center justify-center" data-testid="overlay-close">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-5 w-5 text-text-primary" aria-hidden="true">
             <path d="M19 12H5M12 19l-7-7 7-7" />
