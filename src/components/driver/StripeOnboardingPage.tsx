@@ -176,7 +176,7 @@ export default function StripeOnboardingPage({
         </div>
 
         {/* Info note */}
-        <div className="max-w-sm w-full mx-auto mb-6 flex items-start gap-2 rounded-xl bg-primary/5 border border-primary/15 px-4 py-3">
+        <div className="max-w-sm w-full mx-auto mb-4 flex items-start gap-2 rounded-xl bg-primary/5 border border-primary/15 px-4 py-3">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary shrink-0 mt-0.5" aria-hidden="true">
             <circle cx="12" cy="12" r="10" />
             <line x1="12" y1="16" x2="12" y2="12" />
@@ -184,6 +184,20 @@ export default function StripeOnboardingPage({
           </svg>
           <p className="text-xs text-text-secondary">
             You&apos;ll pick your specific bank or card in the next step. You can switch at any time from your Stripe dashboard.
+          </p>
+        </div>
+
+        {/* Stripe website field tip */}
+        <div className="max-w-sm w-full mx-auto mb-6 flex items-start gap-2 rounded-xl bg-warning/5 border border-warning/20 px-4 py-3">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-warning shrink-0 mt-0.5" aria-hidden="true">
+            <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+          <p className="text-xs text-text-secondary">
+            <span className="font-semibold text-text-primary">Tip:</span> Stripe may ask for a website. Don&apos;t have one? Tap{' '}
+            <span className="font-medium">&quot;I don&apos;t have a website&quot;</span>, then type{' '}
+            <span className="font-medium text-primary">TAGO rideshare driver</span> as your product description.
           </p>
         </div>
 
