@@ -14,6 +14,7 @@ export default function StripeOnboardingPage({
   const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showTipDialog, setShowTipDialog] = useState(false)
 
   async function handleOnboard() {
     setLoading(true)
@@ -187,20 +188,6 @@ export default function StripeOnboardingPage({
           </p>
         </div>
 
-        {/* Stripe website field tip */}
-        <div className="max-w-sm w-full mx-auto mb-6 flex items-start gap-2 rounded-xl bg-warning/5 border border-warning/20 px-4 py-3">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-warning shrink-0 mt-0.5" aria-hidden="true">
-            <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-            <line x1="12" y1="9" x2="12" y2="13" />
-            <line x1="12" y1="17" x2="12.01" y2="17" />
-          </svg>
-          <p className="text-xs text-text-secondary">
-            <span className="font-semibold text-text-primary">Tip:</span> Stripe may ask for a website. Don&apos;t have one? Tap{' '}
-            <span className="font-medium">&quot;I don&apos;t have a website&quot;</span>, then type{' '}
-            <span className="font-medium text-primary">TAGO rideshare driver</span> as your product description.
-          </p>
-        </div>
-
         {error && (
           <p data-testid="onboard-error" className="mb-4 text-sm text-danger text-center max-w-sm mx-auto">
             {error}
@@ -210,7 +197,7 @@ export default function StripeOnboardingPage({
         <div className="max-w-sm w-full mx-auto space-y-3">
           <PrimaryButton
             data-testid="start-onboarding-button"
-            onClick={handleOnboard}
+            onClick={() => setShowTipDialog(true)}
             disabled={loading}
             className="w-full"
           >
@@ -226,6 +213,69 @@ export default function StripeOnboardingPage({
           </SecondaryButton>
         </div>
       </div>
+
+      {/* Tip dialog — shown before redirecting to Stripe */}
+      {showTipDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-6">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            aria-hidden="true"
+            onClick={() => setShowTipDialog(false)}
+          />
+
+          {/* Dialog */}
+          <div
+            data-testid="stripe-tip-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Before you continue"
+            className="relative z-10 w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl"
+          >
+            {/* Warning icon */}
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-warning/10">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-7 w-7 text-warning" aria-hidden="true">
+                <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+            </div>
+
+            <h3 className="text-center text-lg font-bold text-text-primary mb-3">
+              Before you continue
+            </h3>
+
+            <p className="text-center text-sm text-text-secondary mb-4">
+              Stripe will ask you for a <span className="font-semibold text-text-primary">website</span>. Since you&apos;re a student driver, you probably don&apos;t have one.
+            </p>
+
+            <div className="rounded-xl bg-surface border border-border px-4 py-3 mb-6">
+              <p className="text-sm text-text-primary font-medium mb-2">Here&apos;s what to do:</p>
+              <ol className="space-y-2 text-sm text-text-secondary list-decimal list-inside">
+                <li>Look for <span className="font-medium text-text-primary">&quot;I don&apos;t have a website&quot;</span> and tap it</li>
+                <li>Type <span className="font-semibold text-primary">TAGO rideshare driver</span> as your product description</li>
+              </ol>
+            </div>
+
+            <PrimaryButton
+              data-testid="stripe-tip-continue"
+              onClick={() => { setShowTipDialog(false); void handleOnboard() }}
+              disabled={loading}
+              className="w-full mb-3"
+            >
+              {loading ? 'Connecting...' : 'Got it, continue'}
+            </PrimaryButton>
+
+            <button
+              type="button"
+              onClick={() => setShowTipDialog(false)}
+              className="w-full py-2 text-sm font-medium text-text-secondary"
+            >
+              Go back
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
