@@ -65,6 +65,7 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
   )
   const [cancelToast, setCancelToast] = useState<string | null>(null)
   const [isCancelling, setCancelling] = useState(false)
+  const [showFallback, setShowFallback] = useState(false)
 
   const selectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -74,6 +75,17 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
       navigate('/home/rider', { replace: true })
     }
   }, [state, navigate])
+
+  // ── 90-second fallback timer ────────────────────────────────────────────
+  useEffect(() => {
+    if (phase !== 'finding' || offers.length > 0) return
+    const timer = setTimeout(() => {
+      if (phaseRef.current === 'finding') {
+        setShowFallback(true)
+      }
+    }, 90_000)
+    return () => clearTimeout(timer)
+  }, [phase, offers.length])
 
   // ── Auto-select / navigate logic ─────────────────────────────────────────
   const handleSelectOrNavigate = useCallback(
@@ -579,10 +591,60 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
           </div>
         )}
 
-        {offers.length === 0 && phase === 'finding' && (
+        {offers.length === 0 && phase === 'finding' && !showFallback && (
           <p className="text-center text-sm text-text-secondary">
-            Sit tight — we're notifying nearby drivers
+            Sit tight — we&apos;re notifying nearby drivers
           </p>
+        )}
+
+        {/* ── Fallback: no drivers after 90s ─────────────────────────────── */}
+        {showFallback && phase === 'finding' && offers.length === 0 && (
+          <div data-testid="no-driver-fallback" className="rounded-2xl bg-warning/5 border border-warning/20 p-5 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-warning/10">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-warning" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-text-primary">
+                  No drivers available right now
+                </p>
+                <p className="text-xs text-text-secondary mt-1">
+                  Post your trip on the ride board so drivers heading your way can pick it up.
+                </p>
+              </div>
+            </div>
+
+            <button
+              data-testid="post-to-board-button"
+              onClick={() => {
+                void handleCancel()
+                navigate('/schedule', {
+                  replace: true,
+                  state: {
+                    prefill: {
+                      mode: 'rider' as const,
+                      destination: state?.destination,
+                      destinationLat: state?.destinationLat,
+                      destinationLng: state?.destinationLng,
+                      originLat: state?.originLat,
+                      originLng: state?.originLng,
+                    },
+                  },
+                })
+              }}
+              className="w-full rounded-xl bg-primary py-3 text-sm font-semibold text-white active:opacity-90 transition-opacity"
+            >
+              Post on Ride Board
+            </button>
+
+            <p className="text-center text-xs text-text-secondary">
+              We&apos;ll keep looking while you set up your post
+            </p>
+          </div>
         )}
 
         {/* Driver is choosing a drop-off point — show a waiting card */}
