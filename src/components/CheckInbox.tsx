@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { useAuthStore } from '@/stores/authStore'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import Logo from '@/components/ui/Logo'
 
@@ -71,6 +72,15 @@ export default function CheckInbox({ 'data-testid': testId }: CheckInboxProps) {
       }
 
       if (data.session) {
+        // Ensure the auth store picks up the session before we navigate
+        // to a guarded route. Without this, AuthGuard's initialize() may
+        // fire INITIAL_SESSION with null (storage not yet persisted) and
+        // redirect to /signup.
+        useAuthStore.setState({
+          session: data.session,
+          user: data.session.user,
+        })
+
         // Check if user has completed onboarding
         const { data: profile } = await supabase
           .from('users')

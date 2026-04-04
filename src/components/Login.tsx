@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { useAuthStore } from '@/stores/authStore'
 import { isValidEduEmail } from '@/lib/validation'
 import InputField from '@/components/ui/InputField'
 import PrimaryButton from '@/components/ui/PrimaryButton'
@@ -78,6 +79,13 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
       } else {
         // Check if user has completed onboarding (profile with full_name)
         const { data: { user } } = await supabase.auth.getUser()
+        const { data: { session } } = await supabase.auth.getSession()
+
+        // Ensure the auth store has the session before navigating to a guarded route
+        if (session) {
+          useAuthStore.setState({ session, user: session.user })
+        }
+
         const { data: profile } = await supabase
           .from('users')
           .select('full_name, is_driver')

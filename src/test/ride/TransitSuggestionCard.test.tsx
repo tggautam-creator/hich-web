@@ -132,7 +132,7 @@ describe('TransitSuggestionCard', () => {
     expect(screen.getByText('Blue Line')).toBeDefined()
     expect(screen.getByText('Route 42')).toBeDefined()
     // Total time
-    expect(screen.getByText(/Total: ~33 min/)).toBeDefined()
+    expect(screen.getByText(/~33 min rider/)).toBeDefined()
   })
 
   it('shows Accept and Counter buttons for rider', () => {

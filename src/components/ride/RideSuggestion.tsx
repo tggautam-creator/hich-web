@@ -4,6 +4,7 @@ import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
 import { trackEvent } from '@/lib/analytics'
 import { getDirectionsByLatLng } from '@/lib/directions'
+import { calculateFare, formatCents } from '@/lib/fare'
 import { searchPlaces, getPlaceCoordinates } from '@/lib/places'
 import type { PlaceSuggestion } from '@/lib/places'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
@@ -74,6 +75,8 @@ export default function RideSuggestion({
   const [standbyMode, setStandbyMode] = useState(() => !!navState?.isStandbyRenewal || !!navState?.isRenewalStandby)
   // True when the driver already has a pending (reverted-from-standby) offer with destination set
   const [isRenewalOffer, setIsRenewalOffer] = useState(false)
+  // Computed stats when nav state doesn't have fare/distance
+  const [computedStats, setComputedStats] = useState<{ distanceKm: number; durationMin: number; driverEarns: string } | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sessionTokenRef = useRef(crypto.randomUUID())
   const routineAutoFilled = useRef(false)
@@ -157,6 +160,34 @@ export default function RideSuggestion({
 
     void fetchRide()
   }, [rideId, navigate])
+
+  // ── Compute fare/distance when nav state doesn't have them ─────────────────
+  useEffect(() => {
+    // Skip if nav state already has valid values
+    const hasNavEarnings = navState?.estimatedEarnings && navState.estimatedEarnings !== '–' && navState.estimatedEarnings !== '$0.00'
+    const hasNavDistance = navState?.distanceKm && navState.distanceKm !== '–' && !isNaN(Number(navState.distanceKm))
+    if (hasNavEarnings && hasNavDistance) return
+    if (!data?.ride) return
+
+    const ride = data.ride
+    const origin = ride.origin as unknown as { coordinates: [number, number] } | null
+    const dest = ride.destination as unknown as { coordinates: [number, number] } | null
+    if (!origin?.coordinates || !dest?.coordinates) return
+
+    const [oLng, oLat] = origin.coordinates
+    const [dLng, dLat] = dest.coordinates
+    if (!oLat || !oLng || !dLat || !dLng) return
+
+    void getDirectionsByLatLng(oLat, oLng, dLat, dLng).then((dirs) => {
+      if (!dirs) return
+      const fare = calculateFare(dirs.distance_km, dirs.duration_min)
+      setComputedStats({
+        distanceKm: dirs.distance_km,
+        durationMin: dirs.duration_min,
+        driverEarns: formatCents(fare.driver_earns_cents),
+      })
+    })
+  }, [data, navState])
 
   // ── Auto-fill destination from driver routines ─────────────────────────────
   useEffect(() => {
@@ -704,10 +735,17 @@ export default function RideSuggestion({
 
           {/* Stats row: earnings / distance / est. time */}
           {(() => {
-            const distKm = Number(navState?.distanceKm)
-            const distMi = isNaN(distKm) ? null : distKm * 0.621371
-            const etaMin = distMi != null ? Math.max(1, Math.round(distMi / 35 * 60)) : null
-            const earnings = navState?.estimatedEarnings
+            // Prefer nav state values, fall back to computed from directions API
+            const navDistKm = Number(navState?.distanceKm)
+            const distKm = !isNaN(navDistKm) && navDistKm > 0 ? navDistKm : computedStats?.distanceKm
+            const distMi = distKm != null ? distKm * 0.621371 : null
+            const etaMin = computedStats?.durationMin
+              ? Math.max(1, Math.round(computedStats.durationMin))
+              : distMi != null ? Math.max(1, Math.round(distMi / 35 * 60)) : null
+            const navEarnings = navState?.estimatedEarnings
+            const earnings = navEarnings && navEarnings !== '–' && navEarnings !== '$0.00'
+              ? navEarnings
+              : computedStats?.driverEarns ?? null
             if (!earnings && distMi == null) return null
             return (
               <div className="grid grid-cols-3 gap-1 rounded-2xl bg-surface p-2.5">

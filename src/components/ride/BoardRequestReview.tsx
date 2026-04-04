@@ -112,12 +112,16 @@ export default function BoardRequestReview({
         if (userData) setOtherUser(userData)
       }
 
-      // Reverse-geocode rider pickup point for display
-      const origin = rideData.origin as { coordinates: [number, number] } | null
-      if (origin) {
-        void reverseGeocode(origin.coordinates[1], origin.coordinates[0]).then((addr) => {
-          if (addr) setPickupAddress(addr)
-        })
+      // Use stored origin_name if available, otherwise reverse-geocode
+      if (rideData.origin_name) {
+        setPickupAddress(rideData.origin_name)
+      } else {
+        const origin = rideData.origin as { coordinates: [number, number] } | null
+        if (origin) {
+          void reverseGeocode(origin.coordinates[1], origin.coordinates[0]).then((addr) => {
+            if (addr) setPickupAddress(addr)
+          })
+        }
       }
 
       setLoading(false)
@@ -332,7 +336,7 @@ export default function BoardRequestReview({
                   <span className="text-success text-xs">●</span>
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs text-text-secondary font-medium">Pickup</p>
+                  <p className="text-xs text-text-secondary font-medium">Rider&apos;s preferred pickup</p>
                   <p className="text-sm text-text-primary">
                     {pickupAddress ?? 'Rider\'s current location'}
                   </p>

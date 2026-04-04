@@ -35,30 +35,43 @@ export function decodePolyline(encoded: string): Array<{ lat: number; lng: numbe
   return points
 }
 
-/** Renders a polyline on the Google Map using the Maps JS API. */
+/** Renders a polyline on the Google Map using the Maps JS API.
+ *  Supports dashed rendering via the `dashed` prop. */
 export function RoutePolyline({
   encodedPath,
+  path: rawPath,
   color = '#4F46E5',
   weight = 4,
   fitBounds = true,
+  dashed = false,
 }: {
-  encodedPath: string
+  encodedPath?: string
+  path?: Array<{ lat: number; lng: number }>
   color?: string
   weight?: number
   fitBounds?: boolean
+  dashed?: boolean
 }) {
   const map = useMap()
   const polylineRef = useRef<google.maps.Polyline | null>(null)
 
   useEffect(() => {
-    if (!map || !encodedPath) return
+    if (!map) return
+    const path = rawPath ?? (encodedPath ? decodePolyline(encodedPath) : [])
+    if (path.length === 0) return
 
-    const path = decodePolyline(encodedPath)
     const polyline = new google.maps.Polyline({
       path,
       strokeColor: color,
-      strokeOpacity: 0.8,
+      strokeOpacity: dashed ? 0 : 0.8,
       strokeWeight: weight,
+      ...(dashed ? {
+        icons: [{
+          icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.6, scale: weight },
+          offset: '0',
+          repeat: '14px',
+        }],
+      } : {}),
       map,
     })
     polylineRef.current = polyline
@@ -73,7 +86,7 @@ export function RoutePolyline({
       polyline.setMap(null)
       polylineRef.current = null
     }
-  }, [map, encodedPath, color, weight, fitBounds])
+  }, [map, encodedPath, rawPath, color, weight, fitBounds, dashed])
 
   return null
 }

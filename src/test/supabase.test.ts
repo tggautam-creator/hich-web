@@ -109,7 +109,7 @@ describe('database types — row aliases', () => {
     const ride: Ride = {
       id: 'r1', rider_id: 'u1', driver_id: null, vehicle_id: null,
       status: 'requested',
-      origin: { type: 'Point', coordinates: [-121.74, 38.54] },
+      origin: { type: 'Point', coordinates: [-121.74, 38.54] }, origin_name: null,
       destination: null, destination_name: null,
       destination_bearing: null, pickup_point: null, pickup_note: null,
       dropoff_point: null, pickup_confirmed: false, dropoff_confirmed: false, fare_cents: 350,

@@ -4,7 +4,7 @@ import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { trackEvent } from '@/lib/analytics'
-import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
+import { RoutePolyline, MapBoundsFitter, decodePolyline } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
 import type { TransitDropoffSuggestion } from '@/components/ride/TransitSuggestionCard'
 
@@ -367,14 +367,14 @@ export default function DropoffSelection({
     }
   }, [selectedIdx])
 
-  // ── Map bounds ──────────────────────────────────────────────────────────────
+  // ── Map bounds — fit to selected station + rider dest + driver dest ─────────
   const boundsPoints = useMemo(() => {
-    const pts: Array<{ lat: number; lng: number }> = suggestions.map(s => ({
-      lat: s.station_lat,
-      lng: s.station_lng,
-    }))
-    if (state?.pickupLat != null && state.pickupLng != null) {
-      pts.push({ lat: state.pickupLat, lng: state.pickupLng })
+    const pts: Array<{ lat: number; lng: number }> = []
+    // Selected station (or all stations if none selected)
+    if (selectedIdx !== null && suggestions[selectedIdx]) {
+      pts.push({ lat: suggestions[selectedIdx].station_lat, lng: suggestions[selectedIdx].station_lng })
+    } else {
+      for (const s of suggestions) pts.push({ lat: s.station_lat, lng: s.station_lng })
     }
     if (state?.riderDestLat != null && state.riderDestLng != null) {
       pts.push({ lat: state.riderDestLat, lng: state.riderDestLng })
@@ -383,7 +383,32 @@ export default function DropoffSelection({
       pts.push({ lat: effLat, lng: effLng })
     }
     return pts
-  }, [suggestions, state, effLat, effLng])
+  }, [suggestions, selectedIdx, state, effLat, effLng])
+
+  // ── Split polyline at selected station ─────────────────────────────────────
+  const { solidPath, dashedPath } = useMemo(() => {
+    if (!driverRoutePolyline || selectedIdx === null || !suggestions[selectedIdx]) {
+      return { solidPath: null, dashedPath: null }
+    }
+    const points = decodePolyline(driverRoutePolyline)
+    if (points.length === 0) return { solidPath: null, dashedPath: null }
+
+    const station = suggestions[selectedIdx]
+    let closestIdx = 0
+    let closestDist = Infinity
+    for (let i = 0; i < points.length; i++) {
+      const dLat = points[i].lat - station.station_lat
+      const dLng = points[i].lng - station.station_lng
+      const dist = dLat * dLat + dLng * dLng
+      if (dist < closestDist) { closestDist = dist; closestIdx = i }
+    }
+    // Ensure at least 1 point in each segment
+    const splitAt = Math.max(1, Math.min(closestIdx, points.length - 2))
+    return {
+      solidPath: points.slice(0, splitAt + 1),
+      dashedPath: points.slice(splitAt),
+    }
+  }, [driverRoutePolyline, selectedIdx, suggestions])
 
   if (recovering) {
     return (
@@ -410,59 +435,20 @@ export default function DropoffSelection({
             mapId={MAP_ID}
             defaultCenter={boundsPoints[0]}
             defaultZoom={11}
-            gestureHandling="cooperative"
+            gestureHandling="greedy"
             disableDefaultUI
+            clickableIcons={false}
             className="h-full w-full"
           >
-            {/* Driver route polyline */}
-            {driverRoutePolyline && (
+            {/* Driver route — solid from start to station, dashed from station to driver dest */}
+            {solidPath && <RoutePolyline path={solidPath} color="#4F46E5" weight={4} fitBounds={false} />}
+            {dashedPath && <RoutePolyline path={dashedPath} color="#4F46E5" weight={4} fitBounds={false} dashed />}
+            {/* Fallback: full solid line when no station is selected */}
+            {!solidPath && driverRoutePolyline && (
               <RoutePolyline encodedPath={driverRoutePolyline} color="#4F46E5" weight={4} fitBounds={false} />
             )}
 
-            {/* Pickup marker */}
-            {state?.pickupLat != null && state.pickupLng != null && (
-              <AdvancedMarker position={{ lat: state.pickupLat, lng: state.pickupLng }}>
-                <div className="flex h-6 items-center justify-center rounded-full border-2 border-white bg-success px-2 shadow-md text-[10px] font-bold text-white whitespace-nowrap">
-                  PICKUP
-                </div>
-              </AdvancedMarker>
-            )}
-
-            {/* Rider destination marker */}
-            {state?.riderDestLat != null && state.riderDestLng != null && (
-              <AdvancedMarker position={{ lat: state.riderDestLat, lng: state.riderDestLng }} zIndex={2}>
-                <div className="flex h-6 items-center justify-center rounded-full border-2 border-white bg-danger px-2 shadow-md text-[10px] font-bold text-white whitespace-nowrap">
-                  DROP-OFF
-                </div>
-              </AdvancedMarker>
-            )}
-
-            {/* Driver destination marker */}
-            <AdvancedMarker position={{ lat: effLat, lng: effLng }} zIndex={0}>
-              <div className="flex h-6 items-center justify-center rounded-full border-2 border-white bg-warning px-2 shadow-md text-[10px] font-bold text-white whitespace-nowrap">
-                YOUR DEST
-              </div>
-            </AdvancedMarker>
-
-            {/* Station markers */}
-            {suggestions.map((s, idx) => (
-              <AdvancedMarker
-                key={s.station_place_id}
-                position={{ lat: s.station_lat, lng: s.station_lng }}
-                onClick={() => setSelectedIdx(idx)}
-                zIndex={selectedIdx === idx ? 10 : 1}
-              >
-                <div
-                  className={`flex h-7 w-7 items-center justify-center rounded-full border-2 border-white shadow-md text-xs font-bold text-white transition-transform ${
-                    selectedIdx === idx ? 'bg-primary scale-125' : 'bg-text-secondary scale-100'
-                  }`}
-                >
-                  {idx + 1}
-                </div>
-              </AdvancedMarker>
-            ))}
-
-            {/* Transit polyline for selected station */}
+            {/* Transit polyline for selected station (station → rider dest) */}
             {selectedIdx !== null && suggestions[selectedIdx]?.transit_polyline && (
               <RoutePolyline
                 encodedPath={suggestions[selectedIdx].transit_polyline as string}
@@ -471,6 +457,51 @@ export default function DropoffSelection({
                 fitBounds={false}
               />
             )}
+
+            {/* ── Dropoff station marker (purple) ── */}
+            {suggestions.map((s, idx) => (
+              <AdvancedMarker
+                key={s.station_place_id}
+                position={{ lat: s.station_lat, lng: s.station_lng }}
+                onClick={() => setSelectedIdx(idx)}
+                zIndex={selectedIdx === idx ? 10 : 1}
+              >
+                <div className="flex flex-col items-center">
+                  {selectedIdx === idx && (
+                    <div className="mb-0.5 max-w-[140px] truncate rounded bg-primary px-1.5 py-0.5 text-[9px] font-semibold text-white shadow whitespace-nowrap">
+                      {s.station_name}
+                    </div>
+                  )}
+                  <div
+                    className={`flex h-7 w-7 items-center justify-center rounded-full border-2 border-white shadow-md text-xs font-bold text-white transition-transform ${
+                      selectedIdx === idx ? 'bg-primary scale-125' : 'bg-text-secondary scale-100'
+                    }`}
+                  >
+                    {idx + 1}
+                  </div>
+                </div>
+              </AdvancedMarker>
+            ))}
+
+            {/* ── Rider's final destination marker (red) ── */}
+            {state?.riderDestLat != null && state.riderDestLng != null && (
+              <AdvancedMarker position={{ lat: state.riderDestLat, lng: state.riderDestLng }} zIndex={2}>
+                <div className="flex flex-col items-center">
+                  <div className="flex h-6 items-center justify-center rounded-full border-2 border-white bg-danger px-2 shadow-md text-[10px] font-bold text-white whitespace-nowrap">
+                    {state.riderDestName ? state.riderDestName.split(',')[0] : 'RIDER DEST'}
+                  </div>
+                </div>
+              </AdvancedMarker>
+            )}
+
+            {/* ── Driver's final destination marker (amber) ── */}
+            <AdvancedMarker position={{ lat: effLat, lng: effLng }} zIndex={0}>
+              <div className="flex flex-col items-center">
+                <div className="flex h-6 items-center justify-center rounded-full border-2 border-white bg-warning px-2 shadow-md text-[10px] font-bold text-white whitespace-nowrap">
+                  {effName ? effName.split(',')[0] : 'YOUR DEST'}
+                </div>
+              </div>
+            </AdvancedMarker>
 
             {boundsPoints.length >= 2 && <MapBoundsFitter points={boundsPoints} />}
           </Map>
@@ -681,10 +712,11 @@ export default function DropoffSelection({
             </div>
 
             {/* Summary */}
-            <div className="mt-1.5 pt-1.5 border-t border-border/50 pl-9">
+            <div className="mt-1.5 pt-1.5 border-t border-border/50 pl-9 space-y-0.5">
+              <p className="text-[10px] text-text-secondary">~{s.total_rider_minutes} min rider&apos;s total journey</p>
+              <p className="text-[10px] text-text-secondary">{s.ride_with_driver_minutes} min with you · {s.walk_to_station_minutes} min walk · {s.transit_to_dest_minutes} min transit</p>
               <p className="text-[10px] text-text-secondary">
-                ~{s.total_rider_minutes} min total to destination
-                <span>{' · '}{s.driver_detour_minutes > 0 ? `+${s.driver_detour_minutes} min detour` : 'On your route'}</span>
+                {s.driver_detour_minutes > 0 ? `+${s.driver_detour_minutes} min detour for you` : 'On your route'}
               </p>
             </div>
 

@@ -183,6 +183,7 @@ export type Database = {
           vehicle_id: string | null
           status: RideStatus
           origin: GeoPoint
+          origin_name: string | null
           destination: GeoPoint | null
           destination_name: string | null
           destination_bearing: number | null
@@ -230,6 +231,7 @@ export type Database = {
           vehicle_id?: string | null
           status?: RideStatus
           origin: GeoPoint
+          origin_name?: string | null
           destination?: GeoPoint | null
           destination_name?: string | null
           destination_bearing?: number | null
@@ -277,6 +279,7 @@ export type Database = {
           vehicle_id?: string | null
           status?: RideStatus
           origin?: GeoPoint
+          origin_name?: string | null
           destination?: GeoPoint | null
           destination_name?: string | null
           destination_bearing?: number | null

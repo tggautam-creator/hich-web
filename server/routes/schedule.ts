@@ -475,6 +475,7 @@ interface ScheduleRequestBody {
   schedule_id: string
   origin_lat?: number
   origin_lng?: number
+  origin_name?: string
   destination_lat?: number
   destination_lng?: number
   destination_name?: string
@@ -659,6 +660,7 @@ scheduleRouter.post(
         rider_id: riderId,
         driver_id: driverId,
         origin: originGeo,
+        origin_name: body.origin_name ?? null,
         ...(destGeo ? { destination: destGeo } : {}),
         destination_name: schedule.dest_address,
         status: 'requested',
@@ -871,7 +873,7 @@ scheduleRouter.patch(
 
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, driver_id, status, destination_name, schedule_id')
+      .select('id, rider_id, driver_id, status, destination_name, schedule_id, origin, origin_name')
       .eq('id', rideId)
       .single()
 
@@ -1079,6 +1081,40 @@ scheduleRouter.patch(
       void realtimeBroadcast(`myrides:${requesterId}`, 'ride_status_changed', { ride_id: rideId, status: 'coordinating' })
     }
     void realtimeBroadcast(`myrides:${userId}`, 'ride_status_changed', { ride_id: rideId, status: 'coordinating' })
+
+    // Auto-send rider's preferred pickup as a pickup_suggestion message in chat
+    const rideOrigin = ride.origin as { coordinates?: [number, number] } | null
+    if (rideOrigin?.coordinates && rideOrigin.coordinates[0] !== 0 && rideOrigin.coordinates[1] !== 0) {
+      const pickupLat = rideOrigin.coordinates[1]
+      const pickupLng = rideOrigin.coordinates[0]
+      const pickupSenderId = ride.rider_id // rider suggested this pickup
+      void (async () => {
+        const { data: insertedMsg, error: msgErr } = await supabaseAdmin
+          .from('messages')
+          .insert({
+            ride_id: rideId,
+            sender_id: pickupSenderId,
+            content: 'Suggested pickup point',
+            type: 'pickup_suggestion',
+            meta: {
+              lat: pickupLat,
+              lng: pickupLng,
+              note: ride.origin_name ?? null,
+              proposed_by: pickupSenderId,
+            },
+          })
+          .select('*')
+          .single()
+
+        if (msgErr) {
+          console.error('Failed to auto-send pickup suggestion:', msgErr.message)
+        } else if (insertedMsg) {
+          // Broadcast the full message object so MessagingWindow can append it directly
+          void realtimeBroadcast(`chat:${rideId}`, 'new_message', insertedMsg as Record<string, unknown>)
+          void realtimeBroadcast(`chat-badge:${rideId}`, 'new_message', { ride_id: rideId })
+        }
+      })()
+    }
 
     console.log(JSON.stringify({ type: 'board_accept', ride_id: rideId, accepted_by: userId }))
     res.status(200).json({ ride_id: rideId, status: 'coordinating' })

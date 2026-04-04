@@ -76,6 +76,15 @@ vi.mock('@/components/ui/BottomNav', () => ({
   default: () => <div data-testid="bottom-nav" />,
 }))
 
+// ── Mock places (for pickup/destination search) ─────────────────────────────
+
+vi.mock('@/lib/places', () => ({
+  searchPlaces: vi.fn().mockResolvedValue([
+    { placeId: 'p1', mainText: 'Test Pickup', secondaryText: 'Davis, CA', fullAddress: '123 Main St, Davis, CA', lat: 38.54, lng: -121.74 },
+  ]),
+  getPlaceCoordinates: vi.fn().mockResolvedValue({ lat: 38.54, lng: -121.74 }),
+}))
+
 // ── Mock geolocation ─────────────────────────────────────────────────────────
 
 const mockGetCurrentPosition = vi.fn()
@@ -219,8 +228,8 @@ describe('RideBoard', () => {
 
     // Confirmation sheet should appear with enrichment fields
     expect(screen.getByTestId('confirm-sheet')).toBeInTheDocument()
-    expect(screen.getByTestId('mode-destination')).toBeInTheDocument()
-    expect(screen.getByTestId('mode-flexible')).toBeInTheDocument()
+    expect(screen.getByTestId('pickup-search')).toBeInTheDocument()
+    expect(screen.getByTestId('destination-search')).toBeInTheDocument()
     expect(screen.getByTestId('confirm-send-button')).toHaveTextContent('Send Request')
   })
 
@@ -254,8 +263,19 @@ describe('RideBoard', () => {
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) })
     })
 
-    // Select flexible mode so button is enabled
-    await user.click(screen.getByTestId('mode-flexible'))
+    // Fill in pickup
+    await user.type(screen.getByTestId('pickup-search'), 'Test')
+    await waitFor(() => {
+      expect(screen.getByTestId('pickup-suggestion')).toBeInTheDocument()
+    })
+    await user.click(screen.getByTestId('pickup-suggestion'))
+
+    // Fill in destination
+    await user.type(screen.getByTestId('destination-search'), 'Test')
+    await waitFor(() => {
+      expect(screen.getByTestId('place-suggestion')).toBeInTheDocument()
+    })
+    await user.click(screen.getByTestId('place-suggestion'))
 
     // Click "Send Request" in the confirmation sheet
     await user.click(screen.getByTestId('confirm-send-button'))
@@ -294,8 +314,19 @@ describe('RideBoard', () => {
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) })
     })
 
-    // Select flexible mode so button is enabled
-    await user.click(screen.getByTestId('mode-flexible'))
+    // Fill in pickup
+    await user.type(screen.getByTestId('pickup-search'), 'Test')
+    await waitFor(() => {
+      expect(screen.getByTestId('pickup-suggestion')).toBeInTheDocument()
+    })
+    await user.click(screen.getByTestId('pickup-suggestion'))
+
+    // Fill in destination
+    await user.type(screen.getByTestId('destination-search'), 'Test')
+    await waitFor(() => {
+      expect(screen.getByTestId('place-suggestion')).toBeInTheDocument()
+    })
+    await user.click(screen.getByTestId('place-suggestion'))
 
     // Click "Send Request"
     await user.click(screen.getByTestId('confirm-send-button'))

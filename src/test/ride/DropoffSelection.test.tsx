@@ -199,7 +199,7 @@ describe('DropoffSelection', () => {
     renderWithState()
 
     await waitFor(() => {
-      expect(screen.getByText('Diridon Station')).toBeInTheDocument()
+      expect(screen.getAllByText('Diridon Station').length).toBeGreaterThan(0)
       expect(screen.getByText('72% of the way')).toBeInTheDocument()
     })
   })
@@ -238,7 +238,7 @@ describe('DropoffSelection', () => {
     renderWithState()
 
     await waitFor(() => {
-      expect(screen.getByText('Diridon Station')).toBeInTheDocument()
+      expect(screen.getAllByText('Diridon Station').length).toBeGreaterThan(0)
     })
 
     // First click selects the card (auto-selected as idx=0), second click confirms

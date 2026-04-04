@@ -6,6 +6,9 @@ import type { PlaceSuggestion } from '@/lib/places'
 import { supabase } from '@/lib/supabase'
 
 export interface RequestEnrichment {
+  pickup_lat: number
+  pickup_lng: number
+  pickup_name: string
   destination_lat?: number
   destination_lng?: number
   destination_name?: string
@@ -26,7 +29,14 @@ export default function RideBoardConfirmSheet({
   onConfirm,
   onCancel,
 }: RideBoardConfirmSheetProps) {
-  const [mode, setMode] = useState<'destination' | 'flexible'>('destination')
+  // Pickup fields
+  const [pickupQuery, setPickupQuery] = useState('')
+  const [pickupSuggestions, setPickupSuggestions] = useState<PlaceSuggestion[]>([])
+  const [selectedPickup, setSelectedPickup] = useState<PlaceSuggestion | null>(null)
+  const [pickupResolving, setPickupResolving] = useState(false)
+  const pickupDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Destination fields
   const [query, setQuery] = useState('')
   const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([])
   const [selectedPlace, setSelectedPlace] = useState<PlaceSuggestion | null>(null)
@@ -48,7 +58,9 @@ export default function RideBoardConfirmSheet({
 
   // Reset state when ride changes
   useEffect(() => {
-    setMode('destination')
+    setPickupQuery('')
+    setPickupSuggestions([])
+    setSelectedPickup(null)
     setQuery('')
     setSuggestions([])
     setSelectedPlace(null)
@@ -121,25 +133,53 @@ export default function RideBoardConfirmSheet({
     }
   }, [])
 
-  const handleSubmit = useCallback(() => {
-    const enrichment: RequestEnrichment = {
-      destination_flexible: mode === 'flexible',
+  const handlePickupSearch = useCallback((value: string) => {
+    setPickupQuery(value)
+    setSelectedPickup(null)
+    if (pickupDebounceRef.current) clearTimeout(pickupDebounceRef.current)
+    if (value.trim().length < 2) { setPickupSuggestions([]); return }
+    pickupDebounceRef.current = setTimeout(() => {
+      void searchPlaces(value).then(setPickupSuggestions)
+    }, 300)
+  }, [])
+
+  const handleSelectPickup = useCallback(async (place: PlaceSuggestion) => {
+    setPickupQuery(place.fullAddress)
+    setPickupSuggestions([])
+    if (place.lat != null && place.lng != null) {
+      setSelectedPickup(place)
+      return
     }
-    if (mode === 'destination' && selectedPlace?.lat != null && selectedPlace.lng != null) {
-      enrichment.destination_lat = selectedPlace.lat
-      enrichment.destination_lng = selectedPlace.lng
-      enrichment.destination_name = selectedPlace.fullAddress
+    setPickupResolving(true)
+    const coords = await getPlaceCoordinates(place.placeId)
+    setPickupResolving(false)
+    if (coords) {
+      setSelectedPickup({ ...place, lat: coords.lat, lng: coords.lng })
+    }
+  }, [])
+
+  const handleSubmit = useCallback(() => {
+    if (!selectedPickup?.lat || !selectedPickup.lng) return
+    if (!selectedPlace?.lat || !selectedPlace.lng) return
+    const enrichment: RequestEnrichment = {
+      pickup_lat: selectedPickup.lat,
+      pickup_lng: selectedPickup.lng,
+      pickup_name: selectedPickup.fullAddress,
+      destination_lat: selectedPlace.lat,
+      destination_lng: selectedPlace.lng,
+      destination_name: selectedPlace.fullAddress,
+      destination_flexible: false,
     }
     if (note.trim()) enrichment.note = note.trim().slice(0, 200)
     onConfirm(enrichment)
-  }, [mode, selectedPlace, note, onConfirm])
+  }, [selectedPickup, selectedPlace, note, onConfirm])
 
   if (!ride) return null
 
   const isDriverPost = ride.mode === 'driver'
   const poster = ride.poster
   const initial = poster?.full_name?.[0]?.toUpperCase() ?? '?'
-  const canSubmit = mode === 'flexible' || (mode === 'destination' && selectedPlace != null)
+  const canSubmit = selectedPickup != null && selectedPlace != null
 
   return (
     <>
@@ -200,41 +240,57 @@ export default function RideBoardConfirmSheet({
             </div>
           </div>
 
-          {/* ── Step 1: Where are you headed? ───────────────────────────── */}
+          {/* ── Pickup location (required) ───────────────────────────────── */}
+          <div className="mb-5">
+            <p className="text-sm font-semibold text-text-primary mb-2">Where should the driver pick you up?</p>
+            <div className="relative">
+              <input
+                data-testid="pickup-search"
+                type="text"
+                value={pickupQuery}
+                onChange={(e) => handlePickupSearch(e.target.value)}
+                placeholder="Search for your pickup location..."
+                className="w-full rounded-xl border border-border px-3 py-2.5 text-sm text-text-primary placeholder:text-text-secondary/60 focus:border-primary focus:outline-none"
+              />
+              {pickupResolving && (
+                <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                </div>
+              )}
+              {selectedPickup && (
+                <div className="mt-2 flex items-center gap-2 rounded-xl bg-success/5 border border-success/20 px-3 py-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5 text-success shrink-0" aria-hidden="true">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  <p className="text-xs text-text-primary font-medium truncate">{selectedPickup.fullAddress}</p>
+                </div>
+              )}
+
+              {/* Pickup suggestions dropdown */}
+              {pickupSuggestions.length > 0 && !selectedPickup && (
+                <div className="absolute left-0 right-0 top-full mt-1 z-20 rounded-xl bg-white border border-border shadow-lg max-h-48 overflow-y-auto">
+                  {pickupSuggestions.map((s) => (
+                    <button
+                      key={s.placeId}
+                      data-testid="pickup-suggestion"
+                      onClick={() => void handleSelectPickup(s)}
+                      className="w-full text-left px-3 py-2.5 hover:bg-surface border-b border-border/50 last:border-b-0"
+                    >
+                      <p className="text-sm font-medium text-text-primary">{s.mainText}</p>
+                      <p className="text-xs text-text-secondary">{s.secondaryText}</p>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Where are you headed? ───────────────────────────────────── */}
           <div className="mb-5">
             <p className="text-sm font-semibold text-text-primary mb-3">Where are you headed?</p>
 
-            {/* Mode toggle */}
-            <div className="flex gap-2 mb-3">
-              <button
-                data-testid="mode-destination"
-                onClick={() => setMode('destination')}
-                className={[
-                  'flex-1 rounded-xl py-2.5 text-xs font-semibold border-2 transition-colors',
-                  mode === 'destination'
-                    ? 'border-primary bg-primary/5 text-primary'
-                    : 'border-border bg-white text-text-secondary',
-                ].join(' ')}
-              >
-                I know my destination
-              </button>
-              <button
-                data-testid="mode-flexible"
-                onClick={() => { setMode('flexible'); setSuggestions([]); setSelectedPlace(null); setQuery('') }}
-                className={[
-                  'flex-1 rounded-xl py-2.5 text-xs font-semibold border-2 transition-colors',
-                  mode === 'flexible'
-                    ? 'border-primary bg-primary/5 text-primary'
-                    : 'border-border bg-white text-text-secondary',
-                ].join(' ')}
-              >
-                Let&apos;s figure it out
-              </button>
-            </div>
-
             {/* Destination search */}
-            {mode === 'destination' && (
-              <div className="relative">
+            <div className="relative">
                 <input
                   data-testid="destination-search"
                   type="text"
@@ -319,21 +375,6 @@ export default function RideBoardConfirmSheet({
                   </div>
                 )}
               </div>
-            )}
-
-            {/* Flexible mode badge */}
-            {mode === 'flexible' && (
-              <div className="flex items-center gap-2 rounded-xl bg-primary/5 border border-primary/15 px-3 py-3">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary shrink-0" aria-hidden="true">
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="12" y1="16" x2="12" y2="12" />
-                  <line x1="12" y1="8" x2="12.01" y2="8" />
-                </svg>
-                <p className="text-xs text-text-secondary">
-                  The driver will see your destination is flexible. You can coordinate the drop-off in chat.
-                </p>
-              </div>
-            )}
           </div>
 
           {/* ── Step 2: Add a note (optional) ───────────────────────────── */}

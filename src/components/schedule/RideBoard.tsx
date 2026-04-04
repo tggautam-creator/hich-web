@@ -102,6 +102,9 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       }
 
       const loc = userLocationRef.current
+      // Use rider's explicit pickup location from enrichment, fall back to GPS
+      const originLat = enrichment?.pickup_lat ?? loc?.lat
+      const originLng = enrichment?.pickup_lng ?? loc?.lng
       const resp = await fetch('/api/schedule/request', {
         method: 'POST',
         headers: {
@@ -110,8 +113,15 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
         },
         body: JSON.stringify({
           schedule_id: confirmRide.id,
-          ...(loc ? { origin_lat: loc.lat, origin_lng: loc.lng } : {}),
-          ...(enrichment ?? {}),
+          ...(originLat != null && originLng != null ? { origin_lat: originLat, origin_lng: originLng } : {}),
+          origin_name: enrichment?.pickup_name ?? null,
+          ...(enrichment ? {
+            destination_lat: enrichment.destination_lat,
+            destination_lng: enrichment.destination_lng,
+            destination_name: enrichment.destination_name,
+            destination_flexible: enrichment.destination_flexible,
+            note: enrichment.note,
+          } : {}),
         }),
       })
 

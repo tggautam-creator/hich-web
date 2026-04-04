@@ -76,11 +76,12 @@ export async function getCachedRefreshToken(): Promise<string | null> {
         const oldCache = await caches.open(OLD_CACHE_NAME)
         response = (await oldCache.match(OLD_CACHE_KEY)) ?? undefined
         if (response) {
-          // Migrate to new cache so this only happens once
+          // Migrate to new cache and delete from old cache so this only happens once
           const token = await response.clone().text()
           await cache.put(new Request(CACHE_KEY), new Response(token, {
             headers: { 'Content-Type': 'text/plain', 'X-Timestamp': Date.now().toString() },
           }))
+          await oldCache.delete(OLD_CACHE_KEY)
           authLog('cacheStorage', 'getCachedRefreshToken', true, 'migrated from hich-auth-v1')
         }
       } catch { /* old cache not available */ }

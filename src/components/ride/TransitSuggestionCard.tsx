@@ -196,6 +196,7 @@ export function TransitSuggestionPicker({
             defaultCenter={suggestions[0] ? { lat: suggestions[0].station_lat, lng: suggestions[0].station_lng } : { lat: 38.5, lng: -121.7 }}
             gestureHandling="greedy"
             disableDefaultUI
+            clickableIcons={false}
             className="h-full w-full"
           >
             {/* Driver's route polyline */}
@@ -365,10 +366,11 @@ export function TransitSuggestionPicker({
             </div>
 
             {/* Total summary */}
-            <div className="mt-1.5 pt-1.5 border-t border-border/50 pl-8">
+            <div className="mt-1.5 pt-1.5 border-t border-border/50 pl-8 space-y-0.5">
+              <p className="text-[10px] text-text-secondary">~{s.total_rider_minutes} min rider&apos;s total journey</p>
+              <p className="text-[10px] text-text-secondary">{s.ride_with_driver_minutes} min journey together · {s.walk_to_station_minutes} min walk · {s.transit_to_dest_minutes} min transit</p>
               <p className="text-[10px] text-text-secondary">
-                ~{s.total_rider_minutes} min total to destination
-                <span>{' · '}{s.driver_detour_minutes > 0 ? `+${s.driver_detour_minutes} min detour` : 'On your route'}</span>
+                {s.driver_detour_minutes > 0 ? `+${s.driver_detour_minutes} min detour for driver` : 'On driver\'s route'}
               </p>
             </div>
 
@@ -443,6 +445,7 @@ export default function TransitSuggestionCard({
             defaultCenter={{ lat: suggestion.station_lat, lng: suggestion.station_lng }}
             gestureHandling="greedy"
             disableDefaultUI
+            clickableIcons={false}
             className="h-full w-full"
           >
             {/* Driver route — indigo solid line */}
@@ -607,15 +610,21 @@ export default function TransitSuggestionCard({
             )}
 
             {/* Total */}
-            <div className={`${!rideFare ? 'border-t border-border' : ''} pt-1.5 flex items-center justify-between`}>
-              <span className="font-semibold text-text-primary">
-                Total: ~{totalJourney} min
-              </span>
-              {savedMinutes > 0 && (
-                <span className="font-semibold text-success text-[9px]">
-                  {savedMinutes} min faster than public transit
-                </span>
-              )}
+            <div className={`${!rideFare ? 'border-t border-border' : ''} pt-1.5 space-y-0.5`}>
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-text-primary">~{totalJourney} min rider&apos;s total journey</span>
+                {savedMinutes > 0 && (
+                  <span className="font-semibold text-success text-[9px]">
+                    {savedMinutes} min faster
+                  </span>
+                )}
+              </div>
+              <p className="text-[9px] text-text-secondary">
+                {rideMin > 0 ? `${rideMin} min journey together · ` : ''}{suggestion.walk_to_station_minutes} min walk · {suggestion.transit_to_dest_minutes} min transit
+              </p>
+              <p className="text-[9px] text-text-secondary">
+                {suggestion.driver_detour_minutes > 0 ? `+${suggestion.driver_detour_minutes} min detour for driver` : "On driver's route"}
+              </p>
             </div>
           </div>
         )

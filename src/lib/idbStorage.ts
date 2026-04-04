@@ -66,6 +66,22 @@ async function idbDelete(key: string): Promise<void> {
   })
 }
 
+/** Delete a key from the old hich-auth DB to prevent repeated migration of stale tokens */
+async function deleteFromOldDb(key: string): Promise<void> {
+  return new Promise((resolve) => {
+    const req = indexedDB.open(OLD_DB_NAME, 1)
+    req.onsuccess = () => {
+      const db = req.result
+      if (!db.objectStoreNames.contains(STORE_NAME)) { db.close(); resolve(); return }
+      const tx = db.transaction(STORE_NAME, 'readwrite')
+      tx.objectStore(STORE_NAME).delete(key)
+      tx.oncomplete = () => { db.close(); resolve() }
+      tx.onerror = () => { db.close(); resolve() }
+    }
+    req.onerror = () => resolve()
+  })
+}
+
 export const idbStorage = {
   async getItem(key: string): Promise<string | null> {
     // Try IndexedDB first (survives iOS force-kills better)
@@ -102,8 +118,9 @@ export const idbStorage = {
       })
       if (oldValue) {
         authLog('idb', `getItem(${key.slice(0, 30)})`, true, 'source=hich-auth-migration')
-        // Migrate to new DB so this only happens once
+        // Migrate to new DB and delete from old DB so this only happens once
         void idbSet(key, oldValue).catch(() => {})
+        void deleteFromOldDb(key).catch(() => {})
         return oldValue
       }
     } catch { /* old DB not available, ignore */ }

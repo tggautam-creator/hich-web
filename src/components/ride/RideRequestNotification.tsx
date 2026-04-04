@@ -463,6 +463,63 @@ export default function RideRequestNotification({
     }
   }, [profile?.id, isDriver, handleRideRequest])
 
+  // Fallback: poll unread notifications for board_accepted entries (rider side).
+  // Handles missed Realtime events when the app is backgrounded.
+  useEffect(() => {
+    if (!profile?.id || isDriver) return
+
+    let cancelled = false
+    const seenAcceptedIdsRef = new Set<string>()
+
+    const poll = async () => {
+      // Don't re-show if accepted toast is already visible
+      if (acceptedToast) return
+
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) return
+
+        const resp = await fetch('/api/notifications?unread_only=true&limit=10', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+        if (!resp.ok || cancelled) return
+
+        const body = (await resp.json()) as { notifications?: InboxNotification[] }
+        const rows = body.notifications ?? []
+
+        for (const notif of rows) {
+          if (seenAcceptedIdsRef.has(notif.id)) continue
+          seenAcceptedIdsRef.add(notif.id)
+          if (seenInboxNotifIdsRef.current.has(notif.id)) continue
+          seenInboxNotifIdsRef.current.add(notif.id)
+
+          void fetch(`/api/notifications/${notif.id}/read`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bearer ${session.access_token}` },
+          }).catch(() => {})
+
+          if (notif.type !== 'board_accepted') continue
+
+          const rideId = notif.data['ride_id'] as string | undefined
+          if (rideId) {
+            handleBoardAccepted({ type: 'board_accepted', ride_id: rideId })
+            break
+          }
+        }
+      } catch {
+        // non-fatal fallback path
+      }
+    }
+
+    void poll()
+    const intervalId = setInterval(() => { void poll() }, 10000)
+
+    return () => {
+      cancelled = true
+      clearInterval(intervalId)
+    }
+  }, [profile?.id, isDriver, acceptedToast, handleBoardAccepted])
+
   // Countdown timer — auto-dismiss after 90s (on-demand only, not board requests)
   useEffect(() => {
     if (!notification) return
