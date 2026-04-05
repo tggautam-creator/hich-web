@@ -28,6 +28,7 @@ interface LocationState {
   destinationLat?: number
   destinationLng?: number
   driverDestinationSet?: boolean
+  autoOpenPickup?: boolean
 }
 
 interface ChatMessage {
@@ -343,6 +344,10 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const [cancelling, setCancelling] = useState(false)
   const [driverCancelledModal, setDriverCancelledModal] = useState(false)
 
+  // Auto-open pickup pin dropper for board rides after acceptance
+  const [pickupRequired, setPickupRequired] = useState(false)
+  const autoPickupFiredRef = useRef(false)
+
   // Time-based state for scheduled rides
   const [isRideApproaching, setIsRideApproaching] = useState(false)
   const [minutesUntilRide, setMinutesUntilRide] = useState<number | null>(null)
@@ -493,7 +498,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   // ── Check if scheduled ride is approaching (15 min before) ───────────────
   useEffect(() => {
     const checkRideApproaching = () => {
-      setIsRideApproaching(isScheduledRideApproaching(ride, 30))
+      setIsRideApproaching(isScheduledRideApproaching(ride, 30, 120))
       setMinutesUntilRide(getMinutesUntilRide(ride))
     }
 
@@ -730,6 +735,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         setPinLat(null)
         setPinLng(null)
         setPinError(null)
+        setPickupRequired(false)
         // Refresh ride data and messages
         const { data: updated } = await supabase.from('rides').select('*').eq('id', rideId).single()
         if (updated) setRide(updated)
@@ -910,6 +916,28 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
     }
   }, [ride, latestPickupProposal, latestDropoffProposal])
 
+  // ── Auto-open pickup pin dropper for board rides after acceptance ────────
+  useEffect(() => {
+    if (
+      autoPickupFiredRef.current ||
+      loading ||
+      !ride ||
+      !state?.autoOpenPickup ||
+      !ride.schedule_id
+    ) return
+
+    // Only auto-open if no pickup has been proposed yet
+    const hasPickup = messages.some((m) => m.type === 'pickup_suggestion')
+    if (hasPickup) return
+
+    autoPickupFiredRef.current = true
+    setPickupRequired(true)
+    openPinDropper('pickup')
+
+    // Clear navigation state so refresh doesn't re-trigger
+    navigate(location.pathname, { replace: true, state: null })
+  }, [loading, ride, state?.autoOpenPickup, messages, openPinDropper, navigate, location.pathname])
+
   // ── Pin dropper: debounced address search ─────────────────────────────────
   const handlePinSearch = useCallback((query: string) => {
     setPinSearchQuery(query)
@@ -1072,6 +1100,29 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
     )
   }
 
+  // ── Ride Missed — expired scheduled ride that was never started ──────────
+  if (ride?.status === 'expired' && ride.schedule_id) {
+    return (
+      <div data-testid={testId ?? 'messaging-window'} className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-surface px-6">
+        <div className="h-16 w-16 rounded-full bg-warning/10 flex items-center justify-center mb-2">
+          <span className="text-3xl">&#x23F0;</span>
+        </div>
+        <h2 className="text-lg font-bold text-text-primary">Ride Missed</h2>
+        <p className="text-sm text-text-secondary text-center">
+          This scheduled ride was not started and has expired.
+        </p>
+        <button
+          type="button"
+          data-testid="missed-go-rides"
+          onClick={() => navigate('/rides', { replace: true })}
+          className="mt-2 rounded-2xl bg-primary px-8 py-3 font-semibold text-white"
+        >
+          Back to My Rides
+        </button>
+      </div>
+    )
+  }
+
   // ── Pin dropper overlay ─────────────────────────────────────────────────
   if (pinMode && pinLat != null && pinLng != null) {
     const riderDestName = ride?.destination_name ?? null
@@ -1083,17 +1134,19 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           className="flex items-center gap-3 px-4 border-b border-border bg-white z-10 shrink-0"
           style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
         >
-          <button
-            data-testid="pin-back-button"
-            onClick={() => { setPinMode(null); setPinSearchQuery(''); setPinSearchResults([]); setPinRouteInfo(null) }}
-            className="p-1 shrink-0 text-text-primary active:opacity-60"
-            aria-label="Cancel"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
-              <path d="M19 12H5" />
-              <path d="m12 5-7 7 7 7" />
-            </svg>
-          </button>
+          {!(pickupRequired && pinMode === 'pickup') && (
+            <button
+              data-testid="pin-back-button"
+              onClick={() => { setPinMode(null); setPinSearchQuery(''); setPinSearchResults([]); setPinRouteInfo(null) }}
+              className="p-1 shrink-0 text-text-primary active:opacity-60"
+              aria-label="Cancel"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden="true">
+                <path d="M19 12H5" />
+                <path d="m12 5-7 7 7 7" />
+              </svg>
+            </button>
+          )}
           <h2 className="text-sm font-bold text-text-primary">
             {pinMode === 'pickup' ? 'Suggest Pickup Point' : 'Suggest Dropoff Point'}
           </h2>

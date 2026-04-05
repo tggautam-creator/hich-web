@@ -5,17 +5,18 @@
  * Run by PM2 every minute via ecosystem.config.cjs.
  * Exits after completion (autorestart: false, cron_restart triggers next run).
  */
-import { checkUpcomingRides, expireStaleRequests } from '../lib/scheduledReminders.ts'
+import { checkUpcomingRides, expireStaleRequests, expireMissedRides } from '../lib/scheduledReminders.ts'
 import { checkActiveRides } from '../lib/rideSafetyNet.ts'
 
 async function main() {
   console.log('[cron/reminders] Starting check...')
-  const [reminders, expiry, safetyNet] = await Promise.all([
+  const [reminders, expiry, missed, safetyNet] = await Promise.all([
     checkUpcomingRides(),
     expireStaleRequests(),
+    expireMissedRides(),
     checkActiveRides(),
   ])
-  console.log(`[cron/reminders] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}`)
+  console.log(`[cron/reminders] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}`)
   process.exit(0)
 }
 

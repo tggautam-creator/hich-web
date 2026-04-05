@@ -207,6 +207,8 @@ export type Database = {
           payment_intent_id: string | null
           stripe_fee_cents: number
           reminder_sent: boolean
+          reminder_30_sent: boolean
+          reminder_15_sent: boolean
           progress_pct: number
           requester_destination: GeoPoint | null
           requester_destination_name: string | null
@@ -255,6 +257,8 @@ export type Database = {
           payment_intent_id?: string | null
           stripe_fee_cents?: number
           reminder_sent?: boolean
+          reminder_30_sent?: boolean
+          reminder_15_sent?: boolean
           progress_pct?: number
           requester_destination?: GeoPoint | null
           requester_destination_name?: string | null
@@ -303,6 +307,8 @@ export type Database = {
           payment_intent_id?: string | null
           stripe_fee_cents?: number
           reminder_sent?: boolean
+          reminder_30_sent?: boolean
+          reminder_15_sent?: boolean
           progress_pct?: number
           requester_destination?: GeoPoint | null
           requester_destination_name?: string | null

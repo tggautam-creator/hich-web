@@ -196,12 +196,29 @@ export default function RideRequestNotification({
   // Handle board request accepted — show toast and navigate to messaging
   const [acceptedToast, setAcceptedToast] = useState<{ rideId: string } | null>(null)
   const acceptedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const seenAcceptedRideIdsRef = useRef<Set<string>>(new Set())
 
   const handleBoardAccepted = useCallback((data: BoardAcceptedData) => {
+    // Prevent duplicate toasts for the same ride (realtime + polling can both fire)
+    if (seenAcceptedRideIdsRef.current.has(data.ride_id)) return
+    seenAcceptedRideIdsRef.current.add(data.ride_id)
     setAcceptedToast({ rideId: data.ride_id })
     // Auto-dismiss after 10s
     if (acceptedTimerRef.current) clearTimeout(acceptedTimerRef.current)
     acceptedTimerRef.current = setTimeout(() => setAcceptedToast(null), 10000)
+  }, [])
+
+  // Ride reminder toast — shown when ride is approaching
+  const [reminderToast, setReminderToast] = useState<{ rideId: string } | null>(null)
+  const reminderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const seenReminderRideIdsRef = useRef<Set<string>>(new Set())
+
+  const handleRideReminder = useCallback((rideId: string) => {
+    if (seenReminderRideIdsRef.current.has(rideId)) return
+    seenReminderRideIdsRef.current.add(rideId)
+    setReminderToast({ rideId })
+    if (reminderTimerRef.current) clearTimeout(reminderTimerRef.current)
+    reminderTimerRef.current = setTimeout(() => setReminderToast(null), 10000)
   }, [])
 
   // Cancelled toast — shown when the other party cancels the ride
@@ -381,6 +398,11 @@ export default function RideRequestNotification({
         // Handling it here too caused duplicate notifications (Realtime + FCM both
         // delete from seenRideIds) which raced with WaitingRoom's auto-select.
         // The driver_selected event (below) is the real transition signal.
+      } else if (payload.data?.type === 'ride_reminder') {
+        const rideId = payload.data?.ride_id as string | undefined
+        if (rideId) {
+          handleRideReminder(rideId)
+        }
       } else if (payload.data?.type === 'driver_selected') {
         if (!isDriver) return
         const data = payload.data as { ride_id?: string }
@@ -393,7 +415,7 @@ export default function RideRequestNotification({
     return () => {
       if (unsub) unsub()
     }
-  }, [isDriver, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled, handleDriverSelected])
+  }, [isDriver, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled, handleRideReminder, handleDriverSelected])
 
   // Ref to track current queue so the polling callback can skip when
   // a notification is already being displayed without re-creating the effect.
@@ -732,7 +754,7 @@ export default function RideRequestNotification({
               </div>
               <div className="min-w-0">
                 <p className="text-sm font-bold text-text-primary">Ride Accepted!</p>
-                <p className="text-xs text-text-secondary">Open chat to coordinate pickup</p>
+                <p className="text-xs text-text-secondary">Set your pickup location</p>
               </div>
             </div>
             <button
@@ -748,13 +770,56 @@ export default function RideRequestNotification({
             <button
               type="button"
               onClick={() => {
-                navigate(`/ride/messaging/${acceptedToast.rideId}`)
+                navigate(`/ride/messaging/${acceptedToast.rideId}`, { state: { autoOpenPickup: true } })
                 setAcceptedToast(null)
               }}
               className="w-full rounded-2xl bg-success py-2.5 text-center text-sm font-semibold text-white active:bg-success/90"
               data-testid="accepted-open-chat"
             >
               Open Chat
+            </button>
+          </div>
+        </div>
+      </div>,
+      portalTarget,
+    )
+  }
+
+  // Ride reminder toast — shown when ride is approaching
+  if (reminderToast && !notification && !acceptedToast) {
+    return createPortal(
+      <div className="fixed top-0 left-0 right-0 z-[1200] animate-slide-down">
+        <div className="mx-2 mt-2 rounded-2xl border border-warning/30 bg-white shadow-xl">
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-warning/10 shrink-0">
+                <AppIcon name="bell" className="h-5 w-5 text-warning" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-text-primary">Ride Starting Soon!</p>
+                <p className="text-xs text-text-secondary">Head to your pickup location</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReminderToast(null)}
+              aria-label="Dismiss"
+              className="rounded-full p-1 text-text-secondary hover:bg-surface shrink-0"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="px-3 pb-3">
+            <button
+              type="button"
+              onClick={() => {
+                navigate(`/ride/messaging/${reminderToast.rideId}`)
+                setReminderToast(null)
+              }}
+              className="w-full rounded-2xl bg-warning py-2.5 text-center text-sm font-semibold text-white active:bg-warning/90"
+              data-testid="reminder-open-chat"
+            >
+              Open Ride
             </button>
           </div>
         </div>

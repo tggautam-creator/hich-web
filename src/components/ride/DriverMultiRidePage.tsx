@@ -312,9 +312,9 @@ export default function DriverMultiRidePage({
               {/* Pickup + destination info */}
               <div className="mt-2 pl-10 space-y-0.5">
                 {/* Confirmed pickup from chat */}
-                {r.ride.pickup_confirmed && r.ride.pickup_note ? (
+                {r.ride.pickup_confirmed ? (
                   <p className="text-xs text-success font-medium truncate">
-                    ✓ Pickup: {r.ride.pickup_note}
+                    ✓ Pickup{r.ride.pickup_note ? `: ${r.ride.pickup_note}` : ' confirmed'}
                   </p>
                 ) : r.ride.pickup_point ? (
                   <p className="text-xs text-warning font-medium truncate">
@@ -376,14 +376,16 @@ export default function DriverMultiRidePage({
         className="bg-white border-t border-border px-4 pt-3 flex gap-2"
         style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 1rem)' }}
       >
-        <button
-          type="button"
-          onClick={() => navigate(`/ride/group-chat/${scheduleId}`)}
-          className="flex-1 rounded-2xl border-2 border-primary py-3 text-center text-sm font-semibold text-primary active:bg-primary/5"
-          data-testid="group-chat-button"
-        >
-          Group Chat
-        </button>
+        {riders.length > 1 && (
+          <button
+            type="button"
+            onClick={() => navigate(`/ride/group-chat/${scheduleId}`)}
+            className="flex-1 rounded-2xl border-2 border-primary py-3 text-center text-sm font-semibold text-primary active:bg-primary/5"
+            data-testid="group-chat-button"
+          >
+            Group Chat
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setQrOpen(true)}

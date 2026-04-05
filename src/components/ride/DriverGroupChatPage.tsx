@@ -107,7 +107,7 @@ export default function DriverGroupChatPage({
     if (riderChats.length === 0) return
 
     const channels = riderChats.map((rc) =>
-      supabase.channel(`chat:${rc.ride.id}:group`)
+      supabase.channel(`chat:${rc.ride.id}`)
         .on('broadcast', { event: 'new_message' }, (payload) => {
           const msg = payload.payload as ChatMessage
           setRiderChats((prev) =>
@@ -151,7 +151,7 @@ export default function DriverGroupChatPage({
 
     setSending(true)
     const token = (await supabase.auth.getSession()).data.session?.access_token
-    await fetch(`/api/rides/${targetRideId}/message`, {
+    await fetch(`/api/messages/${targetRideId}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

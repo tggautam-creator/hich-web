@@ -132,7 +132,7 @@ export default function NotificationsPage({
     const rideId = notif.data['ride_id'] as string | undefined
     if (!rideId) return
 
-    if (notif.type === 'board_accepted') {
+    if (notif.type === 'board_accepted' || notif.type === 'ride_reminder' || notif.type === 'ride_missed') {
       navigate(`/ride/messaging/${rideId}`)
     } else if (notif.type === 'ride_request') {
       navigate(`/ride/suggestion/${rideId}`, {
@@ -156,6 +156,8 @@ export default function NotificationsPage({
       case 'board_request_actioned': return { name: 'clipboard', color: 'text-primary' }
       case 'board_accepted':         return { name: 'check-circle', color: 'text-success' }
       case 'board_declined':         return { name: 'x-circle', color: 'text-danger' }
+      case 'ride_reminder':          return { name: 'bell', color: 'text-warning' }
+      case 'ride_missed':            return { name: 'x-circle', color: 'text-warning' }
       case 'ride_request':           return { name: 'car-request', color: 'text-primary' }
       default:                       return { name: 'bell', color: 'text-text-secondary' }
     }
@@ -219,6 +221,7 @@ export default function NotificationsPage({
               const isBoardRequest = notif.type === 'board_request'
               const isActioned = notif.type === 'board_request_actioned'
               const isAccepted = notif.type === 'board_accepted'
+              const isReminder = notif.type === 'ride_reminder'
               const route = notif.data['route'] as string | undefined
               const tripDate = notif.data['trip_date'] as string | undefined
               const isActioning = actioningId === notif.id
@@ -230,7 +233,7 @@ export default function NotificationsPage({
                   className={[
                     'px-4 py-4',
                     !notif.is_read ? 'bg-primary/5' : 'bg-white',
-                    isAccepted ? 'cursor-pointer active:bg-surface' : '',
+                    (isAccepted || isReminder) ? 'cursor-pointer active:bg-surface' : '',
                   ].join(' ')}
                   onClick={() => { if (!isBoardRequest && !isActioned) handleTap(notif) }}
                 >
@@ -288,6 +291,11 @@ export default function NotificationsPage({
                       {/* Tap hint for accepted */}
                       {isAccepted && (
                         <p className="text-xs text-primary font-medium mt-2">Tap to open messaging →</p>
+                      )}
+
+                      {/* Tap hint for ride reminder */}
+                      {isReminder && (
+                        <p className="text-xs text-warning font-medium mt-2">Tap to navigate to pickup →</p>
                       )}
                     </div>
                   </div>
