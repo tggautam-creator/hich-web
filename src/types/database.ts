@@ -729,6 +729,35 @@ export type Database = {
         }
         Relationships: never[]
       }
+
+      // ── reports ────────────────────────────────────────────────────────────
+      reports: {
+        Row: {
+          id: string
+          user_id: string
+          ride_id: string | null
+          category: string
+          description: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          ride_id?: string | null
+          category: string
+          description: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          ride_id?: string | null
+          category?: string
+          description?: string
+          created_at?: string
+        }
+        Relationships: never[]
+      }
     }
     Views: Record<string, never>
     Functions: {

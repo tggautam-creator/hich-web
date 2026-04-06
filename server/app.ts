@@ -19,6 +19,7 @@ import { authRouter } from './routes/auth.ts'
 import { gasPriceRouter } from './routes/gasPrice.ts'
 import { addressesRouter } from './routes/addresses.ts'
 import { vehicleRouter } from './routes/vehicle.ts'
+import { reportRouter } from './routes/report.ts'
 import { errorHandler } from './middleware/errorHandler.ts'
 
 export const app = express()
@@ -79,6 +80,7 @@ app.use('/api/auth', authRouter)
 app.use('/api/gas-price', gasPriceRouter)
 app.use('/api/addresses', addressesRouter)
 app.use('/api/vehicle', vehicleRouter)
+app.use('/api/report', reportRouter)
 
 // ── SPA fallback — serve built frontend in production ─────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url))

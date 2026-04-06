@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useAuthStore } from '@/stores/authStore'
+import { supabase } from '@/lib/supabase'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 
 interface RideReportPageProps {
@@ -12,40 +12,54 @@ const CATEGORIES = [
   { value: 'rider_behavior',  label: 'Rider behavior',  examples: 'Rude, harassment, property damage, no-show' },
   { value: 'payment',         label: 'Payment issue',   examples: 'Wrong charge, payment failed, fare dispute' },
   { value: 'safety',          label: 'Safety concern',  examples: 'Felt unsafe, accident, emergency' },
-  { value: 'bug',             label: 'App bug',         examples: 'Something in the app didn\'t work' },
+  { value: 'bug',             label: 'App bug',         examples: "Something in the app didn't work" },
 ] as const
-
-const SUPPORT_EMAIL = 'support@tagorides.com'
 
 export default function RideReportPage({
   'data-testid': testId = 'ride-report-page',
 }: RideReportPageProps) {
   const { rideId } = useParams<{ rideId: string }>()
   const navigate = useNavigate()
-  const profile = useAuthStore((s) => s.profile)
 
   const [category, setCategory] = useState('')
   const [description, setDescription] = useState('')
   const [submitted, setSubmitted] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const canSubmit = category !== '' && description.trim().length >= 10
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!canSubmit) return
+    if (!canSubmit || submitting) return
 
-    const cat = CATEGORIES.find((c) => c.value === category)
-    const subject = encodeURIComponent(`[TAGO] Ride Report — ${cat?.label ?? category}`)
-    const body = encodeURIComponent(
-      `Category: ${cat?.label ?? category}\n` +
-      `Ride ID: ${rideId ?? 'unknown'}\n` +
-      `User: ${profile?.email ?? 'unknown'}\n` +
-      `User ID: ${profile?.id ?? 'unknown'}\n\n` +
-      `${description.trim()}`,
-    )
+    setSubmitting(true)
+    setError(null)
 
-    window.open(`mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`, '_self')
-    setSubmitted(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) throw new Error('Not authenticated')
+
+      const res = await fetch('/api/report', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          category,
+          description: description.trim(),
+          ride_id: rideId ?? null,
+        }),
+      })
+
+      if (!res.ok) throw new Error('Failed to submit report')
+      setSubmitted(true)
+    } catch {
+      setError('Something went wrong. Please try again.')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -67,15 +81,12 @@ export default function RideReportPage({
         </button>
 
         <h1 className="mb-1 text-2xl font-bold text-text-primary">Report this ride</h1>
-        <p className="mb-1 text-sm text-text-secondary">
+        <p className="mb-6 text-sm text-text-secondary">
           Tell us what happened and we&apos;ll look into it.
         </p>
-        {rideId && (
-          <p className="mb-6 text-xs text-text-secondary font-mono">Ride: {rideId}</p>
-        )}
 
         {!submitted ? (
-          <form onSubmit={handleSubmit} className="flex flex-col gap-6">
+          <form onSubmit={(e) => { void handleSubmit(e) }} className="flex flex-col gap-6">
             {/* Category */}
             <div>
               <p className="text-sm font-medium text-text-primary mb-3">What happened?</p>
@@ -126,12 +137,17 @@ export default function RideReportPage({
               </p>
             </div>
 
+            {error && (
+              <p className="text-sm text-danger" role="alert">{error}</p>
+            )}
+
             <PrimaryButton
               data-testid="submit-button"
               type="submit"
               disabled={!canSubmit}
+              isLoading={submitting}
             >
-              Send report
+              Submit report
             </PrimaryButton>
           </form>
         ) : (
@@ -139,17 +155,9 @@ export default function RideReportPage({
             <div className="w-16 h-16 rounded-full bg-success/10 flex items-center justify-center">
               <span className="text-3xl">✓</span>
             </div>
-            <h2 className="text-lg font-semibold text-text-primary">Report sent</h2>
+            <h2 className="text-lg font-semibold text-text-primary">Report received</h2>
             <p className="text-sm text-text-secondary text-center max-w-xs">
-              Your email app should have opened with the report details.
-              If it didn&apos;t, email us directly at{' '}
-              <a
-                href={`mailto:${SUPPORT_EMAIL}`}
-                className="text-primary font-medium"
-                data-testid="support-email-link"
-              >
-                {SUPPORT_EMAIL}
-              </a>
+              Thanks for letting us know. We&apos;ll review it and take action if needed.
             </p>
             <button
               data-testid="done-button"

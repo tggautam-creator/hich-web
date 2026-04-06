@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useAuthStore } from '@/stores/authStore'
+import { supabase } from '@/lib/supabase'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 
 interface ReportIssuePageProps {
@@ -16,35 +16,49 @@ const CATEGORIES = [
   { value: 'other', label: 'Other' },
 ] as const
 
-const SUPPORT_EMAIL = 'support@tagorides.com'
-
 export default function ReportIssuePage({
   'data-testid': testId = 'report-issue-page',
 }: ReportIssuePageProps) {
   const navigate = useNavigate()
-  const profile = useAuthStore((s) => s.profile)
 
   const [category, setCategory] = useState('')
   const [description, setDescription] = useState('')
   const [submitted, setSubmitted] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const canSubmit = category !== '' && description.trim().length >= 10
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!canSubmit) return
+    if (!canSubmit || submitting) return
 
-    const categoryLabel = CATEGORIES.find((c) => c.value === category)?.label ?? category
-    const subject = encodeURIComponent(`[TAGO] ${categoryLabel}`)
-    const body = encodeURIComponent(
-      `Category: ${categoryLabel}\n` +
-      `User: ${profile?.email ?? 'unknown'}\n` +
-      `User ID: ${profile?.id ?? 'unknown'}\n\n` +
-      `${description.trim()}`,
-    )
+    setSubmitting(true)
+    setError(null)
 
-    window.open(`mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`, '_self')
-    setSubmitted(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) throw new Error('Not authenticated')
+
+      const res = await fetch('/api/report', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          category,
+          description: description.trim(),
+        }),
+      })
+
+      if (!res.ok) throw new Error('Failed to submit report')
+      setSubmitted(true)
+    } catch {
+      setError('Something went wrong. Please try again.')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -71,7 +85,7 @@ export default function ReportIssuePage({
         </p>
 
         {!submitted ? (
-          <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+          <form onSubmit={(e) => { void handleSubmit(e) }} className="flex flex-col gap-5">
             {/* Category */}
             <div>
               <label className="block text-sm font-medium text-text-primary mb-2">
@@ -120,12 +134,17 @@ export default function ReportIssuePage({
               </p>
             </div>
 
+            {error && (
+              <p className="text-sm text-danger" role="alert">{error}</p>
+            )}
+
             <PrimaryButton
               data-testid="submit-button"
               type="submit"
               disabled={!canSubmit}
+              isLoading={submitting}
             >
-              Send report
+              Submit report
             </PrimaryButton>
           </form>
         ) : (
@@ -133,17 +152,9 @@ export default function ReportIssuePage({
             <div className="w-16 h-16 rounded-full bg-success/10 flex items-center justify-center">
               <span className="text-3xl">✓</span>
             </div>
-            <h2 className="text-lg font-semibold text-text-primary">Report sent</h2>
+            <h2 className="text-lg font-semibold text-text-primary">Report received</h2>
             <p className="text-sm text-text-secondary text-center max-w-xs">
-              Your email app should have opened with the report details.
-              If it didn&apos;t, email us directly at{' '}
-              <a
-                href={`mailto:${SUPPORT_EMAIL}`}
-                className="text-primary font-medium"
-                data-testid="support-email-link"
-              >
-                {SUPPORT_EMAIL}
-              </a>
+              Thanks for letting us know. We&apos;ll review it and take action if needed.
             </p>
             <button
               data-testid="back-to-settings-button"
