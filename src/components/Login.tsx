@@ -64,7 +64,7 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
     setServerError(null)
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data: signInData, error } = await supabase.auth.signInWithPassword({
         email:    email.trim().toLowerCase(),
         password,
       })
@@ -77,26 +77,27 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
           setServerError(error.message)
         }
       } else {
-        // Check if user has completed onboarding (profile with full_name)
-        const { data: { user } } = await supabase.auth.getUser()
-        const { data: { session } } = await supabase.auth.getSession()
+        const signedInUser = signInData.user
+        const signedInSession = signInData.session
 
         // Ensure the auth store has the session before navigating to a guarded route
-        if (session) {
-          useAuthStore.setState({ session, user: session.user })
+        if (signedInSession) {
+          useAuthStore.setState({ session: signedInSession, user: signedInSession.user, isLoading: true })
         }
 
-        const { data: profile } = await supabase
+        const { data: profile, error: profileErr } = await supabase
           .from('users')
           .select('full_name, is_driver')
-          .eq('id', user?.id ?? '')
+          .eq('id', signedInUser?.id ?? '')
           .single()
 
-        if (!profile?.full_name) {
-          // No profile or incomplete — send to onboarding
-          navigate('/onboarding/profile')
+        if (profileErr || !profile?.full_name) {
+          // Query failed or genuinely new user — let AuthGuard decide.
+          // Navigate to /home/rider; AuthGuard will redirect to onboarding
+          // if the profile truly doesn't exist, or render home if it does.
+          navigate(profile?.is_driver ? '/home/driver' : '/home/rider', { replace: true })
         } else {
-          navigate(profile.is_driver ? '/home/driver' : '/home/rider')
+          navigate(profile.is_driver ? '/home/driver' : '/home/rider', { replace: true })
         }
       }
     } catch {

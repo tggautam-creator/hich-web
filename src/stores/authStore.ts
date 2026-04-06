@@ -157,6 +157,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           void syncSessionToServer(session)     // Layer: server HTTP-only cookie
           void cacheRefreshToken(session.refresh_token)  // Layer: Cache Storage
           void requestPersistentStorage()        // Ask iOS to keep our data
+          // Ensure AuthGuard shows spinner while profile loads (critical after
+          // sign-out → re-login: isLoading was set to false by signOut())
+          if (!get().profile) set({ isLoading: true })
           // Load/refresh profile — sets isLoading: false when done
           void get().refreshProfile()
         } else if (event === 'SIGNED_OUT') {
