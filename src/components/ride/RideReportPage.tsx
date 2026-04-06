@@ -15,7 +15,7 @@ const CATEGORIES = [
   { value: 'bug',             label: 'App bug',         examples: 'Something in the app didn\'t work' },
 ] as const
 
-const SUPPORT_EMAIL = 'tagorides@gmail.com'
+const SUPPORT_EMAIL = 'support@tagorides.com'
 
 export default function RideReportPage({
   'data-testid': testId = 'ride-report-page',

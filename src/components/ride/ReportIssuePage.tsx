@@ -16,7 +16,7 @@ const CATEGORIES = [
   { value: 'other', label: 'Other' },
 ] as const
 
-const SUPPORT_EMAIL = 'tagorides@gmail.com'
+const SUPPORT_EMAIL = 'support@tagorides.com'
 
 export default function ReportIssuePage({
   'data-testid': testId = 'report-issue-page',
