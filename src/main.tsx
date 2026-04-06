@@ -56,6 +56,7 @@ const ProfilePage = lazy(() => import('@/components/ride/ProfilePage'))
 const VehicleEditPage = lazy(() => import('@/components/ride/VehicleEditPage'))
 const SettingsPage = lazy(() => import('@/components/ride/SettingsPage'))
 const ReportIssuePage = lazy(() => import('@/components/ride/ReportIssuePage'))
+const RideReportPage = lazy(() => import('@/components/ride/RideReportPage'))
 
 // ── Stripe Connect (Driver) ─────────────────────────────────────────────────
 const StripeOnboardingPage = lazy(() => import('@/components/driver/StripeOnboardingPage'))
@@ -158,7 +159,7 @@ createRoot(rootEl).render(
               <Route path="/vehicle/edit" element={<Suspense fallback={<FormPageSkeleton />}><VehicleEditPage /></Suspense>} />
               <Route path="/settings" element={<Suspense fallback={<FormPageSkeleton />}><SettingsPage /></Suspense>} />
               <Route path="/report-issue" element={<Suspense fallback={<FormPageSkeleton />}><ReportIssuePage /></Suspense>} />
-              <Route path="/report/:rideId" element={<Suspense fallback={<FormPageSkeleton />}><Placeholder name="Report" /></Suspense>} />
+              <Route path="/report/:rideId" element={<Suspense fallback={<FormPageSkeleton />}><RideReportPage /></Suspense>} />
 
             </Route>
 

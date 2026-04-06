@@ -143,46 +143,62 @@ export default function RideHistoryPage({ 'data-testid': testId }: RideHistoryPa
             : fareCents
 
           return (
-            <button
+            <div
               key={ride.id}
-              onClick={() => navigate(`/ride/summary/${ride.id}`)}
-              className="w-full rounded-2xl bg-white p-4 shadow-sm text-left active:bg-gray-50 transition-colors"
+              className="rounded-2xl bg-white shadow-sm overflow-hidden"
               data-testid={`ride-${ride.id}`}
             >
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  {/* Other user + role */}
-                  <div className="flex items-center gap-2">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-light text-primary text-sm font-bold">
-                      {ride.other_name?.charAt(0)?.toUpperCase() ?? '?'}
+              <button
+                onClick={() => navigate(`/ride/summary/${ride.id}`)}
+                className="w-full p-4 text-left active:bg-gray-50 transition-colors"
+                data-testid={`ride-summary-${ride.id}`}
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    {/* Other user + role */}
+                    <div className="flex items-center gap-2">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-light text-primary text-sm font-bold">
+                        {ride.other_name?.charAt(0)?.toUpperCase() ?? '?'}
+                      </div>
+                      <div>
+                        <p className="font-medium text-text-primary text-sm">{ride.other_name}</p>
+                        <p className="text-xs text-text-secondary">{isDriver ? 'You drove' : 'You rode'}</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="font-medium text-text-primary text-sm">{ride.other_name}</p>
-                      <p className="text-xs text-text-secondary">{isDriver ? 'You drove' : 'You rode'}</p>
-                    </div>
+
+                    {/* Destination */}
+                    {ride.destination_name && (
+                      <p className="mt-2 text-xs text-text-secondary truncate">
+                        📍 {ride.destination_name}
+                      </p>
+                    )}
+
+                    {/* Date + time */}
+                    <p className="mt-1 text-xs text-text-secondary">
+                      {formatDate(ride.ended_at)} · {formatTime(ride.ended_at)}
+                    </p>
                   </div>
 
-                  {/* Destination */}
-                  {ride.destination_name && (
-                    <p className="mt-2 text-xs text-text-secondary truncate">
-                      📍 {ride.destination_name}
+                  {/* Amount */}
+                  <div className="text-right">
+                    <p className={`text-sm font-semibold ${isDriver ? 'text-success' : 'text-text-primary'}`}>
+                      {isDriver ? '+' : '−'}{formatCents(displayAmount)}
                     </p>
-                  )}
-
-                  {/* Date + time */}
-                  <p className="mt-1 text-xs text-text-secondary">
-                    {formatDate(ride.ended_at)} · {formatTime(ride.ended_at)}
-                  </p>
+                  </div>
                 </div>
+              </button>
 
-                {/* Amount */}
-                <div className="text-right">
-                  <p className={`text-sm font-semibold ${isDriver ? 'text-success' : 'text-text-primary'}`}>
-                    {isDriver ? '+' : '−'}{formatCents(displayAmount)}
-                  </p>
-                </div>
+              {/* Report button */}
+              <div className="border-t border-border/60 px-4 py-2">
+                <button
+                  onClick={() => navigate(`/report/${ride.id}`)}
+                  className="text-xs text-text-secondary active:text-danger transition-colors"
+                  data-testid={`report-ride-${ride.id}`}
+                >
+                  Report an issue with this ride
+                </button>
               </div>
-            </button>
+            </div>
           )
         })}
       </div>
