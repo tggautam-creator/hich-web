@@ -6,11 +6,16 @@ import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 export const reportRouter = Router()
 
 reportRouter.post('/', validateJwt, async (req: Request, res: Response) => {
-  const userId = (req as Request & { userId: string }).userId
+  const userId = res.locals['userId'] as string | undefined
   const { category, description, ride_id } = req.body as {
     category?: unknown
     description?: unknown
     ride_id?: unknown
+  }
+
+  if (!userId) {
+    res.status(401).json({ error: { code: 'UNAUTHENTICATED', message: 'User session missing' } })
+    return
   }
 
   if (typeof category !== 'string' || category.trim() === '') {

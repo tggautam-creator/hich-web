@@ -325,7 +325,7 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
               <span>{fareDisplay}</span>
             </div>
             <div className="flex justify-between text-text-secondary">
-              <span>Platform fee (15%)</span>
+              <span>Platform fee (0%)</span>
               <span data-testid="breakdown-fee">
                 {formatRange(fareRange.low.platform_fee_cents, fareRange.high.platform_fee_cents)}
               </span>
