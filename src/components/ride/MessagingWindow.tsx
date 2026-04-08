@@ -313,6 +313,15 @@ function DropoffProposalCard({
   )
 }
 
+function isMissedScheduledRide(ride: Ride | null): boolean {
+  if (!ride || ride.status !== 'cancelled' || !ride.schedule_id || ride.started_at) {
+    return false
+  }
+
+  const minutesUntilRide = getMinutesUntilRide(ride)
+  return minutesUntilRide != null && minutesUntilRide < 0
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function MessagingWindow({ 'data-testid': testId }: MessagingWindowProps) {
@@ -1078,7 +1087,9 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
     )
   }
 
-  if (rideCancelled) {
+  const missedScheduledRide = isMissedScheduledRide(ride)
+
+  if (rideCancelled && !missedScheduledRide) {
     return (
       <div data-testid={testId ?? 'messaging-window'} className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-surface px-6">
         <div className="h-16 w-16 rounded-full bg-danger/10 flex items-center justify-center mb-2">
@@ -1100,8 +1111,8 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
     )
   }
 
-  // ── Ride Missed — expired scheduled ride that was never started ──────────
-  if (ride?.status === 'expired' && ride.schedule_id) {
+  // ── Ride Missed — scheduled ride passed its trip time without starting ───
+  if (missedScheduledRide) {
     return (
       <div data-testid={testId ?? 'messaging-window'} className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-surface px-6">
         <div className="h-16 w-16 rounded-full bg-warning/10 flex items-center justify-center mb-2">
@@ -1150,57 +1161,6 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           <h2 className="text-sm font-bold text-text-primary">
             {pinMode === 'pickup' ? 'Suggest Pickup Point' : 'Suggest Dropoff Point'}
           </h2>
-        </div>
-
-        {/* Address search bar */}
-        <div className="relative px-4 py-2 bg-white border-b border-border shrink-0 z-20">
-          <div className="relative">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-secondary pointer-events-none" aria-hidden="true">
-              <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
-            </svg>
-            <input
-              data-testid="pin-search-input"
-              type="text"
-              value={pinSearchQuery}
-              onChange={(e) => handlePinSearch(e.target.value)}
-              placeholder="Search an address..."
-              className="w-full rounded-2xl border border-border bg-surface pl-10 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
-              autoComplete="off"
-            />
-            {pinSearchQuery && (
-              <button
-                onClick={() => { setPinSearchQuery(''); setPinSearchResults([]) }}
-                className="absolute right-3 top-1/2 -translate-y-1/2 p-0.5 text-text-secondary active:opacity-60"
-                aria-label="Clear search"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4" aria-hidden="true">
-                  <path d="M18 6 6 18" /><path d="m6 6 12 12" />
-                </svg>
-              </button>
-            )}
-          </div>
-
-          {/* Search results dropdown */}
-          {pinSearchResults.length > 0 && (
-            <div className="absolute left-4 right-4 top-full mt-1 bg-white rounded-xl border border-border shadow-lg max-h-48 overflow-y-auto z-30">
-              {pinSearchResults.map((s) => (
-                <button
-                  key={s.placeId}
-                  data-testid={`pin-search-result-${s.placeId}`}
-                  onClick={() => { void handlePinSearchSelect(s) }}
-                  className="w-full text-left px-4 py-3 border-b border-border/50 last:border-b-0 active:bg-surface transition-colors"
-                >
-                  <p className="text-sm font-medium text-text-primary truncate">{s.mainText}</p>
-                  <p className="text-xs text-text-secondary truncate">{s.secondaryText}</p>
-                </button>
-              ))}
-            </div>
-          )}
-          {pinSearching && pinSearchQuery.trim() && pinSearchResults.length === 0 && (
-            <div className="absolute left-4 right-4 top-full mt-1 bg-white rounded-xl border border-border shadow-lg px-4 py-3 z-30">
-              <p className="text-xs text-text-secondary">Searching...</p>
-            </div>
-          )}
         </div>
 
         {/* Map — focused on the pin location only, no zoom-out */}
@@ -1329,6 +1289,56 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           className="px-4 pt-3 pb-4 border-t border-border bg-white space-y-3 shrink-0"
           style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 1rem)' }}
         >
+          <div className="relative z-20">
+            <div className="relative">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-secondary pointer-events-none" aria-hidden="true">
+                <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
+              </svg>
+              <input
+                data-testid="pin-search-input"
+                type="text"
+                value={pinSearchQuery}
+                onChange={(e) => handlePinSearch(e.target.value)}
+                placeholder="Search an address..."
+                className="w-full rounded-2xl border border-border bg-surface pl-10 pr-4 py-2.5 text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-primary/30"
+                autoComplete="off"
+              />
+              {pinSearchQuery && (
+                <button
+                  onClick={() => { setPinSearchQuery(''); setPinSearchResults([]) }}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-0.5 text-text-secondary active:opacity-60"
+                  aria-label="Clear search"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4" aria-hidden="true">
+                    <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+
+            {/* Search results dropdown */}
+            {pinSearchResults.length > 0 && (
+              <div className="absolute left-0 right-0 bottom-full mb-2 bg-white rounded-xl border border-border shadow-lg max-h-48 overflow-y-auto z-30">
+                {pinSearchResults.map((s) => (
+                  <button
+                    key={s.placeId}
+                    data-testid={`pin-search-result-${s.placeId}`}
+                    onClick={() => { void handlePinSearchSelect(s) }}
+                    className="w-full text-left px-4 py-3 border-b border-border/50 last:border-b-0 active:bg-surface transition-colors"
+                  >
+                    <p className="text-sm font-medium text-text-primary truncate">{s.mainText}</p>
+                    <p className="text-xs text-text-secondary truncate">{s.secondaryText}</p>
+                  </button>
+                ))}
+              </div>
+            )}
+            {pinSearching && pinSearchQuery.trim() && pinSearchResults.length === 0 && (
+              <div className="absolute left-0 right-0 bottom-full mb-2 bg-white rounded-xl border border-border shadow-lg px-4 py-3 z-30">
+                <p className="text-xs text-text-secondary">Searching...</p>
+              </div>
+            )}
+          </div>
+
           <input
             data-testid="pin-note-input"
             type="text"

@@ -4,7 +4,7 @@ import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
-import { checkUpcomingRides, expireStaleRequests } from '../lib/scheduledReminders.ts'
+import { checkUpcomingRides, expireMissedRides, expireStaleRequests } from '../lib/scheduledReminders.ts'
 
 export const scheduleRouter = Router()
 
@@ -1399,11 +1399,12 @@ scheduleRouter.get(
   '/check-reminders',
   async (_req: Request, res: Response, next: NextFunction) => {
     try {
-      const [reminders, expiry] = await Promise.all([
+      const [reminders, expiry, missed] = await Promise.all([
         checkUpcomingRides(),
         expireStaleRequests(),
+        expireMissedRides(),
       ])
-      res.json({ reminders, expiry })
+      res.json({ reminders, expiry, missed })
     } catch (err) {
       next(err)
     }

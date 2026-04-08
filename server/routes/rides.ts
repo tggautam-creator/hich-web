@@ -8,6 +8,7 @@ import { generateQrToken, validateQrToken } from '../lib/qrToken.ts'
 import { computeTransitDropoffSuggestions, fetchDrivingRoute, type TransitDropoffSuggestion } from '../lib/transitSuggestions.ts'
 import { realtimeBroadcast, realtimeBroadcastMany } from '../lib/realtimeBroadcast.ts'
 import { chargeRideFare } from '../lib/stripeConnect.ts'
+import { shouldTreatScheduledRideAsExpired } from '../lib/scheduledReminders.ts'
 
 export const ridesRouter = Router()
 
@@ -3306,7 +3307,16 @@ ridesRouter.get(
       }
     })
 
-    res.status(200).json({ rides: enriched })
+    const visibleRides = enriched.filter((ride) => {
+      return !shouldTreatScheduledRideAsExpired(ride as {
+        status?: string
+        schedule_id?: string | null
+        trip_date?: string | null
+        trip_time?: string | null
+      })
+    })
+
+    res.status(200).json({ rides: visibleRides })
   },
 )
 

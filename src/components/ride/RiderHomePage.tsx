@@ -29,6 +29,7 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
   const [activeRideCount, setActiveRideCount] = useState(0)
   const [unreadCount, setUnreadCount] = useState(0)
   const [userPanned, setUserPanned] = useState(false)
+  const [showRealtimeNotice, setShowRealtimeNotice] = useState(false)
   const gpsFixedRef = useRef(false)
   const gpsLocationRef = useRef(DEFAULT_CENTER)
   const mapRef = useRef<google.maps.Map | null>(null)
@@ -93,6 +94,11 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
   }, [])
 
   const apiKey = env.GOOGLE_MAPS_KEY ?? ''
+
+  function continueToInstantMatch() {
+    setShowRealtimeNotice(false)
+    navigate('/ride/search', { state: { locationName, originLat: center.lat, originLng: center.lng } })
+  }
 
   return (
     <div
@@ -209,7 +215,7 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
         {/* Full-width search card */}
         <button
           data-testid="search-bar"
-          onClick={() => { navigate('/ride/search', { state: { locationName, originLat: center.lat, originLng: center.lng } }) }}
+          onClick={() => { setShowRealtimeNotice(true) }}
           aria-label="Search for a destination"
           className="w-full bg-white rounded-2xl shadow-lg px-4 py-3 text-left active:scale-[0.99] transition-transform"
         >
@@ -263,6 +269,80 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
 
       {/* ── Bottom navigation ──────────────────────────────────────────────── */}
       <BottomNav activeTab="home" />
+
+      {/* ── Realtime availability advisory overlay ─────────────────────────── */}
+      {showRealtimeNotice && (
+        <div
+          className="absolute inset-0 z-[1200] bg-background/55 backdrop-blur-[2px] p-4 flex items-center justify-center"
+          onClick={() => setShowRealtimeNotice(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-[28px] border border-white/80 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.18)] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="h-1.5 w-full bg-gradient-to-r from-warning via-primary to-success" />
+            <div className="p-5 flex flex-col gap-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wide text-warning">Instant Match Update</p>
+                <h2 className="mt-1 text-[2rem] leading-tight font-extrabold text-text-primary">Fewer Drivers Online Right Now</h2>
+              </div>
+              <button
+                type="button"
+                data-testid="realtime-notice-close"
+                onClick={() => setShowRealtimeNotice(false)}
+                aria-label="Close availability notice"
+                className="h-9 w-9 rounded-full bg-surface text-text-secondary hover:text-text-primary text-xl leading-none"
+              >
+                ×
+              </button>
+            </div>
+
+            <p className="text-base leading-8 text-text-secondary">
+              Instant Match is the feature that finds a nearby student driver right away, similar to Uber or Lyft.
+            </p>
+
+            <p className="text-base leading-8 text-text-secondary">
+              Right now, campus driver supply is low, so opening this fully could mean long waits and a poor experience. We are actively onboarding more student drivers and expanding coverage.
+            </p>
+
+            <p className="text-sm font-medium text-text-primary">
+              Best options today:
+            </p>
+
+            <div className="grid grid-cols-1 gap-2">
+              <button
+                data-testid="realtime-notice-post-ride"
+                onClick={() => { setShowRealtimeNotice(false); navigate('/schedule/rider') }}
+                className="w-full rounded-xl bg-primary text-white px-4 py-2.5 text-sm font-semibold text-left"
+              >
+                Schedule a Ride Request
+              </button>
+
+              <button
+                data-testid="realtime-notice-ride-board"
+                onClick={() => { setShowRealtimeNotice(false); navigate('/rides/board', { state: { fromTab: 'home' } }) }}
+                className="w-full rounded-xl border border-border bg-white px-4 py-2.5 text-sm font-semibold text-text-primary text-left"
+              >
+                Browse Ride Board
+              </button>
+            </div>
+
+            <button
+              data-testid="realtime-notice-continue-search"
+              onClick={continueToInstantMatch}
+              className="w-full rounded-xl bg-warning/10 text-warning px-4 py-2.5 text-sm font-semibold"
+            >
+              Try Instant Match Anyway
+            </button>
+
+            <p className="text-xs text-text-secondary text-center">
+              Thanks for helping us build a better ride network for students.
+            </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Spotlight walkthrough for new users ──────────────────────────── */}
       {!hasSeenWalkthrough && <SpotlightOverlay />}

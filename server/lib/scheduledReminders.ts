@@ -1,6 +1,63 @@
 import { supabaseAdmin } from './supabaseAdmin.ts'
 import { sendFcmPush } from './fcm.ts'
 
+function getLocalDateString(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function getLocalTimeString(date: Date): string {
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+  return `${hours}:${minutes}:${seconds}`
+}
+
+function parseScheduledRideDateTime(tripDate: string, tripTime: string): Date {
+  const [yearStr, monthStr, dayStr] = tripDate.split('-')
+  const [hourStr, minuteStr, secondStr = '0'] = tripTime.split(':')
+
+  const year = Number(yearStr)
+  const month = Number(monthStr)
+  const day = Number(dayStr)
+  const hour = Number(hourStr)
+  const minute = Number(minuteStr)
+  const second = Number(secondStr)
+
+  if ([year, month, day, hour, minute, second].some((part) => Number.isNaN(part))) {
+    return new Date(NaN)
+  }
+
+  return new Date(year, month - 1, day, hour, minute, second)
+}
+
+export function shouldTreatScheduledRideAsExpired(
+  ride: {
+    status?: string
+    schedule_id?: string | null
+    trip_date?: string | null
+    trip_time?: string | null
+  },
+  now = new Date(),
+): boolean {
+  if (!ride.status || !ride.schedule_id || !ride.trip_date || !ride.trip_time) return false
+
+  const rideDateTime = parseScheduledRideDateTime(ride.trip_date, ride.trip_time)
+  if (Number.isNaN(rideDateTime.getTime())) return false
+
+  if (ride.status === 'requested') {
+    return rideDateTime.getTime() <= now.getTime()
+  }
+
+  if (ride.status === 'accepted' || ride.status === 'coordinating') {
+    return now.getTime() - rideDateTime.getTime() >= 2 * 60 * 60 * 1000
+  }
+
+  return false
+}
+
 /**
  * Checks for upcoming scheduled rides and sends dual reminders:
  * - 30-min reminder: sent when ride is 15–30 min away
@@ -13,8 +70,8 @@ export async function checkUpcomingRides(): Promise<{ checked: number; reminded:
   const now = new Date()
   const thirtyMinLater = new Date(now.getTime() + 30 * 60 * 1000)
 
-  const todayDate = now.toISOString().slice(0, 10)
-  const tomorrowDate = thirtyMinLater.toISOString().slice(0, 10)
+  const todayDate = getLocalDateString(now)
+  const tomorrowDate = getLocalDateString(thirtyMinLater)
 
   // Query rides that still have at least one unsent reminder
   const { data: rides, error } = await supabaseAdmin
@@ -39,7 +96,7 @@ export async function checkUpcomingRides(): Promise<{ checked: number; reminded:
   for (const ride of rides) {
     if (!ride.trip_date || !ride.trip_time) continue
 
-    const rideDateTime = new Date(`${ride.trip_date}T${ride.trip_time}`)
+    const rideDateTime = parseScheduledRideDateTime(ride.trip_date, ride.trip_time)
     if (isNaN(rideDateTime.getTime())) continue
 
     const minutesUntil = (rideDateTime.getTime() - now.getTime()) / (1000 * 60)
@@ -130,8 +187,8 @@ async function sendReminderNotification(
 export async function expireStaleRequests(): Promise<{ checked: number; expired: number }> {
   const { realtimeBroadcast } = await import('./realtimeBroadcast.ts')
   const now = new Date()
-  const todayDate = now.toISOString().slice(0, 10)
-  const nowTime = now.toTimeString().slice(0, 8) // HH:MM:SS
+  const todayDate = getLocalDateString(now)
+  const nowTime = getLocalTimeString(now) // HH:MM:SS
 
   // Find requested rides whose trip has already passed
   const { data: rides, error } = await supabaseAdmin
@@ -160,10 +217,10 @@ export async function expireStaleRequests(): Promise<{ checked: number; expired:
     // For today's rides, only expire if trip_time has passed
     if (ride.trip_date === todayDate && ride.trip_time > nowTime) continue
 
-    // Update status to expired
+    // Update status to cancelled so the ride disappears from active views.
     const { error: updateErr } = await supabaseAdmin
       .from('rides')
-      .update({ status: 'expired' })
+      .update({ status: 'cancelled' })
       .eq('id', ride.id)
 
     if (updateErr) {
@@ -224,8 +281,8 @@ export async function expireMissedRides(): Promise<{ checked: number; expired: n
   const { realtimeBroadcast } = await import('./realtimeBroadcast.ts')
   const now = new Date()
   const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000)
-  const todayDate = now.toISOString().slice(0, 10)
-  const yesterdayDate = twoHoursAgo.toISOString().slice(0, 10)
+  const todayDate = getLocalDateString(now)
+  const yesterdayDate = getLocalDateString(twoHoursAgo)
 
   // Find confirmed rides whose trip time is more than 2 hours ago
   const { data: rides, error } = await supabaseAdmin
@@ -251,7 +308,7 @@ export async function expireMissedRides(): Promise<{ checked: number; expired: n
   for (const ride of rides) {
     if (!ride.trip_date || !ride.trip_time) continue
 
-    const rideDateTime = new Date(`${ride.trip_date}T${ride.trip_time}`)
+    const rideDateTime = parseScheduledRideDateTime(ride.trip_date, ride.trip_time)
     if (isNaN(rideDateTime.getTime())) continue
 
     const minutesSince = (now.getTime() - rideDateTime.getTime()) / (1000 * 60)
@@ -261,7 +318,7 @@ export async function expireMissedRides(): Promise<{ checked: number; expired: n
 
     const { error: updateErr } = await supabaseAdmin
       .from('rides')
-      .update({ status: 'expired' })
+      .update({ status: 'cancelled' })
       .eq('id', ride.id)
 
     if (updateErr) {
@@ -305,7 +362,7 @@ export async function expireMissedRides(): Promise<{ checked: number; expired: n
     for (const userId of userIds) {
       void realtimeBroadcast(`myrides:${userId}`, 'ride_status_changed', {
         ride_id: ride.id,
-        status: 'expired',
+        status: 'cancelled',
       })
     }
 

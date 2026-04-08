@@ -112,6 +112,9 @@ export default function ResetPasswordPage({ 'data-testid': testId }: ResetPasswo
                   setServerError(null)
                 }}
               />
+              <p className="-mt-3 text-xs text-text-secondary">
+                Passwords must be at least 8 characters long and include at least 1 number.
+              </p>
 
               <InputField
                 data-testid="confirm-password-input"

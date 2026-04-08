@@ -252,6 +252,9 @@ export default function CreateProfilePage() {
             onChange={(e) => { setPassword(e.target.value) }}
             error={errors.password}
           />
+          <p className="-mt-3 text-xs text-text-secondary">
+            Passwords must be at least 8 characters long and include at least 1 number.
+          </p>
 
           {/* Photo upload — optional */}
           <div className="flex flex-col gap-1">
