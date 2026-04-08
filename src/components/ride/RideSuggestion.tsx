@@ -79,7 +79,6 @@ export default function RideSuggestion({
   const [computedStats, setComputedStats] = useState<{ distanceKm: number; durationMin: number; driverEarns: string } | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sessionTokenRef = useRef(crypto.randomUUID())
-  const routineAutoFilled = useRef(false)
 
   // ── Fetch ride + rider ────────────────────────────────────────────────────
   useEffect(() => {
@@ -188,32 +187,6 @@ export default function RideSuggestion({
       })
     })
   }, [data, navState])
-
-  // ── Auto-fill destination from driver routines ─────────────────────────────
-  useEffect(() => {
-    if (routineAutoFilled.current) return
-    routineAutoFilled.current = true
-
-    void (async () => {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) return
-
-      const { data: routines } = await supabase
-        .from('driver_routines')
-        .select('dest_address, destination')
-        .eq('user_id', session.user.id)
-        .eq('is_active', true)
-        .limit(1)
-
-      if (routines?.[0]?.dest_address) {
-        setDriverDestQuery(routines[0].dest_address)
-        const dest = routines[0].destination as unknown as { type: string; coordinates: number[] } | null
-        if (dest?.coordinates) {
-          setDriverDestCoords({ lat: dest.coordinates[1], lng: dest.coordinates[0] })
-        }
-      }
-    })()
-  }, [rideId])
 
   // ── Check for existing offer (guards against bypassed renewal flags) ─────
   // If the driver already has a standby offer, or a pending offer with a

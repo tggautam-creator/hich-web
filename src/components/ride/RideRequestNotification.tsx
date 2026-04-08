@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { onForegroundMessage } from '@/lib/fcm'
-import { formatCents } from '@/lib/fare'
+import { calculateFare, formatCents } from '@/lib/fare'
+import { getDirectionsByLatLng } from '@/lib/directions'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { reverseGeocode } from '@/lib/geocode'
@@ -114,13 +115,78 @@ export default function RideRequestNotification({
     rideIdRef.current = notification?.rideId ?? null
   }, [notification?.rideId])
 
+  const hydrateMissingRideStats = useCallback(async (
+    rideId: string,
+    originLat: string,
+    originLng: string,
+    destinationLat: string,
+    destinationLng: string,
+  ) => {
+    const oLat = Number(originLat)
+    const oLng = Number(originLng)
+    const dLat = Number(destinationLat)
+    const dLng = Number(destinationLng)
+    if (
+      Number.isNaN(oLat)
+      || Number.isNaN(oLng)
+      || Number.isNaN(dLat)
+      || Number.isNaN(dLng)
+    ) return
+
+    const dirs = await getDirectionsByLatLng(oLat, oLng, dLat, dLng)
+    if (!dirs) return
+
+    const fare = calculateFare(dirs.distance_km, dirs.duration_min)
+    setQueue((prev) => prev.map((n) => (
+      n.rideId === rideId
+        ? {
+          ...n,
+          distanceKm: String(dirs.distance_km),
+          estimatedEarnings: formatCents(fare.driver_earns_cents),
+        }
+        : n
+    )))
+  }, [])
+
   // Handle incoming ride request data from any source
   const handleRideRequest = useCallback((data: RideRequestData, isRenewal?: boolean) => {
-    // Deduplicate: skip if we've already shown a notification for this ride
-    if (seenRideIdsRef.current.has(data.ride_id)) return
+    const earningsCents = parseInt(data.estimated_earnings_cents ?? '0', 10)
+    const hasDistance = !!data.distance_km && !Number.isNaN(Number(data.distance_km))
+    const hasEarnings = earningsCents > 0
+
+    // Deduplicate: when already seen, enrich existing entry instead of adding a duplicate.
+    if (seenRideIdsRef.current.has(data.ride_id)) {
+      setQueue((prev) => prev.map((n) => {
+        if (n.rideId !== data.ride_id) return n
+        return {
+          ...n,
+          riderName: data.rider_name ?? n.riderName,
+          destination: data.destination ?? n.destination,
+          distanceKm: hasDistance ? data.distance_km ?? n.distanceKm : n.distanceKm,
+          estimatedEarnings: hasEarnings ? formatCents(earningsCents) : n.estimatedEarnings,
+          originLat: data.origin_lat ?? n.originLat,
+          originLng: data.origin_lng ?? n.originLng,
+          destinationLat: data.destination_lat ?? n.destinationLat,
+          destinationLng: data.destination_lng ?? n.destinationLng,
+          riderRating: data.rider_rating ?? n.riderRating,
+          riderRatingCount: data.rider_rating_count ?? n.riderRatingCount,
+          isRenewal: isRenewal ?? n.isRenewal,
+        }
+      }))
+
+      if (!hasDistance || !hasEarnings) {
+        void hydrateMissingRideStats(
+          data.ride_id,
+          data.origin_lat ?? '',
+          data.origin_lng ?? '',
+          data.destination_lat ?? '',
+          data.destination_lng ?? '',
+        )
+      }
+      return
+    }
     seenRideIdsRef.current.add(data.ride_id)
 
-    const earningsCents = parseInt(data.estimated_earnings_cents ?? '0', 10)
     const entry: NotificationState = {
       rideId: data.ride_id,
       riderName: data.rider_name ?? 'A rider',
@@ -152,7 +218,17 @@ export default function RideRequestNotification({
         )
       })
     }
-  }, [])
+
+    if (!hasDistance || !hasEarnings) {
+      void hydrateMissingRideStats(
+        data.ride_id,
+        data.origin_lat ?? '',
+        data.origin_lng ?? '',
+        data.destination_lat ?? '',
+        data.destination_lng ?? '',
+      )
+    }
+  }, [hydrateMissingRideStats])
 
   // Handle incoming board request (from ride board)
   const handleBoardRequest = useCallback((data: BoardRequestData) => {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { searchPlaces, getPlaceCoordinates } from '@/lib/places'
 import type { PlaceSuggestion } from '@/lib/places'
@@ -17,7 +17,7 @@ interface DriverDestinationCardProps {
 
 export default function DriverDestinationCard({
   rideId,
-  driverId,
+  driverId: _driverId,
   'data-testid': testId = 'driver-destination-card',
   onSuggestionsReceived,
 }: DriverDestinationCardProps) {
@@ -31,25 +31,6 @@ export default function DriverDestinationCard({
   const [suggestions, setSuggestions] = useState<TransitDropoffSuggestion[]>([])
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sessionTokenRef = useRef(crypto.randomUUID())
-
-  // Auto-fill from driver routines on mount
-  useEffect(() => {
-    void (async () => {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) return
-
-      const { data: routines } = await supabase
-        .from('driver_routines')
-        .select('dest_address, destination')
-        .eq('user_id', driverId)
-        .eq('is_active', true)
-        .limit(1)
-
-      if (routines && routines.length > 0 && routines[0].dest_address) {
-        setQuery(routines[0].dest_address)
-      }
-    })()
-  }, [driverId])
 
   // Debounced place search
   const handleQueryChange = useCallback((val: string) => {
