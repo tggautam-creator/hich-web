@@ -77,8 +77,8 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
           setServerError(error.message)
         }
       } else {
-        const signedInUser = signInData.user
-        const signedInSession = signInData.session
+        const signedInUser = signInData?.user
+        const signedInSession = signInData?.session
 
         // Ensure the auth store has the session before navigating to a guarded route
         if (signedInSession) {
@@ -92,12 +92,9 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
           .single()
 
         if (profileErr || !profile?.full_name) {
-          // Query failed or genuinely new user — let AuthGuard decide.
-          // Navigate to /home/rider; AuthGuard will redirect to onboarding
-          // if the profile truly doesn't exist, or render home if it does.
-          navigate(profile?.is_driver ? '/home/driver' : '/home/rider', { replace: true })
+          navigate('/onboarding/profile')
         } else {
-          navigate(profile.is_driver ? '/home/driver' : '/home/rider', { replace: true })
+          navigate(profile.is_driver ? '/home/driver' : '/home/rider')
         }
       }
     } catch {

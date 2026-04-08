@@ -183,10 +183,12 @@ describe('RiderHomePage', () => {
     })
   })
 
-  it('clicking the search card navigates to /ride/search', async () => {
+  it('clicking the search card shows the availability notice and continues to /ride/search', async () => {
     const user = userEvent.setup()
     renderPage()
     await user.click(screen.getByTestId('search-bar'))
+    expect(screen.getByTestId('realtime-notice-continue-search')).toBeInTheDocument()
+    await user.click(screen.getByTestId('realtime-notice-continue-search'))
     expect(mockNavigate).toHaveBeenCalledWith('/ride/search', expect.objectContaining({ state: expect.objectContaining({ locationName: expect.any(String) }) }))
   })
 

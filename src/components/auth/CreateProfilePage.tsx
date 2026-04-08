@@ -253,7 +253,7 @@ export default function CreateProfilePage() {
             error={errors.password}
           />
           <p className="-mt-3 text-xs text-text-secondary">
-            Passwords must be at least 8 characters long and include at least 1 number.
+            Use 8+ characters and include at least 1 number.
           </p>
 
           {/* Photo upload — optional */}

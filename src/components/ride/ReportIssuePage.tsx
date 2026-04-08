@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { supabase } from '@/lib/supabase'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 
 interface ReportIssuePageProps {
@@ -24,41 +23,22 @@ export default function ReportIssuePage({
   const [category, setCategory] = useState('')
   const [description, setDescription] = useState('')
   const [submitted, setSubmitted] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
   const canSubmit = category !== '' && description.trim().length >= 10
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!canSubmit || submitting) return
+    if (!canSubmit) return
 
-    setSubmitting(true)
-    setError(null)
+    const subject = encodeURIComponent(`TAGO issue report: ${category}`)
+    const body = encodeURIComponent([
+      `Category: ${category}`,
+      '',
+      description.trim(),
+    ].join('\n'))
 
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) throw new Error('Not authenticated')
-
-      const res = await fetch('/api/report', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          category,
-          description: description.trim(),
-        }),
-      })
-
-      if (!res.ok) throw new Error('Failed to submit report')
-      setSubmitted(true)
-    } catch {
-      setError('Something went wrong. Please try again.')
-    } finally {
-      setSubmitting(false)
-    }
+    window.open(`mailto:support@tagorides.com?subject=${subject}&body=${body}`, '_self')
+    setSubmitted(true)
   }
 
   return (
@@ -134,15 +114,10 @@ export default function ReportIssuePage({
               </p>
             </div>
 
-            {error && (
-              <p className="text-sm text-danger" role="alert">{error}</p>
-            )}
-
             <PrimaryButton
               data-testid="submit-button"
               type="submit"
               disabled={!canSubmit}
-              isLoading={submitting}
             >
               Submit report
             </PrimaryButton>
@@ -152,7 +127,7 @@ export default function ReportIssuePage({
             <div className="w-16 h-16 rounded-full bg-success/10 flex items-center justify-center">
               <span className="text-3xl">✓</span>
             </div>
-            <h2 className="text-lg font-semibold text-text-primary">Report received</h2>
+            <h2 className="text-lg font-semibold text-text-primary">Report sent</h2>
             <p className="text-sm text-text-secondary text-center max-w-xs">
               Thanks for letting us know. We&apos;ll review it and take action if needed.
             </p>
