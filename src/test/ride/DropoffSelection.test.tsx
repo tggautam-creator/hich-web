@@ -212,6 +212,10 @@ describe('DropoffSelection', () => {
     renderWithState()
 
     await waitFor(() => {
+      expect(screen.getByTestId('rider-dest-option')).not.toBeDisabled()
+    })
+
+    await waitFor(() => {
       expect(screen.getByTestId('rider-dest-option')).toBeInTheDocument()
     })
 
