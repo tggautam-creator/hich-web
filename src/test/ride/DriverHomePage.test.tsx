@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, act, fireEvent } from '@testing-library/react'
+import { render, screen, act, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import DriverHomePage from '@/components/ride/DriverHomePage'
@@ -50,11 +50,18 @@ vi.mock('@/stores/authStore', () => ({
 // ── Mock supabase ──────────────────────────────────────────────────────────────
 
 const mockUpsert = vi.fn().mockResolvedValue({ data: null, error: null })
+// By default return is_online: true so tests that expect "online by default" still pass
+const mockMaybeSingle = vi.fn().mockResolvedValue({ data: { is_online: true }, error: null })
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
     from: () => ({
       upsert: mockUpsert,
+      select: () => ({
+        eq: () => ({
+          maybeSingle: mockMaybeSingle,
+        }),
+      }),
     }),
     auth: {
       getSession: vi.fn().mockResolvedValue({ data: { session: { access_token: 'tok' } } }),
@@ -129,10 +136,10 @@ function fireGpsSuccess(lat = 38.54, lng = -121.77) {
 
 describe('DriverHomePage', () => {
   beforeEach(() => {
-    vi.useFakeTimers()
     vi.clearAllMocks()
     capturedWatch = null
     mockProfile = { id: 'driver-001', stripe_onboarding_complete: true }
+    mockMaybeSingle.mockResolvedValue({ data: { is_online: true }, error: null })
     global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ rides: [], count: 0 }) })
   })
 
@@ -173,20 +180,25 @@ describe('DriverHomePage', () => {
 
   // ── GPS polling ────────────────────────────────────────────────────────────
 
-  it('posts GPS to driver_locations immediately on mount when online', () => {
+  it('posts GPS to driver_locations once online state is loaded', async () => {
     renderPage()
-    expect(mockUpsert).toHaveBeenCalledTimes(1)
-    expect(mockUpsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        user_id: 'driver-001',
-        location: expect.objectContaining({ type: 'Point' }),
-      }),
-      { onConflict: 'user_id' },
-    )
+    // Wait for the maybeSingle() fetch to resolve and set isOnline = true
+    await waitFor(() => {
+      expect(mockUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user_id: 'driver-001',
+          location: expect.objectContaining({ type: 'Point' }),
+        }),
+        { onConflict: 'user_id' },
+      )
+    })
   })
 
-  it('posts GPS every 30 seconds while online', () => {
+  it('posts GPS every 30 seconds while online', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
     renderPage()
+    // Wait for online state to load
+    await waitFor(() => expect(mockUpsert).toHaveBeenCalled())
     mockUpsert.mockClear()
 
     act(() => { vi.advanceTimersByTime(30_000) })
@@ -196,8 +208,11 @@ describe('DriverHomePage', () => {
     expect(mockUpsert).toHaveBeenCalledTimes(2)
   })
 
-  it('stops GPS polling on unmount', () => {
+  it('stops GPS polling on unmount', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
     const { unmount } = renderPage()
+    // Wait for online state to load
+    await waitFor(() => expect(mockUpsert).toHaveBeenCalled())
     mockUpsert.mockClear()
     unmount()
 
@@ -207,18 +222,21 @@ describe('DriverHomePage', () => {
 
   // ── Online/offline toggle ──────────────────────────────────────────────────
 
-  it('shows online status by default', () => {
+  it('shows online status once online state is loaded from DB', async () => {
     renderPage()
-    expect(screen.getByTestId('online-toggle').textContent).toContain('Online')
+    await waitFor(() => {
+      expect(screen.getByTestId('online-toggle').textContent).toContain('Online')
+    })
   })
 
-  it('toggles to offline when clicked', () => {
+  it('toggles to offline when clicked', async () => {
     renderPage()
-
-    act(() => {
-      fireEvent.click(screen.getByTestId('online-toggle'))
+    // Wait for online state to load first
+    await waitFor(() => {
+      expect(screen.getByTestId('online-toggle')).not.toBeDisabled()
     })
 
+    act(() => { fireEvent.click(screen.getByTestId('online-toggle')) })
     expect(screen.getByTestId('online-toggle').textContent).toContain('Offline')
   })
 
@@ -248,7 +266,6 @@ describe('DriverHomePage', () => {
   })
 
   it('rider tab navigates to /home/rider', async () => {
-    vi.useRealTimers()
     const user = userEvent.setup()
     renderPage()
     await user.click(screen.getByTestId('home-tab'))
@@ -256,7 +273,6 @@ describe('DriverHomePage', () => {
   })
 
   it('payment tab navigates to /payment/methods', async () => {
-    vi.useRealTimers()
     const user = userEvent.setup()
     renderPage()
     await user.click(screen.getByTestId('payment-tab'))
@@ -264,7 +280,6 @@ describe('DriverHomePage', () => {
   })
 
   it('profile tab navigates to /profile', async () => {
-    vi.useRealTimers()
     const user = userEvent.setup()
     renderPage()
     await user.click(screen.getByTestId('profile-tab'))
@@ -286,9 +301,12 @@ describe('DriverHomePage', () => {
     expect(screen.queryByTestId('bank-setup-banner')).not.toBeInTheDocument()
   })
 
-  it('blocks going online without bank setup and shows the bank dialog', () => {
+  it('blocks going online without bank setup and shows the bank dialog', async () => {
     mockProfile = { id: 'driver-001', stripe_onboarding_complete: false }
     renderPage()
+
+    // Wait for online state to load (button becomes enabled)
+    await waitFor(() => expect(screen.getByTestId('online-toggle')).not.toBeDisabled())
 
     // Toggle — should be blocked, bank dialog should appear instead
     act(() => { fireEvent.click(screen.getByTestId('online-toggle')) })

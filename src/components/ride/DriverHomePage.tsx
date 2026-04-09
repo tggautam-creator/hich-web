@@ -31,7 +31,11 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
 
   const [center, setCenter] = useState(DEFAULT_CENTER)
   const [hasGps, setHasGps] = useState(false)
-  const [isOnline, setIsOnline] = useState(hasBank)
+  // Start offline — actual state is loaded from driver_locations on mount.
+  // Never initialize from hasBank: if the driver went offline and switches
+  // tabs, the component remounts and hasBank would reset them to online.
+  const [isOnline, setIsOnline] = useState(false)
+  const [onlineStateLoaded, setOnlineStateLoaded] = useState(false)
   const [activeRideCount, setActiveRideCount] = useState(0)
   const [unreadCount, setUnreadCount] = useState(0)
   const [statusToast, setStatusToast] = useState<string | null>(null)
@@ -69,6 +73,29 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
     }
     void fetchCounts()
   }, [])
+
+  // ── Load persisted online/offline state from driver_locations on mount ───
+  useEffect(() => {
+    if (!profile?.id) return
+    void supabase
+      .from('driver_locations')
+      .select('is_online')
+      .eq('user_id', profile.id)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data) {
+          // Only allow online if bank is connected
+          setIsOnline(hasBank && data.is_online)
+        } else {
+          // No record yet — default offline
+          setIsOnline(false)
+        }
+        setOnlineStateLoaded(true)
+      })
+  // Run once on mount — intentionally not re-running on hasBank change
+  // (the auto-go-online effect handles that separately)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.id])
 
   // ── Post GPS to driver_locations ──────────────────────────────────────────
   const postLocation = useCallback(async () => {
@@ -137,12 +164,13 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
   }
 
   // ── Auto-go-online when bank account is connected ─────────────────────
+  // Only fires after initial state has loaded so we don't clobber the DB read
   useEffect(() => {
+    if (!onlineStateLoaded) return
     if (hasBank && !isOnline) {
       setIsOnline(true)
       showToast('Bank connected — you are now online!')
     }
-  // Only run when hasBank flips to true, not on every isOnline change
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasBank])
 
@@ -382,8 +410,10 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         <button
           data-testid="online-toggle"
           onClick={() => { void handleToggleOnline() }}
+          disabled={!onlineStateLoaded}
           className={[
             'w-full rounded-2xl shadow-lg px-4 py-3 flex items-center gap-3 active:scale-[0.99] transition-all',
+            !onlineStateLoaded ? 'opacity-60' : '',
             isOnline
               ? 'bg-white border-2 border-success'
               : 'bg-white border border-border',
