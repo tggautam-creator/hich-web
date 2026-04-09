@@ -341,7 +341,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const [riderDestLng, setRiderDestLng] = useState<number | null>(state?.destinationLng ?? null)
   const riderDestCapturedRef = useRef(state?.destinationLat != null)
   const [otherUser, setOtherUser] = useState<Pick<User, 'id' | 'full_name' | 'avatar_url' | 'rating_avg' | 'rating_count'> | null>(null)
-  const [otherVehicle, setOtherVehicle] = useState<Pick<Vehicle, 'color' | 'plate' | 'make' | 'model'> | null>(null)
+  const [otherVehicle, setOtherVehicle] = useState<Pick<Vehicle, 'color' | 'plate' | 'make' | 'model' | 'year'> | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [inputText, setInputText] = useState('')
   const [loading, setLoading] = useState(true)
@@ -478,7 +478,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         if (otherIsDriver) {
           const { data: vehicleData } = await supabase
             .from('vehicles')
-            .select('color, plate, make, model')
+            .select('color, plate, make, model, year')
             .eq('user_id', otherId)
             .eq('is_active', true)
             .maybeSingle()
@@ -1540,17 +1540,16 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
       {/* ── Vehicle info bar (rider side only — no duplicate name) ──────── */}
       {otherVehicle && (
         <div data-testid="vehicle-details" className="px-4 py-2 bg-white border-b border-border flex items-center gap-2.5 shrink-0">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 shrink-0 text-text-secondary" aria-hidden="true">
-            <path d="M5 17H3a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1l2-3h12l2 3h1a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2" />
-            <circle cx="7.5" cy="17.5" r="2.5" />
-            <circle cx="16.5" cy="17.5" r="2.5" />
-          </svg>
-          <p className="text-xs font-medium text-text-primary">
-            {otherVehicle.color} {otherVehicle.make} {otherVehicle.model}
+          <span
+            className="h-3 w-3 rounded-full border border-border shrink-0"
+            style={{ backgroundColor: otherVehicle.color.toLowerCase() }}
+          />
+          <p className="text-xs font-medium text-text-primary truncate">
+            {otherVehicle.year} {otherVehicle.make} {otherVehicle.model}
           </p>
-          <p data-testid="vehicle-badge" className="ml-auto text-xs font-bold text-primary tracking-wide">
+          <span data-testid="vehicle-badge" className="ml-auto shrink-0 rounded-md bg-surface border border-border px-2 py-0.5 text-[11px] font-semibold text-text-primary tracking-widest">
             {otherVehicle.plate}
-          </p>
+          </span>
         </div>
       )}
 
