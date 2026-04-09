@@ -157,6 +157,7 @@ export type Database = {
           heading: number | null
           speed: number | null
           recorded_at: string
+          is_online: boolean
         }
         Insert: {
           id?: string
@@ -165,6 +166,7 @@ export type Database = {
           heading?: number | null
           speed?: number | null
           recorded_at?: string
+          is_online?: boolean
         }
         Update: {
           id?: string
@@ -173,6 +175,7 @@ export type Database = {
           heading?: number | null
           speed?: number | null
           recorded_at?: string
+          is_online?: boolean
         }
         Relationships: never[]
       }
