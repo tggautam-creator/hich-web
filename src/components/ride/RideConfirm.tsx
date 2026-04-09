@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { calculateFareRange, formatCents, type FareRange, DEFAULT_GAS_PRICE_PER_GALLON } from '@/lib/fare'
+import { calculateFareRange, formatCents, type FareRange, DEFAULT_GAS_PRICE_PER_GALLON, MIN_FARE_CENTS } from '@/lib/fare'
 import type { PlaceSuggestion } from '@/lib/places'
 import { supabase } from '@/lib/supabase'
 import { trackEvent } from '@/lib/analytics'
@@ -321,7 +321,12 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
               </span>
             </div>
             <div className="border-t border-border pt-2 flex justify-between text-text-primary font-medium">
-              <span>Subtotal</span>
+              <div>
+                <span>Subtotal</span>
+                {fareRange.low.fare_cents === MIN_FARE_CENTS && (
+                  <p className="text-xs text-text-secondary font-normal">{formatCents(MIN_FARE_CENTS)} minimum fare</p>
+                )}
+              </div>
               <span>{fareDisplay}</span>
             </div>
             <div className="flex justify-between text-text-secondary">

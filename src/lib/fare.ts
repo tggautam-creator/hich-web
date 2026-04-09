@@ -17,7 +17,7 @@
 
 import { DEFAULT_MPG } from '@/lib/fuelEconomy'
 
-const MIN_FARE_CENTS    = 500
+export const MIN_FARE_CENTS    = 500
 const MAX_FARE_CENTS    = 4000
 const BASE_CENTS        = 200
 const PER_MIN_CENTS     = 8
