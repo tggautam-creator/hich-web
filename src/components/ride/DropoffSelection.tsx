@@ -58,6 +58,7 @@ export default function DropoffSelection({
   const [recoveredDest, setRecoveredDest] = useState<{
     lat: number; lng: number; name: string
   } | null>(null)
+  const [recoveredRiderDestName, setRecoveredRiderDestName] = useState<string | null>(null)
 
   // Effective destination: prefer navigation state, fall back to DB recovery
   const effLat = state?.driverDestLat ?? recoveredDest?.lat ?? null
@@ -78,9 +79,13 @@ export default function DropoffSelection({
       // Try ride row first — /select-driver copies destination here
       const { data: rideRow } = await supabase
         .from('rides')
-        .select('driver_destination, driver_destination_name, driver_id, status')
+        .select('driver_destination, driver_destination_name, driver_id, status, destination_name')
         .eq('id', rideId as string)
         .single()
+
+      if (rideRow?.destination_name) {
+        setRecoveredRiderDestName(rideRow.destination_name as string)
+      }
 
       if (rideRow?.driver_destination && rideRow.driver_id === session.user.id) {
         const geo = rideRow.driver_destination as { coordinates: [number, number] }
@@ -121,6 +126,19 @@ export default function DropoffSelection({
       navigate('/home/driver', { replace: true })
     })()
   }, [effLat, rideId, navigate])
+
+  // ── Fetch rider's destination name when missing from nav state ───────────
+  useEffect(() => {
+    if (state?.riderDestName || !rideId) return
+    void supabase
+      .from('rides')
+      .select('destination_name')
+      .eq('id', rideId)
+      .single()
+      .then(({ data }) => {
+        if (data?.destination_name) setRecoveredRiderDestName(data.destination_name as string)
+      })
+  }, [rideId, state?.riderDestName])
 
   // ── Listen for ride cancellation ──────────────────────────────────────────
   useEffect(() => {
@@ -421,7 +439,7 @@ export default function DropoffSelection({
   if (!effLat || !effLng || !rideId) return null
 
   const riderName = state?.riderName ?? 'the rider'
-  const riderDestName = state?.riderDestName ?? 'their destination'
+  const riderDestName = state?.riderDestName ?? recoveredRiderDestName ?? 'their destination'
 
   return (
     <div
