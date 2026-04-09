@@ -314,7 +314,7 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
             <div className="flex justify-between text-text-primary">
               <div>
                 <span>Time cost</span>
-                <p className="text-xs text-text-secondary">{Math.round(breakdown.duration_min)} min × $0.05/min</p>
+                <p className="text-xs text-text-secondary">{Math.round(breakdown.duration_min)} min × ${(breakdown.time_cost_cents / Math.max(1, breakdown.duration_min) / 100).toFixed(2)}/min</p>
               </div>
               <span data-testid="breakdown-time">
                 {formatRange(fareRange.low.time_cost_cents, fareRange.high.time_cost_cents)}

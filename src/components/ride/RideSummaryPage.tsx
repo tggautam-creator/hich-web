@@ -398,7 +398,7 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
                     <span className="text-text-primary">{formatCents(fareBreakdown.gas_cost_cents)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-text-secondary">Time ({fareBreakdown.duration_min} min × $0.05)</span>
+                    <span className="text-text-secondary">Time ({fareBreakdown.duration_min} min × ${(fareBreakdown.time_cost_cents / Math.max(1, fareBreakdown.duration_min) / 100).toFixed(2)})</span>
                     <span className="text-text-primary">{formatCents(fareBreakdown.time_cost_cents)}</span>
                   </div>
                   {fareCents > fareBreakdown.base_cents + fareBreakdown.gas_cost_cents + fareBreakdown.time_cost_cents && (
