@@ -109,6 +109,7 @@ export type Database = {
           fuel_efficiency_mpg: number | null
           is_active: boolean
           body_type: string
+          deleted_at: string | null
         }
         Insert: {
           id?: string
@@ -125,6 +126,7 @@ export type Database = {
           fuel_efficiency_mpg?: number | null
           is_active?: boolean
           body_type?: string
+          deleted_at?: string | null
         }
         Update: {
           id?: string
@@ -141,6 +143,7 @@ export type Database = {
           fuel_efficiency_mpg?: number | null
           is_active?: boolean
           body_type?: string
+          deleted_at?: string | null
         }
         Relationships: never[]
       }

@@ -3,7 +3,10 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import VehicleEditPage from '@/components/ride/VehicleEditPage'
 
 const mockNavigate = vi.fn()
-vi.mock('react-router-dom', () => ({ useNavigate: () => mockNavigate }))
+vi.mock('react-router-dom', () => ({
+  useNavigate: () => mockNavigate,
+  useParams: () => ({ vehicleId: 'v-1' }),
+}))
 
 const mockVehicle = {
   id: 'v-1',
@@ -22,10 +25,8 @@ const mockVehicle = {
 }
 
 const mockSingle = vi.fn().mockResolvedValue({ data: mockVehicle, error: null })
-const mockLimit = vi.fn(() => ({ maybeSingle: mockSingle }))
-const mockEqActive = vi.fn(() => ({ limit: mockLimit }))
-const mockEqUser = vi.fn(() => ({ eq: mockEqActive }))
-const mockSelect = vi.fn(() => ({ eq: mockEqUser }))
+const mockEqId = vi.fn(() => ({ maybeSingle: mockSingle }))
+const mockSelect = vi.fn(() => ({ eq: mockEqId }))
 const mockUpdate = vi.fn(() => ({ eq: vi.fn().mockResolvedValue({ error: null }) }))
 
 vi.mock('@/lib/supabase', () => ({

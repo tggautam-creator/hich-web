@@ -139,8 +139,8 @@ describe('RideConfirm', () => {
       estimatedDurationMin: 1,
     })
     const fareEl = screen.getByTestId('fare-range')
-    // Both low and high hit the $2.00 minimum → single value, no dash
-    expect(fareEl.textContent).toBe('$2.00')
+    // Both low and high hit the $5.00 minimum → single value, no dash
+    expect(fareEl.textContent).toBe('$5.00')
   })
 
   // ── Route info ─────────────────────────────────────────────────────

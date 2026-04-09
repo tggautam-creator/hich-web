@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type FormEvent, type ChangeEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { validateVin, validateYear } from '@/lib/validation'
@@ -109,6 +109,8 @@ export default function VehicleRegistrationPage({
   'data-testid': testId = 'vehicle-registration-page',
 }: VehicleRegistrationPageProps) {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const isFromProfile = searchParams.get('from') === 'profile'
   const refreshProfile = useAuthStore((s) => s.refreshProfile)
 
   // Plate + state (top of form)
@@ -217,11 +219,13 @@ export default function VehicleRegistrationPage({
     const modelErr = !model.trim() ? 'Model is required' : undefined
     const yearErr  = validateYear(year)
     const colorErr = !color ? 'Please select a car color' : undefined
+    const licensePhotoErr = !licensePhoto ? 'License plate photo is required' : undefined
 
-    if (plateErr ?? stateErr ?? vinErr ?? makeErr ?? modelErr ?? yearErr ?? colorErr) {
+    if (plateErr ?? stateErr ?? vinErr ?? makeErr ?? modelErr ?? yearErr ?? colorErr ?? licensePhotoErr) {
       setErrors({
         plate: plateErr, state: stateErr, vin: vinErr,
         make: makeErr, model: modelErr, year: yearErr, color: colorErr,
+        licensePhoto: licensePhotoErr,
       })
       return
     }
@@ -240,7 +244,7 @@ export default function VehicleRegistrationPage({
         const carPath = `${user.id}-${Date.now()}.${carExt}`
         const { error: carUpErr } = await supabase.storage
           .from('car-photos')
-          .upload(carPath, carPhoto, { upsert: true })
+          .upload(carPath, carPhoto, { upsert: true, contentType: carPhoto.type })
         if (carUpErr) throw carUpErr
         const { data: carUrlData } = supabase.storage
           .from('car-photos')
@@ -255,8 +259,17 @@ export default function VehicleRegistrationPage({
         licPath = `${user.id}-${Date.now()}.${licExt}`
         const { error: licUpErr } = await supabase.storage
           .from('license-photos')
-          .upload(licPath, licensePhoto, { upsert: true })
+          .upload(licPath, licensePhoto, { upsert: true, contentType: licensePhoto.type })
         if (licUpErr) throw licUpErr
+      }
+
+      // When adding another vehicle, deactivate existing ones first
+      if (isFromProfile) {
+        await supabase
+          .from('vehicles')
+          .update({ is_active: false })
+          .eq('user_id', user.id)
+          .eq('is_active', true)
       }
 
       // Insert vehicle record
@@ -273,19 +286,22 @@ export default function VehicleRegistrationPage({
         seats_available:         seats,
         fuel_efficiency_mpg:     fuelMpg ?? DEFAULT_MPG,
         body_type:               bodyType,
+        is_active:               true,
       })
       if (vehErr) throw vehErr
 
-      // Mark user as a driver
-      const { error: userErr } = await supabase
-        .from('users')
-        .update({ is_driver: true })
-        .eq('id', user.id)
-      if (userErr) throw userErr
+      if (!isFromProfile) {
+        // First-time onboarding: mark as driver and go to Stripe
+        const { error: userErr } = await supabase
+          .from('users')
+          .update({ is_driver: true })
+          .eq('id', user.id)
+        if (userErr) throw userErr
+      }
 
       // Refresh auth store so AuthGuard sees is_driver + full_name
       await refreshProfile()
-      navigate('/stripe/onboarding')
+      navigate(isFromProfile ? '/profile' : '/stripe/onboarding')
     } catch (err: unknown) {
       // eslint-disable-next-line no-console
       console.error('[VehicleRegistrationPage] submit error:', err)
@@ -496,8 +512,7 @@ export default function VehicleRegistrationPage({
           {/* ── License plate photo ─────────────────────────────────── */}
           <div className="flex flex-col gap-1">
             <label htmlFor="license-photo-input" className="text-sm font-medium text-text-primary">
-              License plate photo{' '}
-              <span className="font-normal text-text-secondary">(optional)</span>
+              License plate photo
             </label>
             <p className="text-xs text-text-secondary">Stored securely — not visible to riders</p>
             <input

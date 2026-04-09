@@ -88,6 +88,7 @@ describe('scaffold — @/ alias and database types', () => {
       fuel_efficiency_mpg: 28,
       is_active: true,
       body_type: 'sedan',
+      deleted_at: null,
     }
     expect(v.seats_available).toBeGreaterThanOrEqual(1)
     expect(v.seats_available).toBeLessThanOrEqual(4)

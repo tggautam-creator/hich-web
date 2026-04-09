@@ -256,8 +256,8 @@ export default function DropoffSelection({
       const gallons = distMiles / 25
       const gasCents = Math.round(gallons * 3.5 * 100)
       const estMin = Math.round(distKm / 40 * 60)
-      const timeCents = Math.round(estMin * 5)
-      const fare = Math.max(200, Math.min(4000, 100 + gasCents + timeCents))
+      const timeCents = Math.round(estMin * 8)
+      const fare = Math.max(500, Math.min(4000, 200 + gasCents + timeCents))
       setFareEstimate(fare)
     }
     setFareLoading(false)

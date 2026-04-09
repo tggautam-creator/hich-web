@@ -1,5 +1,5 @@
 import { useState, useEffect, type FormEvent, type ChangeEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import PrimaryButton from '@/components/ui/PrimaryButton'
@@ -26,6 +26,7 @@ export default function VehicleEditPage({
   'data-testid': testId = 'vehicle-edit-page',
 }: VehicleEditPageProps) {
   const navigate = useNavigate()
+  const { vehicleId } = useParams<{ vehicleId: string }>()
   const profile = useAuthStore((s) => s.profile)
 
   const [vehicle, setVehicle] = useState<Vehicle | null>(null)
@@ -40,17 +41,16 @@ export default function VehicleEditPage({
   const [success, setSuccess] = useState(false)
 
   useEffect(() => {
-    if (!profile?.id) return
-    const userId = profile.id
+    if (!profile?.id || !vehicleId) return
+    const vid = vehicleId
     async function load() {
       const { data } = await supabase
         .from('vehicles')
         .select('*')
-        .eq('user_id', userId)
-        .eq('is_active', true)
-        .limit(1)
+        .eq('id', vid)
         .maybeSingle()
-      const v = data as Vehicle | null
+      const raw = data as Vehicle | null
+      const v = raw?.deleted_at ? null : raw
       setVehicle(v)
       if (v) {
         setColor(v.color)
@@ -60,7 +60,7 @@ export default function VehicleEditPage({
       setLoading(false)
     }
     void load()
-  }, [profile?.id])
+  }, [profile?.id, vehicleId])
 
   function handleCarPhotoChange(e: ChangeEvent<HTMLInputElement>) {
     setCarPhoto(e.target.files?.[0] ?? null)
@@ -94,7 +94,7 @@ export default function VehicleEditPage({
         const carPath = `${profile.id}-${Date.now()}.${carExt}`
         const { error: carUpErr } = await supabase.storage
           .from('car-photos')
-          .upload(carPath, carPhoto, { upsert: true })
+          .upload(carPath, carPhoto, { upsert: true, contentType: carPhoto.type })
         if (carUpErr) throw carUpErr
         const { data: carUrlData } = supabase.storage.from('car-photos').getPublicUrl(carPath)
         carPhotoUrl = carUrlData.publicUrl
@@ -106,7 +106,7 @@ export default function VehicleEditPage({
         licPath = `${profile.id}-${Date.now()}.${licExt}`
         const { error: licUpErr } = await supabase.storage
           .from('license-photos')
-          .upload(licPath, licensePhoto, { upsert: true })
+          .upload(licPath, licensePhoto, { upsert: true, contentType: licensePhoto.type })
         if (licUpErr) throw licUpErr
       }
 

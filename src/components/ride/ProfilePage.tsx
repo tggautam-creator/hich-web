@@ -50,8 +50,10 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
   const [deletingRoute, setDeletingRoute] = useState<string | null>(null)
 
   // Vehicle state
-  const [vehicle, setVehicle] = useState<Vehicle | null>(null)
+  const [vehicles, setVehicles] = useState<Vehicle[]>([])
   const [loadingVehicle, setLoadingVehicle] = useState(true)
+  const [removingVehicle, setRemovingVehicle] = useState<string | null>(null)
+  const [settingActive, setSettingActive] = useState<string | null>(null)
 
   // QR sheet state
   const [qrOpen, setQrOpen] = useState(false)
@@ -166,26 +168,75 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
 
   useEffect(() => { void loadRoutines() }, [loadRoutines])
 
-  // ── Load vehicle ─────────────────────────────────────────────────────
-  useEffect(() => {
+  // ── Load vehicles ────────────────────────────────────────────────────
+  const loadVehicles = useCallback(async () => {
     if (!profile?.id || !profile.is_driver) {
       setLoadingVehicle(false)
       return
     }
-    const userId = profile.id
-    async function loadVehicle() {
-      const { data } = await supabase
-        .from('vehicles')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('is_active', true)
-        .limit(1)
-        .maybeSingle()
-      setVehicle(data as Vehicle | null)
-      setLoadingVehicle(false)
-    }
-    void loadVehicle()
+    const { data } = await supabase
+      .from('vehicles')
+      .select('*')
+      .eq('user_id', profile.id)
+      .order('is_active', { ascending: false })
+    // Filter out soft-deleted vehicles client-side
+    const active = ((data ?? []) as Vehicle[]).filter((v) => !v.deleted_at)
+    setVehicles(active)
+    setLoadingVehicle(false)
   }, [profile?.id, profile?.is_driver])
+
+  useEffect(() => { void loadVehicles() }, [loadVehicles])
+
+  // ── Set active vehicle ──────────────────────────────────────────────
+  const handleSetActive = async (vehicleId: string) => {
+    if (!profile?.id) return
+    setSettingActive(vehicleId)
+    // Deactivate all non-deleted, then activate selected
+    await supabase
+      .from('vehicles')
+      .update({ is_active: false })
+      .eq('user_id', profile.id)
+      .eq('is_active', true)
+    await supabase
+      .from('vehicles')
+      .update({ is_active: true })
+      .eq('id', vehicleId)
+    await loadVehicles()
+    setSettingActive(null)
+  }
+
+  // ── Remove vehicle (soft delete) ───────────────────────────────────
+  const handleRemoveVehicle = async (vehicleId: string) => {
+    if (!profile?.id) return
+    if (!window.confirm('Remove this vehicle? It will no longer appear in your list.')) return
+    setRemovingVehicle(vehicleId)
+    await supabase
+      .from('vehicles')
+      .update({ deleted_at: new Date().toISOString(), is_active: false })
+      .eq('id', vehicleId)
+
+    // If no vehicles remain, unset is_driver
+    const { data: allVehicles } = await supabase
+      .from('vehicles')
+      .select('id, deleted_at')
+      .eq('user_id', profile.id)
+    const remaining = (allVehicles ?? []).filter((v: { deleted_at: string | null }) => !v.deleted_at)
+    if (!remaining || remaining.length === 0) {
+      await supabase.from('users').update({ is_driver: false }).eq('id', profile.id)
+      await refreshProfile()
+    } else {
+      // If the removed vehicle was active, auto-activate the first remaining
+      const wasActive = vehicles.find((v) => v.id === vehicleId)?.is_active
+      if (wasActive && remaining.length > 0) {
+        await supabase
+          .from('vehicles')
+          .update({ is_active: true })
+          .eq('id', remaining[0].id)
+      }
+    }
+    await loadVehicles()
+    setRemovingVehicle(null)
+  }
 
   // ── Load saved addresses ────────────────────────────────────────────
   const loadAddresses = useCallback(async () => {
@@ -229,7 +280,7 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
     const path = `${profile.id}-${Date.now()}.${ext}`
     const { error: upErr } = await supabase.storage
       .from('avatars')
-      .upload(path, file, { upsert: true })
+      .upload(path, file, { upsert: true, contentType: file.type })
     if (upErr) { setUploadingAvatar(false); return }
     const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(path)
     await supabase.from('users').update({ avatar_url: urlData.publicUrl }).eq('id', profile.id)
@@ -593,51 +644,91 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
         presetLabel={addressPresetLabel}
       />
 
-      {/* ── My Vehicle ──────────────────────────────────────────────────── */}
+      {/* ── My Vehicles ─────────────────────────────────────────────────── */}
       {profile?.is_driver && (
         <div className="mx-4 mt-4">
-          <h2 className="text-sm font-semibold text-text-primary mb-3">My Vehicle</h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-text-primary">My Vehicles</h2>
+            <button
+              data-testid="add-vehicle-button"
+              onClick={() => navigate('/onboarding/vehicle?from=profile')}
+              className="text-xs font-semibold text-primary"
+            >
+              + Add Vehicle
+            </button>
+          </div>
           {loadingVehicle ? (
             <div className="flex justify-center py-8">
               <div className="h-6 w-6 animate-spin rounded-full border-3 border-primary border-t-transparent" />
             </div>
-          ) : vehicle ? (
-            <div data-testid="vehicle-card" className="bg-white rounded-2xl p-4 border border-border">
-              <div className="flex items-center gap-3">
-                {vehicle.car_photo_url ? (
-                  <img
-                    src={vehicle.car_photo_url}
-                    alt="Vehicle"
-                    className="h-16 w-20 rounded-2xl object-cover shrink-0"
-                  />
-                ) : (
-                  <div className="h-16 w-20 rounded-2xl bg-surface flex items-center justify-center shrink-0">
-                    <VehicleIcon color={vehicle.color.toLowerCase()} className="h-10 w-auto" />
+          ) : vehicles.length > 0 ? (
+            <div className="flex flex-col gap-3">
+              {vehicles.map((v) => (
+                <div key={v.id} data-testid="vehicle-card" className="bg-white rounded-2xl p-4 border border-border">
+                  <div className="flex items-center gap-3">
+                    {v.car_photo_url ? (
+                      <img
+                        src={v.car_photo_url}
+                        alt="Vehicle"
+                        className="h-16 w-20 rounded-2xl object-cover shrink-0"
+                      />
+                    ) : (
+                      <div className="h-16 w-20 rounded-2xl bg-surface flex items-center justify-center shrink-0">
+                        <VehicleIcon color={v.color.toLowerCase()} className="h-10 w-auto" />
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p data-testid="vehicle-name" className="text-sm font-semibold text-text-primary truncate">
+                          {v.year} {v.make} {v.model}
+                        </p>
+                        {v.is_active && (
+                          <span className="shrink-0 rounded-full bg-success/10 px-2 py-0.5 text-[10px] font-semibold text-success">
+                            Active
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span
+                          className="h-3 w-3 rounded-full border border-border shrink-0"
+                          style={{ backgroundColor: v.color.toLowerCase() }}
+                        />
+                        <span className="text-xs text-text-secondary">{v.color}</span>
+                      </div>
+                      <p data-testid="vehicle-plate" className="text-xs text-text-secondary mt-0.5">
+                        {v.plate} · {v.seats_available} seat{v.seats_available !== 1 ? 's' : ''}
+                      </p>
+                    </div>
                   </div>
-                )}
-                <div className="flex-1 min-w-0">
-                  <p data-testid="vehicle-name" className="text-sm font-semibold text-text-primary truncate">
-                    {vehicle.year} {vehicle.make} {vehicle.model}
-                  </p>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span
-                      className="h-3 w-3 rounded-full border border-border shrink-0"
-                      style={{ backgroundColor: vehicle.color.toLowerCase() }}
-                    />
-                    <span className="text-xs text-text-secondary">{vehicle.color}</span>
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      data-testid="edit-vehicle-button"
+                      onClick={() => navigate(`/vehicle/edit/${v.id}`)}
+                      className="flex-1 rounded-2xl py-2 text-xs font-semibold text-primary bg-primary/10 active:bg-primary/20 transition-colors"
+                    >
+                      Edit
+                    </button>
+                    {!v.is_active && (
+                      <button
+                        data-testid="set-active-button"
+                        onClick={() => { void handleSetActive(v.id) }}
+                        disabled={settingActive === v.id}
+                        className="flex-1 rounded-2xl py-2 text-xs font-semibold text-success bg-success/10 active:bg-success/20 transition-colors disabled:opacity-50"
+                      >
+                        {settingActive === v.id ? 'Setting...' : 'Set Active'}
+                      </button>
+                    )}
+                    <button
+                      data-testid="remove-vehicle-button"
+                      onClick={() => { void handleRemoveVehicle(v.id) }}
+                      disabled={removingVehicle === v.id}
+                      className="rounded-2xl px-3 py-2 text-xs font-semibold text-danger bg-danger/10 active:bg-danger/20 transition-colors disabled:opacity-50"
+                    >
+                      {removingVehicle === v.id ? '...' : 'Remove'}
+                    </button>
                   </div>
-                  <p data-testid="vehicle-plate" className="text-xs text-text-secondary mt-0.5">
-                    {vehicle.plate} · {vehicle.seats_available} seat{vehicle.seats_available !== 1 ? 's' : ''}
-                  </p>
                 </div>
-              </div>
-              <button
-                data-testid="edit-vehicle-button"
-                onClick={() => navigate('/vehicle/edit')}
-                className="mt-3 w-full rounded-2xl py-2 text-xs font-semibold text-primary bg-primary/10 active:bg-primary/20 transition-colors"
-              >
-                Edit Vehicle
-              </button>
+              ))}
             </div>
           ) : (
             <div className="bg-white rounded-2xl p-6 text-center border border-border">

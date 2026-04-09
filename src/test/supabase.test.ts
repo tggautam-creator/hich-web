@@ -82,7 +82,7 @@ describe('database types — row aliases', () => {
       plate: 'ABC123', license_plate_photo_url: 'https://x.com/p.jpg',
       car_photo_url: 'https://x.com/c.jpg', seats_available: 3,
       fuel_efficiency_mpg: null, is_active: true,
-      body_type: 'suv',
+      body_type: 'suv', deleted_at: null,
     }
     expect(v.seats_available).toBeGreaterThanOrEqual(1)
   })

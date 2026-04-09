@@ -21,10 +21,10 @@ interface GeoPoint {
 const DEG_TO_RAD = Math.PI / 180
 const EARTH_RADIUS_M = 6_371_000
 const KM_TO_MILES = 0.621371
-const MIN_FARE_CENTS = 200
+const MIN_FARE_CENTS = 500
 const MAX_FARE_CENTS = 4000
-const BASE_CENTS = 100
-const PER_MIN_CENTS = 5
+const BASE_CENTS = 200
+const PER_MIN_CENTS = 8
 const PLATFORM_FEE_RATE = 0
 const DEFAULT_MPG = 25
 const DEFAULT_GAS_PRICE_PER_GALLON = 3.50
@@ -283,7 +283,7 @@ ridesRouter.post(
     })
 
     const fareCents = typeof body.estimated_fare_cents === 'number' ? body.estimated_fare_cents : 0
-    const platformFee = Math.round(fareCents * 0.15)
+    const platformFee = Math.round(fareCents * PLATFORM_FEE_RATE)
     const driverEarns = fareCents - platformFee
 
     // Fetch rider name + rating for notifications and broadcasts

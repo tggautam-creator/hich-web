@@ -159,11 +159,12 @@ function setupMocks(opts: { routines?: typeof MOCK_ROUTINES; rides?: unknown[] }
       return {
         select: vi.fn().mockReturnValue({
           eq: vi.fn().mockReturnValue({
-            eq: vi.fn().mockReturnValue({
-              limit: vi.fn().mockReturnValue({
-                maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
-              }),
-            }),
+            order: vi.fn().mockResolvedValue({ data: [], error: null }),
+          }),
+        }),
+        update: vi.fn().mockReturnValue({
+          eq: vi.fn().mockReturnValue({
+            eq: vi.fn().mockResolvedValue({ data: null, error: null }),
           }),
         }),
       }

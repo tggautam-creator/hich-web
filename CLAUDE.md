@@ -80,10 +80,15 @@ STRIPE_WEBHOOK_SECRET
 
 ## Fare Formula
 ```
-fare_cents = max(200, min(4000, Math.round((100 + distance_km*18 + duration_min*5) * 100)))
-platform_fee_cents = Math.round(fare_cents * 0.15)
-driver_earns_cents = fare_cents - platform_fee_cents
+gas_cost_cents  = round((distance_km * 0.621371 / mpg) * gas_price_per_gallon * 100)
+time_cost_cents = round(duration_min * 8)           // 8 cents/min
+base_cents      = 200                               // $2.00 base
+raw             = base_cents + gas_cost_cents + time_cost_cents
+fare_cents      = max(500, min(4000, raw))          // $5 minimum, $40 maximum
+platform_fee_cents = 0                              // driver keeps 100% during MVP
+driver_earns_cents = fare_cents
 ```
+Default: mpg=25, gas_price=$3.50/gal
 
 ## Matching — What to Build (read before touching any notification code)
 The matching logic has stages. Build in order, do not skip ahead.

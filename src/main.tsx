@@ -156,7 +156,7 @@ createRoot(rootEl).render(
               <Route path="/ride/summary/:rideId" element={<Suspense fallback={<FormPageSkeleton />}><RideSummaryPage /></Suspense>} />
               <Route path="/ride/rate/:rideId" element={<Suspense fallback={<FormPageSkeleton />}><RateRidePage /></Suspense>} />
               <Route path="/profile" element={<Suspense fallback={<ListPageSkeleton />}><ProfilePage /></Suspense>} />
-              <Route path="/vehicle/edit" element={<Suspense fallback={<FormPageSkeleton />}><VehicleEditPage /></Suspense>} />
+              <Route path="/vehicle/edit/:vehicleId" element={<Suspense fallback={<FormPageSkeleton />}><VehicleEditPage /></Suspense>} />
               <Route path="/settings" element={<Suspense fallback={<FormPageSkeleton />}><SettingsPage /></Suspense>} />
               <Route path="/report-issue" element={<Suspense fallback={<FormPageSkeleton />}><ReportIssuePage /></Suspense>} />
               <Route path="/report/:rideId" element={<Suspense fallback={<FormPageSkeleton />}><RideReportPage /></Suspense>} />

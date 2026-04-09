@@ -5,22 +5,22 @@
  *
  * Gas-cost-aware formula:
  *   gas_cost    = (distance_km × 0.621371 / mpg) × gas_price_per_gallon
- *   time_cost   = duration_min × $0.05/min (5 cents/min)
- *   base        = $1.00 (100 cents)
+ *   time_cost   = duration_min × $0.08/min (8 cents/min)
+ *   base        = $2.00 (200 cents)
  *   subtotal    = base + gas_cost + time_cost
- *   fare_cents  = max(200, min(4000, round(subtotal)))
- *   platform_fee = round(fare × 0.15)
- *   driver_earns = fare - platform_fee
+ *   fare_cents  = max(500, min(4000, round(subtotal)))
+ *   platform_fee = round(fare × 0) — driver keeps 100% during MVP
+ *   driver_earns = fare
  *
  * If mpg/gas_price are not available, falls back to flat per-km rate.
  */
 
 import { DEFAULT_MPG } from '@/lib/fuelEconomy'
 
-const MIN_FARE_CENTS    = 200
+const MIN_FARE_CENTS    = 500
 const MAX_FARE_CENTS    = 4000
-const BASE_CENTS        = 100
-const PER_MIN_CENTS     = 5
+const BASE_CENTS        = 200
+const PER_MIN_CENTS     = 8
 const PLATFORM_FEE_RATE = 0
 const KM_TO_MILES       = 0.621371
 

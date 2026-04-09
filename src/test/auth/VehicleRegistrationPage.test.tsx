@@ -25,7 +25,11 @@ const {
 
 vi.mock('react-router-dom', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-router-dom')>()
-  return { ...actual, useNavigate: () => mockNavigate }
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+    useSearchParams: () => [new URLSearchParams()],
+  }
 })
 
 vi.mock('@/lib/vin', () => ({
@@ -84,6 +88,8 @@ function fillValidForm() {
   fireEvent.change(screen.getByTestId('model-input'), { target: { value: 'Accord' } })
   fireEvent.change(screen.getByTestId('year-input'), { target: { value: '2020' } })
   fireEvent.click(screen.getByTestId('color-blue'))
+  const licFile = new File(['lic'], 'license.jpg', { type: 'image/jpeg' })
+  fireEvent.change(screen.getByTestId('license-photo-input'), { target: { files: [licFile] } })
 }
 
 /** Fill required fields + both optional photos. */
@@ -281,9 +287,10 @@ describe('VehicleRegistrationPage', () => {
       expect(screen.getByText('Year is required')).toBeDefined()
       expect(screen.getByText('License plate is required')).toBeDefined()
       expect(screen.getByText('Please select a car color')).toBeDefined()
-      // photos are optional — no required errors
+      // Car photo is optional — no required error
       expect(screen.queryByText('Car photo is required')).toBeNull()
-      expect(screen.queryByText('License plate photo is required')).toBeNull()
+      // License plate photo is mandatory
+      expect(screen.getByText('License plate photo is required')).toBeDefined()
     })
 
     it('shows VIN error for invalid VIN', async () => {
@@ -315,7 +322,7 @@ describe('VehicleRegistrationPage', () => {
 
   // ── Successful submit ────────────────────────────────────────────────────
   describe('successful submit', () => {
-    it('inserts vehicle, updates user, and navigates without photos', async () => {
+    it('inserts vehicle, updates user, and navigates with license photo', async () => {
       renderPage()
       fillValidForm()
 
@@ -324,8 +331,8 @@ describe('VehicleRegistrationPage', () => {
       })
 
       await waitFor(() => {
-        // No uploads when no photos selected
-        expect(mockStorageUpload).not.toHaveBeenCalled()
+        // License photo upload is mandatory, so storage upload should be called
+        expect(mockStorageUpload).toHaveBeenCalled()
         // Inserted vehicle
         expect(mockInsert).toHaveBeenCalledTimes(1)
         const insertArg = mockInsert.mock.calls[0][0] as Record<string, unknown>
@@ -336,7 +343,6 @@ describe('VehicleRegistrationPage', () => {
         expect(insertArg.color).toBe('Blue')
         expect(insertArg.seats_available).toBe(2)
         expect(insertArg.car_photo_url).toBeNull()
-        expect(insertArg.license_plate_photo_url).toBeNull()
         // Updated user is_driver
         expect(mockUpdate).toHaveBeenCalledWith({ is_driver: true })
         // Navigated
