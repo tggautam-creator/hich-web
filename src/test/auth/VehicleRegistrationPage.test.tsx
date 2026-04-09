@@ -287,10 +287,9 @@ describe('VehicleRegistrationPage', () => {
       expect(screen.getByText('Year is required')).toBeDefined()
       expect(screen.getByText('License plate is required')).toBeDefined()
       expect(screen.getByText('Please select a car color')).toBeDefined()
-      // Car photo is optional — no required error
+      // Car photo and license plate photo are both optional — no required errors
       expect(screen.queryByText('Car photo is required')).toBeNull()
-      // License plate photo is mandatory
-      expect(screen.getByText('License plate photo is required')).toBeDefined()
+      expect(screen.queryByText('License plate photo is required')).toBeNull()
     })
 
     it('shows VIN error for invalid VIN', async () => {

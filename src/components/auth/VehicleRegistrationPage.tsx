@@ -219,13 +219,10 @@ export default function VehicleRegistrationPage({
     const modelErr = !model.trim() ? 'Model is required' : undefined
     const yearErr  = validateYear(year)
     const colorErr = !color ? 'Please select a car color' : undefined
-    const licensePhotoErr = !licensePhoto ? 'License plate photo is required' : undefined
-
-    if (plateErr ?? stateErr ?? vinErr ?? makeErr ?? modelErr ?? yearErr ?? colorErr ?? licensePhotoErr) {
+    if (plateErr ?? stateErr ?? vinErr ?? makeErr ?? modelErr ?? yearErr ?? colorErr) {
       setErrors({
         plate: plateErr, state: stateErr, vin: vinErr,
         make: makeErr, model: modelErr, year: yearErr, color: colorErr,
-        licensePhoto: licensePhotoErr,
       })
       return
     }
@@ -512,7 +509,7 @@ export default function VehicleRegistrationPage({
           {/* ── License plate photo ─────────────────────────────────── */}
           <div className="flex flex-col gap-1">
             <label htmlFor="license-photo-input" className="text-sm font-medium text-text-primary">
-              License plate photo
+              License plate photo <span className="font-normal text-text-secondary">(optional)</span>
             </label>
             <p className="text-xs text-text-secondary">Stored securely — not visible to riders</p>
             <input
