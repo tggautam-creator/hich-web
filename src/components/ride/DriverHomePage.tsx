@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { APIProvider, Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { env } from '@/lib/env'
 
@@ -25,16 +25,21 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
   const profile = useAuthStore((s) => s.profile)
   const refreshProfile = useAuthStore((s) => s.refreshProfile)
   const navigate = useNavigate()
+  const location = useLocation()
+
+  const hasBank = profile?.stripe_onboarding_complete === true
 
   const [center, setCenter] = useState(DEFAULT_CENTER)
   const [hasGps, setHasGps] = useState(false)
-  const [isOnline, setIsOnline] = useState(true)
+  const [isOnline, setIsOnline] = useState(hasBank)
   const [activeRideCount, setActiveRideCount] = useState(0)
   const [unreadCount, setUnreadCount] = useState(0)
   const [statusToast, setStatusToast] = useState<string | null>(null)
   const [userPanned, setUserPanned] = useState(false)
-
-  const hasBank = profile?.stripe_onboarding_complete === true
+  // Show the bank dialog when driver skipped onboarding, or when they try to go online without bank
+  const [showBankDialog, setShowBankDialog] = useState(
+    !hasBank && (location.state as { fromSkip?: boolean } | null)?.fromSkip === true,
+  )
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const latestCoordsRef = useRef(DEFAULT_CENTER)
   const gpsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -131,6 +136,16 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
     toastTimeoutRef.current = setTimeout(() => setStatusToast(null), 3000)
   }
 
+  // ── Auto-go-online when bank account is connected ─────────────────────
+  useEffect(() => {
+    if (hasBank && !isOnline) {
+      setIsOnline(true)
+      showToast('Bank connected — you are now online!')
+    }
+  // Only run when hasBank flips to true, not on every isOnline change
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasBank])
+
   // ── Stripe return handler ──────────────────────────────────────────────
   const [searchParams, setSearchParams] = useSearchParams()
   useEffect(() => {
@@ -154,9 +169,12 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
   }, [searchParams, setSearchParams, refreshProfile])
 
   async function handleToggleOnline() {
-    if (!hasBank) {
-      showToast('Tip: Set up your payout method to receive earnings')
+    // Without a bank account, going online is blocked — show the connect dialog
+    if (!hasBank && !isOnline) {
+      setShowBankDialog(true)
+      return
     }
+
     const next = !isOnline
     setIsOnline(next)
 
@@ -379,7 +397,7 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
           </span>
 
           <span className={['flex-1 text-sm font-semibold text-left', isOnline ? 'text-success' : 'text-text-secondary'].join(' ')}>
-            {isOnline ? 'Online — receiving rides' : 'Offline — tap to go online'}
+            {isOnline ? 'Online — receiving rides' : !hasBank ? 'Connect bank to go online' : 'Offline — tap to go online'}
           </span>
 
           {/* Mini toggle switch */}
@@ -415,6 +433,56 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
 
       {/* ── Bottom navigation ──────────────────────────────────────────────── */}
       <BottomNav activeTab="drive" />
+
+      {/* ── Bank connection required dialog ────────────────────────────────── */}
+      {showBankDialog && (
+        <div className="fixed inset-0 z-[2000] flex items-end justify-center sm:items-center px-4 pb-6 sm:pb-0">
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            aria-hidden="true"
+            onClick={() => setShowBankDialog(false)}
+          />
+          <div
+            data-testid="bank-required-dialog"
+            role="dialog"
+            aria-modal="true"
+            className="relative z-10 w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl"
+          >
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-warning/10">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-7 w-7 text-warning" aria-hidden="true">
+                <rect x="2" y="6" width="20" height="14" rx="2" />
+                <path d="M2 10h20" />
+                <path d="M6 14h.01" />
+                <path d="M10 14h4" />
+              </svg>
+            </div>
+            <h3 className="text-center text-lg font-bold text-text-primary mb-2">
+              Connect a bank account to go online
+            </h3>
+            <p className="text-center text-sm text-text-secondary mb-1">
+              You need a connected payout method to receive ride notifications and go online.
+            </p>
+            <p className="text-center text-xs text-text-secondary mb-6">
+              You can still browse and post to the ride board without a bank account.
+            </p>
+            <button
+              data-testid="bank-dialog-setup-button"
+              onClick={() => { setShowBankDialog(false); navigate('/stripe/payouts') }}
+              className="w-full rounded-xl bg-primary py-3 text-sm font-semibold text-white active:opacity-90 transition-opacity mb-3"
+            >
+              Set Up Payouts
+            </button>
+            <button
+              data-testid="bank-dialog-dismiss-button"
+              type="button"
+              onClick={() => setShowBankDialog(false)}
+              className="w-full py-2 text-sm font-medium text-text-secondary"
+            >
+              I&apos;ll do this later
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

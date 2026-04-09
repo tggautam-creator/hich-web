@@ -286,13 +286,14 @@ describe('DriverHomePage', () => {
     expect(screen.queryByTestId('bank-setup-banner')).not.toBeInTheDocument()
   })
 
-  it('allows going online without bank setup but shows tip', () => {
+  it('blocks going online without bank setup and shows the bank dialog', () => {
     mockProfile = { id: 'driver-001', stripe_onboarding_complete: false }
     renderPage()
 
-    // Toggle — should succeed (no hard block), not be prevented
+    // Toggle — should be blocked, bank dialog should appear instead
     act(() => { fireEvent.click(screen.getByTestId('online-toggle')) })
-    // The toast should show a status message (not a hard block error)
-    expect(screen.getByTestId('status-toast')).toBeInTheDocument()
+    expect(screen.getByTestId('bank-required-dialog')).toBeInTheDocument()
+    // Should NOT have gone online
+    expect(screen.getByTestId('online-indicator')).toHaveTextContent('Offline')
   })
 })

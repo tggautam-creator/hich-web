@@ -206,7 +206,7 @@ export default function StripeOnboardingPage({
 
           <SecondaryButton
             data-testid="skip-onboarding-button"
-            onClick={() => { navigate('/home/driver', { replace: true }) }}
+            onClick={() => { navigate('/home/driver', { replace: true, state: { fromSkip: true } }) }}
             className="w-full"
           >
             I&apos;ll do this later
