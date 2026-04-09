@@ -1540,7 +1540,11 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
       {/* ── Vehicle info bar (rider side only — no duplicate name) ──────── */}
       {otherVehicle && (
         <div data-testid="vehicle-details" className="px-4 py-2 bg-white border-b border-border flex items-center gap-2.5 shrink-0">
-          <span className="text-base">&#x1F697;</span>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 shrink-0 text-text-secondary" aria-hidden="true">
+            <path d="M5 17H3a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1l2-3h12l2 3h1a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2" />
+            <circle cx="7.5" cy="17.5" r="2.5" />
+            <circle cx="16.5" cy="17.5" r="2.5" />
+          </svg>
           <p className="text-xs font-medium text-text-primary">
             {otherVehicle.color} {otherVehicle.make} {otherVehicle.model}
           </p>
