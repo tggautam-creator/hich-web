@@ -70,3 +70,79 @@ safetyRouter.post('/share-location', validateJwt, async (req, res) => {
 
   res.status(201).json({ token })
 })
+
+/**
+ * GET /api/safety/track/:token
+ *
+ * Public endpoint — no auth required. Validates the share token,
+ * checks expiry, then returns the driver's current GPS location.
+ *
+ * Returns: { lat, lng, recorded_at, ride_id, expires_at }
+ */
+safetyRouter.get('/track/:token', async (req, res) => {
+  const { token } = req.params as { token: string }
+
+  if (!token || !/^[0-9a-f]{64}$/.test(token)) {
+    res.status(400).json({
+      error: { code: 'INVALID_TOKEN', message: 'Invalid token format' },
+    })
+    return
+  }
+
+  // Look up the share token
+  const { data: share, error: shareError } = await supabaseAdmin
+    .from('location_shares')
+    .select('ride_id, user_id, expires_at')
+    .eq('token', token)
+    .single()
+
+  if (shareError ?? !share) {
+    res.status(404).json({
+      error: { code: 'TOKEN_NOT_FOUND', message: 'Link not found or expired' },
+    })
+    return
+  }
+
+  if (new Date(share.expires_at) < new Date()) {
+    res.status(410).json({
+      error: { code: 'TOKEN_EXPIRED', message: 'This tracking link has expired' },
+    })
+    return
+  }
+
+  // Get the ride to find the driver
+  const { data: ride } = await supabaseAdmin
+    .from('rides')
+    .select('driver_id, rider_id')
+    .eq('id', share.ride_id)
+    .single()
+
+  // Track the driver's location (fall back to share creator if no driver yet)
+  const trackUserId = ride?.driver_id ?? share.user_id
+
+  const { data: loc, error: locError } = await supabaseAdmin
+    .from('driver_locations')
+    .select('location, recorded_at')
+    .eq('user_id', trackUserId)
+    .single()
+
+  if (locError ?? !loc) {
+    res.status(200).json({
+      ride_id: share.ride_id,
+      expires_at: share.expires_at,
+      lat: null,
+      lng: null,
+      recorded_at: null,
+    })
+    return
+  }
+
+  const coords = (loc.location as { coordinates: [number, number] }).coordinates
+  res.status(200).json({
+    ride_id: share.ride_id,
+    expires_at: share.expires_at,
+    lat: coords[1],
+    lng: coords[0],
+    recorded_at: loc.recorded_at,
+  })
+})

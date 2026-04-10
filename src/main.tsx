@@ -11,6 +11,9 @@ import AuthGuard from '@/components/auth/AuthGuard'
 
 initAnalytics()
 
+// ── Safety ───────────────────────────────────────────────────────────────────
+const TrackPage = lazy(() => import('@/components/safety/TrackPage'))
+
 // ── Public routes ────────────────────────────────────────────────────────────
 const Landing = lazy(() => import('@/components/Landing'))
 const Signup = lazy(() => import('@/components/Signup'))
@@ -100,6 +103,7 @@ createRoot(rootEl).render(
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/auth/callback" element={<AuthCallback />} />
+            <Route path="/track/:token" element={<Suspense fallback={<FormPageSkeleton />}><TrackPage /></Suspense>} />
 
             {/* ── Authenticated routes — AuthGuard checks session + profile ── */}
             <Route element={<AuthGuard />}>

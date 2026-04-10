@@ -9,6 +9,17 @@ interface EmergencySheetProps {
   'data-testid'?: string
 }
 
+const REPORT_CATEGORIES = [
+  { value: 'unsafe_driving', label: 'Unsafe driving' },
+  { value: 'inappropriate_behavior', label: 'Inappropriate behavior' },
+  { value: 'wrong_route', label: 'Wrong route / detour' },
+  { value: 'no_show', label: 'No show / abandonment' },
+  { value: 'other', label: 'Other safety concern' },
+] as const
+
+type ReportCategory = (typeof REPORT_CATEGORIES)[number]['value']
+type ReportStep = 'idle' | 'category' | 'description' | 'submitting' | 'submitted' | 'error'
+
 /**
  * Emergency action sheet — renders in a React portal at the top of the DOM tree.
  * Always available on active ride screens. Backdrop click does NOT dismiss.
@@ -23,6 +34,40 @@ export default function EmergencySheet({
   const [shareStatus, setShareStatus] = useState<'idle' | 'sharing' | 'shared' | 'error'>('idle')
   const [shareLink, setShareLink] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+
+  // Report flow
+  const [reportStep, setReportStep] = useState<ReportStep>('idle')
+  const [reportCategory, setReportCategory] = useState<ReportCategory | null>(null)
+  const [reportDescription, setReportDescription] = useState('')
+
+  function resetReport() {
+    setReportStep('idle')
+    setReportCategory(null)
+    setReportDescription('')
+  }
+
+  async function handleSubmitReport() {
+    if (!reportCategory || reportDescription.trim().length < 10) return
+    setReportStep('submitting')
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) { setReportStep('error'); return }
+
+      const res = await fetch('/api/report', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ category: reportCategory, description: reportDescription.trim(), ride_id: rideId }),
+      })
+
+      if (!res.ok) { setReportStep('error'); return }
+      setReportStep('submitted')
+    } catch {
+      setReportStep('error')
+    }
+  }
 
   const handleShareLocation = async () => {
     setShareStatus('sharing')
@@ -157,20 +202,105 @@ export default function EmergencySheet({
               </div>
             )}
 
-            {/* Report unsafe situation */}
-            <a
-              href={`/report/${rideId}`}
-              data-testid="emergency-report"
-              className="flex items-center gap-4 rounded-2xl bg-text-primary px-5 py-4 text-white active:opacity-80 transition-opacity"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 shrink-0" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
-              </svg>
-              <div>
-                <span className="text-base font-bold">Report unsafe situation</span>
-                <p className="text-sm text-white/80">File a safety report for this ride</p>
+            {/* Report unsafe situation — inline form, never navigates away */}
+            {reportStep === 'idle' && (
+              <button
+                type="button"
+                onClick={() => setReportStep('category')}
+                data-testid="emergency-report"
+                className="flex items-center gap-4 rounded-2xl bg-text-primary px-5 py-4 text-white active:opacity-80 transition-opacity w-full text-left"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
+                </svg>
+                <div>
+                  <span className="text-base font-bold">Report unsafe situation</span>
+                  <p className="text-sm text-white/80">File a safety report for this ride</p>
+                </div>
+              </button>
+            )}
+
+            {reportStep === 'category' && (
+              <div data-testid="report-category-step" className="rounded-2xl border border-border bg-surface p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="font-semibold text-text-primary">What happened?</p>
+                  <button type="button" onClick={resetReport} className="text-xs text-text-secondary hover:text-text-primary">Cancel</button>
+                </div>
+                <div className="space-y-2">
+                  {REPORT_CATEGORIES.map((cat) => (
+                    <button
+                      key={cat.value}
+                      type="button"
+                      data-testid={`report-category-${cat.value}`}
+                      onClick={() => { setReportCategory(cat.value); setReportStep('description') }}
+                      className="flex w-full items-center justify-between rounded-xl border border-border bg-white px-4 py-3 text-sm font-medium text-text-primary active:bg-surface"
+                    >
+                      {cat.label}
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-text-secondary" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                      </svg>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </a>
+            )}
+
+            {reportStep === 'description' && (
+              <div data-testid="report-description-step" className="rounded-2xl border border-border bg-surface p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <button type="button" onClick={() => setReportStep('category')} className="flex items-center gap-1 text-xs text-text-secondary hover:text-text-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clipRule="evenodd" />
+                    </svg>
+                    Back
+                  </button>
+                  <p className="text-xs text-text-secondary font-medium">{REPORT_CATEGORIES.find(c => c.value === reportCategory)?.label}</p>
+                </div>
+                <textarea
+                  data-testid="report-description-input"
+                  value={reportDescription}
+                  onChange={(e) => setReportDescription(e.target.value)}
+                  placeholder="Describe what happened (min. 10 characters)…"
+                  rows={3}
+                  className="w-full resize-none rounded-xl border border-border bg-white px-3 py-2.5 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none"
+                />
+                <button
+                  type="button"
+                  data-testid="report-submit-button"
+                  onClick={() => void handleSubmitReport()}
+                  disabled={reportDescription.trim().length < 10}
+                  className="w-full rounded-xl bg-danger px-4 py-3 text-sm font-bold text-white disabled:opacity-40 active:opacity-80"
+                >
+                  Submit Report
+                </button>
+              </div>
+            )}
+
+            {reportStep === 'submitting' && (
+              <div data-testid="report-submitting" className="rounded-2xl border border-border bg-surface p-4 text-center text-sm text-text-secondary">
+                Submitting report…
+              </div>
+            )}
+
+            {reportStep === 'submitted' && (
+              <div data-testid="report-submitted" className="rounded-2xl border border-success/30 bg-success/5 p-4 text-center space-y-1">
+                <p className="font-semibold text-success text-sm">Report submitted</p>
+                <p className="text-xs text-text-secondary">Our safety team will review this ride. Thank you for reporting.</p>
+              </div>
+            )}
+
+            {reportStep === 'error' && (
+              <div data-testid="report-error" className="rounded-2xl border border-danger/30 bg-danger/5 p-4 space-y-2">
+                <p className="text-sm font-semibold text-danger text-center">Failed to submit</p>
+                <button
+                  type="button"
+                  onClick={() => setReportStep('description')}
+                  className="w-full rounded-xl border border-danger/30 px-4 py-2 text-sm font-medium text-danger"
+                >
+                  Try again
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

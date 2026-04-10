@@ -6,7 +6,7 @@
  *  2. Renders all three options when open
  *  3. Call 911 link has correct tel: href
  *  4. Share location button calls API and shows link
- *  5. Report link navigates to /report/:rideId
+ *  5. Report button opens inline category picker (no navigation)
  *  6. Backdrop click does NOT dismiss (no onClose called)
  *  7. Close button calls onClose
  *  8. Renders in a portal (at top of DOM)
@@ -81,10 +81,12 @@ describe('EmergencySheet', () => {
     expect(link).toHaveAttribute('href', 'tel:911')
   })
 
-  it('Report link points to /report/:rideId', () => {
+  it('Report button opens inline category picker', async () => {
     renderSheet({ rideId: 'ride-123' })
-    const link = screen.getByTestId('emergency-report')
-    expect(link).toHaveAttribute('href', '/report/ride-123')
+    const btn = screen.getByTestId('emergency-report')
+    expect(btn.tagName).toBe('BUTTON')
+    fireEvent.click(btn)
+    expect(screen.getByTestId('report-category-step')).toBeInTheDocument()
   })
 
   it('backdrop click does NOT dismiss the sheet', () => {
