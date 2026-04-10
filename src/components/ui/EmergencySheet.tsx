@@ -93,14 +93,25 @@ export default function EmergencySheet({
       }
 
       const body = (await res.json()) as { token: string }
-      const link = `https://tagorides.com/track/${body.token}`
+      const link = `${window.location.origin}/track/${body.token}`
       setShareLink(link)
       setShareStatus('shared')
 
-      // Copy to clipboard automatically
-      await navigator.clipboard.writeText(link)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 3000)
+      // Try native share sheet first (mobile), fall back to clipboard copy
+      if (navigator.share) {
+        try {
+          await navigator.share({
+            title: 'Track my TAGO ride',
+            text: 'Follow my live location during this ride (link valid for 4 hours)',
+            url: link,
+          })
+        } catch {
+          // User dismissed share sheet — still copy to clipboard as fallback
+          try { await navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 3000) } catch { /* ignore */ }
+        }
+      } else {
+        try { await navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 3000) } catch { /* ignore */ }
+      }
     } catch {
       setShareStatus('error')
     }
