@@ -53,10 +53,10 @@ app.use(cors({
 // Stripe webhook needs raw body for signature verification — mount BEFORE json parser and rate limiter
 app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }), stripeWebhookRouter)
 
-// Rate limiting — 100 requests per 15s per IP
+// Rate limiting — 200 requests per 15 minutes per IP
 const limiter = rateLimit({
-  windowMs: 15 * 1000,
-  max: 100,
+  windowMs: 15 * 60 * 1000,
+  max: 200,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } },
