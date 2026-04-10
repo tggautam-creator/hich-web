@@ -82,6 +82,10 @@ export default function VehicleEditPage({
       setError('Please select a car color')
       return
     }
+    if (plate.trim().toUpperCase() !== vehicle.plate && !licensePhoto) {
+      setError('You changed the license plate number — please upload a new license plate photo to confirm.')
+      return
+    }
 
     setSaving(true)
     setError(null)
@@ -272,7 +276,11 @@ export default function VehicleEditPage({
           {/* License photo */}
           <div className="flex flex-col gap-1">
             <label htmlFor="edit-license-photo" className="text-sm font-medium text-text-primary">
-              License plate photo <span className="font-normal text-text-secondary">(optional)</span>
+              License plate photo{' '}
+              {plate.trim().toUpperCase() !== vehicle.plate
+                ? <span className="font-semibold text-danger">(required — plate changed)</span>
+                : <span className="font-normal text-text-secondary">(optional)</span>
+              }
             </label>
             <p className="text-xs text-text-secondary">Stored securely — not visible to riders</p>
             <input
