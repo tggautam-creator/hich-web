@@ -208,6 +208,10 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
   // ── Remove vehicle (soft delete) ───────────────────────────────────
   const handleRemoveVehicle = async (vehicleId: string) => {
     if (!profile?.id) return
+    if (vehicles.length <= 1) {
+      window.alert('You must add a new vehicle before removing your only one. Drivers need at least one vehicle to receive ride requests.')
+      return
+    }
     if (!window.confirm('Remove this vehicle? It will no longer appear in your list.')) return
     setRemovingVehicle(vehicleId)
     await supabase
@@ -721,8 +725,9 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
                     <button
                       data-testid="remove-vehicle-button"
                       onClick={() => { void handleRemoveVehicle(v.id) }}
-                      disabled={removingVehicle === v.id}
-                      className="rounded-2xl px-3 py-2 text-xs font-semibold text-danger bg-danger/10 active:bg-danger/20 transition-colors disabled:opacity-50"
+                      disabled={removingVehicle === v.id || vehicles.length <= 1}
+                      title={vehicles.length <= 1 ? 'Add a new vehicle before removing your only one' : undefined}
+                      className="rounded-2xl px-3 py-2 text-xs font-semibold text-danger bg-danger/10 active:bg-danger/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       {removingVehicle === v.id ? '...' : 'Remove'}
                     </button>
