@@ -501,12 +501,23 @@ export default function DropoffSelection({
               </AdvancedMarker>
             ))}
 
+            {/* ── Pickup marker (green) ── */}
+            {state?.pickupLat != null && state.pickupLng != null && (
+              <AdvancedMarker position={{ lat: state.pickupLat, lng: state.pickupLng }} zIndex={3}>
+                <div className="flex flex-col items-center">
+                  <div className="flex h-6 items-center justify-center rounded-full border-2 border-white bg-success px-2 shadow-md text-[10px] font-bold text-white whitespace-nowrap">
+                    Pickup
+                  </div>
+                </div>
+              </AdvancedMarker>
+            )}
+
             {/* ── Rider's final destination marker (red) ── */}
             {state?.riderDestLat != null && state.riderDestLng != null && (
               <AdvancedMarker position={{ lat: state.riderDestLat, lng: state.riderDestLng }} zIndex={2}>
                 <div className="flex flex-col items-center">
                   <div className="flex h-6 items-center justify-center rounded-full border-2 border-white bg-danger px-2 shadow-md text-[10px] font-bold text-white whitespace-nowrap">
-                    {state.riderDestName ? state.riderDestName.split(',')[0] : 'RIDER DEST'}
+                    {riderDestName !== 'their destination' ? riderDestName.split(',')[0] : 'Rider\'s destination'}
                   </div>
                 </div>
               </AdvancedMarker>
@@ -516,7 +527,7 @@ export default function DropoffSelection({
             <AdvancedMarker position={{ lat: effLat, lng: effLng }} zIndex={0}>
               <div className="flex flex-col items-center">
                 <div className="flex h-6 items-center justify-center rounded-full border-2 border-white bg-warning px-2 shadow-md text-[10px] font-bold text-white whitespace-nowrap">
-                  {effName ? effName.split(',')[0] : 'YOUR DEST'}
+                  {effName ? effName.split(',')[0] : 'Your destination'}
                 </div>
               </div>
             </AdvancedMarker>
