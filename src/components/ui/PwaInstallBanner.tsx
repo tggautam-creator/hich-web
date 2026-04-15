@@ -7,8 +7,64 @@
  */
 
 import { useState } from 'react'
-import { isStandalone, isMobile, isIos, hasInstallPrompt, triggerInstallPrompt } from '@/lib/pwa'
+import { isStandalone, isMobile, isIos, isAndroid, detectBrowser, hasInstallPrompt, triggerInstallPrompt } from '@/lib/pwa'
 import { usePwaStore } from '@/stores/pwaStore'
+
+function getBannerSteps(): { title: string; steps: string[] } {
+  const ios = isIos()
+  const android = isAndroid()
+  const browser = detectBrowser()
+
+  if (ios && browser === 'safari') {
+    return {
+      title: 'How to add on Safari (iOS):',
+      steps: [
+        'Tap the <strong>Share</strong> button <span class="text-primary">⬆</span> at the <strong>bottom</strong> of the screen',
+        'Scroll down and tap <strong>"Add to Home Screen"</strong>',
+        'Tap <strong>"Add"</strong> — that\'s it!',
+      ],
+    }
+  }
+  if (ios && browser === 'chrome') {
+    return {
+      title: 'How to add on Chrome (iOS):',
+      steps: [
+        'Tap the <strong>Share</strong> button <span class="text-primary">⬆</span> in the <strong>top right</strong>',
+        'Scroll down and tap <strong>"Add to Home Screen"</strong>',
+        'Tap <strong>"Add"</strong> — that\'s it!',
+      ],
+    }
+  }
+  if (ios) {
+    return {
+      title: 'How to add on iOS:',
+      steps: [
+        'Open this page in <strong>Safari</strong> for the best experience',
+        'Tap the <strong>Share</strong> button <span class="text-primary">⬆</span> at the bottom',
+        'Tap <strong>"Add to Home Screen"</strong>, then <strong>"Add"</strong>',
+      ],
+    }
+  }
+  if (android && browser === 'samsung') {
+    return {
+      title: 'How to add on Samsung Internet:',
+      steps: [
+        'Tap the <strong>menu</strong> (☰) at the <strong>bottom right</strong>',
+        'Tap <strong>"Add page to"</strong> → <strong>"Home screen"</strong>',
+        'Tap <strong>"Add"</strong> — that\'s it!',
+      ],
+    }
+  }
+  // Android Chrome / generic Android
+  return {
+    title: 'How to add on Android:',
+    steps: [
+      'Tap the <strong>menu</strong> (⋮) in the <strong>top right</strong>',
+      'Tap <strong>"Add to Home Screen"</strong> or <strong>"Install App"</strong>',
+      'Tap <strong>"Add"</strong> — that\'s it!',
+    ],
+  }
+}
 
 interface PwaInstallBannerProps {
   'data-testid'?: string
@@ -40,7 +96,7 @@ export default function PwaInstallBanner({
     setDismissedBanner()
   }
 
-  const iosDevice = isIos()
+  const { title, steps } = getBannerSteps()
 
   return (
     <>
@@ -123,56 +179,21 @@ export default function PwaInstallBanner({
                 ))}
               </div>
 
-              {/* Platform-specific steps */}
-              {iosDevice ? (
-                <div className="space-y-3">
-                  <p className="text-sm font-semibold text-text-primary">How to add on iPhone:</p>
-                  <ol className="space-y-2.5">
-                    <li className="flex items-start gap-3">
-                      <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">1</span>
-                      <span className="text-sm text-text-primary">
-                        Tap the <strong>Share</strong> button <span className="text-primary">⬆</span> at the bottom of Safari
-                      </span>
+              {/* Browser-specific steps */}
+              <div className="space-y-3">
+                <p className="text-sm font-semibold text-text-primary">{title}</p>
+                <ol className="space-y-2.5">
+                  {steps.map((step, i) => (
+                    <li key={i} className="flex items-start gap-3">
+                      <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">{i + 1}</span>
+                      <span
+                        className="text-sm text-text-primary"
+                        dangerouslySetInnerHTML={{ __html: step }}
+                      />
                     </li>
-                    <li className="flex items-start gap-3">
-                      <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">2</span>
-                      <span className="text-sm text-text-primary">
-                        Scroll down and tap <strong>&quot;Add to Home Screen&quot;</strong>
-                      </span>
-                    </li>
-                    <li className="flex items-start gap-3">
-                      <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">3</span>
-                      <span className="text-sm text-text-primary">
-                        Tap <strong>&quot;Add&quot;</strong> — that&apos;s it!
-                      </span>
-                    </li>
-                  </ol>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <p className="text-sm font-semibold text-text-primary">How to add on Android:</p>
-                  <ol className="space-y-2.5">
-                    <li className="flex items-start gap-3">
-                      <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">1</span>
-                      <span className="text-sm text-text-primary">
-                        Tap the <strong>menu</strong> (&#8942;) in the top right of Chrome
-                      </span>
-                    </li>
-                    <li className="flex items-start gap-3">
-                      <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">2</span>
-                      <span className="text-sm text-text-primary">
-                        Tap <strong>&quot;Add to Home Screen&quot;</strong>
-                      </span>
-                    </li>
-                    <li className="flex items-start gap-3">
-                      <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">3</span>
-                      <span className="text-sm text-text-primary">
-                        Tap <strong>&quot;Add&quot;</strong> — that&apos;s it!
-                      </span>
-                    </li>
-                  </ol>
-                </div>
-              )}
+                  ))}
+                </ol>
+              </div>
 
               {/* Dismiss */}
               <button

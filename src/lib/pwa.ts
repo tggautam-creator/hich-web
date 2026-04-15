@@ -23,6 +23,34 @@ export function isMobile(): boolean {
   return /android|iphone|ipad|ipod/i.test(navigator.userAgent)
 }
 
+/** True on Android devices. */
+export function isAndroid(): boolean {
+  return /android/i.test(navigator.userAgent)
+}
+
+/**
+ * Detect which browser the user is running.
+ * Order matters — check more specific UA strings first.
+ */
+export type BrowserType = 'safari' | 'chrome' | 'firefox' | 'samsung' | 'edge' | 'opera' | 'other'
+
+export function detectBrowser(): BrowserType {
+  const ua = navigator.userAgent
+  // Samsung Internet (contains "SamsungBrowser")
+  if (/samsungbrowser/i.test(ua)) return 'samsung'
+  // Opera (contains "OPR" or "Opera")
+  if (/opr|opera/i.test(ua)) return 'opera'
+  // Edge (contains "Edg" — not "Edge" which was the old one)
+  if (/edg/i.test(ua)) return 'edge'
+  // Firefox
+  if (/firefox|fxios/i.test(ua)) return 'firefox'
+  // Chrome (must check after Edge/Opera/Samsung which also contain "Chrome")
+  if (/chrome|crios/i.test(ua)) return 'chrome'
+  // Safari (must be last — many browsers contain "Safari")
+  if (/safari/i.test(ua)) return 'safari'
+  return 'other'
+}
+
 // ── beforeinstallprompt interception ─────────────────────────────────────────
 
 interface BeforeInstallPromptEvent extends Event {
