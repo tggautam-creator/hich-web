@@ -1,8 +1,8 @@
 /**
  * PwaInstallPrompt — Full-screen overlay shown before the landing page.
  *
- * Auto-detects OS + browser and shows tailored install instructions.
- * Only visible on mobile devices that haven't installed the PWA yet.
+ * Auto-detects OS + browser and shows tailored instructions to add TAGO
+ * to the home screen. Only visible on mobile devices that haven't done so.
  */
 
 import { useState } from 'react'
@@ -29,41 +29,40 @@ function getInstallSteps(): { title: string; steps: InstallStep[] } {
 
   if (ios && browser === 'safari') {
     return {
-      title: 'How to install on Safari (iOS):',
+      title: 'Quick setup — Safari (iOS):',
       steps: [
         { text: 'Tap the <strong>Share</strong> button <span class="text-primary">⬆</span> at the <strong>bottom</strong> of the screen' },
         { text: 'Scroll down and tap <strong>"Add to Home Screen"</strong>' },
-        { text: 'Tap <strong>"Add"</strong> to confirm' },
+        { text: 'Tap <strong>"Add"</strong> — done! Open TAGO from your home screen' },
       ],
     }
   }
 
   if (ios && browser === 'chrome') {
     return {
-      title: 'How to install on Chrome (iOS):',
+      title: 'Quick setup — Chrome (iOS):',
       steps: [
         { text: 'Tap the <strong>Share</strong> button <span class="text-primary">⬆</span> in the <strong>top right</strong> (or address bar)' },
         { text: 'Scroll down and tap <strong>"Add to Home Screen"</strong>' },
-        { text: 'Tap <strong>"Add"</strong> to confirm' },
+        { text: 'Tap <strong>"Add"</strong> — done! Open TAGO from your home screen' },
       ],
     }
   }
 
   if (ios && browser === 'firefox') {
     return {
-      title: 'How to install on Firefox (iOS):',
+      title: 'Quick setup — Firefox (iOS):',
       steps: [
         { text: 'Tap the <strong>menu</strong> (☰) in the <strong>bottom right</strong>' },
         { text: 'Tap <strong>"Share"</strong>, then <strong>"Add to Home Screen"</strong>' },
-        { text: 'Tap <strong>"Add"</strong> to confirm' },
+        { text: 'Tap <strong>"Add"</strong> — done! Open TAGO from your home screen' },
       ],
     }
   }
 
   if (ios) {
-    // iOS other browsers — generic fallback
     return {
-      title: 'How to install on iOS:',
+      title: 'Quick setup — iOS:',
       steps: [
         { text: 'Open this page in <strong>Safari</strong> for the best experience' },
         { text: 'Tap the <strong>Share</strong> button <span class="text-primary">⬆</span> at the bottom' },
@@ -74,66 +73,66 @@ function getInstallSteps(): { title: string; steps: InstallStep[] } {
 
   if (android && browser === 'chrome') {
     return {
-      title: 'How to install on Chrome (Android):',
+      title: 'Quick setup — Chrome (Android):',
       steps: [
         { text: 'Tap the <strong>menu</strong> (⋮) in the <strong>top right</strong> corner' },
-        { text: 'Tap <strong>"Add to Home Screen"</strong> or <strong>"Install App"</strong>' },
-        { text: 'Tap <strong>"Add"</strong> to confirm' },
+        { text: 'Tap <strong>"Add to Home Screen"</strong>' },
+        { text: 'Tap <strong>"Add"</strong> — done! Open TAGO from your home screen' },
       ],
     }
   }
 
   if (android && browser === 'samsung') {
     return {
-      title: 'How to install on Samsung Internet:',
+      title: 'Quick setup — Samsung Internet:',
       steps: [
         { text: 'Tap the <strong>menu</strong> (☰) at the <strong>bottom right</strong>' },
         { text: 'Tap <strong>"Add page to"</strong> → <strong>"Home screen"</strong>' },
-        { text: 'Tap <strong>"Add"</strong> to confirm' },
+        { text: 'Tap <strong>"Add"</strong> — done! Open TAGO from your home screen' },
       ],
     }
   }
 
   if (android && browser === 'firefox') {
     return {
-      title: 'How to install on Firefox (Android):',
+      title: 'Quick setup — Firefox (Android):',
       steps: [
         { text: 'Tap the <strong>menu</strong> (⋮) in the <strong>top right</strong>' },
-        { text: 'Tap <strong>"Install"</strong> or <strong>"Add to Home Screen"</strong>' },
-        { text: 'Tap <strong>"Add"</strong> to confirm' },
+        { text: 'Tap <strong>"Add to Home Screen"</strong>' },
+        { text: 'Tap <strong>"Add"</strong> — done! Open TAGO from your home screen' },
       ],
     }
   }
 
   if (android && browser === 'edge') {
     return {
-      title: 'How to install on Edge (Android):',
+      title: 'Quick setup — Edge (Android):',
       steps: [
         { text: 'Tap the <strong>menu</strong> (⋯) at the <strong>bottom center</strong>' },
         { text: 'Tap <strong>"Add to Phone"</strong>' },
-        { text: 'Tap <strong>"Add"</strong> to confirm' },
+        { text: 'Tap <strong>"Add"</strong> — done! Open TAGO from your home screen' },
       ],
     }
   }
 
   if (android) {
     return {
-      title: 'How to install on Android:',
+      title: 'Quick setup — Android:',
       steps: [
         { text: 'Tap the <strong>browser menu</strong> (⋮ or ☰)' },
-        { text: 'Look for <strong>"Add to Home Screen"</strong> or <strong>"Install App"</strong>' },
-        { text: 'Tap <strong>"Add"</strong> to confirm' },
+        { text: 'Look for <strong>"Add to Home Screen"</strong>' },
+        { text: 'Tap <strong>"Add"</strong> — done! Open TAGO from your home screen' },
       ],
     }
   }
 
   // Desktop fallback
   return {
-    title: 'How to install:',
+    title: 'Quick setup:',
     steps: [
-      { text: 'In Chrome, click the <strong>install icon</strong> in the address bar' },
-      { text: 'Or open the browser menu and look for <strong>"Install TAGO"</strong>' },
-      { text: 'Click <strong>"Install"</strong> to confirm' },
+      { text: 'In Chrome, click the <strong>icon</strong> in the address bar' },
+      { text: 'Or open the browser menu and look for <strong>"Add to Home Screen"</strong>' },
+      { text: 'Click <strong>"Add"</strong> to confirm' },
     ],
   }
 }
@@ -184,10 +183,10 @@ export default function PwaInstallPrompt({
       <main className="flex-1 flex flex-col justify-center px-6 gap-8">
         <div className="space-y-4">
           <h1 className="text-3xl font-bold text-text-primary leading-tight">
-            Install TAGO for the best experience
+            Add TAGO to your home screen
           </h1>
           <p className="text-base text-text-secondary leading-relaxed">
-            Add TAGO to your home screen for instant access, push notifications, and a full-screen experience.
+            It takes 10 seconds — get push notifications, instant access, and a full-screen experience.
           </p>
         </div>
 
@@ -199,7 +198,7 @@ export default function PwaInstallPrompt({
               disabled={installing}
               data-testid="pwa-native-install"
             >
-              {installing ? 'Installing...' : 'Install TAGO'}
+              {installing ? 'Adding...' : 'Add TAGO to Home Screen'}
             </PrimaryButton>
           </div>
         ) : (

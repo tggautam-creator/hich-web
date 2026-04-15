@@ -17,7 +17,7 @@ function getBannerSteps(): { title: string; steps: string[] } {
 
   if (ios && browser === 'safari') {
     return {
-      title: 'How to add on Safari (iOS):',
+      title: 'Quick setup — Safari (iOS):',
       steps: [
         'Tap the <strong>Share</strong> button <span class="text-primary">⬆</span> at the <strong>bottom</strong> of the screen',
         'Scroll down and tap <strong>"Add to Home Screen"</strong>',
@@ -27,7 +27,7 @@ function getBannerSteps(): { title: string; steps: string[] } {
   }
   if (ios && browser === 'chrome') {
     return {
-      title: 'How to add on Chrome (iOS):',
+      title: 'Quick setup — Chrome (iOS):',
       steps: [
         'Tap the <strong>Share</strong> button <span class="text-primary">⬆</span> in the <strong>top right</strong>',
         'Scroll down and tap <strong>"Add to Home Screen"</strong>',
@@ -37,7 +37,7 @@ function getBannerSteps(): { title: string; steps: string[] } {
   }
   if (ios) {
     return {
-      title: 'How to add on iOS:',
+      title: 'Quick setup — iOS:',
       steps: [
         'Open this page in <strong>Safari</strong> for the best experience',
         'Tap the <strong>Share</strong> button <span class="text-primary">⬆</span> at the bottom',
@@ -47,7 +47,7 @@ function getBannerSteps(): { title: string; steps: string[] } {
   }
   if (android && browser === 'samsung') {
     return {
-      title: 'How to add on Samsung Internet:',
+      title: 'Quick setup — Samsung Internet:',
       steps: [
         'Tap the <strong>menu</strong> (☰) at the <strong>bottom right</strong>',
         'Tap <strong>"Add page to"</strong> → <strong>"Home screen"</strong>',
@@ -57,10 +57,10 @@ function getBannerSteps(): { title: string; steps: string[] } {
   }
   // Android Chrome / generic Android
   return {
-    title: 'How to add on Android:',
+    title: 'Quick setup — Android:',
     steps: [
       'Tap the <strong>menu</strong> (⋮) in the <strong>top right</strong>',
-      'Tap <strong>"Add to Home Screen"</strong> or <strong>"Install App"</strong>',
+      'Tap <strong>"Add to Home Screen"</strong>',
       'Tap <strong>"Add"</strong> — that\'s it!',
     ],
   }
@@ -161,7 +161,7 @@ export default function PwaInstallBanner({
                 />
                 <div>
                   <h2 className="text-lg font-bold text-text-primary">Add TAGO to Home Screen</h2>
-                  <p className="text-sm text-text-secondary">Get the full app experience</p>
+                  <p className="text-sm text-text-secondary">It takes 10 seconds</p>
                 </div>
               </div>
 
