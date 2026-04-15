@@ -502,8 +502,8 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
             {pickupPos && (
               <AdvancedMarker position={pickupPos} title="Pickup point">
                 <div data-testid="pickup-pin" className="flex flex-col items-center">
-                  <div className="bg-success text-white rounded-full px-2 py-1 text-xs font-bold shadow-lg mb-1">
-                    PICKUP
+                  <div className="bg-success text-white rounded-full px-2 py-1 text-xs font-bold shadow-lg mb-1 max-w-[140px] truncate">
+                    {ride?.pickup_note?.split(',')[0] ?? 'Pickup'}
                   </div>
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-8 w-8 text-success drop-shadow-md" aria-hidden="true">
                     <path d="M12 0C7.31 0 3.5 3.81 3.5 8.5c0 7.94 7.81 14.66 8.14 14.93a.5.5 0 0 0 .72 0C12.69 23.16 20.5 16.44 20.5 8.5 20.5 3.81 16.69 0 12 0zm0 12a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/>
@@ -699,10 +699,10 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
               onDragEnd={handleDragEnd}
             >
               <div data-testid="pickup-pin" className="flex flex-col items-center">
-                <div className={`${isDropoffMode ? 'bg-primary' : 'bg-success'} text-white rounded-full px-2 py-1 text-xs font-bold shadow-lg mb-1`}>
-                  {isDropoffMode ? 'DROPOFF' : 'PICKUP'}
+                <div className={`${isDropoffMode ? '' : 'bg-success'} text-white rounded-full px-2 py-1 text-xs font-bold shadow-lg mb-1`} style={isDropoffMode ? { backgroundColor: '#8B5CF6' } : undefined}>
+                  {isDropoffMode ? 'Drop off' : 'Pickup'}
                 </div>
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className={`h-8 w-8 ${isDropoffMode ? 'text-primary' : 'text-success'} drop-shadow-md`} aria-hidden="true">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className={`h-8 w-8 ${isDropoffMode ? '' : 'text-success'} drop-shadow-md`} style={isDropoffMode ? { color: '#8B5CF6' } : undefined} aria-hidden="true">
                   <path d="M12 0C7.31 0 3.5 3.81 3.5 8.5c0 7.94 7.81 14.66 8.14 14.93a.5.5 0 0 0 .72 0C12.69 23.16 20.5 16.44 20.5 8.5 20.5 3.81 16.69 0 12 0zm0 12a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/>
                 </svg>
               </div>

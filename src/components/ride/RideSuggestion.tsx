@@ -590,16 +590,16 @@ export default function RideSuggestion({
                 </div>
               </AdvancedMarker>
             )}
-            {/* Rider pickup marker (green P) */}
+            {/* Rider pickup marker (green) */}
             <AdvancedMarker position={{ lat: oLat, lng: oLng }} title="Pickup">
-              <div className="flex h-7 items-center justify-center rounded-full border-[3px] border-white bg-success px-2 shadow-lg text-[10px] font-bold text-white whitespace-nowrap">
-                PICKUP
+              <div className="flex h-7 items-center justify-center rounded-full border-[3px] border-white bg-success px-2 shadow-lg text-[10px] font-bold text-white whitespace-nowrap max-w-[140px] truncate">
+                {ns?.originAddress?.split(',')[0] ?? 'Pickup'}
               </div>
             </AdvancedMarker>
-            {/* Final destination marker (red D) */}
+            {/* Rider destination marker (red) */}
             <AdvancedMarker position={{ lat: dLat, lng: dLng }} title="Destination">
-              <div className="flex h-7 items-center justify-center rounded-full border-[3px] border-white bg-danger px-2 shadow-lg text-[10px] font-bold text-white whitespace-nowrap">
-                DROP-OFF
+              <div className="flex h-7 items-center justify-center rounded-full border-[3px] border-white bg-danger px-2 shadow-lg text-[10px] font-bold text-white whitespace-nowrap max-w-[140px] truncate">
+                {ride.destination_name?.split(',')[0] ?? 'Destination'}
               </div>
             </AdvancedMarker>
             {/* Driver → Pickup polyline (dashed gray) */}
@@ -633,6 +633,12 @@ export default function RideSuggestion({
         >
           &larr; Back
         </button>
+      </div>
+
+      {/* ── Map legend ─────────────────────────────────────────────────────── */}
+      <div className="flex items-center justify-center gap-4 py-1.5 bg-white border-b border-border shrink-0">
+        <div className="flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-full bg-success" /><span className="text-[10px] font-medium text-text-primary">Pickup</span></div>
+        <div className="flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-full bg-danger" /><span className="text-[10px] font-medium text-text-primary">Destination</span></div>
       </div>
 
       {/* ── Countdown progress bar ──────────────────────────────────────────── */}

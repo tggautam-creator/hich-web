@@ -115,12 +115,13 @@ function ProposalMapOverlay({ data, onClose }: { data: MapOverlayData; onClose: 
       </div>
       {/* Legend */}
       <div className="px-4 py-3 border-t border-border bg-surface flex flex-wrap gap-3">
-        {data.points.map((pt, i) => (
-          <div key={i} className="flex items-center gap-1.5">
-            <span className="inline-block w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: pt.color }} />
-            <span className="text-xs text-text-primary font-medium">{pt.label}</span>
-          </div>
-        ))}
+        <div className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full shrink-0 bg-success" /><span className="text-xs text-text-primary font-medium">Pickup</span></div>
+        {data.type === 'dropoff' && (
+          <div className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: '#8B5CF6' }} /><span className="text-xs text-text-primary font-medium">Drop off</span></div>
+        )}
+        {data.type === 'dropoff' && data.points.length > 2 && (
+          <div className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full shrink-0 bg-danger" /><span className="text-xs text-text-primary font-medium">Destination</span></div>
+        )}
       </div>
     </div>
   )
@@ -177,7 +178,7 @@ function PickupProposalCard({
     onViewMap({
       type: 'pickup',
       points: [
-        { lat: originLat, lng: originLng, label: 'Your Location', color: '#6366F1' },
+        { lat: originLat, lng: originLng, label: 'Your Location', color: '#3B82F6' },
         { lat: pickupLat, lng: pickupLng, label: 'Pickup', color: '#22C55E' },
       ],
       walkPolyline,
@@ -260,10 +261,10 @@ function DropoffProposalCard({
   const handleViewMap = () => {
     const points: MapOverlayData['points'] = [
       { lat: pickupLat, lng: pickupLng, label: 'Pickup', color: '#22C55E' },
-      { lat: dropoffLat, lng: dropoffLng, label: 'Dropoff', color: '#EF4444' },
+      { lat: dropoffLat, lng: dropoffLng, label: 'Dropoff', color: '#8B5CF6' },
     ]
     if (riderDestLat != null && riderDestLng != null) {
-      points.push({ lat: riderDestLat, lng: riderDestLng, label: riderDestName ?? 'Final Destination', color: '#6366F1' })
+      points.push({ lat: riderDestLat, lng: riderDestLng, label: riderDestName ?? 'Destination', color: '#EF4444' })
     }
     onViewMap({ type: 'dropoff', points, polyline: routeInfo?.polyline })
   }

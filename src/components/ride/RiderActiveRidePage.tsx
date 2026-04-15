@@ -536,17 +536,17 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
         >
           {pickupPos && (
             <AdvancedMarker position={pickupPos} title="Pickup">
-              <div className="bg-success text-white rounded-full px-2 py-0.5 text-[10px] font-bold shadow">PICKUP</div>
+              <div className="bg-success text-white rounded-full px-2 py-0.5 text-[10px] font-bold shadow max-w-[140px] truncate">{ride?.pickup_note?.split(',')[0] ?? 'Pickup'}</div>
             </AdvancedMarker>
           )}
           {destPos && (
-            <AdvancedMarker position={destPos} title="Destination">
-              <div className="bg-primary text-white rounded-full px-2 py-0.5 text-[10px] font-bold shadow">DROP-OFF</div>
+            <AdvancedMarker position={destPos} title="Drop off">
+              <div className="text-white rounded-full px-2 py-0.5 text-[10px] font-bold shadow max-w-[140px] truncate" style={{ backgroundColor: '#8B5CF6' }}>{ride?.destination_name?.split(',')[0] ?? 'Drop off'}</div>
             </AdvancedMarker>
           )}
           {riderPos && (
             <AdvancedMarker position={riderPos} title="You">
-              <div className="h-4 w-4 rounded-full bg-primary border-2 border-white shadow" />
+              <div className="h-4 w-4 rounded-full border-2 border-white shadow" style={{ backgroundColor: '#3B82F6' }} />
             </AdvancedMarker>
           )}
           {routePolyline && (
@@ -558,6 +558,13 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
           )}
           {boundsPoints.length >= 2 && <MapBoundsFitter points={boundsPoints} />}
         </Map>
+      </div>
+
+      {/* ── Map legend ─────────────────────────────────────────────────────── */}
+      <div className="flex items-center justify-center gap-4 py-1.5 bg-white border-b border-border shrink-0">
+        <div className="flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-full bg-success" /><span className="text-[10px] font-medium text-text-primary">Pickup</span></div>
+        <div className="flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#8B5CF6' }} /><span className="text-[10px] font-medium text-text-primary">Drop off</span></div>
+        <div className="flex items-center gap-1.5"><span className="inline-block w-2.5 h-2.5 rounded-full bg-danger" /><span className="text-[10px] font-medium text-text-primary">Destination</span></div>
       </div>
 
       {error && (

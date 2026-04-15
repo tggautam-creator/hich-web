@@ -509,8 +509,8 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
           {riderLat !== null && riderLng !== null && (
             <AdvancedMarker position={{ lat: riderLat, lng: riderLng }} title="Your location">
               <div data-testid="rider-marker" className="relative flex items-center justify-center">
-                <span className="absolute h-6 w-6 rounded-full bg-primary/30 animate-ping" />
-                <span className="relative h-3 w-3 rounded-full bg-primary border-2 border-white shadow-md" />
+                <span className="absolute h-6 w-6 rounded-full animate-ping" style={{ backgroundColor: 'rgba(59,130,246,0.3)' }} />
+                <span className="relative h-3 w-3 rounded-full border-2 border-white shadow-md" style={{ backgroundColor: '#3B82F6' }} />
               </div>
             </AdvancedMarker>
           )}
@@ -519,8 +519,8 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
           {hasPickup && (
             <AdvancedMarker position={{ lat: pickupLat, lng: pickupLng }} title="Pickup point">
               <div data-testid="pickup-pin" className="flex flex-col items-center">
-                <div className="bg-success text-white rounded-full px-2 py-1 text-xs font-bold shadow-lg mb-1">
-                  PICKUP
+                <div className="bg-success text-white rounded-full px-2 py-1 text-xs font-bold shadow-lg mb-1 max-w-[140px] truncate">
+                  {pickupNote?.split(',')[0] ?? 'Pickup'}
                 </div>
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-8 w-8 text-success drop-shadow-md" aria-hidden="true">
                   <path d="M12 0C7.31 0 3.5 3.81 3.5 8.5c0 7.94 7.81 14.66 8.14 14.93a.5.5 0 0 0 .72 0C12.69 23.16 20.5 16.44 20.5 8.5 20.5 3.81 16.69 0 12 0zm0 12a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/>
