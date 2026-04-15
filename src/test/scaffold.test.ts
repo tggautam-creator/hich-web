@@ -31,6 +31,7 @@ describe('scaffold — @/ alias and database types', () => {
       stripe_account_id: null,
       stripe_onboarding_complete: false,
       default_payment_method_id: null,
+      phone_verified: false,
       created_at: new Date().toISOString(),
     }
     expect(user.wallet_balance).toBe(0)
@@ -54,6 +55,7 @@ describe('scaffold — @/ alias and database types', () => {
       stripe_account_id: null,
       stripe_onboarding_complete: false,
       default_payment_method_id: null,
+      phone_verified: false,
       created_at: new Date().toISOString(),
     }
     expect(Number.isInteger(user.wallet_balance)).toBe(true)

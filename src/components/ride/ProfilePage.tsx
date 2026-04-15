@@ -304,9 +304,17 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
     setSaving(true)
     setEditError(null)
 
+    const newPhone = editPhone.trim() || null
+    const phoneChanged = newPhone !== profile.phone
+
+    const updateData: Record<string, unknown> = { full_name: trimmedName, phone: newPhone }
+    if (phoneChanged) {
+      updateData.phone_verified = false
+    }
+
     const { error } = await supabase
       .from('users')
-      .update({ full_name: trimmedName, phone: editPhone.trim() || null })
+      .update(updateData)
       .eq('id', profile.id)
 
     if (error) {
@@ -318,6 +326,11 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
     await refreshProfile()
     setSaving(false)
     setEditing(false)
+
+    // If phone changed, redirect to verify the new number
+    if (phoneChanged && newPhone) {
+      navigate('/onboarding/verify-phone', { state: { phone: newPhone, returnTo: '/profile' } })
+    }
   }
 
   // ── Toggle route active/paused ─────────────────────────────────────────

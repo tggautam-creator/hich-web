@@ -141,7 +141,7 @@ export default function CreateProfilePage() {
       // Refresh the auth store so AuthGuard sees the new full_name
       await refreshProfile()
       trackEvent('signup_completed')
-      navigate('/onboarding/location')
+      navigate('/onboarding/verify-phone', { state: { phone: fullPhone } })
     } catch (err: unknown) {
       // eslint-disable-next-line no-console
       console.error('[CreateProfilePage] submit error:', err)

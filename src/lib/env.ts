@@ -27,4 +27,6 @@ export const env = {
   FIREBASE_MESSAGING_SENDER_ID: import.meta.env['VITE_FIREBASE_MESSAGING_SENDER_ID'] as string | undefined,
   FIREBASE_APP_ID: import.meta.env['VITE_FIREBASE_APP_ID'] as string | undefined,
   FIREBASE_VAPID_KEY: import.meta.env['VITE_FIREBASE_VAPID_KEY'] as string | undefined,
+  // Set to 'true' in .env to bypass phone verification (dev/testing only)
+  SKIP_PHONE_VERIFICATION: import.meta.env['VITE_SKIP_PHONE_VERIFICATION'] === 'true',
 }

@@ -53,12 +53,14 @@ export type Database = {
           stripe_account_id: string | null
           stripe_onboarding_complete: boolean
           default_payment_method_id: string | null
+          phone_verified: boolean
           created_at: string
         }
         Insert: {
           id?: string
           email: string
           phone?: string | null
+          phone_verified?: boolean
           full_name?: string | null
           avatar_url?: string | null
           wallet_balance?: number
@@ -87,6 +89,7 @@ export type Database = {
           stripe_account_id?: string | null
           stripe_onboarding_complete?: boolean
           default_payment_method_id?: string | null
+          phone_verified?: boolean
           created_at?: string
         }
         Relationships: never[]

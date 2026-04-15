@@ -27,6 +27,7 @@ const ResetPasswordPage = lazy(() => import('@/components/auth/ResetPasswordPage
 const CreateProfilePage = lazy(() => import('@/components/auth/CreateProfilePage'))
 const LocationPermissionsPage = lazy(() => import('@/components/auth/LocationPermissionsPage'))
 const ModeSelectionPage = lazy(() => import('@/components/auth/ModeSelectionPage'))
+const PhoneVerificationPage = lazy(() => import('@/components/auth/PhoneVerificationPage'))
 const VehicleRegistrationPage = lazy(() => import('@/components/auth/VehicleRegistrationPage'))
 
 // ── Ride flow ────────────────────────────────────────────────────────────────
@@ -110,6 +111,7 @@ createRoot(rootEl).render(
 
               {/* Onboarding */}
               <Route path="/onboarding/profile" element={<Suspense fallback={<FormPageSkeleton />}><CreateProfilePage /></Suspense>} />
+              <Route path="/onboarding/verify-phone" element={<Suspense fallback={<FormPageSkeleton />}><PhoneVerificationPage /></Suspense>} />
               <Route path="/onboarding/location" element={<Suspense fallback={<FormPageSkeleton />}><LocationPermissionsPage /></Suspense>} />
               <Route path="/onboarding/mode" element={<Suspense fallback={<FormPageSkeleton />}><ModeSelectionPage /></Suspense>} />
               <Route path="/onboarding/vehicle" element={<Suspense fallback={<FormPageSkeleton />}><VehicleRegistrationPage /></Suspense>} />

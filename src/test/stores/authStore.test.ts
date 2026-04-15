@@ -45,6 +45,7 @@ const fakeProfile = {
   stripe_account_id:  null,
   stripe_onboarding_complete: false,
   default_payment_method_id: null,
+  phone_verified: false,
   created_at:         '2024-01-01T00:00:00Z',
 }
 
