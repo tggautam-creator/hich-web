@@ -72,21 +72,19 @@ export default function AuthGuard({ 'data-testid': testId }: AuthGuardProps) {
   }
 
   // ── 3b. Phone not verified ──────────────────────────────────────────────────
+  // TODO: Re-enable when Twilio toll-free verification is approved.
   // Existing and new users must verify their phone before accessing the app.
-  // Allow onboarding paths through so they can reach the verify-phone page.
-  // Bypass with VITE_SKIP_PHONE_VERIFICATION=true in .env (dev/testing only).
-  const isVerifyPhonePath = location.pathname === '/onboarding/verify-phone'
-  const isProfilePath = location.pathname === '/onboarding/profile'
-  if (
-    !env.SKIP_PHONE_VERIFICATION &&
-    profile?.full_name &&
-    profile.phone &&
-    profile.phone_verified === false &&
-    !isVerifyPhonePath &&
-    !isProfilePath
-  ) {
-    return <Navigate to="/onboarding/verify-phone" replace />
-  }
+  // const isVerifyPhonePath = location.pathname === '/onboarding/verify-phone'
+  // const isProfilePath = location.pathname === '/onboarding/profile'
+  // if (
+  //   profile?.full_name &&
+  //   profile.phone &&
+  //   profile.phone_verified === false &&
+  //   !isVerifyPhonePath &&
+  //   !isProfilePath
+  // ) {
+  //   return <Navigate to="/onboarding/verify-phone" replace />
+  // }
 
   // ── 4. Authenticated + sufficient profile ────────────────────────────────────
   // Show intro carousel for users who haven't seen it yet (and aren't on onboarding)

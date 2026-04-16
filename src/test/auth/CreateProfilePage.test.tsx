@@ -435,7 +435,7 @@ describe('submit behavior', () => {
     submitForm()
     // Should still navigate — the same-password error is not fatal
     await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/onboarding/verify-phone', { state: { phone: '+15551234567' } })
+      expect(mockNavigate).toHaveBeenCalledWith('/onboarding/location', { replace: true })
     })
     expect(screen.queryByTestId('submit-error')).toBeNull()
   })
@@ -460,12 +460,12 @@ describe('submit behavior', () => {
     expect(mockStorageUpload).not.toHaveBeenCalled()
   })
 
-  it('navigates to /onboarding/verify-phone on success', async () => {
+  it('navigates to /onboarding/location on success', async () => {
     renderPage()
     fillValidForm()
     submitForm()
     await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/onboarding/verify-phone', { state: { phone: '+15551234567' } })
+      expect(mockNavigate).toHaveBeenCalledWith('/onboarding/location', { replace: true })
     })
   })
 

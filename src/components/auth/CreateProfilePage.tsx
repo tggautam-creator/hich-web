@@ -141,7 +141,9 @@ export default function CreateProfilePage() {
       // Refresh the auth store so AuthGuard sees the new full_name
       await refreshProfile()
       trackEvent('signup_completed')
-      navigate('/onboarding/verify-phone', { state: { phone: fullPhone } })
+      // TODO: Re-enable when Twilio toll-free verification is approved.
+      // navigate('/onboarding/verify-phone', { state: { phone: fullPhone } })
+      navigate('/onboarding/location', { replace: true })
     } catch (err: unknown) {
       // eslint-disable-next-line no-console
       console.error('[CreateProfilePage] submit error:', err)
