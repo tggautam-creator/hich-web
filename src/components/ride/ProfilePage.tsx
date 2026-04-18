@@ -305,12 +305,13 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
     setEditError(null)
 
     const newPhone = editPhone.trim() || null
-    const phoneChanged = newPhone !== profile.phone
+    // TODO: Re-enable when Twilio toll-free verification is approved.
+    // const phoneChanged = newPhone !== profile.phone
 
     const updateData: Record<string, unknown> = { full_name: trimmedName, phone: newPhone }
-    if (phoneChanged) {
-      updateData.phone_verified = false
-    }
+    // if (phoneChanged) {
+    //   updateData.phone_verified = false
+    // }
 
     const { error } = await supabase
       .from('users')
@@ -327,10 +328,10 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
     setSaving(false)
     setEditing(false)
 
-    // If phone changed, redirect to verify the new number
-    if (phoneChanged && newPhone) {
-      navigate('/onboarding/verify-phone', { state: { phone: newPhone, returnTo: '/profile' } })
-    }
+    // TODO: Re-enable when Twilio toll-free verification is approved.
+    // if (phoneChanged && newPhone) {
+    //   navigate('/onboarding/verify-phone', { state: { phone: newPhone, returnTo: '/profile' } })
+    // }
   }
 
   // ── Toggle route active/paused ─────────────────────────────────────────
