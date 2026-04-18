@@ -22,6 +22,8 @@ const CheckInbox = lazy(() => import('@/components/CheckInbox'))
 const AuthCallback = lazy(() => import('@/components/auth/AuthCallback'))
 const ForgotPassword = lazy(() => import('@/components/auth/ForgotPassword'))
 const ResetPasswordPage = lazy(() => import('@/components/auth/ResetPasswordPage'))
+const TermsPage = lazy(() => import('@/components/legal/TermsPage'))
+const PrivacyPage = lazy(() => import('@/components/legal/PrivacyPage'))
 
 // ── Onboarding ───────────────────────────────────────────────────────────────
 const CreateProfilePage = lazy(() => import('@/components/auth/CreateProfilePage'))
@@ -105,6 +107,8 @@ createRoot(rootEl).render(
             <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/auth/callback" element={<AuthCallback />} />
             <Route path="/track/:token" element={<Suspense fallback={<FormPageSkeleton />}><TrackPage /></Suspense>} />
+            <Route path="/terms" element={<Suspense fallback={<FormPageSkeleton />}><TermsPage /></Suspense>} />
+            <Route path="/privacy" element={<Suspense fallback={<FormPageSkeleton />}><PrivacyPage /></Suspense>} />
 
             {/* ── Authenticated routes — AuthGuard checks session + profile ── */}
             <Route element={<AuthGuard />}>

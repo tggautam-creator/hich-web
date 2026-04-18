@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -212,7 +212,7 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
         {/* ── Support ─────────────────────────────────────────────────── */}
         <section className="mb-6">
           <h2 className="text-sm font-semibold text-text-primary mb-3">Support</h2>
-          <div className="bg-white rounded-2xl border border-border">
+          <div className="bg-white rounded-2xl border border-border divide-y divide-border">
             <button
               data-testid="report-issue-button"
               onClick={() => navigate('/report-issue')}
@@ -221,6 +221,34 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
               Report an issue
               <span className="text-text-secondary">&rsaquo;</span>
             </button>
+            <a
+              href="mailto:support@tagorides.com"
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-text-primary"
+            >
+              Contact us
+              <span className="text-text-secondary">&rsaquo;</span>
+            </a>
+          </div>
+        </section>
+
+        {/* ── Legal ───────────────────────────────────────────────────── */}
+        <section className="mb-6">
+          <h2 className="text-sm font-semibold text-text-primary mb-3">Legal</h2>
+          <div className="bg-white rounded-2xl border border-border divide-y divide-border">
+            <Link
+              to="/terms"
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-text-primary"
+            >
+              Terms of Service
+              <span className="text-text-secondary">&rsaquo;</span>
+            </Link>
+            <Link
+              to="/privacy"
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-text-primary"
+            >
+              Privacy Policy
+              <span className="text-text-secondary">&rsaquo;</span>
+            </Link>
           </div>
         </section>
 

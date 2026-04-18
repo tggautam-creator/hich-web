@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import SecondaryButton from '@/components/ui/SecondaryButton'
@@ -77,7 +77,7 @@ export default function Landing({ 'data-testid': testId }: LandingProps) {
 
       {/* Trust strip — safe-area aware bottom padding */}
       <footer
-        className="px-6 pt-6 flex justify-center"
+        className="px-6 pt-6 flex flex-col items-center"
         style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 2rem)' }}
       >
         <div className="rounded-2xl bg-white/80 px-5 py-3 shadow-sm backdrop-blur-sm">
@@ -87,6 +87,11 @@ export default function Landing({ 'data-testid': testId }: LandingProps) {
           >
             Verified community · Instant matching · Automatic payments
           </p>
+        </div>
+        <div className="mt-3 flex justify-center gap-3 text-xs text-text-secondary">
+          <Link to="/terms" className="underline">Terms of Service</Link>
+          <span>·</span>
+          <Link to="/privacy" className="underline">Privacy Policy</Link>
         </div>
       </footer>
     </div>

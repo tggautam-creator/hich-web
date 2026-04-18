@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { isValidEduEmail } from '@/lib/validation'
 import { trackEvent } from '@/lib/analytics'
@@ -158,6 +158,13 @@ export default function Signup({ 'data-testid': testId }: SignupProps) {
         <p className="text-sm text-text-secondary text-center">
           Only <span className="font-semibold">.edu</span> emails accepted.
           TAGO is for verified university students only.
+        </p>
+
+        <p className="text-xs text-text-secondary text-center">
+          By signing up, you agree to our{' '}
+          <Link to="/terms" className="text-primary underline">Terms of Service</Link>
+          {' '}and{' '}
+          <Link to="/privacy" className="text-primary underline">Privacy Policy</Link>.
         </p>
 
         <p className="text-sm text-text-secondary text-center">

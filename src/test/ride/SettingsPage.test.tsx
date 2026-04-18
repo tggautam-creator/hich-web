@@ -3,7 +3,12 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import SettingsPage from '@/components/ride/SettingsPage'
 
 const mockNavigate = vi.fn()
-vi.mock('react-router-dom', () => ({ useNavigate: () => mockNavigate }))
+vi.mock('react-router-dom', () => ({
+  useNavigate: () => mockNavigate,
+  Link: ({ to, children, ...props }: { to: string; children: React.ReactNode; [key: string]: unknown }) => (
+    <a href={to} {...props}>{children}</a>
+  ),
+}))
 
 const mockSignOut = vi.fn().mockResolvedValue(undefined)
 vi.mock('@/stores/authStore', () => ({
