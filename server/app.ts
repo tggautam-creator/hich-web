@@ -20,7 +20,9 @@ import { gasPriceRouter } from './routes/gasPrice.ts'
 import { addressesRouter } from './routes/addresses.ts'
 import { vehicleRouter } from './routes/vehicle.ts'
 import { reportRouter } from './routes/report.ts'
+import { adminRouter } from './routes/admin.ts'
 import { errorHandler } from './middleware/errorHandler.ts'
+import { metricsMiddleware } from './middleware/metrics.ts'
 
 export const app = express()
 
@@ -53,18 +55,57 @@ app.use(cors({
 // Stripe webhook needs raw body for signature verification — mount BEFORE json parser and rate limiter
 app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }), stripeWebhookRouter)
 
-// Rate limiting — 200 requests per 15 minutes per IP
-const limiter = rateLimit({
+// ── Rate limiting ──────────────────────────────────────────────────────────
+// Dev: disabled entirely so local testing with one engineer driving both
+// sides of a ride doesn't trip limits. Prod: two buckets — a generous
+// global bucket for ordinary routes, and a separate higher-volume bucket
+// for `/gps-ping` since GPS fires every ~10 s per party per ride and would
+// otherwise burn the global budget in minutes.
+const IS_PROD = process.env['NODE_ENV'] === 'production'
+
+const RATE_LIMIT_MESSAGE = {
+  error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' },
+}
+
+// General bucket: 2000 requests / 15 min per IP. Comfortably covers a campus
+// Wi-Fi full of logged-in students plus normal app polling; blocks only a
+// genuinely abusive client.
+const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
+  max: 2000,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } },
+  skip: () => !IS_PROD,
+  message: RATE_LIMIT_MESSAGE,
 })
-app.use('/api/', limiter)
+
+// GPS-ping bucket: 600 requests / 5 min per IP. At 6 pings/min/party × 2
+// parties that's 12/min; a NATted campus network with ~20 simultaneous
+// pinging phones is ~240/min — still well under the 600 ceiling.
+const gpsLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => !IS_PROD,
+  message: RATE_LIMIT_MESSAGE,
+})
+
+// Mount the GPS limiter on the specific path BEFORE the general limiter so
+// gps-ping traffic is counted only against its own bucket.
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/rides/') && req.path.endsWith('/gps-ping')) {
+    return gpsLimiter(req, res, next)
+  }
+  return generalLimiter(req, res, next)
+})
 
 app.use(cookieParser())
 app.use(express.json())
+
+// Request + bandwidth meter (R.23). Must come after body parsing but before
+// route handlers so every /api/* response is counted.
+app.use(metricsMiddleware)
 
 app.use('/api/rides', ridesRouter)
 app.use('/api/notifications', notificationsRouter)
@@ -81,6 +122,7 @@ app.use('/api/gas-price', gasPriceRouter)
 app.use('/api/addresses', addressesRouter)
 app.use('/api/vehicle', vehicleRouter)
 app.use('/api/report', reportRouter)
+app.use('/api/admin', adminRouter)
 
 // ── SPA fallback — serve built frontend in production ─────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url))

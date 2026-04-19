@@ -1,0 +1,168 @@
+TAGO — Senior Review Progress Tracker
+======================================
+Source: REVIEW.md + plan at
+/Users/tarungautam/.claude/plans/you-are-a-senior-wobbly-thacker.md
+Created: 2026-04-18
+
+Working rules:
+- Claude works on 1–2 items at a time, then STOPS for user review.
+- Claude marks [~] IN PROGRESS while awaiting user review.
+- Only after user tests + approves does Claude mark [x] DONE.
+- Never push to GitHub before user tests locally (standing rule).
+
+Statuses: [ ] TODO  |  [~] IN PROGRESS (awaiting user review)  |  [x] DONE  |  [!] BLOCKED
+
+Currently in progress: R.19 rate-limit fix, R.23 bandwidth meter (CTO-replan for
+campus-launch scale ≈100 users on $0 budget)
+Last updated: 2026-04-19
+
+
+═══════════════════════════════════════════════════════
+ P0 — CONCURRENCY & CORRECTNESS (ship first)
+═══════════════════════════════════════════════════════
+
+[x] R.1 — Atomic accept (REVIEW A1)
+      Single conditional UPDATE with WHERE status='requested' AND driver_id IS NULL.
+      Files: server/routes/rides.ts:1324, L937-977
+      Verify: 2 concurrent accepts → one 200, one 409.
+
+[x] R.2 — Wallet RPC wallet_apply_delta (REVIEW A2, A4)
+      Supabase SQL function: balance update + transaction insert in one tx.
+      Files: supabase/migrations/<ts>_wallet_apply_delta.sql (NEW),
+             server/routes/wallet.ts, server/routes/stripeWebhook.ts
+      Verify: insert-failure test rolls balance back; concurrent topups don't lose credit.
+
+[x] R.3 — Charge-before-complete (REVIEW A3)
+      chargeRideFare() first, then mark ride completed. Failure → payment_failed.
+      Files: server/routes/rides.ts:2518-2585
+      Verify: stubbed Stripe failure leaves ride in payment_failed, not completed.
+
+[x] R.4 — Idempotency keys + middleware (REVIEW A6, A10, B2)
+      Idempotency-Key header + request_idempotency table; return cached response.
+      Files: server/middleware/idempotency.ts (NEW),
+             supabase/migrations/<ts>_request_idempotency.sql (NEW),
+             server/routes/rides.ts (request + scan-driver endpoints)
+      Verify: replay POST returns cached response + no new rides row.
+
+[x] R.5 — Driver single-active guard (REVIEW A7)
+      Pre-check: SELECT 1 FROM rides WHERE driver_id=? AND status IN ('coordinating','active').
+      Files: server/routes/rides.ts:833-1078
+      Verify: driver with active single-rider ride cannot accept second single-rider ride.
+
+[x] R.6 — Stale-closure fix (REVIEW A5, A9)
+      posRef pattern for GPS interval; add missing deps / ref-ize state in WaitingRoom.
+      Files: src/components/ride/RiderPickupPage.tsx:217-240,
+             src/components/ride/WaitingRoom.tsx:91-135
+      Verify: Vitest fake timers + state mutation → interval sends latest value.
+
+[x] R.7 — Hard env validation at boot (REVIEW B1)
+      Throw (not warn) on missing STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
+      QR_HMAC_SECRET, FCM_SERVER_KEY.
+      Files: server/env.ts:6-39
+      Verify: boot with missing var exits non-zero.
+
+[x] R.8 — GPS ping observability (REVIEW B3)
+      Count consecutive failures, show "GPS weak" banner, emit PostHog event.
+      Files: src/components/ride/DriverMultiRidePage.tsx:184-193
+      Verify: offline device shows banner within N failures.
+
+[x] R.9 — Standby-offer upsert guard (REVIEW A8)
+      Conditional WHERE status != 'released'; inspect affected rows.
+      Files: server/routes/rides.ts:937-977
+      Verify: released offer does not resurrect on standby accept.
+
+[x] R.10 — Scan-end broadcast ordering (REVIEW B2)
+       Move broadcast + payment commit after rides UPDATE success.
+       Files: server/routes/rides.ts:2845-2855
+       Verify: forced UPDATE failure does not send broadcast or commit payment.
+
+
+═══════════════════════════════════════════════════════
+ P1 — UX POLISH (only after P0 lands)
+═══════════════════════════════════════════════════════
+
+[x] R.11 — CSS motion tokens + BottomSheet animation
+       No framer-motion dep. Central src/lib/motion.ts tokens (durations,
+       easings) so an iOS port (Capacitor / RN / native Swift) only needs to
+       re-read the constants, not re-implement motion logic. BottomSheet
+       slide-up + backdrop fade via Tailwind keyframes. Respect
+       prefers-reduced-motion.
+       Files: src/lib/motion.ts (NEW), src/components/ui/BottomSheet.tsx,
+              tailwind.config.cjs
+
+[x] R.12 — Driver card reveal on match
+       Slide-up card: photo, car, plate, ETA, trust badges. CSS enter
+       animation driven by the motion tokens.
+       Files: src/components/ride/WaitingRoom.tsx
+
+[x] R.13 — Animated car marker (bearing + tween)
+       Rotate to bearing; useAnimatedPosition RAF hook tweens between GPS
+       ticks (RAF works in WebView / Capacitor and has a direct Reanimated
+       equivalent for a later RN port).
+       Files: src/components/map/CarMarker.tsx, src/hooks/useAnimatedPosition.ts (NEW)
+
+[x] R.14 — Live pickup ETA countdown
+       Shared component driven by Distance Matrix polling.
+       Files: src/components/ride/PickupEta.tsx (NEW),
+              RiderPickupPage.tsx, DriverPickupPage.tsx
+
+[~] R.15 — Trust badges component
+       .edu verified, rides completed, avg rating.
+       Files: src/components/ui/TrustBadges.tsx (NEW),
+              WaitingRoom.tsx (driver card), ProfilePage.tsx
+
+[~] R.16 — Rating + tip flow
+       Tip picker ($1/$2/$5/custom) via tip_ride RPC (rider→driver atomic
+       transfer, mirrors transfer_ride_fare). New endpoint POST
+       /api/rides/:id/tip (rider-only, completed rides, one tip per ride).
+       Files: supabase/migrations/046_tip_ride.sql (NEW),
+              server/routes/rides.ts, src/components/ride/RateRidePage.tsx
+
+[x] R.15 — Trust badges component  (done 2026-04-19)
+[x] R.16 — Rating + tip flow  (done 2026-04-19)
+
+═══════════════════════════════════════════════════════
+ P1.5 — CTO RE-PLAN (2026-04-19)
+ Target: 100-user campus beta, $0 infra, solo founder. Infra hardening must
+ land before more UX polish so the Supabase free-tier 2GB/mo bandwidth cap
+ doesn't bite during the beta window.
+═══════════════════════════════════════════════════════
+
+[~] R.19 — Rate-limit fix (BLOCKER for local testing)
+       server/app.ts — dev bypass (NODE_ENV !== 'production'), prod cap
+       raised 200→2000 / 15 min, separate 600 / 5 min bucket for /gps-ping.
+       Verify: repeatedly hit any endpoint locally, no 429.
+
+[~] R.23 — Bandwidth meter
+       In-memory request+response-bytes counter; /api/admin/health endpoint
+       returns monthly egress + top paths + Supabase-free-tier %.
+       Gated by x-admin-token header (404 when ADMIN_TOKEN env unset).
+       Files: server/middleware/metrics.ts (NEW), server/routes/admin.ts (NEW),
+              server/app.ts.
+
+[ ] R.17 — Ride board filters + route-match
+       Filter chips (time/seats/price) + "Matches your route" section using
+       calculateInterceptPoint.
+       Files: src/components/schedule/RideBoard.tsx, src/lib/geo.ts
+
+[ ] R.18 — Small cleanups
+       WalletPage spinner → ListPageSkeleton; RiderHomePage text-[2rem] → text-2xl;
+       remove or wire unused slide-down keyframe.
+       Files: WalletPage.tsx, RiderHomePage.tsx, tailwind.config.cjs
+
+
+═══════════════════════════════════════════════════════
+ CHANGE LOG
+═══════════════════════════════════════════════════════
+2026-04-18  Tracker created from senior review (REVIEW.md + plan file).
+2026-04-18  R.11/R.12 scope updated: CSS-only motion (no framer-motion dep)
+            so UX polish is portable to a future iOS app (Capacitor / React
+            Native / native Swift). Central src/lib/motion.ts tokens carry
+            the durations + easings; only the timing intent ports across
+            platforms, not the motion implementation.
+2026-04-19  CTO re-plan: target 100 users, $0 budget, solo. Interleave
+            infra hardening (R.19 rate limit, R.23 bandwidth meter) ahead
+            of R.17/R.18 polish. R.20 GPS-to-broadcast + R.21 in-memory
+            ride cache parked behind an upgrade trigger (bandwidth meter
+            crossing 60% of the Supabase free-tier 2GB/mo egress cap) —
+            not worth the surface-area until we see real pressure.
