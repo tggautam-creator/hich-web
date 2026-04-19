@@ -767,6 +767,35 @@ export type Database = {
         }
         Relationships: never[]
       }
+
+      // ── request_idempotency ─────────────────────────────────────────────────
+      request_idempotency: {
+        Row: {
+          user_id: string
+          idempotency_key: string
+          endpoint: string
+          response_status: number
+          response_body: unknown
+          created_at: string
+        }
+        Insert: {
+          user_id: string
+          idempotency_key: string
+          endpoint: string
+          response_status: number
+          response_body: unknown
+          created_at?: string
+        }
+        Update: {
+          user_id?: string
+          idempotency_key?: string
+          endpoint?: string
+          response_status?: number
+          response_body?: unknown
+          created_at?: string
+        }
+        Relationships: never[]
+      }
     }
     Views: Record<string, never>
     Functions: {
@@ -782,6 +811,32 @@ export type Database = {
           stale_min?: number
         }
         Returns: Array<{ user_id: string }>
+      }
+      wallet_apply_delta: {
+        Args: {
+          p_user_id: string
+          p_delta_cents: number
+          p_type: string
+          p_description: string
+          p_ride_id?: string | null
+          p_payment_intent_id?: string | null
+          p_stripe_event_id?: string | null
+        }
+        Returns: { applied: boolean; balance?: number; error?: string }
+      }
+      tip_ride: {
+        Args: {
+          p_ride_id: string
+          p_rider_id: string
+          p_driver_id: string
+          p_tip_cents: number
+        }
+        Returns: {
+          tipped: boolean
+          rider_balance?: number
+          driver_balance?: number
+          error?: string
+        }
       }
     }
     Enums: Record<string, never>

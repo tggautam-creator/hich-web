@@ -1,5 +1,6 @@
-import { HTMLAttributes, ReactNode, useEffect } from 'react'
+import { HTMLAttributes, ReactNode, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { DURATION, prefersReducedMotion } from '@/lib/motion'
 
 interface BottomSheetProps extends HTMLAttributes<HTMLDivElement> {
   isOpen: boolean
@@ -8,6 +9,11 @@ interface BottomSheetProps extends HTMLAttributes<HTMLDivElement> {
   children: ReactNode
   'data-testid'?: string
 }
+
+// Long enough to cover the slowest exit keyframe (sheet-out 220ms). Keep in
+// sync with tailwind.config.cjs. We use the sheet-in duration as the floor
+// because entering is the longer phase.
+const EXIT_MS = DURATION.base
 
 export default function BottomSheet({
   isOpen,
@@ -18,9 +24,29 @@ export default function BottomSheet({
   'data-testid': testId,
   ...rest
 }: BottomSheetProps) {
-  // Lock body scroll while sheet is open
+  // `mounted` drives whether the node is in the DOM; `visible` drives which
+  // enter/exit animation class is applied. Decoupling them lets the exit
+  // animation play before unmount.
+  const [mounted, setMounted] = useState(isOpen)
+  const [visible, setVisible] = useState(isOpen)
+
   useEffect(() => {
     if (isOpen) {
+      setMounted(true)
+      // Next frame: flip visible so enter animation runs from mounted state.
+      requestAnimationFrame(() => setVisible(true))
+    } else if (mounted) {
+      setVisible(false)
+      const reduced = prefersReducedMotion()
+      const timeout = setTimeout(() => setMounted(false), reduced ? 0 : EXIT_MS)
+      return () => clearTimeout(timeout)
+    }
+    return undefined
+  }, [isOpen, mounted])
+
+  // Lock body scroll while mounted (covers enter + exit phases).
+  useEffect(() => {
+    if (mounted) {
       document.body.style.overflow = 'hidden'
     } else {
       document.body.style.overflow = ''
@@ -28,15 +54,20 @@ export default function BottomSheet({
     return () => {
       document.body.style.overflow = ''
     }
-  }, [isOpen])
+  }, [mounted])
 
-  if (!isOpen) return null
+  if (!mounted) return null
 
   const portalTarget =
     (typeof document !== 'undefined' && document.getElementById('portal-root')) ||
     (typeof document !== 'undefined' ? document.body : null)
 
   if (!portalTarget) return null
+
+  // `motion-reduce:animate-none` ensures reduced-motion users see a plain
+  // mount/unmount rather than the slide tween.
+  const backdropAnim = visible ? 'animate-fade-in' : 'animate-fade-out'
+  const sheetAnim = visible ? 'animate-sheet-in' : 'animate-sheet-out'
 
   return createPortal(
     <div
@@ -47,7 +78,11 @@ export default function BottomSheet({
     >
       {/* Backdrop */}
       <div
-        className="fixed inset-0 z-[1100] bg-black/50 backdrop-blur-sm"
+        className={[
+          'fixed inset-0 z-[1100] bg-black/50 backdrop-blur-sm',
+          backdropAnim,
+          'motion-reduce:animate-none',
+        ].join(' ')}
         aria-hidden="true"
         onClick={onClose}
       />
@@ -59,6 +94,8 @@ export default function BottomSheet({
           'rounded-t-3xl border-t border-border bg-white',
           'max-h-[90dvh] overflow-y-auto',
           'px-4 pb-8 pt-3',
+          sheetAnim,
+          'motion-reduce:animate-none',
           className,
         ].join(' ')}
         {...rest}

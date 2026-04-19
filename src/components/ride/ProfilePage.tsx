@@ -7,6 +7,7 @@ import BottomNav from '@/components/ui/BottomNav'
 import DriverQrSheet from '@/components/ride/DriverQrSheet'
 import AppIcon from '@/components/ui/AppIcon'
 import VehicleIcon from '@/components/ui/VehicleIcon'
+import TrustBadges from '@/components/ui/TrustBadges'
 import type { Ride, DriverRoutine, Vehicle, SavedAddress } from '@/types/database'
 import AddressPickerModal from '@/components/ride/AddressPickerModal'
 
@@ -451,14 +452,14 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
                     {profile.phone}
                   </p>
                 )}
-                {profile?.rating_avg != null && (
-                  <p className="text-xs text-text-secondary mt-0.5">
-                    <span className="inline-flex items-center gap-1">
-                      <AppIcon name="star" className="h-3.5 w-3.5 text-warning" />
-                      {profile.rating_avg.toFixed(1)} ({profile.rating_count} ratings)
-                    </span>
-                  </p>
-                )}
+                <TrustBadges
+                  email={profile?.email}
+                  ratingAvg={profile?.rating_avg ?? null}
+                  ratingCount={profile?.rating_count ?? 0}
+                  ridesCompleted={rides.length}
+                  size="md"
+                  className="mt-1.5"
+                />
               </>
             )}
           </div>

@@ -7,6 +7,12 @@ interface CarMarkerProps {
   className?: string
   /** Test ID. */
   'data-testid'?: string
+  /**
+   * Bearing in degrees clockwise from north. When provided, the marker
+   * rotates so the nose points in the direction of travel. Transitioned
+   * smoothly so the car doesn't snap between GPS ticks.
+   */
+  bearing?: number
 }
 
 /**
@@ -18,9 +24,16 @@ export default function CarMarker({
   color = '#FFFFFF',
   className,
   'data-testid': testId,
+  bearing,
 }: CarMarkerProps) {
   // The SVG is drawn in a 24×40 viewBox (portrait-oriented car)
   const height = Math.round(size * (40 / 24))
+
+  // The SVG is drawn nose-up (north), so a bearing of 0° = no rotation.
+  // Long transition covers the gap between GPS ticks (~5–15 s) so the
+  // rotation looks like steering rather than teleporting.
+  const rotate = typeof bearing === 'number' ? bearing : 0
+  const transform = `rotate(${rotate}deg)`
 
   return (
     <svg
@@ -32,7 +45,12 @@ export default function CarMarker({
       className={className}
       data-testid={testId}
       aria-hidden="true"
-      style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.4))' }}
+      style={{
+        filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.4))',
+        transform,
+        transformOrigin: '50% 50%',
+        transition: 'transform 600ms cubic-bezier(0.22, 1, 0.36, 1)',
+      }}
     >
       {/* Car body */}
       <rect x="4" y="2" width="16" height="36" rx="6" ry="6" />

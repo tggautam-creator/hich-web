@@ -40,12 +40,22 @@ vi.mock('@/lib/supabase', () => ({
     removeChannel: mockRemoveChannel,
     from: (table: string) => {
       if (table === 'rides') {
+        // Two query shapes hit this table:
+        //  1. poll status         → select('status, driver_id').eq(id).single()
+        //  2. trust-badge count   → select('id', {count}).eq(driver_id).eq(status)
         return {
-          select: () => ({
-            eq: () => ({
-              single: () => Promise.resolve({ data: { status: 'requested', driver_id: null }, error: null }),
-            }),
-          }),
+          select: (_cols: string, opts?: { count?: string; head?: boolean }) => {
+            if (opts?.count === 'exact') {
+              return {
+                eq: () => ({ eq: () => Promise.resolve({ count: 0, data: null, error: null }) }),
+              }
+            }
+            return {
+              eq: () => ({
+                single: () => Promise.resolve({ data: { status: 'requested', driver_id: null }, error: null }),
+              }),
+            }
+          },
         }
       }
       if (table === 'ride_offers') {

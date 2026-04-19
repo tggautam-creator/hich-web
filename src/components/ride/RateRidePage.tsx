@@ -106,6 +106,13 @@ export default function RateRidePage({ 'data-testid': testId }: RateRidePageProp
   const [otherRating, setOtherRating] = useState<{ stars: number; tags: string[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Tip state — rider-only, shown after rating submitted.
+  const [selectedTip, setSelectedTip] = useState<number | null>(null)
+  const [customTip, setCustomTip] = useState('')
+  const [tipping, setTipping] = useState(false)
+  const [tipSent, setTipSent] = useState(false)
+  const [tipError, setTipError] = useState<string | null>(null)
+
   const isDriver = profile?.id === ride?.driver_id
   const isPositive = stars >= 4
   // Driver rates rider → show rider tags; Rider rates driver → show driver tags
@@ -211,6 +218,44 @@ export default function RateRidePage({ 'data-testid': testId }: RateRidePageProp
     navigate(isDriver ? '/home/driver' : '/home/rider', { replace: true })
   }
 
+  // ── Send tip ────────────────────────────────────────────────────────────
+  const handleSendTip = async () => {
+    // Resolve picker → cents. Preset chips store cents directly; the custom
+    // field is in whole dollars for display but the API speaks cents.
+    const cents = selectedTip === -1
+      ? Math.round(parseFloat(customTip) * 100)
+      : selectedTip
+    if (cents == null || !Number.isFinite(cents) || cents < 100 || cents > 2000) {
+      setTipError('Enter between $1 and $20')
+      return
+    }
+    setTipping(true)
+    setTipError(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) { setTipError('Not authenticated'); setTipping(false); return }
+      const resp = await fetch(`/api/rides/${rideId}/tip`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ tip_cents: cents }),
+      })
+      const body = (await resp.json()) as { error?: { message?: string } }
+      if (!resp.ok) {
+        setTipError(body.error?.message ?? 'Tip failed')
+        setTipping(false)
+        return
+      }
+      setTipSent(true)
+    } catch {
+      setTipError('Network error — try again')
+    } finally {
+      setTipping(false)
+    }
+  }
+
   // ── Loading ─────────────────────────────────────────────────────────────
   if (loading) {
     return (
@@ -259,6 +304,82 @@ export default function RateRidePage({ 'data-testid': testId }: RateRidePageProp
           <p className="text-sm text-text-secondary" data-testid="waiting-reveal">
             Your rating will be revealed once they rate you too.
           </p>
+        )}
+
+        {/* Tip picker — riders only, when they gave a positive rating.
+            Hidden entirely after a successful tip (replaced by confirmation). */}
+        {!isDriver && stars >= 4 && (
+          tipSent ? (
+            <div
+              className="w-full max-w-xs rounded-2xl bg-success/10 border border-success/20 px-4 py-3 text-center animate-reveal-up motion-reduce:animate-none"
+              data-testid="tip-confirmation"
+            >
+              <p className="text-sm font-semibold text-success">
+                Tip sent — {otherUser?.full_name ?? 'Your driver'} will see it.
+              </p>
+            </div>
+          ) : (
+            <div
+              className="w-full max-w-xs rounded-2xl bg-white shadow-sm p-4 space-y-3"
+              data-testid="tip-picker"
+            >
+              <p className="text-sm font-semibold text-text-primary text-center">
+                Add a tip for {otherUser?.full_name ?? 'your driver'}?
+              </p>
+              <div className="grid grid-cols-4 gap-2">
+                {[
+                  { label: '$1', cents: 100 },
+                  { label: '$2', cents: 200 },
+                  { label: '$5', cents: 500 },
+                  { label: 'Custom', cents: -1 },
+                ].map(({ label, cents }) => {
+                  const active = selectedTip === cents
+                  return (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={() => { setSelectedTip(cents); setTipError(null) }}
+                      data-testid={`tip-${label.toLowerCase()}`}
+                      className={`rounded-xl py-2 text-sm font-semibold transition-colors ${
+                        active
+                          ? 'bg-primary text-white'
+                          : 'bg-surface text-text-primary'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  )
+                })}
+              </div>
+              {selectedTip === -1 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-text-secondary">$</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="20"
+                    step="0.01"
+                    value={customTip}
+                    onChange={(e) => setCustomTip(e.target.value)}
+                    placeholder="1 – 20"
+                    data-testid="tip-custom-input"
+                    className="flex-1 rounded-xl border border-border bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none"
+                  />
+                </div>
+              )}
+              {tipError && (
+                <p data-testid="tip-error" className="text-xs text-danger text-center">{tipError}</p>
+              )}
+              <PrimaryButton
+                onClick={() => { void handleSendTip() }}
+                disabled={tipping || selectedTip == null || (selectedTip === -1 && !customTip)}
+                className="w-full"
+                data-testid="send-tip-button"
+              >
+                {tipping ? 'Sending…' : 'Send tip'}
+              </PrimaryButton>
+            </div>
+          )
         )}
 
         <PrimaryButton
