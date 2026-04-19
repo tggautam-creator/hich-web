@@ -1,11 +1,17 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import DriverQrSheet from '@/components/ride/DriverQrSheet'
 import { haversineMetres } from '@/lib/geo'
 import { formatCents } from '@/lib/fare'
+import { trackEvent } from '@/lib/analytics'
 import type { Ride, User } from '@/types/database'
+
+// Threshold before surfacing the "GPS weak" banner. 3 consecutive misses at
+// 10s cadence = 30s of silence — matches what the fare-distance integrator
+// considers a meaningful gap.
+const GPS_WEAK_THRESHOLD = 3
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -55,6 +61,12 @@ export default function DriverMultiRidePage({
   // Driver GPS
   const [driverLat, setDriverLat] = useState<number | null>(null)
   const [driverLng, setDriverLng] = useState<number | null>(null)
+
+  // GPS ping health — R.8. Count consecutive ping failures so the UI can
+  // surface a "GPS weak" banner and we emit a PostHog signal once.
+  const [gpsWeak, setGpsWeak] = useState(false)
+  const pingFailStreakRef = useRef(0)
+  const weakEventEmittedRef = useRef(false)
 
   const currentUserId = profile?.id ?? null
 
@@ -181,7 +193,7 @@ export default function DriverMultiRidePage({
       if (driverLat === null || driverLng === null) return
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) return
-      await Promise.all(activeRideIds.map((id) =>
+      const results = await Promise.all(activeRideIds.map((id) =>
         fetch(`/api/rides/${id}/gps-ping`, {
           method: 'POST',
           headers: {
@@ -189,14 +201,36 @@ export default function DriverMultiRidePage({
             Authorization: `Bearer ${session.access_token}`,
           },
           body: JSON.stringify({ lat: driverLat, lng: driverLng }),
-        }).catch(() => { /* best-effort */ }),
+        })
+          .then((r) => r.ok)
+          .catch(() => false),
       ))
+
+      const allFailed = results.length > 0 && results.every((ok) => !ok)
+      if (allFailed) {
+        pingFailStreakRef.current += 1
+        if (pingFailStreakRef.current >= GPS_WEAK_THRESHOLD && !weakEventEmittedRef.current) {
+          weakEventEmittedRef.current = true
+          trackEvent('gps_ping_failed', {
+            schedule_id: scheduleId,
+            consecutive_failures: pingFailStreakRef.current,
+            active_ride_count: activeRideIds.length,
+          })
+          setGpsWeak(true)
+        }
+      } else {
+        pingFailStreakRef.current = 0
+        if (weakEventEmittedRef.current) {
+          weakEventEmittedRef.current = false
+          setGpsWeak(false)
+        }
+      }
     }
 
     void sendPings()
     const interval = setInterval(() => { void sendPings() }, 10_000)
     return () => clearInterval(interval)
-  }, [riders, driverLat, driverLng])
+  }, [riders, driverLat, driverLng, scheduleId])
 
   // ── Derive summary stats ─────────────────────────────────────────────────
   const activeRiders = riders.filter((r) => r.ride.status === 'active')
@@ -258,6 +292,18 @@ export default function DriverMultiRidePage({
             {activeRiders.length} active · {waitingRiders.length} waiting · {completedRiders.length} done
           </span>
         </div>
+        {gpsWeak && (
+          <div
+            role="status"
+            data-testid="gps-weak-banner"
+            className="mt-2 flex items-center gap-2 rounded-lg bg-warning/10 px-3 py-2 text-xs font-medium text-warning"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 shrink-0" aria-hidden="true">
+              <path d="M12 18h.01" /><path d="M5 12.55a11 11 0 0 1 14 0" /><path d="M1.42 9a16 16 0 0 1 21.16 0" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+            </svg>
+            <span>GPS weak — fare distance tracking may be affected. Check signal.</span>
+          </div>
+        )}
       </div>
 
       {/* ── Rider cards ─────────────────────────────────────────────────────── */}

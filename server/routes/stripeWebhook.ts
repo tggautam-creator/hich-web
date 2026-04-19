@@ -185,44 +185,29 @@ async function handleWalletTopup(eventId: string, paymentIntent: Stripe.PaymentI
     return
   }
 
-  // Get current balance
-  const { data: user, error: userErr } = await supabaseAdmin
-    .from('users')
-    .select('wallet_balance')
-    .eq('id', userId)
-    .single()
+  // Atomic credit via RPC: balance + transaction in one tx.
+  // Unique indexes on stripe_event_id / payment_intent_id prevent double-credit;
+  // if another path (confirm-topup) credited first, the 23505 rolls us back.
+  const { data: rpcResult, error: rpcErr } = await supabaseAdmin.rpc('wallet_apply_delta', {
+    p_user_id: userId,
+    p_delta_cents: amountCents,
+    p_type: 'topup',
+    p_description: `Added $${(amountCents / 100).toFixed(2)} to wallet`,
+    p_ride_id: null,
+    p_payment_intent_id: paymentIntent.id,
+    p_stripe_event_id: eventId,
+  })
 
-  if (userErr || !user) {
-    console.error('User not found for topup:', userId)
+  if (rpcErr) {
+    if ((rpcErr as { code?: string }).code === '23505') {
+      console.log(`[Webhook] Duplicate topup (already credited via confirm-topup or earlier webhook): user=${userId} pi=${paymentIntent.id}`)
+      return
+    }
+    console.error('Failed to apply wallet delta:', rpcErr)
     return
   }
 
-  const currentBalance = user.wallet_balance as number
-  const newBalance = currentBalance + amountCents
-
-  const { error: updateErr } = await supabaseAdmin
-    .from('users')
-    .update({ wallet_balance: newBalance })
-    .eq('id', userId)
-
-  if (updateErr) {
-    console.error('Failed to update wallet balance:', updateErr)
-    return
-  }
-
-  const { error: txErr } = await supabaseAdmin
-    .from('transactions')
-    .insert({
-      user_id: userId,
-      type: 'topup',
-      amount_cents: amountCents,
-      balance_after_cents: newBalance,
-      description: `Added $${(amountCents / 100).toFixed(2)} to wallet`,
-      stripe_event_id: eventId,
-      payment_intent_id: paymentIntent.id,
-    })
-
-  if (txErr) {
-    console.error('Failed to insert transaction record:', txErr)
+  if (!rpcResult?.applied) {
+    console.error('User not found for topup:', userId, rpcResult?.error)
   }
 }

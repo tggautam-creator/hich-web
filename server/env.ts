@@ -19,11 +19,16 @@ export function getServerEnv() {
     throw new Error('Missing required server env var: QR_HMAC_SECRET')
   }
 
-  const stripeSecretKey = process.env['STRIPE_SECRET_KEY'] ?? ''
-  const stripeWebhookSecret = process.env['STRIPE_WEBHOOK_SECRET'] ?? ''
+  const stripeSecretKey = process.env['STRIPE_SECRET_KEY']
+  const stripeWebhookSecret = process.env['STRIPE_WEBHOOK_SECRET']
 
+  // Hard fail at boot rather than warn. Missing Stripe creds will blow up
+  // the wallet/payment routes at runtime with cryptic errors; prefer a
+  // fast, loud exit.
   if (!stripeSecretKey || !stripeWebhookSecret) {
-    console.warn('[ENV] STRIPE_SECRET_KEY or STRIPE_WEBHOOK_SECRET missing — wallet/payment routes will fail')
+    throw new Error(
+      'Missing required server env vars: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET',
+    )
   }
 
   return {

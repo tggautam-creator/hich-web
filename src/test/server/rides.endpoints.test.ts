@@ -411,7 +411,15 @@ describe('PATCH /api/rides/:id/accept', () => {
         }
       }
       if (table === 'rides') {
-        return { select: () => ({ eq: () => ({ single: () => Promise.resolve({ data: RIDE_REQUESTED, error: null }) }) }) }
+        return {
+          select: (cols: string) => {
+            // R.5 guard query: other active rides for this driver
+            if (cols.includes('driver_id') === false && cols.includes('schedule_id')) {
+              return { eq: () => ({ in: () => ({ neq: () => ({ limit: () => Promise.resolve({ data: [], error: null }) }) }) }) }
+            }
+            return { eq: () => ({ single: () => Promise.resolve({ data: RIDE_REQUESTED, error: null }) }) }
+          },
+        }
       }
       if (table === 'vehicles') {
         return { select: () => ({ eq: () => ({ eq: () => ({ limit: () => ({ single: () => Promise.resolve({ data: { id: 'v-1' }, error: null }) }) }) }) }) }
@@ -452,7 +460,15 @@ describe('PATCH /api/rides/:id/accept', () => {
         return { select: () => ({ eq: () => ({ single: () => Promise.resolve({ data: { is_driver: true }, error: null }) }) }) }
       }
       if (table === 'rides') {
-        return { select: () => ({ eq: () => ({ single: () => Promise.resolve({ data: RIDE_ACCEPTED, error: null }) }) }) }
+        return {
+          select: (cols: string) => {
+            // R.5 guard query: other active rides for this driver
+            if (cols.includes('driver_id') === false && cols.includes('schedule_id')) {
+              return { eq: () => ({ in: () => ({ neq: () => ({ limit: () => Promise.resolve({ data: [], error: null }) }) }) }) }
+            }
+            return { eq: () => ({ single: () => Promise.resolve({ data: RIDE_ACCEPTED, error: null }) }) }
+          },
+        }
       }
       if (table === 'vehicles') {
         return { select: () => ({ eq: () => ({ eq: () => ({ limit: () => ({ single: () => Promise.resolve({ data: null, error: null }) }) }) }) }) }

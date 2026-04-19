@@ -7,6 +7,7 @@ import type { PlaceSuggestion } from '@/lib/places'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
 import { useAuthStore } from '@/stores/authStore'
+import TrustBadges from '@/components/ui/TrustBadges'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -34,6 +35,8 @@ interface DriverOfferInfo {
   driver_avatar: string | null
   driver_rating: number | null
   driver_rating_count: number
+  driver_email: string | null
+  driver_rides_completed: number | null
   overlap_pct: number | null
   driver_destination_name: string | null
 }
@@ -59,6 +62,12 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
   )
   const phaseRef = useRef(phase)
   phaseRef.current = phase
+
+  // Keep a ref to the latest location state so async callbacks (which can
+  // resolve after location.state mutates or the component remounts) always
+  // read the current rideId / destination rather than a stale closure. (R.6)
+  const stateRef = useRef<LocationState | null>(state)
+  stateRef.current = state
   const [offers, setOffers] = useState<DriverOfferInfo[]>([])
   const [selectedDriverName, setSelectedDriverName] = useState<string | null>(
     state?.selectedDriverName ?? null,
@@ -90,11 +99,13 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
   // ── Auto-select / navigate logic ─────────────────────────────────────────
   const handleSelectOrNavigate = useCallback(
     (currentOffers: DriverOfferInfo[]) => {
-      if (!state?.rideId || phaseRef.current !== 'finding') return
+      const current = stateRef.current
+      if (!current?.rideId || phaseRef.current !== 'finding') return
+      const rideIdSnapshot = current.rideId
       const navState = {
-        destination: state.destination,
-        destinationLat: state.destinationLat,
-        destinationLng: state.destinationLng,
+        destination: current.destination,
+        destinationLat: current.destinationLat,
+        destinationLng: current.destinationLng,
       }
 
       if (currentOffers.length === 1) {
@@ -103,7 +114,11 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
           const { data: { session } } = await supabase.auth.getSession()
           if (!session || phaseRef.current !== 'finding') return
 
-          const resp = await fetch(`/api/rides/${state.rideId}/select-driver`, {
+          // Re-read after the await so we pick up any remount of location state.
+          const latest = stateRef.current
+          const activeRideId = latest?.rideId ?? rideIdSnapshot
+
+          const resp = await fetch(`/api/rides/${activeRideId}/select-driver`, {
             method: 'PATCH',
             headers: {
               'Content-Type': 'application/json',
@@ -121,17 +136,17 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
             if (resp.status === 409) {
               setOffers((prev) => prev.filter((o) => o.driver_id !== currentOffers[0]!.driver_id))
             } else {
-              navigate(`/ride/messaging/${state.rideId}`, { replace: true, state: navState })
+              navigate(`/ride/messaging/${activeRideId}`, { replace: true, state: navState })
             }
           }
         })()
       } else if (currentOffers.length > 1) {
         // Multiple drivers — navigate to multi-driver selection
         setPhase('navigating_away')
-        navigate(`/ride/multi-driver/${state.rideId}`, { replace: true, state: navState })
+        navigate(`/ride/multi-driver/${rideIdSnapshot}`, { replace: true, state: navState })
       }
     },
-    [state, navigate],
+    [navigate],
   )
 
   // ── Single Realtime channel + Single polling interval ─────────────────────
@@ -157,28 +172,45 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
           driver_avatar: typeof data['driver_avatar'] === 'string' ? data['driver_avatar'] : null,
           driver_rating: typeof data['driver_rating'] === 'number' ? data['driver_rating'] : null,
           driver_rating_count: typeof data['driver_rating_count'] === 'number' ? data['driver_rating_count'] : 0,
+          driver_email: typeof data['driver_email'] === 'string' ? data['driver_email'] : null,
+          driver_rides_completed: typeof data['driver_rides_completed'] === 'number' ? data['driver_rides_completed'] : null,
           overlap_pct: typeof data['overlap_pct'] === 'number' ? data['overlap_pct'] : null,
           driver_destination_name: typeof data['driver_destination_name'] === 'string' ? data['driver_destination_name'] : null,
         }
 
-        // Fetch driver info if broadcast didn't include it
-        if (!offer.driver_name) {
-          void supabase
-            .from('users')
-            .select('full_name, avatar_url, rating_avg, rating_count')
-            .eq('id', driverId)
-            .single()
-            .then(({ data: driverUser }) => {
-              if (driverUser?.full_name) {
-                setOffers((prev) =>
-                  prev.map((o) =>
-                    o.driver_id === driverId
-                      ? { ...o, driver_name: driverUser.full_name, driver_avatar: driverUser.avatar_url ?? o.driver_avatar, driver_rating: driverUser.rating_avg ?? o.driver_rating, driver_rating_count: driverUser.rating_count ?? o.driver_rating_count }
-                      : o,
-                  ),
-                )
-              }
-            })
+        // Fetch driver info if broadcast didn't include it — plus trust
+        // signals (email domain for .edu badge, completed-ride count) that
+        // aren't in the broadcast payload.
+        if (!offer.driver_name || offer.driver_email == null || offer.driver_rides_completed == null) {
+          void Promise.all([
+            supabase
+              .from('users')
+              .select('full_name, avatar_url, rating_avg, rating_count, email')
+              .eq('id', driverId)
+              .single(),
+            supabase
+              .from('rides')
+              .select('id', { count: 'exact', head: true })
+              .eq('driver_id', driverId)
+              .eq('status', 'completed'),
+          ]).then(([{ data: driverUser }, { count: ridesCount }]) => {
+            if (!driverUser) return
+            setOffers((prev) =>
+              prev.map((o) =>
+                o.driver_id === driverId
+                  ? {
+                      ...o,
+                      driver_name: driverUser.full_name ?? o.driver_name,
+                      driver_avatar: driverUser.avatar_url ?? o.driver_avatar,
+                      driver_rating: driverUser.rating_avg ?? o.driver_rating,
+                      driver_rating_count: driverUser.rating_count ?? o.driver_rating_count,
+                      driver_email: driverUser.email ?? o.driver_email,
+                      driver_rides_completed: ridesCount ?? o.driver_rides_completed,
+                    }
+                  : o,
+              ),
+            )
+          })
         }
 
         setOffers((prev) => {
@@ -351,12 +383,28 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
         const driverIds = existingOffers.map((o) => o.driver_id)
         const { data: drivers } = await supabase
           .from('users')
-          .select('id, full_name, avatar_url, rating_avg, rating_count')
+          .select('id, full_name, avatar_url, rating_avg, rating_count, email')
           .in('id', driverIds)
 
         if (cancelled) return
 
-        const driverMap: Record<string, { full_name: string | null; avatar_url: string | null; rating_avg: number | null; rating_count: number }> = {}
+        // Fan out one count-query per driver in parallel so the trust badge
+        // "N rides" surfaces alongside the initial load rather than appearing
+        // a tick later.
+        const ridesCounts = await Promise.all(
+          driverIds.map(async (id) => {
+            const { count } = await supabase
+              .from('rides')
+              .select('id', { count: 'exact', head: true })
+              .eq('driver_id', id)
+              .eq('status', 'completed')
+            return [id, count ?? 0] as const
+          }),
+        )
+        if (cancelled) return
+        const ridesCountMap = Object.fromEntries(ridesCounts)
+
+        const driverMap: Record<string, { full_name: string | null; avatar_url: string | null; rating_avg: number | null; rating_count: number; email: string | null }> = {}
         for (const d of drivers ?? []) driverMap[d.id] = d
 
         const polledOffers: DriverOfferInfo[] = existingOffers.map((row) => {
@@ -367,6 +415,8 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
             driver_avatar: driver?.avatar_url ?? null,
             driver_rating: driver?.rating_avg ?? null,
             driver_rating_count: driver?.rating_count ?? 0,
+            driver_email: driver?.email ?? null,
+            driver_rides_completed: ridesCountMap[row.driver_id] ?? null,
             overlap_pct: row.overlap_pct,
             driver_destination_name: row.driver_destination_name,
           }
@@ -451,7 +501,10 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
     >
 
       {/* ── Route preview map ────────────────────────────────────────────────── */}
-      <div className="relative w-full" style={{ height: offers.length > 0 ? '35dvh' : '45dvh' }}>
+      <div
+        className="relative w-full transition-[height] duration-300 ease-out motion-reduce:transition-none"
+        style={{ height: offers.length > 0 ? '35dvh' : '45dvh' }}
+      >
         {hasRoute ? (
           <Map
             mapId={MAP_ID}
@@ -534,7 +587,10 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
 
         {/* Driver offer cards */}
         {offers.length > 0 && (
-          <div className="space-y-3" data-testid="driver-offers">
+          <div
+            className="space-y-3 animate-reveal-up motion-reduce:animate-none"
+            data-testid="driver-offers"
+          >
             <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider">
               {offers.length === 1 ? 'Driver accepted' : `${offers.length} drivers accepted`}
             </p>
@@ -542,7 +598,7 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
               <div
                 key={offer.driver_id}
                 data-testid="driver-offer-card"
-                className="bg-surface rounded-2xl p-4 space-y-2.5"
+                className="bg-surface rounded-2xl p-4 space-y-2.5 shadow-sm animate-reveal-up motion-reduce:animate-none"
               >
                 <div className="flex items-center gap-3">
                   {offer.driver_avatar ? (
@@ -558,12 +614,13 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
                     <p className="text-sm font-semibold text-text-primary truncate">
                       {offer.driver_name ?? 'Driver'}
                     </p>
-                    {offer.driver_rating != null && (
-                      <div className="flex items-center gap-1">
-                        <span className="text-warning text-xs">&#x2605;</span>
-                        <span className="text-xs text-text-secondary">{offer.driver_rating.toFixed(1)}</span>
-                      </div>
-                    )}
+                    <TrustBadges
+                      email={offer.driver_email}
+                      ratingAvg={offer.driver_rating}
+                      ratingCount={offer.driver_rating_count}
+                      ridesCompleted={offer.driver_rides_completed}
+                      className="mt-1"
+                    />
                   </div>
                 </div>
 
@@ -649,7 +706,7 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
 
         {/* Driver is choosing a drop-off point — show a waiting card */}
         {phase === 'driver_choosing_dropoff' && (
-          <div data-testid="driver-choosing-dropoff" className="bg-primary/5 border border-primary/15 rounded-2xl p-4 space-y-3">
+          <div data-testid="driver-choosing-dropoff" className="bg-primary/5 border border-primary/15 rounded-2xl p-4 space-y-3 animate-reveal-up motion-reduce:animate-none">
             <div className="flex items-center gap-3">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent shrink-0" />
               <p className="text-sm font-medium text-text-primary">

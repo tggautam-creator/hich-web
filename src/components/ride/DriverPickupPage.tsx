@@ -2,7 +2,9 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
-import { calculateInterceptPoint, haversineMetres } from '@/lib/geo'
+import { calculateInterceptPoint, haversineMetres, calculateBearing } from '@/lib/geo'
+import { useAnimatedPosition } from '@/hooks/useAnimatedPosition'
+import PickupEta from '@/components/ride/PickupEta'
 import { decodePolyline, RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
 import CarMarker from '@/components/map/CarMarker'
 import { MAP_ID } from '@/lib/mapConstants'
@@ -89,6 +91,31 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
   const [riderLiveLat, setRiderLiveLat] = useState<number | null>(null)
   const [riderLiveLng, setRiderLiveLng] = useState<number | null>(null)
   const [riderEtaMin, setRiderEtaMin] = useState<number | null>(null)
+
+  // R.13 — smooth the driver's own marker between GPS ticks + rotate the
+  // car icon toward the direction of travel. Same pattern applied on
+  // RiderPickupPage for the other side of the journey.
+  const driverTarget = useMemo(
+    () =>
+      liveDriverLat != null && liveDriverLng != null
+        ? { lat: liveDriverLat, lng: liveDriverLng }
+        : null,
+    [liveDriverLat, liveDriverLng],
+  )
+  const driverAnimatedPos = useAnimatedPosition(driverTarget)
+  const prevDriverRef = useRef<{ lat: number; lng: number } | null>(null)
+  const [driverBearing, setDriverBearing] = useState<number>(0)
+  useEffect(() => {
+    if (driverTarget) {
+      const prev = prevDriverRef.current
+      if (prev && (prev.lat !== driverTarget.lat || prev.lng !== driverTarget.lng)) {
+        if (haversineMetres(prev.lat, prev.lng, driverTarget.lat, driverTarget.lng) > 2) {
+          setDriverBearing(calculateBearing(prev.lat, prev.lng, driverTarget.lat, driverTarget.lng))
+        }
+      }
+      prevDriverRef.current = driverTarget
+    }
+  }, [driverTarget])
 
   // ── Fetch ride + rider info ──────────────────────────────────────────────
   useEffect(() => {
@@ -530,10 +557,10 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
             )}
 
             {/* Live driver marker */}
-            {liveDriverLat !== null && liveDriverLng !== null && (
-              <AdvancedMarker position={{ lat: liveDriverLat, lng: liveDriverLng }} title="You">
+            {driverAnimatedPos && (
+              <AdvancedMarker position={driverAnimatedPos} title="You">
                 <div data-testid="driver-live-marker">
-                  <CarMarker size={32} color="#FFFFFF" />
+                  <CarMarker size={32} color="#FFFFFF" bearing={driverBearing} />
                 </div>
               </AdvancedMarker>
             )}
@@ -543,7 +570,19 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
               <AdvancedMarker position={{ lat: riderLiveLat, lng: riderLiveLng }} title="Rider">
                 <div data-testid="rider-live-marker" className="flex flex-col items-center">
                   <div className={`${riderArriving ? 'bg-success animate-pulse' : 'bg-[#6366F1]'} text-white rounded-full px-2 py-0.5 text-[10px] font-bold shadow-lg mb-0.5 whitespace-nowrap`}>
-                    {riderArriving ? 'Arriving!' : riderEtaMin === 0 ? 'At pickup!' : riderEtaMin != null ? `${riderEtaMin} min walk` : '…'}
+                    {riderArriving ? (
+                      'Arriving!'
+                    ) : (
+                      <PickupEta
+                        fromLat={riderLiveLat}
+                        fromLng={riderLiveLng}
+                        toLat={pickupPos?.lat ?? null}
+                        toLng={pickupPos?.lng ?? null}
+                        mode="WALK"
+                        suffix="walk"
+                        data-testid="rider-walk-eta"
+                      />
+                    )}
                   </div>
                   <div className="relative flex items-center justify-center">
                     <span className="absolute h-6 w-6 rounded-full bg-[#6366F1]/30 animate-ping" />

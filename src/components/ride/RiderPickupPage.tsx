@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
 import { getDirectionsByLatLng } from '@/lib/directions'
-import { haversineMetres } from '@/lib/geo'
+import { haversineMetres, calculateBearing } from '@/lib/geo'
+import { useAnimatedPosition } from '@/hooks/useAnimatedPosition'
 import { trackEvent } from '@/lib/analytics'
 import { useAuthStore } from '@/stores/authStore'
 import QrScanner from '@/components/ride/QrScanner'
@@ -12,6 +13,7 @@ import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
 import JourneyDrawer from '@/components/ride/JourneyDrawer'
+import PickupEta from '@/components/ride/PickupEta'
 import type { Ride, User, Vehicle, GeoPoint } from '@/types/database'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -57,14 +59,43 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   const [pickupLng, setPickupLng] = useState<number | null>(null)
   const [pickupNote, setPickupNote] = useState<string | null>(null)
 
-  // Rider's current GPS position
+  // Rider's current GPS position.
+  // `posRef` mirrors the state so interval callbacks always read the latest
+  // values without re-running the broadcast effect on every GPS tick (R.6).
   const [riderLat, setRiderLat] = useState<number | null>(null)
   const [riderLng, setRiderLng] = useState<number | null>(null)
+  const posRef = useRef<{ lat: number | null; lng: number | null }>({ lat: null, lng: null })
 
   // Live driver location + ETA
   const [driverLiveLat, setDriverLiveLat] = useState<number | null>(null)
   const [driverLiveLng, setDriverLiveLng] = useState<number | null>(null)
   const [driverEtaMin, setDriverEtaMin] = useState<number | null>(null)
+
+  // R.13 — Smooth the driver marker between GPS ticks and derive a bearing
+  // from the previous target so the car icon rotates in the direction of
+  // travel instead of teleporting.
+  const driverTarget = useMemo(
+    () =>
+      driverLiveLat != null && driverLiveLng != null
+        ? { lat: driverLiveLat, lng: driverLiveLng }
+        : null,
+    [driverLiveLat, driverLiveLng],
+  )
+  const driverAnimatedPos = useAnimatedPosition(driverTarget)
+  const prevDriverRef = useRef<{ lat: number; lng: number } | null>(null)
+  const [driverBearing, setDriverBearing] = useState<number>(0)
+  useEffect(() => {
+    if (driverTarget) {
+      const prev = prevDriverRef.current
+      if (prev && (prev.lat !== driverTarget.lat || prev.lng !== driverTarget.lng)) {
+        // Ignore sub-2m jitter to avoid spinning in place while parked.
+        if (haversineMetres(prev.lat, prev.lng, driverTarget.lat, driverTarget.lng) > 2) {
+          setDriverBearing(calculateBearing(prev.lat, prev.lng, driverTarget.lat, driverTarget.lng))
+        }
+      }
+      prevDriverRef.current = driverTarget
+    }
+  }, [driverTarget])
 
   const isNearby = (riderLat !== null && riderLng !== null && pickupLat !== null && pickupLng !== null)
     ? haversineMetres(riderLat, riderLng, pickupLat, pickupLng) <= CLOSE_THRESHOLD_M
@@ -211,33 +242,34 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   }, [driverLiveLat, driverLiveLng, pickupLat, pickupLng])
 
   // ── Broadcast rider location to driver every 15s ───────────────────────
+  // Reads `posRef.current` instead of state so we avoid a stale-closure bug
+  // (old values pinned into the interval) without re-subscribing the channel
+  // on every GPS tick.
   useEffect(() => {
-    if (!rideId || riderLat == null || riderLng == null) return
+    if (!rideId) return
 
     const channel = supabase.channel(`ride-location:${rideId}`)
-    channel.subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        void channel.send({
-          type: 'broadcast',
-          event: 'rider_location',
-          payload: { lat: riderLat, lng: riderLng },
-        })
-      }
-    })
-
-    const interval = setInterval(() => {
+    const sendLatest = () => {
+      const { lat, lng } = posRef.current
+      if (lat == null || lng == null) return
       void channel.send({
         type: 'broadcast',
         event: 'rider_location',
-        payload: { lat: riderLat, lng: riderLng },
+        payload: { lat, lng },
       })
-    }, 15000)
+    }
+
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') sendLatest()
+    })
+
+    const interval = setInterval(sendLatest, 15000)
 
     return () => {
       clearInterval(interval)
       void supabase.removeChannel(channel)
     }
-  }, [rideId, riderLat, riderLng])
+  }, [rideId])
 
   // ── GPS tracking for rider ───────────────────────────────────────────────
   useEffect(() => {
@@ -245,6 +277,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
 
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
+        posRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude }
         setRiderLat(pos.coords.latitude)
         setRiderLng(pos.coords.longitude)
       },
@@ -530,14 +563,31 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
           )}
 
           {/* Live driver marker with ETA badge */}
-          {driverLiveLat != null && driverLiveLng != null && (
-            <AdvancedMarker position={{ lat: driverLiveLat, lng: driverLiveLng }} title="Driver location">
+          {driverAnimatedPos && (
+            <AdvancedMarker position={driverAnimatedPos} title="Driver location">
               <div data-testid="driver-live-marker" className="flex flex-col items-center">
                 <div className="bg-primary text-white rounded-full px-2 py-0.5 text-[10px] font-bold shadow-lg mb-0.5 whitespace-nowrap">
-                  {driverEtaMin === 0 ? 'Arriving!' : driverEtaMin != null ? `${driverEtaMin} min` : '…'}
+                  <PickupEta
+                    fromLat={driverLiveLat}
+                    fromLng={driverLiveLng}
+                    toLat={pickupLat}
+                    toLng={pickupLng}
+                    data-testid="driver-eta-badge"
+                  />
                 </div>
                 <div className="h-7 w-7 rounded-full bg-primary border-2 border-white shadow-lg flex items-center justify-center">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-4 w-4" aria-hidden="true">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="white"
+                    className="h-4 w-4 motion-reduce:!transition-none"
+                    aria-hidden="true"
+                    style={{
+                      transform: `rotate(${driverBearing}deg)`,
+                      transformOrigin: '50% 50%',
+                      transition: 'transform 600ms cubic-bezier(0.22, 1, 0.36, 1)',
+                    }}
+                  >
                     <path d="M18.92 6.01C18.72 5.42 18.16 5 17.5 5h-11c-.66 0-1.21.42-1.42 1.01L3 12v8c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-8l-2.08-5.99zM6.5 16c-.83 0-1.5-.67-1.5-1.5S5.67 13 6.5 13s1.5.67 1.5 1.5S7.33 16 6.5 16zm11 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zM5 11l1.5-4.5h11L19 11H5z"/>
                   </svg>
                 </div>

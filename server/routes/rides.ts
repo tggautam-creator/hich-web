@@ -4,6 +4,7 @@ import rateLimit from 'express-rate-limit'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
 import { validateJwt } from '../middleware/auth.ts'
+import { idempotency } from '../middleware/idempotency.ts'
 import { generateQrToken, validateQrToken } from '../lib/qrToken.ts'
 import { computeTransitDropoffSuggestions, fetchDrivingRoute, type TransitDropoffSuggestion } from '../lib/transitSuggestions.ts'
 import { realtimeBroadcast, realtimeBroadcastMany } from '../lib/realtimeBroadcast.ts'
@@ -170,6 +171,7 @@ function isGeoPoint(val: unknown): val is GeoPoint {
 ridesRouter.post(
   '/request',
   validateJwt,
+  idempotency('POST /api/rides/request'),
   async (req: Request, res: Response, next: NextFunction) => {
     const riderId = res.locals['userId'] as string
     const body = req.body as RideRequestBody
@@ -860,7 +862,7 @@ ridesRouter.patch(
 
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, driver_id, status')
+      .select('id, rider_id, driver_id, status, schedule_id')
       .eq('id', rideId)
       .single()
 
@@ -913,6 +915,35 @@ ridesRouter.patch(
       return
     }
 
+    // R.5 — Single-active-ride guard. A driver already on an active ride from a
+    // different schedule (or an unscheduled ride) must finish it before taking
+    // another. Rides belonging to the same scheduled trip are allowed, since a
+    // single scheduled run legitimately carries multiple riders.
+    const { data: otherActive } = await supabaseAdmin
+      .from('rides')
+      .select('id, schedule_id')
+      .eq('driver_id', driverId)
+      .in('status', ['coordinating', 'active'])
+      .neq('id', rideId)
+      .limit(5)
+
+    if (otherActive && otherActive.length > 0) {
+      const hasConflict = otherActive.some((r) => {
+        const otherSched = (r as { schedule_id: string | null }).schedule_id
+        if (!ride.schedule_id || !otherSched) return true
+        return otherSched !== ride.schedule_id
+      })
+      if (hasConflict) {
+        res.status(409).json({
+          error: {
+            code: 'DRIVER_ALREADY_ON_RIDE',
+            message: 'You already have an active ride — finish it before accepting another.',
+          },
+        })
+        return
+      }
+    }
+
     // Look up driver's active vehicle
     const { data: vehicle } = await supabaseAdmin
       .from('vehicles')
@@ -957,6 +988,21 @@ ridesRouter.patch(
         // normal accept flow proceeds and WaitingRoom can select them.
         console.log(`[rides/accept] rideId=${rideId} driver=${driverId} has existing pending offer, keeping as pending (not standby)`)
         offerStatus = 'pending'
+      }
+
+      // R.9 — A released offer must not be resurrected by a retry. The driver
+      // was taken off this ride (rider re-selected, driver cancelled, etc.);
+      // the only way back on is via a brand-new accept flow after the offer
+      // row is cleared.
+      if (existingOffer?.status === 'released') {
+        console.log(`[rides/accept] rideId=${rideId} driver=${driverId} offer is released, refusing to resurrect`)
+        res.status(409).json({
+          error: {
+            code: 'OFFER_RELEASED',
+            message: 'This offer was released and cannot be reactivated.',
+          },
+        })
+        return
       }
 
       // If still standby (new driver joining for the first time while ride is
@@ -1274,7 +1320,7 @@ ridesRouter.patch(
 
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, status')
+      .select('id, rider_id, status, driver_id')
       .eq('id', rideId)
       .single()
 
@@ -1299,6 +1345,8 @@ ridesRouter.patch(
       return
     }
 
+    const priorDriverId = (ride.driver_id ?? null) as string | null
+
     // Verify the selected driver's offer is still valid (pending)
     // Guards against race condition: if driver already cancelled (offer released),
     // we should not assign them to the ride.
@@ -1319,13 +1367,29 @@ ridesRouter.patch(
 
     // Preserve 'coordinating' if already there (dropoff-done may have fired first)
     const newStatus = ride.status === 'coordinating' ? 'coordinating' : 'accepted'
-    const { error: updateErr } = await supabaseAdmin
+    // Atomic optimistic update: only apply if status and driver_id still match
+    // the snapshot we read above. Prevents two concurrent select-driver calls
+    // (auto-select + manual) from both winning.
+    let updateQ = supabaseAdmin
       .from('rides')
       .update({ status: newStatus, driver_id: selectedDriverId })
       .eq('id', rideId)
+      .eq('status', ride.status)
+    updateQ = priorDriverId === null
+      ? updateQ.is('driver_id', null)
+      : updateQ.eq('driver_id', priorDriverId)
+    const { data: updatedRows, error: updateErr } = await updateQ.select('id')
 
     if (updateErr) {
       next(updateErr)
+      return
+    }
+
+    if (!updatedRows || updatedRows.length === 0) {
+      console.log(`[rides/select-driver] Lost race: ride=${rideId} state changed since fetch`)
+      res.status(409).json({
+        error: { code: 'RIDE_STATE_CHANGED', message: 'Ride was just updated by another action; please refresh.' },
+      })
       return
     }
 
@@ -2515,28 +2579,15 @@ ridesRouter.post(
     const { fare_cents: fareCents, platform_fee_cents: platformFeeCents, driver_earns_cents: driverEarnsCents, distance_miles, duration_min } =
       await computeRideFare(rideForFare, endedAt)
 
-    const { error: updateErr } = await supabaseAdmin
-      .from('rides')
-      .update({
-        status: 'completed',
-        ended_at: endedAt,
-        fare_cents: fareCents,
-        ...(dropoffGeo ? { dropoff_point: dropoffGeo } : {}),
-      })
-      .eq('id', rideId)
-
-    if (updateErr) {
-      next(updateErr)
-      return
-    }
-
-    // Charge rider's card and route to driver via Stripe Connect
+    // Charge rider's card + route to driver via Stripe Connect BEFORE marking
+    // the ride completed. If chargeRideFare throws, we leave the ride in its
+    // current status so the client can retry — no orphaned "completed but
+    // unpaid" rides.
     let paymentStatus = 'pending'
     let paymentIntentId: string | undefined
     let stripeFeeCents = 0
 
     if (ride.driver_id) {
-      // Look up rider + driver Stripe info
       const [riderRes, driverRes] = await Promise.all([
         supabaseAdmin.from('users').select('stripe_customer_id, default_payment_method_id').eq('id', ride.rider_id).single(),
         supabaseAdmin.from('users').select('stripe_account_id, stripe_onboarding_complete').eq('id', ride.driver_id).single(),
@@ -2568,20 +2619,29 @@ ridesRouter.post(
           console.warn(`[rides/end] Stripe charge failed: ${chargeResult.error}`)
         }
       } else {
-        // Missing payment setup — log but don't block ride end
         paymentStatus = 'failed'
         console.warn(`[rides/end] Missing Stripe setup: rider_customer=${!!rider?.stripe_customer_id} rider_pm=${!!rider?.default_payment_method_id} driver_acct=${!!driver?.stripe_account_id} driver_verified=${!!driver?.stripe_onboarding_complete}`)
       }
+    }
 
-      // Update ride with payment info
-      await supabaseAdmin
-        .from('rides')
-        .update({
-          payment_status: paymentStatus,
-          ...(paymentIntentId ? { payment_intent_id: paymentIntentId } : {}),
-          stripe_fee_cents: stripeFeeCents,
-        })
-        .eq('id', rideId)
+    // Single UPDATE: status + payment state commit together so the ride can
+    // never be marked 'completed' without a recorded payment attempt.
+    const { error: updateErr } = await supabaseAdmin
+      .from('rides')
+      .update({
+        status: 'completed',
+        ended_at: endedAt,
+        fare_cents: fareCents,
+        payment_status: paymentStatus,
+        stripe_fee_cents: stripeFeeCents,
+        ...(paymentIntentId ? { payment_intent_id: paymentIntentId } : {}),
+        ...(dropoffGeo ? { dropoff_point: dropoffGeo } : {}),
+      })
+      .eq('id', rideId)
+
+    if (updateErr) {
+      next(updateErr)
+      return
     }
 
     // Broadcast ride_ended to both parties + component-specific channels
@@ -2651,6 +2711,7 @@ ridesRouter.post(
   '/scan-driver',
   scanDriverLimiter,
   validateJwt,
+  idempotency('POST /api/rides/scan-driver'),
   async (req: Request, res: Response, next: NextFunction) => {
     const riderId = res.locals['userId'] as string
     const { driver_code, lat, lng } = req.body as { driver_code?: string; lat?: number; lng?: number }
@@ -2842,12 +2903,59 @@ ridesRouter.post(
     const { fare_cents: fareCents, platform_fee_cents: platformFeeCents, driver_earns_cents: driverEarnsCents, distance_miles, duration_min } =
       await computeRideFare(rideForFare, endedAt)
 
+    // Charge BEFORE marking completed so a Stripe outage leaves the ride
+    // retryable in 'active' state rather than orphaning it as completed+unpaid.
+    let scanPaymentStatus = 'pending'
+    let scanPaymentIntentId: string | undefined
+    let scanStripeFeeCents = 0
+
+    if (ride.driver_id) {
+      const [riderRes, driverRes] = await Promise.all([
+        supabaseAdmin.from('users').select('stripe_customer_id, default_payment_method_id').eq('id', ride.rider_id).single(),
+        supabaseAdmin.from('users').select('stripe_account_id, stripe_onboarding_complete').eq('id', ride.driver_id).single(),
+      ])
+
+      const scanRider = riderRes.data
+      const scanDriver = driverRes.data
+
+      if (
+        scanRider?.stripe_customer_id &&
+        scanRider?.default_payment_method_id &&
+        scanDriver?.stripe_account_id &&
+        scanDriver?.stripe_onboarding_complete
+      ) {
+        const chargeResult = await chargeRideFare({
+          rideId: ride.id,
+          fareCents,
+          riderCustomerId: scanRider.stripe_customer_id as string,
+          riderPaymentMethodId: scanRider.default_payment_method_id as string,
+          driverAccountId: scanDriver.stripe_account_id as string,
+        })
+
+        if (chargeResult.success) {
+          scanPaymentStatus = 'processing'
+          scanPaymentIntentId = chargeResult.paymentIntentId
+          scanStripeFeeCents = chargeResult.stripFeeCents ?? 0
+        } else {
+          scanPaymentStatus = 'failed'
+          console.warn(`[rides/scan-driver] Stripe charge failed: ${chargeResult.error}`)
+        }
+      } else {
+        scanPaymentStatus = 'failed'
+        console.warn(`[rides/scan-driver] Missing Stripe setup for ride ${ride.id}`)
+      }
+    }
+
+    // Single UPDATE: ride completion + payment state committed together.
     const { error: updateErr } = await supabaseAdmin
       .from('rides')
       .update({
         status: 'completed',
         ended_at: endedAt,
         fare_cents: fareCents,
+        payment_status: scanPaymentStatus,
+        stripe_fee_cents: scanStripeFeeCents,
+        ...(scanPaymentIntentId ? { payment_intent_id: scanPaymentIntentId } : {}),
         ...(scanDropoffGeo ? { dropoff_point: scanDropoffGeo } : {}),
       })
       .eq('id', ride.id)
@@ -2888,57 +2996,6 @@ ridesRouter.post(
       fare_cents: fareCents,
       driver_earns_cents: driverEarnsCents,
     })
-
-    // Charge rider's card and route to driver via Stripe Connect
-    let scanPaymentStatus = 'pending'
-    let scanPaymentIntentId: string | undefined
-    let scanStripeFeeCents = 0
-
-    if (ride.driver_id) {
-      const [riderRes, driverRes] = await Promise.all([
-        supabaseAdmin.from('users').select('stripe_customer_id, default_payment_method_id').eq('id', ride.rider_id).single(),
-        supabaseAdmin.from('users').select('stripe_account_id, stripe_onboarding_complete').eq('id', ride.driver_id).single(),
-      ])
-
-      const scanRider = riderRes.data
-      const scanDriver = driverRes.data
-
-      if (
-        scanRider?.stripe_customer_id &&
-        scanRider?.default_payment_method_id &&
-        scanDriver?.stripe_account_id &&
-        scanDriver?.stripe_onboarding_complete
-      ) {
-        const chargeResult = await chargeRideFare({
-          rideId: ride.id,
-          fareCents,
-          riderCustomerId: scanRider.stripe_customer_id as string,
-          riderPaymentMethodId: scanRider.default_payment_method_id as string,
-          driverAccountId: scanDriver.stripe_account_id as string,
-        })
-
-        if (chargeResult.success) {
-          scanPaymentStatus = 'processing'
-          scanPaymentIntentId = chargeResult.paymentIntentId
-          scanStripeFeeCents = chargeResult.stripFeeCents ?? 0
-        } else {
-          scanPaymentStatus = 'failed'
-          console.warn(`[rides/scan-driver] Stripe charge failed: ${chargeResult.error}`)
-        }
-      } else {
-        scanPaymentStatus = 'failed'
-        console.warn(`[rides/scan-driver] Missing Stripe setup for ride ${ride.id}`)
-      }
-
-      await supabaseAdmin
-        .from('rides')
-        .update({
-          payment_status: scanPaymentStatus,
-          ...(scanPaymentIntentId ? { payment_intent_id: scanPaymentIntentId } : {}),
-          stripe_fee_cents: scanStripeFeeCents,
-        })
-        .eq('id', ride.id)
-    }
 
     // FCM push to driver — only send "Ride completed" when no more active rides
     if (!hasOtherActiveRides) {
@@ -3105,6 +3162,97 @@ ridesRouter.post(
       tags: tagArray,
       revealed,
       other_rating: revealed ? { stars: otherRating.stars, tags: otherRating.tags } : null,
+    })
+  },
+)
+
+/**
+ * POST /api/rides/:id/tip — rider tips the driver from their wallet balance.
+ *
+ * Body: { tip_cents: integer }
+ *
+ * Only the rider may tip, only on a completed ride, and only once per ride.
+ * Delegates the debit+credit+transaction rows to the `tip_ride` RPC so the
+ * three writes stay in one transaction (mirrors `transfer_ride_fare`).
+ */
+ridesRouter.post(
+  '/:id/tip',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const userId = res.locals['userId'] as string
+    const rideId = req.params['id'] as string
+    const { tip_cents } = req.body as { tip_cents?: unknown }
+
+    if (
+      typeof tip_cents !== 'number' ||
+      !Number.isInteger(tip_cents) ||
+      tip_cents < 100 ||
+      tip_cents > 2000
+    ) {
+      res.status(400).json({
+        error: { code: 'INVALID_TIP', message: 'tip_cents must be an integer between 100 and 2000' },
+      })
+      return
+    }
+
+    const { data: ride, error: fetchErr } = await supabaseAdmin
+      .from('rides')
+      .select('id, status, rider_id, driver_id')
+      .eq('id', rideId)
+      .single()
+
+    if (fetchErr ?? !ride) {
+      res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+      return
+    }
+    if (ride.rider_id !== userId) {
+      res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only the rider can tip' } })
+      return
+    }
+    if (ride.status !== 'completed') {
+      res.status(409).json({ error: { code: 'INVALID_STATUS', message: 'Can only tip on completed rides' } })
+      return
+    }
+    if (!ride.driver_id) {
+      res.status(400).json({ error: { code: 'NO_DRIVER', message: 'Ride has no driver' } })
+      return
+    }
+
+    // Idempotency: one tip per ride+rider.
+    const { data: existing } = await supabaseAdmin
+      .from('transactions')
+      .select('id')
+      .eq('ride_id', rideId)
+      .eq('user_id', userId)
+      .eq('type', 'tip_debit')
+      .limit(1)
+
+    if (existing && existing.length > 0) {
+      res.status(409).json({
+        error: { code: 'ALREADY_TIPPED', message: 'You have already tipped this driver' },
+      })
+      return
+    }
+
+    const { data: rpcResult, error: rpcErr } = await supabaseAdmin.rpc('tip_ride', {
+      p_ride_id: rideId,
+      p_rider_id: userId,
+      p_driver_id: ride.driver_id,
+      p_tip_cents: tip_cents,
+    })
+
+    if (rpcErr) { next(rpcErr); return }
+    if (!rpcResult?.tipped) {
+      const msg = rpcResult?.error ?? 'Tip failed'
+      const code = msg === 'Insufficient balance' ? 'INSUFFICIENT_BALANCE' : 'TIP_FAILED'
+      res.status(409).json({ error: { code, message: msg } })
+      return
+    }
+
+    res.status(201).json({
+      tipped: true,
+      tip_cents,
+      rider_balance: rpcResult.rider_balance,
     })
   },
 )

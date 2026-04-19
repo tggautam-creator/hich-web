@@ -129,39 +129,41 @@ walletRouter.post('/confirm-topup', validateJwt, async (req, res, next) => {
       return
     }
 
-    // Credit the wallet
-    const { data: user, error: userErr } = await supabaseAdmin
-      .from('users')
-      .select('wallet_balance')
-      .eq('id', userId)
-      .single()
+    // Atomic credit via RPC: balance update + transaction insert in one tx.
+    // A unique-index conflict on payment_intent_id rolls back the balance.
+    const { data: rpcResult, error: rpcErr } = await supabaseAdmin.rpc('wallet_apply_delta', {
+      p_user_id: userId,
+      p_delta_cents: amountCents,
+      p_type: 'topup',
+      p_description: `Added $${(amountCents / 100).toFixed(2)} to wallet`,
+      p_ride_id: null,
+      p_payment_intent_id: payment_intent_id,
+      p_stripe_event_id: null,
+    })
 
-    if (userErr || !user) {
+    if (rpcErr) {
+      // 23505 = duplicate payment_intent_id → another caller (webhook) already credited.
+      if ((rpcErr as { code?: string }).code === '23505') {
+        const { data: userRow } = await supabaseAdmin
+          .from('users')
+          .select('wallet_balance')
+          .eq('id', userId)
+          .single()
+        res.json({ credited: false, balance: userRow?.wallet_balance ?? 0 })
+        return
+      }
+      next(rpcErr)
+      return
+    }
+
+    if (!rpcResult?.applied) {
       res.status(404).json({
-        error: { code: 'USER_NOT_FOUND', message: 'User not found' },
+        error: { code: 'USER_NOT_FOUND', message: rpcResult?.error ?? 'User not found' },
       })
       return
     }
 
-    const newBalance = (user.wallet_balance as number) + amountCents
-
-    await supabaseAdmin
-      .from('users')
-      .update({ wallet_balance: newBalance })
-      .eq('id', userId)
-
-    await supabaseAdmin
-      .from('transactions')
-      .insert({
-        user_id: userId,
-        type: 'topup',
-        amount_cents: amountCents,
-        balance_after_cents: newBalance,
-        description: `Added $${(amountCents / 100).toFixed(2)} to wallet`,
-        payment_intent_id: payment_intent_id,
-      })
-
-    res.json({ credited: true, balance: newBalance })
+    res.json({ credited: true, balance: rpcResult.balance })
   } catch (err) {
     next(err)
   }
