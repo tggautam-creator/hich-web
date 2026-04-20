@@ -385,7 +385,7 @@ ridesRouter.patch(
 
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, driver_id, status')
+      .select('id, rider_id, driver_id, status, schedule_id')
       .eq('id', rideId)
       .single()
 
@@ -486,7 +486,14 @@ ridesRouter.patch(
     // before status transitions to 'accepted' (race condition), or the ride was
     // left in an inconsistent state. A driver cancel should NEVER permanently
     // cancel the ride — only the rider can do that.
-    if (isDriverCancel && (originalStatus === 'accepted' || originalStatus === 'coordinating' || originalStatus === 'requested')) {
+    //
+    // IMPORTANT: this re-queue/re-broadcast path is for INSTANT ride-hail rides
+    // only. Board-scheduled rides (ride.schedule_id set) came from a mutual
+    // rider↔driver agreement via the ride board, not from a broadcast. If the
+    // driver backs out, the rider should NOT be auto-matched to another driver
+    // — they should return to the board and pick someone else explicitly. So
+    // for scheduled rides we fall through to Path B (permanent cancel).
+    if (isDriverCancel && !ride.schedule_id && (originalStatus === 'accepted' || originalStatus === 'coordinating' || originalStatus === 'requested')) {
       console.log(`[rides/cancel:DEBUG] Path A: driver ${userId} cancelling ${originalStatus} ride ${rideId}`)
       const { error: revertErr } = await supabaseAdmin
         .from('rides')

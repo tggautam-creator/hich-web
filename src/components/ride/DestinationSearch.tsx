@@ -453,7 +453,7 @@ export default function DestinationSearch({ 'data-testid': testId }: Destination
                     </svg>
                     <span className="flex flex-col gap-0.5 min-w-0">
                       <span className="text-sm font-medium text-text-primary truncate">
-                        {addr.label === 'home' ? '🏠 Home' : addr.label === 'work' ? '💼 Work' : addr.label}
+                        {addr.label === 'home' ? 'Home' : addr.label === 'work' ? 'Work' : addr.label}
                       </span>
                       <span className="text-xs text-text-secondary truncate">
                         {addr.main_text}

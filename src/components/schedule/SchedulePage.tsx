@@ -53,6 +53,8 @@ function todayString(): string {
 interface ScheduleLocationState {
   prefillFrom?: PlaceSuggestion
   prefillTo?: PlaceSuggestion
+  /** When 'routine', SchedulePage opens directly in recurring-routine mode. */
+  tripType?: TripType
 }
 
 export default function SchedulePage({ mode: initialMode, 'data-testid': testId }: SchedulePageProps) {
@@ -71,7 +73,7 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
   const [routeName, setRouteName] = useState('')
   const [fromLocation, setFromLocation] = useState<PlaceSuggestion | null>(prefill?.prefillFrom ?? null)
   const [toLocation, setToLocation] = useState<PlaceSuggestion | null>(prefill?.prefillTo ?? null)
-  const [tripType, setTripType] = useState<TripType>('one-time')
+  const [tripType, setTripType] = useState<TripType>(prefill?.tripType ?? 'one-time')
   const [availableSeats, setAvailableSeats] = useState(1)
   const [note, setNote] = useState('')
 
