@@ -5,6 +5,12 @@ import path from 'path'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  build: {
+    // Skip the "computing gzip size" step. On small EC2 instances (1-2 GB RAM)
+    // this final step silently OOM-kills the build after chunks are written.
+    // The gzip numbers are cosmetic; raw chunk sizes are still reported.
+    reportCompressedSize: false,
+  },
   server: {
     host: true,
     proxy: {
