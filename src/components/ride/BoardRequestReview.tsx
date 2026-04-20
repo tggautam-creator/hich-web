@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { haversineMetres } from '@/lib/geo'
 import { reverseGeocode } from '@/lib/geocode'
-import { formatDate, formatTime } from '@/components/schedule/boardHelpers'
+import { formatDate, formatTripSchedule } from '@/components/schedule/boardHelpers'
 import type { Ride, User } from '@/types/database'
 
 interface ScheduleInfo {
@@ -14,6 +14,7 @@ interface ScheduleInfo {
   trip_date: string
   trip_time: string
   time_type: 'departure' | 'arrival'
+  time_flexible?: boolean
 }
 
 interface BoardRequestReviewProps {
@@ -90,7 +91,7 @@ export default function BoardRequestReview({
       if (rideData.schedule_id) {
         const { data: schedData } = await supabase
           .from('ride_schedules')
-          .select('origin_address, dest_address, route_name, trip_date, trip_time, time_type')
+          .select('origin_address, dest_address, route_name, trip_date, trip_time, time_type, time_flexible')
           .eq('id', rideData.schedule_id)
           .single()
 
@@ -416,8 +417,11 @@ export default function BoardRequestReview({
               <span>{formatDate(scheduleInfo?.trip_date ?? ride.trip_date ?? '')}</span>
               {(scheduleInfo?.trip_time ?? ride.trip_time) && (
                 <span>
-                  {scheduleInfo?.time_type === 'arrival' ? 'Arrives' : 'Departs'}{' '}
-                  {formatTime(scheduleInfo?.trip_time ?? ride.trip_time ?? '')}
+                  {formatTripSchedule({
+                    trip_time: scheduleInfo?.trip_time ?? ride.trip_time ?? '',
+                    time_type: scheduleInfo?.time_type ?? 'departure',
+                    time_flexible: scheduleInfo?.time_flexible,
+                  })}
                 </span>
               )}
             </div>

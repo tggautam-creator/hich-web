@@ -587,6 +587,11 @@ describe('SchedulePage', () => {
           trip_time:        '09:30:00',
           available_seats:  null,
           note:             null,
+          time_flexible:    false,
+          origin_lat:       38.54,
+          origin_lng:       -121.76,
+          dest_lat:         38.54,
+          dest_lng:         -121.76,
         })
       })
 

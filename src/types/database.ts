@@ -508,11 +508,16 @@ export type Database = {
           trip_date: string             // ISO date YYYY-MM-DD
           time_type: 'departure' | 'arrival'
           trip_time: string             // HH:MM:SS
+          time_flexible: boolean
           available_seats: number | null
           note: string | null
           is_notified: boolean
           seats_locked: boolean
           created_at: string
+          origin_lat: number | null
+          origin_lng: number | null
+          dest_lat: number | null
+          dest_lng: number | null
         }
         Insert: {
           id?: string
@@ -527,11 +532,16 @@ export type Database = {
           trip_date: string
           time_type?: 'departure' | 'arrival'
           trip_time: string
+          time_flexible?: boolean
           available_seats?: number | null
           note?: string | null
           is_notified?: boolean
           seats_locked?: boolean
           created_at?: string
+          origin_lat?: number | null
+          origin_lng?: number | null
+          dest_lat?: number | null
+          dest_lng?: number | null
         }
         Update: {
           id?: string
@@ -546,11 +556,16 @@ export type Database = {
           trip_date?: string
           time_type?: 'departure' | 'arrival'
           trip_time?: string
+          time_flexible?: boolean
           available_seats?: number | null
           note?: string | null
           is_notified?: boolean
           seats_locked?: boolean
           created_at?: string
+          origin_lat?: number | null
+          origin_lng?: number | null
+          dest_lat?: number | null
+          dest_lng?: number | null
         }
         Relationships: never[]
       }

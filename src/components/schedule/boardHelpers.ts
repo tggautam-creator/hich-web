@@ -22,4 +22,20 @@ export function formatDays(days: number[]): string {
   return [...days].sort((a, b) => a - b).map((d) => SHORT_DAYS[d] ?? '?').join(', ')
 }
 
+/**
+ * Label a trip's time slot for display.
+ *   time_flexible=true                 → "Anytime"
+ *   time_type='departure'              → "Departs 2:30 PM"
+ *   time_type='arrival'                → "Arrives 2:30 PM"
+ */
+export function formatTripSchedule(args: {
+  trip_time: string
+  time_type: 'departure' | 'arrival'
+  time_flexible?: boolean
+}): string {
+  if (args.time_flexible) return 'Anytime'
+  const verb = args.time_type === 'departure' ? 'Departs' : 'Arrives'
+  return `${verb} ${formatTime(args.trip_time)}`
+}
+
 export { SHORT_DAYS }

@@ -285,7 +285,7 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-xs font-bold uppercase tracking-wide text-warning">Instant Match Update</p>
-                <h2 className="mt-1 text-[2rem] leading-tight font-extrabold text-text-primary">Fewer Drivers Online Right Now</h2>
+                <h2 className="mt-1 text-2xl leading-tight font-extrabold text-text-primary">Fewer Drivers Online Right Now</h2>
               </div>
               <button
                 type="button"

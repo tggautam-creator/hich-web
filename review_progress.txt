@@ -12,8 +12,7 @@ Working rules:
 
 Statuses: [ ] TODO  |  [~] IN PROGRESS (awaiting user review)  |  [x] DONE  |  [!] BLOCKED
 
-Currently in progress: R.19 rate-limit fix, R.23 bandwidth meter (CTO-replan for
-campus-launch scale ≈100 users on $0 budget)
+Currently in progress: R.17 ride-board filters + route-match, R.18 small cleanups
 Last updated: 2026-04-19
 
 
@@ -128,27 +127,30 @@ Last updated: 2026-04-19
  doesn't bite during the beta window.
 ═══════════════════════════════════════════════════════
 
-[~] R.19 — Rate-limit fix (BLOCKER for local testing)
+[x] R.19 — Rate-limit fix (done 2026-04-19, deployed to prod)
        server/app.ts — dev bypass (NODE_ENV !== 'production'), prod cap
        raised 200→2000 / 15 min, separate 600 / 5 min bucket for /gps-ping.
-       Verify: repeatedly hit any endpoint locally, no 429.
 
-[~] R.23 — Bandwidth meter
+[x] R.23 — Bandwidth meter (done 2026-04-19, live at https://www.tagorides.com/api/admin/health)
        In-memory request+response-bytes counter; /api/admin/health endpoint
        returns monthly egress + top paths + Supabase-free-tier %.
        Gated by x-admin-token header (404 when ADMIN_TOKEN env unset).
-       Files: server/middleware/metrics.ts (NEW), server/routes/admin.ts (NEW),
-              server/app.ts.
 
-[ ] R.17 — Ride board filters + route-match
-       Filter chips (time/seats/price) + "Matches your route" section using
-       calculateInterceptPoint.
-       Files: src/components/schedule/RideBoard.tsx, src/lib/geo.ts
+[~] R.17 — Ride board filters + route-match  (awaiting user review)
+       Time chips (Anytime/Today/This week) + Seats chips (Any/2+, hidden on
+       riders tab). "Near you" pill on driver posts whose origin→dest polyline
+       passes within a 5-min walk of the rider's current GPS (uses
+       calculateInterceptPoint on 2-point polyline; upgrade input to full
+       decoded polyline when available).
+       Files: src/components/schedule/RideBoard.tsx,
+              src/components/schedule/RideBoardCard.tsx
 
-[ ] R.18 — Small cleanups
-       WalletPage spinner → ListPageSkeleton; RiderHomePage text-[2rem] → text-2xl;
-       remove or wire unused slide-down keyframe.
-       Files: WalletPage.tsx, RiderHomePage.tsx, tailwind.config.cjs
+[~] R.18 — Small cleanups  (awaiting user review)
+       WalletPage spinner → 4 shimmer rows matching transaction-card shape;
+       RiderHomePage text-[2rem] → text-2xl. slide-down keyframe kept — it IS
+       used (DriverHomePage banner + RideRequestNotification). REVIEW.md was
+       stale on that point.
+       Files: WalletPage.tsx, RiderHomePage.tsx
 
 
 ═══════════════════════════════════════════════════════

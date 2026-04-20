@@ -79,6 +79,10 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
   const [tripDate, setTripDate] = useState('')
   const [timeType, setTimeType] = useState<TimeType>('departure')
   const [tripTime, setTripTime] = useState('')
+  // When true, the poster doesn't care about the hour — only the date.
+  // We still submit a noon placeholder for trip_time to satisfy the NOT NULL
+  // constraint and keep legacy sort-by-time stable; UI renders "Anytime".
+  const [timeFlexible, setTimeFlexible] = useState(false)
   const [isSubmitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
@@ -232,7 +236,7 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
       newErrors.tripDate = 'Date cannot be in the past'
     }
 
-    if (!tripTime) {
+    if (!timeFlexible && !tripTime) {
       newErrors.tripTime = 'Please select a time'
     }
 
@@ -263,7 +267,22 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
     setSubmitting(true)
     setSubmitError(null)
 
+    // When the poster is flexible on time we still need a legal trip_time
+    // value (the column is NOT NULL); store noon so anything sorting by time
+    // lands in a sensible middle-of-day position.
+    const submittedTripTime = timeFlexible ? '12:00:00' : `${tripTime}:00`
+
     try {
+      // Resolve coordinates up-front so they're persisted with the row.
+      // Without coords the ride board can't compute fare estimates or
+      // "near me" proximity for this schedule.
+      const [fromCoords, toCoords] = await Promise.all([
+        resolveCoords(fromLocation, fromSessionTokenRef.current),
+        resolveCoords(toLocation, toSessionTokenRef.current),
+      ])
+      fromSessionTokenRef.current = crypto.randomUUID()
+      toSessionTokenRef.current = crypto.randomUUID()
+
       const { error } = await supabase.from('ride_schedules').insert({
         user_id:          user.id,
         mode:             activeMode,
@@ -275,9 +294,14 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
         direction_type:   'one_way',
         trip_date:        tripDate,
         time_type:        timeType,
-        trip_time:        `${tripTime}:00`,
+        trip_time:        submittedTripTime,
+        time_flexible:    timeFlexible,
         available_seats:  activeMode === 'driver' ? availableSeats : null,
         note:             note.trim() || null,
+        origin_lat:       fromCoords?.lat ?? null,
+        origin_lng:       fromCoords?.lng ?? null,
+        dest_lat:         toCoords?.lat ?? null,
+        dest_lng:         toCoords?.lng ?? null,
       }).select('id')
 
       if (error) {
@@ -288,13 +312,6 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
       // Notify matched drivers (fire-and-forget)
       try {
         const { data: { session } } = await supabase.auth.getSession()
-        // BUG-051: Geocode places to get coordinates for proximity/bearing matching
-        const [fromCoords, toCoords] = await Promise.all([
-          resolveCoords(fromLocation, fromSessionTokenRef.current),
-          resolveCoords(toLocation, toSessionTokenRef.current),
-        ])
-        fromSessionTokenRef.current = crypto.randomUUID()
-        toSessionTokenRef.current = crypto.randomUUID()
         await fetch('/api/schedule/notify', {
           method: 'POST',
           headers: {
@@ -305,8 +322,9 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
             origin_place_id: fromLocation.placeId,
             dest_place_id:   toLocation.placeId,
             trip_date:       tripDate,
-            trip_time:       `${tripTime}:00`,
+            trip_time:       submittedTripTime,
             time_type:       timeType,
+            time_flexible:   timeFlexible,
             mode: activeMode,
             ...(fromCoords ? { origin_lat: fromCoords.lat, origin_lng: fromCoords.lng } : {}),
             ...(toCoords ? { dest_lat: toCoords.lat, dest_lng: toCoords.lng } : {}),
@@ -635,19 +653,19 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
               )}
             </div>
 
-            {/* Departure / Arrival Toggle */}
+            {/* Departure / Arrival / Anytime Toggle */}
             <div>
               <label className="block text-sm font-medium text-text-primary mb-2">
                 Time is for
               </label>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-2">
                 <button
                   data-testid="time-type-departure"
-                  onClick={() => { setTimeType('departure') }}
+                  onClick={() => { setTimeFlexible(false); setTimeType('departure') }}
                   className={[
-                    'px-4 py-3 rounded-2xl border transition-all duration-150',
+                    'px-3 py-3 rounded-2xl border transition-all duration-150',
                     'font-medium text-sm',
-                    timeType === 'departure'
+                    !timeFlexible && timeType === 'departure'
                       ? 'bg-primary text-white border-primary'
                       : 'bg-white text-text-primary border-border hover:border-primary',
                   ].join(' ')}
@@ -656,50 +674,70 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
                 </button>
                 <button
                   data-testid="time-type-arrival"
-                  onClick={() => { setTimeType('arrival') }}
+                  onClick={() => { setTimeFlexible(false); setTimeType('arrival') }}
                   className={[
-                    'px-4 py-3 rounded-2xl border transition-all duration-150',
+                    'px-3 py-3 rounded-2xl border transition-all duration-150',
                     'font-medium text-sm',
-                    timeType === 'arrival'
+                    !timeFlexible && timeType === 'arrival'
                       ? 'bg-primary text-white border-primary'
                       : 'bg-white text-text-primary border-border hover:border-primary',
                   ].join(' ')}
                 >
                   Arrival
                 </button>
+                <button
+                  data-testid="time-type-anytime"
+                  onClick={() => { setTimeFlexible(true); setErrors({}) }}
+                  className={[
+                    'px-3 py-3 rounded-2xl border transition-all duration-150',
+                    'font-medium text-sm',
+                    timeFlexible
+                      ? 'bg-primary text-white border-primary'
+                      : 'bg-white text-text-primary border-border hover:border-primary',
+                  ].join(' ')}
+                >
+                  Anytime
+                </button>
               </div>
-            </div>
-
-            {/* Time Picker */}
-            <div>
-              <label
-                htmlFor="trip-time"
-                className="block text-sm font-medium text-text-primary mb-1"
-              >
-                {timeType === 'departure' ? 'Departure Time' : 'Arrival Time'}
-              </label>
-              <input
-                id="trip-time"
-                data-testid="trip-time-input"
-                type="time"
-                value={tripTime}
-                onChange={(e) => { setTripTime(e.target.value); setErrors({}) }}
-                className={[
-                  'w-full rounded-2xl border bg-white px-4 py-3',
-                  'text-base text-text-primary',
-                  'transition-colors duration-150',
-                  'focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary',
-                  errors.tripTime
-                    ? 'border-danger focus:ring-danger'
-                    : 'border-border',
-                ].join(' ')}
-              />
-              {errors.tripTime && (
-                <p data-testid="trip-time-error" className="text-xs text-danger mt-1">
-                  {errors.tripTime}
+              {timeFlexible && (
+                <p className="text-xs text-text-secondary mt-2">
+                  No specific time — anyone matching this date can propose a pickup window.
                 </p>
               )}
             </div>
+
+            {/* Time Picker — hidden when the poster chose Anytime */}
+            {!timeFlexible && (
+              <div>
+                <label
+                  htmlFor="trip-time"
+                  className="block text-sm font-medium text-text-primary mb-1"
+                >
+                  {timeType === 'departure' ? 'Departure Time' : 'Arrival Time'}
+                </label>
+                <input
+                  id="trip-time"
+                  data-testid="trip-time-input"
+                  type="time"
+                  value={tripTime}
+                  onChange={(e) => { setTripTime(e.target.value); setErrors({}) }}
+                  className={[
+                    'w-full rounded-2xl border bg-white px-4 py-3',
+                    'text-base text-text-primary',
+                    'transition-colors duration-150',
+                    'focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary',
+                    errors.tripTime
+                      ? 'border-danger focus:ring-danger'
+                      : 'border-border',
+                  ].join(' ')}
+                />
+                {errors.tripTime && (
+                  <p data-testid="trip-time-error" className="text-xs text-danger mt-1">
+                    {errors.tripTime}
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Submit Error */}
             {submitError && (

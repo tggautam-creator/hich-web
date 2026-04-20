@@ -10,9 +10,22 @@ import RideBoardConfirmSheet from './RideBoardConfirmSheet'
 import type { RequestEnrichment } from './RideBoardConfirmSheet'
 import RideBoardEmptyState from './RideBoardEmptyState'
 import PostRideFAB from './PostRideFAB'
-import { formatDays, formatDate, formatTime, SHORT_DAYS } from './boardHelpers'
+import RideBoardFilterSheet from './RideBoardFilterSheet'
+import { DEFAULT_FILTERS, countActiveFilters, type RideBoardFilters } from './boardFilters'
+import { formatDays, formatDate, formatTime, formatTripSchedule, SHORT_DAYS } from './boardHelpers'
 import type { ScheduledRide, TabFilter } from './boardTypes'
 import type { DriverRoutine } from '@/types/database'
+import { haversineMetres } from '@/lib/geo'
+
+// Same-metro radius for "Near me". Cities routinely span 20-30 km across, so
+// a tighter corridor would exclude a poster living in the same town as the
+// viewer. This is an MVP heuristic — once we have real city boundaries we
+// can swap to a proper geocode-based city match.
+const NEAR_ME_RADIUS_METRES = 30_000
+
+function toIsoDay(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -36,6 +49,8 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
   const defaultTab: TabFilter = activeNavTab === 'drive' ? 'riders' : 'drivers'
   const [tab, setTab] = useState<TabFilter>(defaultTab)
   const [searchQuery, setSearchQuery] = useState('')
+  const [filters, setFilters] = useState<RideBoardFilters>(DEFAULT_FILTERS)
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false)
 
   const [detailRide, setDetailRide] = useState<ScheduledRide | null>(null)
   const [confirmRide, setConfirmRide] = useState<ScheduledRide | null>(null)
@@ -43,10 +58,12 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
   const [requestingId, setRequestingId] = useState<string | null>(null)
   const [requestError, setRequestError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [withdrawingRideId, setWithdrawingRideId] = useState<string | null>(null)
   const [editingSeats, setEditingSeats] = useState(false)
   const [seatEditValue, setSeatEditValue] = useState(1)
   const [savingSeats, setSavingSeats] = useState(false)
   const userLocationRef = useRef<{ lat: number; lng: number } | null>(null)
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null)
 
   // Routines sheet state
   const [routinesOpen, setRoutinesOpen] = useState(false)
@@ -60,26 +77,81 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
   const [editDays, setEditDays] = useState<number[]>([])
   const [editSaving, setEditSaving] = useState(false)
 
-  // ── Client-side search filtering ────────────────────────────────────────────
+  // ── Client-side filtering (search + time window + seat count) ──────────────
   const filteredRides = useMemo(() => {
-    if (!searchQuery.trim()) return rides
-    const q = searchQuery.toLowerCase()
-    return rides.filter(
-      (r) =>
-        r.dest_address.toLowerCase().includes(q) ||
-        r.origin_address.toLowerCase().includes(q),
-    )
-  }, [rides, searchQuery])
+    const q = searchQuery.trim().toLowerCase()
+    const today = toIsoDay(new Date())
+    const weekEnd = new Date()
+    weekEnd.setDate(weekEnd.getDate() + 7)
+    const weekEndStr = toIsoDay(weekEnd)
 
-  const driverCount = filteredRides.filter((r) => r.mode === 'driver').length
-  const riderCount = filteredRides.filter((r) => r.mode === 'rider').length
+    return rides.filter((r) => {
+      if (q && !r.dest_address.toLowerCase().includes(q) && !r.origin_address.toLowerCase().includes(q)) {
+        return false
+      }
+      if (filters.time === 'today' && r.trip_date !== today) return false
+      if (filters.time === 'week' && (r.trip_date < today || r.trip_date > weekEndStr)) return false
+      if (filters.time === 'custom' && filters.customDate && r.trip_date !== filters.customDate) return false
+      // Seat filter only narrows driver posts; rider posts pass through unchanged.
+      if (filters.seats === '2plus' && r.mode === 'driver' && (r.available_seats ?? 0) < 2) return false
+      return true
+    })
+  }, [rides, searchQuery, filters])
+
+  // Posts whose origin is within ~30 km of the viewer — i.e. roughly same
+  // metro area. Applies to BOTH driver and rider posts. Uses the generic
+  // origin_lat/lng columns added in migration 048, falling back to the
+  // legacy driver_origin_* fields for older rows.
+  const nearbyRideIds = useMemo(() => {
+    const loc = userLocation
+    const result = new Set<string>()
+    if (!loc) return result
+    for (const r of filteredRides) {
+      const oLat = r.origin_lat ?? r.driver_origin_lat
+      const oLng = r.origin_lng ?? r.driver_origin_lng
+      if (oLat == null || oLng == null) continue
+      const dist = haversineMetres(loc.lat, loc.lng, oLat, oLng)
+      if (dist <= NEAR_ME_RADIUS_METRES) result.add(r.id)
+    }
+    return result
+  }, [filteredRides, userLocation])
+
+  // Apply near-me filter + sort on top of search/time/seats filter.
+  const visibleRides = useMemo(() => {
+    let arr = filteredRides
+    if (filters.nearMeOnly) {
+      arr = arr.filter((r) => nearbyRideIds.has(r.id))
+    }
+
+    const cmp = (a: ScheduledRide, b: ScheduledRide): number => {
+      if (filters.sort === 'nearest' && userLocation) {
+        const distOf = (r: ScheduledRide) => {
+          const oLat = r.origin_lat ?? r.driver_origin_lat
+          const oLng = r.origin_lng ?? r.driver_origin_lng
+          if (oLat == null || oLng == null) return Number.POSITIVE_INFINITY
+          return haversineMetres(userLocation.lat, userLocation.lng, oLat, oLng)
+        }
+        return distOf(a) - distOf(b)
+      }
+      // Default: recently posted
+      return (b.created_at ?? '').localeCompare(a.created_at ?? '')
+    }
+
+    return [...arr].sort(cmp)
+  }, [filteredRides, filters.nearMeOnly, filters.sort, nearbyRideIds, userLocation])
+
+  const driverCount = visibleRides.filter((r) => r.mode === 'driver').length
+  const riderCount = visibleRides.filter((r) => r.mode === 'rider').length
+  const activeFilterCount = countActiveFilters(filters)
 
   // ── Geolocation ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          userLocationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+          const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+          userLocationRef.current = loc
+          setUserLocation(loc)
         },
         () => { /* non-fatal */ },
         { enableHighAccuracy: false, timeout: 5000 },
@@ -198,6 +270,39 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       setRequestError('Network error — please try again.')
     } finally {
       setSavingSeats(false)
+    }
+  }, [])
+
+  // ── Withdraw pending board request ──────────────────────────────────────────
+  const handleWithdrawRequest = useCallback(async (rideId: string) => {
+    setWithdrawingRideId(rideId)
+    setRequestError(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        setRequestError('Not authenticated')
+        return
+      }
+      const resp = await fetch('/api/schedule/withdraw-board', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ ride_id: rideId }),
+      })
+      if (!resp.ok) {
+        const body = (await resp.json()) as { error?: { message?: string } }
+        setRequestError(body.error?.message ?? 'Failed to withdraw')
+        return
+      }
+      setRides((prev) => prev.map((r) => r.ride_id === rideId ? { ...r, already_requested: false, ride_status: null, ride_id: null } : r))
+      setSuccessMessage('Request withdrawn.')
+      setTimeout(() => setSuccessMessage(null), 3000)
+    } catch {
+      setRequestError('Network error — please try again.')
+    } finally {
+      setWithdrawingRideId(null)
     }
   }, [])
 
@@ -408,16 +513,39 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
           onQueryChange={setSearchQuery}
         />
 
-        {/* Filter tabs */}
-        <div className="flex gap-2 mt-3">
-          <button data-testid="tab-all" onClick={() => setTab('all')} className={tabClass('all')}>
-            All
-          </button>
-          <button data-testid="tab-drivers" onClick={() => setTab('drivers')} className={tabClass('drivers')}>
-            Drivers{!loading && driverCount > 0 ? ` (${driverCount})` : ''}
-          </button>
-          <button data-testid="tab-riders" onClick={() => setTab('riders')} className={tabClass('riders')}>
-            Riders{!loading && riderCount > 0 ? ` (${riderCount})` : ''}
+        {/* Tabs row + Filters button */}
+        <div className="flex items-center gap-2 mt-3">
+          <div className="flex gap-2 flex-1 min-w-0">
+            <button data-testid="tab-all" onClick={() => setTab('all')} className={tabClass('all')}>
+              All
+            </button>
+            <button data-testid="tab-drivers" onClick={() => setTab('drivers')} className={tabClass('drivers')}>
+              Drivers{!loading && driverCount > 0 ? ` (${driverCount})` : ''}
+            </button>
+            <button data-testid="tab-riders" onClick={() => setTab('riders')} className={tabClass('riders')}>
+              Riders{!loading && riderCount > 0 ? ` (${riderCount})` : ''}
+            </button>
+          </div>
+          <button
+            type="button"
+            data-testid="open-filter-sheet"
+            onClick={() => setFilterSheetOpen(true)}
+            aria-label="Filters and sort"
+            className={[
+              'relative flex h-9 items-center gap-1.5 rounded-full border px-3 shrink-0 transition-colors',
+              activeFilterCount > 0
+                ? 'bg-primary text-white border-primary'
+                : 'bg-white text-text-primary border-border',
+            ].join(' ')}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+              <line x1="4" y1="6" x2="20" y2="6" />
+              <line x1="7" y1="12" x2="17" y2="12" />
+              <line x1="10" y1="18" x2="14" y2="18" />
+            </svg>
+            <span className="text-xs font-semibold">
+              Filters{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ''}
+            </span>
           </button>
         </div>
       </div>
@@ -439,7 +567,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
           </div>
         )}
 
-        {!loading && !error && filteredRides.length === 0 && (
+        {!loading && !error && visibleRides.length === 0 && (
           <RideBoardEmptyState
             searchQuery={searchQuery}
             onPostRide={() => navigate(postRideUrl)}
@@ -458,18 +586,21 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
           </div>
         )}
 
-        {!loading && !error && filteredRides.length > 0 && (
+        {!loading && !error && visibleRides.length > 0 && (
           <div className="space-y-3">
-            {filteredRides.map((ride) => (
+            {visibleRides.map((ride) => (
               <RideBoardCard
                 key={ride.id}
                 ride={ride}
                 isOwn={ride.user_id === profile?.id}
+                isNearby={nearbyRideIds.has(ride.id)}
                 deletingId={deletingId}
+                withdrawingRideId={withdrawingRideId}
                 onCardClick={(r) => { setDetailRide(r) }}
                 onRequestClick={(r) => { setConfirmRide(r); setRequestError(null) }}
                 onDeleteClick={(id) => { void handleDeleteSchedule(id) }}
                 onOpenMessages={handleOpenMessages}
+                onWithdrawClick={(rideId) => { void handleWithdrawRequest(rideId) }}
               />
             ))}
           </div>
@@ -551,7 +682,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
                     <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
                   </svg>
-                  {dr.time_type === 'departure' ? 'Departs' : 'Arrives'} {formatTime(dr.trip_time)}
+                  {formatTripSchedule({ trip_time: dr.trip_time, time_type: dr.time_type, time_flexible: dr.time_flexible })}
                 </span>
                 {dr.direction_type === 'roundtrip' && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary">
@@ -617,8 +748,20 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
               )}
 
               {!isOwn && dr.already_requested && dr.ride_status !== 'coordinating' && dr.ride_status !== 'accepted' && (
-                <div className="w-full rounded-2xl py-3 text-center text-sm font-semibold bg-surface text-text-secondary">
-                  Request Sent
+                <div className="space-y-2">
+                  <div className="w-full rounded-2xl py-3 text-center text-sm font-semibold bg-surface text-text-secondary">
+                    Request Sent
+                  </div>
+                  {dr.ride_id && (
+                    <button
+                      data-testid="detail-withdraw-button"
+                      disabled={withdrawingRideId === dr.ride_id}
+                      onClick={() => { setDetailRide(null); if (dr.ride_id) void handleWithdrawRequest(dr.ride_id) }}
+                      className="w-full rounded-2xl py-3 text-sm font-semibold text-danger bg-danger/10 active:bg-danger/20 disabled:opacity-50"
+                    >
+                      {withdrawingRideId === dr.ride_id ? 'Withdrawing…' : 'Withdraw Request'}
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -682,6 +825,16 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
         isRequesting={requestingId === confirmRide?.id}
         onConfirm={(enrichment) => { void handleConfirmRequest(enrichment) }}
         onCancel={() => setConfirmRide(null)}
+      />
+
+      {/* ── Filter + sort sheet ───────────────────────────────────────────── */}
+      <RideBoardFilterSheet
+        isOpen={filterSheetOpen}
+        filters={filters}
+        hasUserLocation={userLocation != null}
+        showSeatsFilter={tab !== 'riders'}
+        onApply={setFilters}
+        onClose={() => setFilterSheetOpen(false)}
       />
 
       {/* ── Post Ride FAB ─────────────────────────────────────────────────── */}

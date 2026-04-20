@@ -119,9 +119,14 @@ scheduleRouter.get(
     const filteredSchedules = schedules.filter((s: Record<string, unknown>) => {
       const tripDate = s['trip_date'] as string
       const tripTime = s['trip_time'] as string
+      const timeFlexible = s['time_flexible'] === true
 
       // If trip date is in the future, keep it
       if (tripDate > today) return true
+
+      // Anytime posts for today stay visible all day — the whole point is no
+      // specific hour, so there's no "past" to filter against.
+      if (tripDate === today && timeFlexible) return true
 
       // If trip date is today, check if time has passed beyond grace period
       if (tripDate === today && tripTime) {
@@ -277,6 +282,8 @@ interface NotifyBody {
   trip_date: string
   trip_time: string
   time_type: 'departure' | 'arrival'
+  /** When true the poster is flexible on time — skip time-window matching. */
+  time_flexible?: boolean
   mode: 'driver' | 'rider'
   origin_lat?: number
   origin_lng?: number
@@ -383,12 +390,16 @@ scheduleRouter.post(
         if (diff > 60) continue
       }
 
-      // Time check: scheduled time within 30 minutes
-      const routineTime = routine.departure_time ?? routine.arrival_time
-      if (!routineTime) continue
+      // Time check: scheduled time within 30 minutes. Skipped when the poster
+      // is flexible on time — otherwise an "anytime" post would never match
+      // any driver whose routine runs outside a 30-minute window of noon.
+      if (!body.time_flexible) {
+        const routineTime = routine.departure_time ?? routine.arrival_time
+        if (!routineTime) continue
 
-      const timeDiff = timeDifferenceMinutes(body.trip_time, routineTime)
-      if (timeDiff > 30) continue
+        const timeDiff = timeDifferenceMinutes(body.trip_time, routineTime)
+        if (timeDiff > 30) continue
+      }
 
       stage3DriverIds.add(routine.user_id)
     }
@@ -1180,6 +1191,108 @@ scheduleRouter.patch(
     void realtimeBroadcast(`myrides:${userId}`, 'ride_status_changed', { ride_id: rideId, status: 'cancelled' })
 
     console.log(JSON.stringify({ type: 'board_decline', ride_id: rideId, declined_by: userId }))
+    res.status(200).json({ ride_id: rideId, status: 'cancelled' })
+  },
+)
+
+// ── PATCH /api/schedule/withdraw-board ───────────────────────────────────────
+/**
+ * The ORIGINAL REQUESTER withdraws their own board request/offer before the
+ * poster has accepted. Atomic: only cancels if status is still 'requested'.
+ * Notifies the poster so their inbox clears.
+ */
+scheduleRouter.patch(
+  '/withdraw-board',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const userId = res.locals['userId'] as string
+    const { ride_id: rideId } = req.body as { ride_id?: string }
+
+    if (!rideId) {
+      res.status(400).json({
+        error: { code: 'INVALID_BODY', message: 'ride_id is required' },
+      })
+      return
+    }
+
+    const { data: ride, error: fetchErr } = await supabaseAdmin
+      .from('rides')
+      .select('id, rider_id, driver_id, status, schedule_id')
+      .eq('id', rideId)
+      .single()
+
+    if (fetchErr || !ride) {
+      res.status(404).json({
+        error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' },
+      })
+      return
+    }
+
+    if (ride.rider_id !== userId && ride.driver_id !== userId) {
+      res.status(403).json({
+        error: { code: 'FORBIDDEN', message: 'You are not a participant in this ride' },
+      })
+      return
+    }
+
+    // Determine the poster so we can verify the caller is the requester, not the poster.
+    // The poster is whoever owns the schedule; they should use decline-board instead.
+    let posterId: string | null = null
+    if (ride.schedule_id) {
+      const { data: schedule } = await supabaseAdmin
+        .from('ride_schedules')
+        .select('user_id')
+        .eq('id', ride.schedule_id)
+        .single()
+      posterId = (schedule?.user_id as string | undefined) ?? null
+    }
+
+    if (posterId && posterId === userId) {
+      res.status(400).json({
+        error: { code: 'USE_DECLINE', message: 'Posters should use decline-board to reject requests' },
+      })
+      return
+    }
+
+    // Atomic cancel — only transitions if still 'requested'
+    const { data: updated, error: updateErr } = await supabaseAdmin
+      .from('rides')
+      .update({ status: 'cancelled' })
+      .eq('id', rideId)
+      .eq('status', 'requested')
+      .select('id')
+
+    if (updateErr) {
+      next(updateErr)
+      return
+    }
+
+    if (!updated || updated.length === 0) {
+      res.status(409).json({
+        error: { code: 'INVALID_STATUS', message: `Ride status is '${ride.status}', can only withdraw while 'requested'` },
+      })
+      return
+    }
+
+    // Notify the poster so their pending-request UI clears
+    if (posterId) {
+      supabaseAdmin.from('notifications').insert({
+        user_id: posterId,
+        type: 'board_withdrawn',
+        title: 'Request Withdrawn',
+        body: 'The other party withdrew their ride request.',
+        data: { ride_id: rideId },
+      }).then(({ error: notifErr }) => {
+        if (notifErr) console.error('Failed to persist withdraw notification:', notifErr.message)
+      })
+
+      void realtimeBroadcast(`board:${posterId}`, 'board_withdrawn', { type: 'board_withdrawn', ride_id: rideId })
+      void realtimeBroadcast(`myrides:${posterId}`, 'ride_status_changed', { ride_id: rideId, status: 'cancelled' })
+    }
+
+    void realtimeBroadcast(`myrides:${userId}`, 'ride_status_changed', { ride_id: rideId, status: 'cancelled' })
+
+    console.log(JSON.stringify({ type: 'board_withdraw', ride_id: rideId, withdrawn_by: userId }))
     res.status(200).json({ ride_id: rideId, status: 'cancelled' })
   },
 )

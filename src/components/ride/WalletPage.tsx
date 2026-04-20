@@ -97,8 +97,17 @@ export default function WalletPage() {
         </h2>
 
         {loading && (
-          <div className="flex justify-center py-8" data-testid="loading-spinner">
-            <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+          <div className="space-y-2" data-testid="loading-spinner">
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} className="flex items-center gap-3 rounded-2xl bg-white p-4">
+                <div className="h-9 w-9 shrink-0 animate-pulse rounded-full bg-border" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-3 w-2/3 animate-pulse rounded bg-border" />
+                  <div className="h-3 w-1/3 animate-pulse rounded bg-border" />
+                </div>
+                <div className="h-4 w-14 animate-pulse rounded bg-border" />
+              </div>
+            ))}
           </div>
         )}
 
