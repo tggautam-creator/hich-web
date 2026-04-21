@@ -30,6 +30,21 @@ const PLATFORM_FEE_RATE = 0
 const DEFAULT_MPG = 25
 const DEFAULT_GAS_PRICE_PER_GALLON = 3.50
 
+/**
+ * M4 — fare invariant. The driver's credit + platform fee must always equal
+ * the rider's charge. Any path that computes these independently risks silent
+ * over- or under-credit, especially if PLATFORM_FEE_RATE changes. Call this
+ * immediately before every `wallet_apply_delta('ride_earning', ...)` so the
+ * bad case surfaces as a 500 in logs rather than a wrong number in prod.
+ */
+function assertFareInvariant(fareCents: number, platformFeeCents: number, driverEarnsCents: number, ctx: string): void {
+  if (driverEarnsCents + platformFeeCents !== fareCents) {
+    throw new Error(
+      `[fare-invariant:${ctx}] driver_earns_cents (${driverEarnsCents}) + platform_fee_cents (${platformFeeCents}) !== fare_cents (${fareCents})`,
+    )
+  }
+}
+
 function haversineMetres(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const φ1 = lat1 * DEG_TO_RAD
   const φ2 = lat2 * DEG_TO_RAD
@@ -2673,6 +2688,7 @@ ridesRouter.post(
           paymentIntentId = chargeResult.paymentIntentId
           stripeFeeCents = chargeResult.stripFeeCents ?? 0
 
+          assertFareInvariant(fareCents, platformFeeCents, driverEarnsCents, 'rides/end')
           const { error: walletErr } = await supabaseAdmin.rpc('wallet_apply_delta', {
             p_user_id: ride.driver_id,
             p_delta_cents: driverEarnsCents,
@@ -3009,6 +3025,7 @@ ridesRouter.post(
           scanPaymentIntentId = chargeResult.paymentIntentId
           scanStripeFeeCents = chargeResult.stripFeeCents ?? 0
 
+          assertFareInvariant(fareCents, platformFeeCents, driverEarnsCents, 'rides/scan-driver')
           const { error: walletErr } = await supabaseAdmin.rpc('wallet_apply_delta', {
             p_user_id: ride.driver_id,
             p_delta_cents: driverEarnsCents,
@@ -4303,10 +4320,15 @@ ridesRouter.post(
           })
           .eq('id', rideId)
 
-        // Platform MVP: driver_earns_cents === fare_cents (0 platform fee).
+        // M4 — derive driver earnings from the same rule as computeRideFare
+        // so a future non-zero PLATFORM_FEE_RATE can't silently over-credit
+        // the driver here while the normal /end path subtracts the fee.
+        const retryPlatformFeeCents = Math.round(fareCents * PLATFORM_FEE_RATE)
+        const retryDriverEarnsCents = fareCents - retryPlatformFeeCents
+        assertFareInvariant(fareCents, retryPlatformFeeCents, retryDriverEarnsCents, 'rides/retry-payment')
         const { error: walletErr } = await supabaseAdmin.rpc('wallet_apply_delta', {
           p_user_id: ride.driver_id,
-          p_delta_cents: fareCents,
+          p_delta_cents: retryDriverEarnsCents,
           p_type: 'ride_earning',
           p_description: `Ride earning · ${rideId}`,
           p_ride_id: rideId,

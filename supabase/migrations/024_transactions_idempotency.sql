@@ -1,6 +1,15 @@
 -- Add idempotency columns for Stripe deduplication.
 -- stripe_event_id: unique per webhook event (prevents Stripe retry double-credit)
 -- payment_intent_id: shared key between webhook and confirm-topup (prevents both crediting)
+--
+-- ⚠️  LOAD-BEARING UNIQUE INDEXES — DO NOT DROP.
+-- wallet_apply_delta (migration 044) relies on these partial-unique indexes
+-- as its *sole* double-credit guard. If either index is removed:
+--   • A Stripe webhook retry that races /confirm-topup will credit twice.
+--   • A payment_intent.succeeded replay will re-run ride_earning credits.
+-- Any future migration that touches these indexes MUST preserve uniqueness
+-- (or port the guard into wallet_apply_delta as an explicit SELECT ... FOR
+-- UPDATE / ON CONFLICT path before dropping).
 
 ALTER TABLE transactions
   ADD COLUMN IF NOT EXISTS stripe_event_id TEXT,

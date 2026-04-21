@@ -6,6 +6,10 @@
 -- enforced by the existing unique partial indexes on
 -- transactions.stripe_event_id and transactions.payment_intent_id —
 -- a duplicate insert raises SQLSTATE 23505 and the balance UPDATE rolls back.
+--
+-- ⚠️  DEPENDS ON load-bearing unique indexes from migration 024
+-- (idx_transactions_stripe_event_id, idx_transactions_payment_intent_id).
+-- Without them this function silently double-credits on webhook retry.
 
 CREATE OR REPLACE FUNCTION wallet_apply_delta(
   p_user_id UUID,
