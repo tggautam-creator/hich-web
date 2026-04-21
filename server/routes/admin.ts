@@ -17,6 +17,7 @@ import { Router } from 'express'
 import type { Request, Response, NextFunction } from 'express'
 import { getMetricsSnapshot } from '../middleware/metrics.ts'
 import { sendGhostDriverReminders, processGhostDriverRefunds } from '../jobs/ghostRefund.ts'
+import { sendPendingPaymentNudges } from '../jobs/paymentDunning.ts'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 
 export const adminRouter = Router()
@@ -80,6 +81,22 @@ adminRouter.post('/ghost-refunds/run', requireAdminToken, async (req: Request, r
       ? await sendGhostDriverReminders()
       : await processGhostDriverRefunds()
     res.json({ kind, result })
+  } catch (err) { next(err) }
+})
+
+// ── 24 h payment-dunning cron ────────────────────────────────────────────────
+
+/**
+ * POST /api/admin/payment-dunning/run — fire the 24/48/72h FCM push sweep.
+ *
+ * No body. Intended to be called by a daily cron (or manually by ops while
+ * no scheduler is wired up). Idempotent — `payment_nudges (ride_id, bucket)`
+ * UNIQUE makes re-running the same day a no-op.
+ */
+adminRouter.post('/payment-dunning/run', requireAdminToken, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await sendPendingPaymentNudges()
+    res.json({ result })
   } catch (err) { next(err) }
 })
 

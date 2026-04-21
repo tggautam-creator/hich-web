@@ -824,6 +824,29 @@ export type Database = {
         Relationships: never[]
       }
 
+      // ── payment_nudges ──────────────────────────────────────────────────────
+      payment_nudges: {
+        Row: {
+          id: string
+          ride_id: string
+          bucket: '24h' | '48h' | '72h'
+          sent_at: string
+        }
+        Insert: {
+          id?: string
+          ride_id: string
+          bucket: '24h' | '48h' | '72h'
+          sent_at?: string
+        }
+        Update: {
+          id?: string
+          ride_id?: string
+          bucket?: '24h' | '48h' | '72h'
+          sent_at?: string
+        }
+        Relationships: never[]
+      }
+
       // ── request_idempotency ─────────────────────────────────────────────────
       request_idempotency: {
         Row: {
