@@ -275,6 +275,100 @@ describe('GET /api/wallet/transactions', () => {
   })
 })
 
+// ── H1: GET /api/wallet/pending-earnings ─────────────────────────────────────
+
+describe('GET /api/wallet/pending-earnings', () => {
+  function mockRidesAndRiders(
+    rides: Array<Record<string, unknown>>,
+    riders: Array<Record<string, unknown>>,
+    ridesError: unknown = null,
+  ) {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'rides') {
+        return {
+          select: () => ({
+            eq: () => ({
+              in: () => ({
+                not: () => ({
+                  order: () => ({
+                    limit: () => Promise.resolve({ data: rides, error: ridesError }),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        }
+      }
+      if (table === 'users') {
+        return {
+          select: () => ({
+            in: () => Promise.resolve({ data: riders, error: null }),
+          }),
+        }
+      }
+      return {}
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAuthSuccess()
+  })
+
+  it('returns 401 without auth token', async () => {
+    const res = await request(app).get('/api/wallet/pending-earnings')
+    expect(res.status).toBe(401)
+  })
+
+  it('returns empty list and total_cents=0 when driver has no pending rides', async () => {
+    mockRidesAndRiders([], [])
+
+    const res = await request(app)
+      .get('/api/wallet/pending-earnings')
+      .set('Authorization', VALID_JWT)
+
+    expect(res.status).toBe(200)
+    expect(res.body.pending).toEqual([])
+    expect(res.body.total_cents).toBe(0)
+  })
+
+  it('joins rider names and sums fare_cents across pending + failed rides', async () => {
+    mockRidesAndRiders(
+      [
+        { id: 'ride-1', rider_id: 'rider-A', fare_cents: 1200, ended_at: '2026-04-18T10:00:00Z', destination_name: 'Library', payment_status: 'pending' },
+        { id: 'ride-2', rider_id: 'rider-B', fare_cents: 800, ended_at: '2026-04-17T10:00:00Z', destination_name: 'Gym', payment_status: 'failed' },
+        { id: 'ride-3', rider_id: 'rider-A', fare_cents: 1500, ended_at: '2026-04-16T10:00:00Z', destination_name: 'Airport', payment_status: 'pending' },
+      ],
+      [
+        { id: 'rider-A', full_name: 'Alice' },
+        { id: 'rider-B', full_name: 'Bob' },
+      ],
+    )
+
+    const res = await request(app)
+      .get('/api/wallet/pending-earnings')
+      .set('Authorization', VALID_JWT)
+
+    expect(res.status).toBe(200)
+    expect(res.body.pending).toHaveLength(3)
+    expect(res.body.pending[0].rider_name).toBe('Alice')
+    expect(res.body.pending[1].rider_name).toBe('Bob')
+    expect(res.body.pending[2].rider_name).toBe('Alice')
+    expect(res.body.total_cents).toBe(3500)
+  })
+
+  it('returns 500 on DB error', async () => {
+    mockRidesAndRiders([], [], { message: 'connection reset' })
+
+    const res = await request(app)
+      .get('/api/wallet/pending-earnings')
+      .set('Authorization', VALID_JWT)
+
+    expect(res.status).toBe(500)
+    expect(res.body.error.code).toBe('DB_ERROR')
+  })
+})
+
 // ── F5: POST /api/wallet/withdraw ─────────────────────────────────────────────
 
 describe('POST /api/wallet/withdraw', () => {

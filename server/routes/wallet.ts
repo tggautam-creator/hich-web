@@ -277,6 +277,65 @@ walletRouter.post('/withdraw', validateJwt, idempotency('wallet-withdraw'), asyn
   }
 })
 
+// ── GET /api/wallet/pending-earnings — driver-side "payments in limbo" ─────
+//
+// Lists rides the caller drove whose rider-side payment never settled
+// (`payment_status IN ('pending','failed')`). These are earnings the driver
+// has *not* received yet — the rider either had no card at end-of-ride (B2)
+// or their off-session retry hit a Stripe decline. The driver's wallet was
+// NOT credited for these rides, so they don't double-count against existing
+// `wallet_balance`.
+walletRouter.get('/pending-earnings', validateJwt, async (_req, res, next) => {
+  try {
+    const userId = res.locals['userId'] as string
+
+    const { data: rides, error: ridesErr } = await supabaseAdmin
+      .from('rides')
+      .select('id, rider_id, fare_cents, ended_at, destination_name, payment_status')
+      .eq('driver_id', userId)
+      .in('payment_status', ['pending', 'failed'])
+      .not('ended_at', 'is', null)
+      .order('ended_at', { ascending: false })
+      .limit(50)
+
+    if (ridesErr) {
+      res.status(500).json({ error: { code: 'DB_ERROR', message: ridesErr.message } })
+      return
+    }
+
+    const ridesList = rides ?? []
+    const riderIds = Array.from(new Set(
+      ridesList.map((r) => r.rider_id as string | null).filter((id): id is string => Boolean(id)),
+    ))
+
+    const nameById = new Map<string, string>()
+    if (riderIds.length > 0) {
+      const { data: riders } = await supabaseAdmin
+        .from('users')
+        .select('id, full_name')
+        .in('id', riderIds)
+      for (const r of riders ?? []) {
+        if (r.id) nameById.set(r.id as string, (r.full_name as string | null) ?? '')
+      }
+    }
+
+    const pending = ridesList.map((r) => ({
+      ride_id: r.id,
+      rider_id: r.rider_id,
+      rider_name: nameById.get(r.rider_id as string) ?? null,
+      fare_cents: r.fare_cents,
+      ended_at: r.ended_at,
+      destination_name: r.destination_name,
+      payment_status: r.payment_status,
+    }))
+    const totalCents = pending.reduce((sum, p) => sum + ((p.fare_cents as number | null) ?? 0), 0)
+
+    res.json({ pending, total_cents: totalCents })
+  } catch (err) {
+    next(err)
+  }
+})
+
 // ── GET /api/wallet/transactions — fetch transaction history ───────────────
 walletRouter.get('/transactions', validateJwt, async (_req, res, next) => {
   try {
