@@ -590,6 +590,30 @@ scheduleRouter.post(
       driverId = userId
     }
 
+    // B1 — server-side card precondition on the rider. If the rider has no
+    // saved card the driver will finish the trip and the charge will silently
+    // fail. Whoever ends up as the rider (poster on a rider-post, or
+    // requester on a driver-post) must have stripe_customer_id + default
+    // payment method before we create the ride.
+    const { data: riderPaymentRow } = await supabaseAdmin
+      .from('users')
+      .select('stripe_customer_id, default_payment_method_id')
+      .eq('id', riderId)
+      .single()
+
+    if (!riderPaymentRow?.stripe_customer_id || !riderPaymentRow?.default_payment_method_id) {
+      const isSelf = riderId === userId
+      res.status(400).json({
+        error: {
+          code: 'NO_PAYMENT_METHOD',
+          message: isSelf
+            ? 'Add a payment method before requesting a ride.'
+            : 'The rider has not added a payment method yet.',
+        },
+      })
+      return
+    }
+
     // Build origin GeoPoint from requester's GPS, profile home_location, or schedule address
     let originGeo: { type: 'Point'; coordinates: [number, number] } | null = null
 

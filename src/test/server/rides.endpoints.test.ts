@@ -114,7 +114,12 @@ describe('POST /api/rides/request', () => {
 
   it('returns 409 when rider already has an active ride (BUG-036)', async () => {
     authAs(RIDER_ID)
-    // First from('rides') call: active-ride guard returns an existing ride
+    // 1) users query for card precondition — rider has a valid card
+    mockFrom.mockReturnValueOnce(chainOk({
+      stripe_customer_id: 'cus_123',
+      default_payment_method_id: 'pm_123',
+    }))
+    // 2) from('rides') active-ride guard returns an existing ride
     mockFrom.mockReturnValueOnce(chainOk({ id: 'existing-ride' }))
 
     const res = await request(app)
@@ -124,6 +129,22 @@ describe('POST /api/rides/request', () => {
 
     expect(res.status).toBe(409)
     expect(res.body.error.code).toBe('ACTIVE_RIDE_EXISTS')
+  })
+
+  it('returns 400 NO_PAYMENT_METHOD when rider has no card on file', async () => {
+    authAs(RIDER_ID)
+    mockFrom.mockReturnValueOnce(chainOk({
+      stripe_customer_id: null,
+      default_payment_method_id: null,
+    }))
+
+    const res = await request(app)
+      .post('/api/rides/request')
+      .set('Authorization', VALID_JWT)
+      .send({ origin: VALID_ORIGIN })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('NO_PAYMENT_METHOD')
   })
 
   it('returns 201 with ride_id on success', async () => {
@@ -150,6 +171,10 @@ describe('POST /api/rides/request', () => {
       if (table === 'users') {
         usersCallN++
         if (usersCallN === 1) {
+          // B1 card precondition → rider has a card
+          return chainOk({ stripe_customer_id: 'cus_123', default_payment_method_id: 'pm_123' })
+        }
+        if (usersCallN === 2) {
           // All drivers query (Stage-1 fallback) → no drivers → driverIds = []
           return { select: () => ({ eq: () => ({ neq: () => Promise.resolve({ data: [], error: null }) }) }) }
         }

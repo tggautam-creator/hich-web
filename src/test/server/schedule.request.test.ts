@@ -97,9 +97,14 @@ function setupMocks(schedule: Record<string, unknown>, requesterId: string) {
   })
   const mockSelectTokens = vi.fn().mockReturnValue({ eq: mockTokenEq })
 
-  // users (requester name + driver check) → .select().eq().single()
+  // users (requester name + driver check + B1 card check) → .select().eq().single()
   const mockUserSingle = vi.fn().mockResolvedValue({
-    data: { full_name: 'Test User', is_driver: true },
+    data: {
+      full_name: 'Test User',
+      is_driver: true,
+      stripe_customer_id: 'cus_123',
+      default_payment_method_id: 'pm_123',
+    },
     error: null,
   })
   const mockUserEq = vi.fn().mockReturnValue({ single: mockUserSingle })
@@ -296,5 +301,45 @@ describe('POST /api/schedule/request', () => {
       .send({ schedule_id: 'sched-001' })
 
     expect(res.status).toBe(401)
+  })
+
+  // ── B1 — card precondition ────────────────────────────────────────────────
+  it('returns 400 NO_PAYMENT_METHOD when rider has no card on file', async () => {
+    authAsUser('rider-me')
+
+    // ride_schedules → single returns DRIVER_SCHEDULE
+    const mockSchedSingle = vi.fn().mockResolvedValue({ data: DRIVER_SCHEDULE, error: null })
+    const mockSchedEq = vi.fn().mockReturnValue({ single: mockSchedSingle })
+    const mockSelectSched = vi.fn().mockReturnValue({ eq: mockSchedEq })
+
+    // rides dup check → no existing ride
+    const mockDupLimit = vi.fn().mockResolvedValue({ data: [], error: null })
+    const mockDupNot = vi.fn().mockReturnValue({ limit: mockDupLimit })
+    const mockDupOr = vi.fn().mockReturnValue({ not: mockDupNot })
+    const mockDupEq = vi.fn().mockReturnValue({ or: mockDupOr })
+    const mockDupSelect = vi.fn().mockReturnValue({ eq: mockDupEq })
+
+    // users (B1 card check) → no card
+    const mockUserSingle = vi.fn().mockResolvedValue({
+      data: { stripe_customer_id: null, default_payment_method_id: null },
+      error: null,
+    })
+    const mockUserEq = vi.fn().mockReturnValue({ single: mockUserSingle })
+    const mockSelectUser = vi.fn().mockReturnValue({ eq: mockUserEq })
+
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'ride_schedules') return { select: mockSelectSched }
+      if (table === 'rides') return { select: mockDupSelect }
+      if (table === 'users') return { select: mockSelectUser }
+      return {}
+    })
+
+    const res = await request(app)
+      .post('/api/schedule/request')
+      .set('Authorization', VALID_JWT)
+      .send({ schedule_id: 'sched-001' })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('NO_PAYMENT_METHOD')
   })
 })

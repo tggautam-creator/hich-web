@@ -198,7 +198,14 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       })
 
       if (!resp.ok) {
-        const body = (await resp.json()) as { error?: { message?: string } }
+        const body = (await resp.json()) as { error?: { code?: string; message?: string } }
+        if (body.error?.code === 'NO_PAYMENT_METHOD') {
+          // B1 — hard redirect rider to /payment/add, come back to the board.
+          setRequestingId(null)
+          setConfirmRide(null)
+          navigate('/payment/add', { state: { returnTo: '/rides/board' } })
+          return
+        }
         setRequestError(body.error?.message ?? 'Failed to send request')
         setRequestingId(null)
         setConfirmRide(null)
@@ -216,7 +223,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       setRequestingId(null)
       setConfirmRide(null)
     }
-  }, [confirmRide])
+  }, [confirmRide, navigate])
 
   // ── Delete own schedule ─────────────────────────────────────────────────────
   const handleDeleteSchedule = useCallback(async (scheduleId: string) => {

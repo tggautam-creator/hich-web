@@ -155,6 +155,27 @@ interface RideRequestBody {
   route_polyline?: string
 }
 
+/**
+ * B2 — notify the rider that a completed ride is waiting for payment because
+ * they didn't have a card on file at end-of-ride. Called from /end and
+ * /scan-driver. The webhook-driven `payment_failed` push covers the case
+ * where a PaymentIntent was created and declined; this covers the case where
+ * no PaymentIntent was ever attempted.
+ */
+async function notifyRiderPaymentNeeded(riderId: string, rideId: string): Promise<void> {
+  const { data: tokenRows } = await supabaseAdmin
+    .from('push_tokens')
+    .select('token')
+    .eq('user_id', riderId)
+  const tokens = (tokenRows ?? []).map((t: { token: string }) => t.token)
+  if (tokens.length === 0) return
+  await sendFcmPush(tokens, {
+    title: 'Payment needed',
+    body: 'Add a payment method to finish your recent ride.',
+    data: { type: 'payment_needed', ride_id: rideId },
+  })
+}
+
 function isGeoPoint(val: unknown): val is GeoPoint {
   if (typeof val !== 'object' || val === null) return false
   const obj = val as Record<string, unknown>
@@ -179,6 +200,22 @@ ridesRouter.post(
     if (!isGeoPoint(body.origin)) {
       res.status(400).json({
         error: { code: 'INVALID_BODY', message: 'origin must be a GeoPoint { type, coordinates }' },
+      })
+      return
+    }
+
+    // B1 — server-side card precondition. A rider cannot create a ride
+    // without a saved card: otherwise the driver finishes the trip and the
+    // charge silently fails, leaving the driver uncompensated.
+    const { data: riderPaymentRow } = await supabaseAdmin
+      .from('users')
+      .select('stripe_customer_id, default_payment_method_id')
+      .eq('id', riderId)
+      .single()
+
+    if (!riderPaymentRow?.stripe_customer_id || !riderPaymentRow?.default_payment_method_id) {
+      res.status(400).json({
+        error: { code: 'NO_PAYMENT_METHOD', message: 'Add a payment method before requesting a ride.' },
       })
       return
     }
@@ -2652,8 +2689,12 @@ ridesRouter.post(
           console.warn(`[rides/end] Stripe charge failed: ${chargeResult.error}`)
         }
       } else {
-        paymentStatus = 'failed'
-        console.warn(`[rides/end] Missing rider Stripe setup: customer=${!!rider?.stripe_customer_id} pm=${!!rider?.default_payment_method_id}`)
+        // B2 — rider lost / never added a card between request and end.
+        // Keep the ride 'pending' rather than 'failed' so the rider can
+        // re-add a card and the retry-payment endpoint can still charge.
+        // Driver is NOT credited until the charge actually lands.
+        paymentStatus = 'pending'
+        console.warn(`[rides/end] Missing rider Stripe setup (pending retry): customer=${!!rider?.stripe_customer_id} pm=${!!rider?.default_payment_method_id}`)
       }
     }
 
@@ -2675,6 +2716,11 @@ ridesRouter.post(
     if (updateErr) {
       next(updateErr)
       return
+    }
+
+    // B2 — rider had no card at end-of-ride. Nudge them to add one now.
+    if (paymentStatus === 'pending' && ride.rider_id) {
+      await notifyRiderPaymentNeeded(ride.rider_id, rideId)
     }
 
     // Broadcast ride_ended to both parties + component-specific channels
@@ -2979,8 +3025,11 @@ ridesRouter.post(
           console.warn(`[rides/scan-driver] Stripe charge failed: ${chargeResult.error}`)
         }
       } else {
-        scanPaymentStatus = 'failed'
-        console.warn(`[rides/scan-driver] Missing rider Stripe setup for ride ${ride.id}`)
+        // B2 — rider missing a card. Leave ride retryable via /retry-payment
+        // instead of marking it failed. Driver stays un-credited until the
+        // charge lands.
+        scanPaymentStatus = 'pending'
+        console.warn(`[rides/scan-driver] Missing rider Stripe setup (pending retry) for ride ${ride.id}`)
       }
     }
 
@@ -2999,6 +3048,11 @@ ridesRouter.post(
       .eq('id', ride.id)
 
     if (updateErr) { next(updateErr); return }
+
+    // B2 — rider had no card at scan-end. Nudge them to add one.
+    if (scanPaymentStatus === 'pending' && ride.rider_id) {
+      await notifyRiderPaymentNeeded(ride.rider_id as string, ride.id as string)
+    }
 
     // Multi-rider check: if other active rides exist for same schedule, only
     // broadcast ride_ended to rider channels so driver stays on active page.
