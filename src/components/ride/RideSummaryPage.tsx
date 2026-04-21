@@ -218,13 +218,26 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
         return
       }
 
-      // Refresh ride data to get updated payment_status
-      const { data: updatedRide } = await supabase
-        .from('rides')
-        .select('*')
-        .eq('id', rideId)
-        .single()
-      if (updatedRide) setRide(updatedRide)
+      // Poll payment_status until it resolves (paid/failed) or the 30s budget
+      // is exhausted. The retry hits Stripe off-session and commits to the
+      // wallet in the same request, but until the /retry-payment handler
+      // returns we can't read the new row, so poll the DB here.
+      const maxAttempts = 10
+      for (let i = 0; i < maxAttempts; i++) {
+        const { data: updatedRide } = await supabase
+          .from('rides')
+          .select('*')
+          .eq('id', rideId)
+          .single()
+        if (updatedRide) {
+          setRide(updatedRide)
+          const status = (updatedRide as Record<string, unknown>).payment_status as string | undefined
+          if (status === 'paid' || status === 'failed') break
+        }
+        if (i < maxAttempts - 1) {
+          await new Promise((r) => setTimeout(r, 3000))
+        }
+      }
     } catch {
       setRetryError('Network error. Please try again.')
     } finally {

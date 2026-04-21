@@ -254,4 +254,41 @@ describe('processGhostDriverRefunds (day 90)', () => {
     expect(state.rpcCalls).toHaveLength(0)
     expect(state.rideUpdates).toHaveLength(0)
   })
+
+  it('leaves ghost_refunds row with refunded_at/stripe_refund_id NULL on Stripe failure so replay is safe', async () => {
+    // Reminder pass at day 60 wrote a row with reminder_sent_at but no refund yet.
+    state.ghost_refunds.push({
+      ride_id: 'ride-A',
+      driver_id: 'driver-1',
+      rider_id: 'rider-1',
+      amount_cents: 1000,
+      payment_intent_id: 'pi_ride-A',
+      reminder_sent_at: daysAgo(30),
+      refunded_at: null,
+      stripe_refund_id: null,
+    })
+    seedGhostDriver('ride-A', 'driver-1', 'rider-1', 1000, 92)
+    mockStripeRefundsCreate.mockRejectedValueOnce(new Error('network_error'))
+
+    const firstRun = await processGhostDriverRefunds()
+    expect(firstRun.processed).toBe(0)
+    expect(firstRun.errors).toHaveLength(1)
+
+    // Finalization fields must remain unset — these are what guard replay.
+    const row = state.ghost_refunds.find((r) => r.ride_id === 'ride-A')
+    expect(row).toBeDefined()
+    expect(row?.refunded_at ?? null).toBeNull()
+    expect(row?.stripe_refund_id ?? null).toBeNull()
+
+    // Replay: second run succeeds because the skip-set only contains rides
+    // where refunded_at IS NOT NULL. Same idempotency key hits Stripe again.
+    mockStripeRefundsCreate.mockResolvedValueOnce({ id: 're_retry' })
+    const secondRun = await processGhostDriverRefunds()
+
+    expect(secondRun.processed).toBe(1)
+    expect(mockStripeRefundsCreate).toHaveBeenCalledTimes(2)
+    expect(mockStripeRefundsCreate.mock.calls[1][1].idempotencyKey).toBe('ghost-refund-ride-A')
+    expect(state.ghost_refunds[0].refunded_at).toBeTruthy()
+    expect(state.ghost_refunds[0].stripe_refund_id).toBe('re_retry')
+  })
 })
