@@ -4348,6 +4348,81 @@ ridesRouter.post(
   },
 )
 
+// ─── Nudge rider (driver-initiated) ──────────────────────────────────────────
+/**
+ * POST /api/rides/:id/nudge-rider
+ *
+ * Driver-side counterpart to the B2 auto-push: lets a driver re-trigger the
+ * "Payment needed" FCM push for a ride whose `payment_status` is still
+ * `pending` or `failed`. 60 s per-ride cooldown stops a driver tapping the
+ * Nudge button in WalletPage into spamming the rider. The cooldown lives in
+ * an in-process Map — good enough for single-instance MVP; if we ever scale
+ * to multiple API nodes this needs to move to Redis or a column on rides.
+ */
+const nudgeCooldownByRide = new Map<string, number>()
+const NUDGE_COOLDOWN_MS = 60_000
+
+ridesRouter.post(
+  '/:id/nudge-rider',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const userId = res.locals['userId'] as string
+    const rideId = req.params['id'] as string
+
+    try {
+      const { data: ride, error: rideErr } = await supabaseAdmin
+        .from('rides')
+        .select('id, rider_id, driver_id, payment_status')
+        .eq('id', rideId)
+        .single()
+
+      if (rideErr || !ride) {
+        res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Ride not found' } })
+        return
+      }
+
+      if (ride.driver_id !== userId) {
+        res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only the driver can nudge the rider' } })
+        return
+      }
+
+      if (ride.payment_status !== 'pending' && ride.payment_status !== 'failed') {
+        res.status(400).json({
+          error: { code: 'INVALID_STATE', message: `Cannot nudge: payment is ${ride.payment_status}` },
+        })
+        return
+      }
+
+      if (!ride.rider_id) {
+        res.status(400).json({ error: { code: 'INVALID_RIDE', message: 'Ride has no rider' } })
+        return
+      }
+
+      const now = Date.now()
+      const last = nudgeCooldownByRide.get(rideId) ?? 0
+      const elapsed = now - last
+      if (elapsed < NUDGE_COOLDOWN_MS) {
+        const retryAfterSec = Math.ceil((NUDGE_COOLDOWN_MS - elapsed) / 1000)
+        res.status(429).json({
+          error: {
+            code: 'COOLDOWN',
+            message: `Please wait ${retryAfterSec}s before nudging again`,
+          },
+          retry_after_seconds: retryAfterSec,
+        })
+        return
+      }
+
+      nudgeCooldownByRide.set(rideId, now)
+      await notifyRiderPaymentNeeded(ride.rider_id as string, rideId)
+
+      res.json({ nudged: true })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
 // ─── Ride timeout cleanup ─────────────────────────────────────────────────────
 /**
  * POST /api/rides/cleanup-stale

@@ -524,3 +524,98 @@ describe('PATCH /api/rides/:id/accept', () => {
     expect(res.body).toMatchObject({ ride_id: RIDE_ID, offer_status: 'standby' })
   })
 })
+
+// ── POST /api/rides/:id/nudge-rider ──────────────────────────────────────────
+
+describe('POST /api/rides/:id/nudge-rider', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockSendFcmPush.mockResolvedValue(1)
+    authAs(DRIVER_ID)
+  })
+
+  function mockRideAndTokens(ride: Record<string, unknown> | null) {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'rides') {
+        return {
+          select: () => ({
+            eq: () => ({
+              single: () => Promise.resolve({ data: ride, error: ride ? null : { message: 'nf' } }),
+            }),
+          }),
+        }
+      }
+      if (table === 'push_tokens') {
+        return {
+          select: () => ({
+            eq: () => Promise.resolve({ data: [{ token: 'fcm-tok-rider' }], error: null }),
+          }),
+        }
+      }
+      return {}
+    })
+  }
+
+  it('returns 401 without auth', async () => {
+    const res = await request(app).post(`/api/rides/${RIDE_ID}/nudge-rider`)
+    expect(res.status).toBe(401)
+  })
+
+  it('returns 404 when ride does not exist', async () => {
+    mockRideAndTokens(null)
+    const res = await request(app)
+      .post(`/api/rides/${RIDE_ID}/nudge-rider`)
+      .set('Authorization', VALID_JWT)
+    expect(res.status).toBe(404)
+    expect(res.body.error.code).toBe('NOT_FOUND')
+  })
+
+  it('returns 403 when caller is not the ride driver', async () => {
+    mockRideAndTokens({
+      id: RIDE_ID, rider_id: RIDER_ID, driver_id: DRIVER_ID_2, payment_status: 'pending',
+    })
+    const res = await request(app)
+      .post(`/api/rides/${RIDE_ID}/nudge-rider`)
+      .set('Authorization', VALID_JWT)
+    expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('FORBIDDEN')
+  })
+
+  it('returns 400 INVALID_STATE when payment is already paid', async () => {
+    mockRideAndTokens({
+      id: RIDE_ID, rider_id: RIDER_ID, driver_id: DRIVER_ID, payment_status: 'paid',
+    })
+    const res = await request(app)
+      .post(`/api/rides/${RIDE_ID}/nudge-rider`)
+      .set('Authorization', VALID_JWT)
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('INVALID_STATE')
+  })
+
+  it('sends push on success and rejects second call within 60s cooldown', async () => {
+    const rideId = 'ride-nudge-cooldown'
+    mockRideAndTokens({
+      id: rideId, rider_id: RIDER_ID, driver_id: DRIVER_ID, payment_status: 'pending',
+    })
+
+    const first = await request(app)
+      .post(`/api/rides/${rideId}/nudge-rider`)
+      .set('Authorization', VALID_JWT)
+    expect(first.status).toBe(200)
+    expect(first.body.nudged).toBe(true)
+    expect(mockSendFcmPush).toHaveBeenCalledTimes(1)
+    const [tokens, payload] = mockSendFcmPush.mock.calls[0]
+    expect(tokens).toEqual(['fcm-tok-rider'])
+    expect(payload.data.type).toBe('payment_needed')
+    expect(payload.data.ride_id).toBe(rideId)
+
+    const second = await request(app)
+      .post(`/api/rides/${rideId}/nudge-rider`)
+      .set('Authorization', VALID_JWT)
+    expect(second.status).toBe(429)
+    expect(second.body.error.code).toBe('COOLDOWN')
+    expect(second.body.retry_after_seconds).toBeGreaterThan(0)
+    // Push was NOT fired again.
+    expect(mockSendFcmPush).toHaveBeenCalledTimes(1)
+  })
+})

@@ -17,6 +17,16 @@ interface Transaction {
   created_at: string
 }
 
+interface PendingEarning {
+  ride_id: string
+  rider_id: string
+  rider_name: string | null
+  fare_cents: number
+  ended_at: string
+  destination_name: string | null
+  payment_status: 'pending' | 'failed'
+}
+
 async function fetchTransactions(): Promise<Transaction[]> {
   const { data: { session } } = await supabase.auth.getSession()
   if (!session) throw new Error('Not authenticated')
@@ -26,6 +36,16 @@ async function fetchTransactions(): Promise<Transaction[]> {
   if (!res.ok) throw new Error('Failed to fetch transactions')
   const json = await res.json() as { transactions: Transaction[] }
   return json.transactions
+}
+
+async function fetchPendingEarnings(): Promise<{ pending: PendingEarning[]; total_cents: number }> {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) throw new Error('Not authenticated')
+  const res = await fetch('/api/wallet/pending-earnings', {
+    headers: { Authorization: `Bearer ${session.access_token}` },
+  })
+  if (!res.ok) throw new Error('Failed to fetch pending earnings')
+  return (await res.json()) as { pending: PendingEarning[]; total_cents: number }
 }
 
 export default function WalletPage() {
@@ -47,6 +67,48 @@ export default function WalletPage() {
     queryKey: ['wallet-transactions'],
     queryFn: fetchTransactions,
   })
+
+  // Driver-only: rides the driver drove whose rider payment is still pending/failed.
+  // These earnings haven't hit wallet_balance yet, so we list them separately
+  // and let the driver nudge the rider to retry their card.
+  const { data: pendingEarnings } = useQuery({
+    queryKey: ['wallet-pending-earnings'],
+    queryFn: fetchPendingEarnings,
+    enabled: isDriver,
+  })
+  const pendingList = pendingEarnings?.pending ?? []
+  const pendingTotal = pendingEarnings?.total_cents ?? 0
+
+  const [nudgingRideId, setNudgingRideId] = useState<string | null>(null)
+  const [nudgeError, setNudgeError] = useState<string | null>(null)
+  const [nudgedRideIds, setNudgedRideIds] = useState<Set<string>>(new Set())
+
+  async function handleNudge(rideId: string) {
+    setNudgingRideId(rideId)
+    setNudgeError(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) { setNudgeError('Please sign in.'); return }
+      const resp = await fetch(`/api/rides/${rideId}/nudge-rider`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
+      if (!resp.ok) {
+        const body = (await resp.json().catch(() => ({}))) as { error?: { message?: string } }
+        setNudgeError(body.error?.message ?? 'Could not send nudge.')
+        return
+      }
+      setNudgedRideIds((prev) => {
+        const next = new Set(prev)
+        next.add(rideId)
+        return next
+      })
+    } catch {
+      setNudgeError('Network error. Please try again.')
+    } finally {
+      setNudgingRideId(null)
+    }
+  }
 
   function formatDate(iso: string): string {
     const d = new Date(iso)
@@ -152,6 +214,69 @@ export default function WalletPage() {
           Manage payment methods →
         </button>
       </div>
+
+      {/* Payments in limbo — driver-only */}
+      {isDriver && pendingList.length > 0 && (
+        <div className="px-6 pb-2" data-testid="pending-earnings-section">
+          <div className="flex items-baseline justify-between mb-3">
+            <h2 className="text-lg font-semibold text-text-primary">Payments in limbo</h2>
+            <span className="text-sm font-semibold text-warning" data-testid="pending-earnings-total">
+              {formatCents(pendingTotal)}
+            </span>
+          </div>
+          <p className="mb-2 text-xs text-text-secondary">
+            The rider hasn't completed payment yet. You'll be credited once they do.
+          </p>
+          {nudgeError && (
+            <p data-testid="nudge-error" className="mb-2 text-xs text-danger">{nudgeError}</p>
+          )}
+          <div className="space-y-2">
+            {pendingList.map((p) => {
+              const alreadyNudged = nudgedRideIds.has(p.ride_id)
+              const nudging = nudgingRideId === p.ride_id
+              return (
+                <div
+                  key={p.ride_id}
+                  className="rounded-2xl bg-white px-4 py-3"
+                  data-testid="pending-earning-item"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium text-text-primary truncate">
+                        {p.rider_name ?? 'Rider'}
+                        {p.destination_name && (
+                          <span className="text-text-secondary font-normal"> · {p.destination_name}</span>
+                        )}
+                      </p>
+                      <p className="mt-0.5 text-xs text-text-secondary">
+                        {formatDate(p.ended_at)}
+                        <span className={`ml-2 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          p.payment_status === 'failed'
+                            ? 'bg-danger/10 text-danger'
+                            : 'bg-warning/10 text-warning'
+                        }`}>
+                          {p.payment_status === 'failed' ? 'Payment failed' : 'Payment pending'}
+                        </span>
+                      </p>
+                    </div>
+                    <p className="shrink-0 font-semibold text-text-primary">
+                      {formatCents(p.fare_cents)}
+                    </p>
+                  </div>
+                  <button
+                    data-testid="nudge-rider-button"
+                    onClick={() => { void handleNudge(p.ride_id) }}
+                    disabled={nudging || alreadyNudged}
+                    className="mt-2 text-xs font-semibold text-primary active:opacity-70 disabled:opacity-50"
+                  >
+                    {alreadyNudged ? 'Nudge sent ✓' : nudging ? 'Sending…' : 'Nudge rider →'}
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Transactions */}
       <div className="px-6">
