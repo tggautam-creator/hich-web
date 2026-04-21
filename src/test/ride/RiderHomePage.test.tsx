@@ -232,11 +232,11 @@ describe('RiderHomePage', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/become-driver')
   })
 
-  it('payment tab navigates to /payment/methods', async () => {
+  it('payment tab navigates to /wallet', async () => {
     const user = userEvent.setup()
     renderPage()
     await user.click(screen.getByTestId('payment-tab'))
-    expect(mockNavigate).toHaveBeenCalledWith('/payment/methods')
+    expect(mockNavigate).toHaveBeenCalledWith('/wallet')
   })
 
   it('profile tab navigates to /profile', async () => {

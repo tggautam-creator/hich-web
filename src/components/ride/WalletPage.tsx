@@ -1,11 +1,12 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuthStore } from '@/stores/authStore'
 import { supabase } from '@/lib/supabase'
 import { formatCents } from '@/lib/fare'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import BottomNav from '@/components/ui/BottomNav'
+import WithdrawSheet from '@/components/ride/WithdrawSheet'
 
 interface Transaction {
   id: string
@@ -29,12 +30,18 @@ async function fetchTransactions(): Promise<Transaction[]> {
 
 export default function WalletPage() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { profile, refreshProfile } = useAuthStore()
+  const [withdrawOpen, setWithdrawOpen] = useState(false)
 
   // Refresh profile once on mount to get latest wallet_balance from DB
   useEffect(() => { void refreshProfile() }, [refreshProfile])
 
   const balance = profile?.wallet_balance ?? 0
+  const hasBank = profile?.stripe_onboarding_complete === true
+  const isDriver = profile?.is_driver === true
+  const showBankBanner = isDriver && !hasBank && balance > 0
+  const canWithdraw = isDriver && balance > 0
 
   const { data: transactions = [], isLoading: loading } = useQuery({
     queryKey: ['wallet-transactions'],
@@ -51,6 +58,7 @@ export default function WalletPage() {
       case 'topup': return 'Added funds'
       case 'fare_debit': return 'Ride fare'
       case 'fare_credit': return 'Ride earnings'
+      case 'ride_earning': return 'Ride earnings'
       case 'refund': return 'Refund'
       default: return type
     }
@@ -60,6 +68,7 @@ export default function WalletPage() {
     switch (type) {
       case 'topup': return '+'
       case 'fare_credit': return '+'
+      case 'ride_earning': return '+'
       case 'fare_debit': return '−'
       case 'refund': return '+'
       default: return ''
@@ -67,27 +76,81 @@ export default function WalletPage() {
   }
 
   function isCredit(type: string): boolean {
-    return type === 'topup' || type === 'fare_credit' || type === 'refund'
+    return type === 'topup' || type === 'fare_credit' || type === 'ride_earning' || type === 'refund'
+  }
+
+  function isDriverEarning(type: string): boolean {
+    return type === 'ride_earning' || type === 'fare_credit'
   }
 
   return (
     <div className="min-h-screen bg-surface pb-20 safe-top" data-testid="wallet-page">
       {/* Header */}
       <div className="bg-primary px-6 pb-8 pt-12 text-white">
-        <p className="text-sm text-white/80">Your balance</p>
+        <p className="text-sm text-white/80">
+          {showBankBanner ? 'Pending payout' : 'Your balance'}
+        </p>
         <p className="text-4xl font-bold" data-testid="wallet-balance">
           {formatCents(balance)}
         </p>
       </div>
 
-      {/* Add Funds */}
-      <div className="px-6 py-4">
+      {/* Bank-not-connected banner for drivers with earnings */}
+      {showBankBanner && (
+        <div className="px-6 pt-4">
+          <div
+            data-testid="wallet-bank-banner"
+            className="rounded-2xl border border-primary/20 bg-primary/5 px-4 py-3 flex items-start gap-3"
+          >
+            <div className="h-8 w-8 shrink-0 rounded-full bg-primary/10 flex items-center justify-center">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary" aria-hidden="true">
+                <rect x="2" y="6" width="20" height="14" rx="2" />
+                <path d="M2 10h20" />
+                <path d="M6 14h.01" />
+                <path d="M10 14h4" />
+              </svg>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-text-primary">Add a bank to withdraw</p>
+              <p className="text-xs text-text-secondary mt-0.5">
+                You've earned {formatCents(balance)}. Link a bank to cash out.
+              </p>
+              <button
+                data-testid="wallet-bank-banner-cta"
+                onClick={() => navigate('/stripe/payouts')}
+                className="mt-2 text-xs font-semibold text-primary active:opacity-70"
+              >
+                Link Bank Account →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Funds / Withdraw */}
+      <div className="px-6 py-4 space-y-2">
         <PrimaryButton
           onClick={() => navigate('/wallet/add')}
           data-testid="add-funds-button"
         >
           Add Funds
         </PrimaryButton>
+        {canWithdraw && (
+          <button
+            data-testid="withdraw-button"
+            onClick={() => setWithdrawOpen(true)}
+            className="w-full rounded-xl border border-primary py-3 text-sm font-semibold text-primary active:opacity-70"
+          >
+            Withdraw to Bank
+          </button>
+        )}
+        <button
+          data-testid="payment-methods-link"
+          onClick={() => navigate('/payment/methods')}
+          className="w-full py-2 text-sm font-medium text-text-secondary active:opacity-70"
+        >
+          Manage payment methods →
+        </button>
       </div>
 
       {/* Transactions */}
@@ -135,6 +198,11 @@ export default function WalletPage() {
                   </p>
                   <p className="text-xs text-text-secondary">
                     {formatDate(tx.created_at)}
+                    {isDriver && !hasBank && isDriverEarning(tx.type) && (
+                      <span data-testid="tx-pending-payout-tag" className="ml-2 text-primary">
+                        · Link bank to withdraw
+                      </span>
+                    )}
                   </p>
                 </div>
                 <p
@@ -150,6 +218,17 @@ export default function WalletPage() {
       </div>
 
       <BottomNav activeTab="payment" />
+
+      <WithdrawSheet
+        open={withdrawOpen}
+        onClose={() => setWithdrawOpen(false)}
+        balanceCents={balance}
+        hasBank={hasBank}
+        onSuccess={() => {
+          void refreshProfile()
+          void queryClient.invalidateQueries({ queryKey: ['wallet-transactions'] })
+        }}
+      />
     </div>
   )
 }

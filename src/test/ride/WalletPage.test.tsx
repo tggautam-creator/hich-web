@@ -28,7 +28,7 @@ vi.mock('@/lib/env', () => ({
   },
 }))
 
-const profileRef = { current: { id: 'user-001', wallet_balance: 2350 } }
+const profileRef: { current: Record<string, unknown> } = { current: { id: 'user-001', wallet_balance: 2350 } }
 
 vi.mock('@/stores/authStore', () => ({
   useAuthStore: vi.fn(
@@ -199,5 +199,51 @@ describe('WalletPage', () => {
     vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {})))
     renderWallet()
     expect(screen.getByTestId('loading-spinner')).toBeInTheDocument()
+  })
+
+  // F6 — Pre-bank wallet UX labels
+  it('tags driver earnings with "Link bank to withdraw" when no bank is linked', async () => {
+    profileRef.current = {
+      id: 'user-001',
+      wallet_balance: 2350,
+      is_driver: true,
+      stripe_onboarding_complete: false,
+    }
+    renderWallet()
+    await waitFor(() => {
+      expect(screen.getByTestId('transaction-list')).toBeInTheDocument()
+    })
+    const tags = screen.getAllByTestId('tx-pending-payout-tag')
+    // fare_credit tx should be tagged; topup + fare_debit should not.
+    expect(tags.length).toBe(1)
+    expect(tags[0].textContent).toContain('Link bank to withdraw')
+  })
+
+  it('does NOT tag earnings once bank is linked', async () => {
+    profileRef.current = {
+      id: 'user-001',
+      wallet_balance: 2350,
+      is_driver: true,
+      stripe_onboarding_complete: true,
+    }
+    renderWallet()
+    await waitFor(() => {
+      expect(screen.getByTestId('transaction-list')).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId('tx-pending-payout-tag')).not.toBeInTheDocument()
+  })
+
+  it('does NOT tag earnings for riders (non-drivers)', async () => {
+    profileRef.current = {
+      id: 'user-001',
+      wallet_balance: 2350,
+      is_driver: false,
+      stripe_onboarding_complete: false,
+    }
+    renderWallet()
+    await waitFor(() => {
+      expect(screen.getByTestId('transaction-list')).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId('tx-pending-payout-tag')).not.toBeInTheDocument()
   })
 })

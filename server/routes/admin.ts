@@ -16,6 +16,8 @@
 import { Router } from 'express'
 import type { Request, Response, NextFunction } from 'express'
 import { getMetricsSnapshot } from '../middleware/metrics.ts'
+import { sendGhostDriverReminders, processGhostDriverRefunds } from '../jobs/ghostRefund.ts'
+import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 
 export const adminRouter = Router()
 
@@ -34,6 +36,52 @@ function requireAdminToken(req: Request, res: Response, next: NextFunction) {
   }
   next()
 }
+
+// ── F7 — Ghost-driver refund queue ────────────────────────────────────────────
+
+/**
+ * GET /api/admin/ghost-refunds — inspect pending / completed refunds.
+ *   ?status=pending   (default) — reminder rows that have not yet refunded
+ *   ?status=refunded              — history of completed auto-refunds
+ */
+adminRouter.get('/ghost-refunds', requireAdminToken, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const status = req.query['status'] === 'refunded' ? 'refunded' : 'pending'
+    const q = supabaseAdmin
+      .from('ghost_refunds')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(200)
+
+    const { data, error } = status === 'refunded'
+      ? await q.not('refunded_at', 'is', null)
+      : await q.is('refunded_at', null)
+
+    if (error) {
+      res.status(500).json({ error: { code: 'DB_ERROR', message: error.message } })
+      return
+    }
+    res.json({ rows: data ?? [] })
+  } catch (err) { next(err) }
+})
+
+/**
+ * POST /api/admin/ghost-refunds/run — trigger the day-60 or day-90 sweep.
+ *   { kind: 'reminders' | 'refunds' }
+ */
+adminRouter.post('/ghost-refunds/run', requireAdminToken, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const kind = (req.body as { kind?: string } | undefined)?.kind
+    if (kind !== 'reminders' && kind !== 'refunds') {
+      res.status(400).json({ error: { code: 'INVALID_KIND', message: 'kind must be "reminders" or "refunds"' } })
+      return
+    }
+    const result = kind === 'reminders'
+      ? await sendGhostDriverReminders()
+      : await processGhostDriverRefunds()
+    res.json({ kind, result })
+  } catch (err) { next(err) }
+})
 
 adminRouter.get('/health', requireAdminToken, (_req: Request, res: Response) => {
   const snap = getMetricsSnapshot()

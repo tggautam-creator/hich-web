@@ -104,7 +104,7 @@ export default function BottomNav({
         {/* Payment */}
         <button
           data-testid="payment-tab"
-          onClick={() => { navigate('/payment/methods') }}
+          onClick={() => { navigate('/wallet') }}
           aria-label="Payment"
           className={tabClass('payment')}
         >

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { APIProvider, Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { env } from '@/lib/env'
 
@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { MAP_ID, DEFAULT_CENTER, DEFAULT_ZOOM } from '@/lib/mapConstants'
 import BottomNav from '@/components/ui/BottomNav'
 import PwaInstallBanner from '@/components/ui/PwaInstallBanner'
+import BankOnboardPrompt from '@/components/ride/BankOnboardPrompt'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -25,25 +26,24 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
   const profile = useAuthStore((s) => s.profile)
   const refreshProfile = useAuthStore((s) => s.refreshProfile)
   const navigate = useNavigate()
-  const location = useLocation()
 
+  // Bank connection is NOT required to go online. Drivers earn into their
+  // in-app wallet on every ride; a bank is only needed to withdraw.
+  // Exception (F3): once the wallet hits the $100 cap, Go Online is gated
+  // until a bank is linked — this mirrors the server-side broadcast filter.
   const hasBank = profile?.stripe_onboarding_complete === true
+  const balance = profile?.wallet_balance ?? 0
+  const CAP_CENTS = 10_000
+  const atWalletCap = !hasBank && balance >= CAP_CENTS
 
   const [center, setCenter] = useState(DEFAULT_CENTER)
   const [hasGps, setHasGps] = useState(false)
-  // Start offline — actual state is loaded from driver_locations on mount.
-  // Never initialize from hasBank: if the driver went offline and switches
-  // tabs, the component remounts and hasBank would reset them to online.
   const [isOnline, setIsOnline] = useState(false)
   const [onlineStateLoaded, setOnlineStateLoaded] = useState(false)
   const [activeRideCount, setActiveRideCount] = useState(0)
   const [unreadCount, setUnreadCount] = useState(0)
   const [statusToast, setStatusToast] = useState<string | null>(null)
   const [userPanned, setUserPanned] = useState(false)
-  // Show the bank dialog when driver skipped onboarding, or when they try to go online without bank
-  const [showBankDialog, setShowBankDialog] = useState(
-    !hasBank && (location.state as { fromSkip?: boolean } | null)?.fromSkip === true,
-  )
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const latestCoordsRef = useRef(DEFAULT_CENTER)
   const gpsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -83,18 +83,9 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
       .eq('user_id', profile.id)
       .maybeSingle()
       .then(({ data }) => {
-        if (data) {
-          // Only allow online if bank is connected
-          setIsOnline(hasBank && data.is_online)
-        } else {
-          // No record yet — default offline
-          setIsOnline(false)
-        }
+        setIsOnline(data?.is_online === true)
         setOnlineStateLoaded(true)
       })
-  // Run once on mount — intentionally not re-running on hasBank change
-  // (the auto-go-online effect handles that separately)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.id])
 
   // ── Post GPS to driver_locations ──────────────────────────────────────────
@@ -163,17 +154,6 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
     toastTimeoutRef.current = setTimeout(() => setStatusToast(null), 3000)
   }
 
-  // ── Auto-go-online when bank account is connected ─────────────────────
-  // Only fires after initial state has loaded so we don't clobber the DB read
-  useEffect(() => {
-    if (!onlineStateLoaded) return
-    if (hasBank && !isOnline) {
-      setIsOnline(true)
-      showToast('Bank connected — you are now online!')
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasBank])
-
   // ── Stripe return handler ──────────────────────────────────────────────
   const [searchParams, setSearchParams] = useSearchParams()
   useEffect(() => {
@@ -197,9 +177,10 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
   }, [searchParams, setSearchParams, refreshProfile])
 
   async function handleToggleOnline() {
-    // Without a bank account, going online is blocked — show the connect dialog
-    if (!hasBank && !isOnline) {
-      setShowBankDialog(true)
+    // F3 — cap gate: at $100 without a bank, we block going online and
+    // nudge the driver to withdraw. Mirrors the server broadcast filter.
+    if (atWalletCap && !isOnline) {
+      showToast('Add a bank to keep earning — you\'ve hit the $100 limit')
       return
     }
 
@@ -374,15 +355,22 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
           </button>
         )}
 
-        {/* ── Bank setup banner ──────────────────────────────────────────── */}
+        {/* ── Bank setup nudge ──────────────────────────────────────────
+            Soft by default; escalates to a hard gate at the $100 cap. */}
         {!hasBank && (
           <div
             data-testid="bank-setup-banner"
-            className="w-full bg-white rounded-2xl shadow-lg px-4 py-4 flex flex-col gap-3"
+            className={[
+              'w-full rounded-2xl shadow-lg px-4 py-4 flex flex-col gap-3',
+              atWalletCap ? 'bg-warning/5 border border-warning/30' : 'bg-white',
+            ].join(' ')}
           >
             <div className="flex items-center gap-3">
-              <div className="h-9 w-9 rounded-full bg-warning/10 flex items-center justify-center shrink-0">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-warning" aria-hidden="true">
+              <div className={[
+                'h-9 w-9 rounded-full flex items-center justify-center shrink-0',
+                atWalletCap ? 'bg-warning/10' : 'bg-primary/10',
+              ].join(' ')}>
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className={['h-5 w-5', atWalletCap ? 'text-warning' : 'text-primary'].join(' ')} aria-hidden="true">
                   <rect x="2" y="6" width="20" height="14" rx="2" />
                   <path d="M2 10h20" />
                   <path d="M6 14h.01" />
@@ -390,9 +378,13 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
                 </svg>
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-text-primary">Set up payouts to get paid</p>
+                <p className="text-sm font-semibold text-text-primary">
+                  {atWalletCap ? 'Add a bank to keep earning' : 'Add a bank to withdraw earnings'}
+                </p>
                 <p className="text-xs text-text-secondary mt-0.5">
-                  Connect a bank account or debit card to receive earnings for every ride.
+                  {atWalletCap
+                    ? 'You\'ve hit the $100 unwithdrawn limit. Link a bank to go back online.'
+                    : 'You can start driving now. Link a bank anytime to cash out.'}
                 </p>
               </div>
             </div>
@@ -401,7 +393,7 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
               onClick={() => { navigate('/stripe/payouts') }}
               className="w-full rounded-xl bg-primary py-2.5 text-sm font-semibold text-white active:opacity-90 transition-opacity"
             >
-              Set Up Payouts
+              Link Bank Account
             </button>
           </div>
         )}
@@ -410,10 +402,10 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         <button
           data-testid="online-toggle"
           onClick={() => { void handleToggleOnline() }}
-          disabled={!onlineStateLoaded}
+          disabled={!onlineStateLoaded || (atWalletCap && !isOnline)}
           className={[
             'w-full rounded-2xl shadow-lg px-4 py-3 flex items-center gap-3 active:scale-[0.99] transition-all',
-            !onlineStateLoaded ? 'opacity-60' : '',
+            !onlineStateLoaded || (atWalletCap && !isOnline) ? 'opacity-60' : '',
             isOnline
               ? 'bg-white border-2 border-success'
               : 'bg-white border border-border',
@@ -427,7 +419,11 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
           </span>
 
           <span className={['flex-1 text-sm font-semibold text-left', isOnline ? 'text-success' : 'text-text-secondary'].join(' ')}>
-            {isOnline ? 'Online — receiving rides' : !hasBank ? 'Connect bank to go online' : 'Offline — tap to go online'}
+            {isOnline
+              ? 'Online — receiving rides'
+              : atWalletCap
+                ? 'Link a bank to go online'
+                : 'Offline — tap to go online'}
           </span>
 
           {/* Mini toggle switch */}
@@ -464,55 +460,8 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
       {/* ── Bottom navigation ──────────────────────────────────────────────── */}
       <BottomNav activeTab="drive" />
 
-      {/* ── Bank connection required dialog ────────────────────────────────── */}
-      {showBankDialog && (
-        <div className="fixed inset-0 z-[2000] flex items-end justify-center sm:items-center px-4 pb-6 sm:pb-0">
-          <div
-            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-            aria-hidden="true"
-            onClick={() => setShowBankDialog(false)}
-          />
-          <div
-            data-testid="bank-required-dialog"
-            role="dialog"
-            aria-modal="true"
-            className="relative z-10 w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl"
-          >
-            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-warning/10">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-7 w-7 text-warning" aria-hidden="true">
-                <rect x="2" y="6" width="20" height="14" rx="2" />
-                <path d="M2 10h20" />
-                <path d="M6 14h.01" />
-                <path d="M10 14h4" />
-              </svg>
-            </div>
-            <h3 className="text-center text-lg font-bold text-text-primary mb-2">
-              Connect a bank account to go online
-            </h3>
-            <p className="text-center text-sm text-text-secondary mb-1">
-              You need a connected payout method to receive ride notifications and go online.
-            </p>
-            <p className="text-center text-xs text-text-secondary mb-6">
-              You can still browse and post to the ride board without a bank account.
-            </p>
-            <button
-              data-testid="bank-dialog-setup-button"
-              onClick={() => { setShowBankDialog(false); navigate('/stripe/payouts') }}
-              className="w-full rounded-xl bg-primary py-3 text-sm font-semibold text-white active:opacity-90 transition-opacity mb-3"
-            >
-              Set Up Payouts
-            </button>
-            <button
-              data-testid="bank-dialog-dismiss-button"
-              type="button"
-              onClick={() => setShowBankDialog(false)}
-              className="w-full py-2 text-sm font-medium text-text-secondary"
-            >
-              I&apos;ll do this later
-            </button>
-          </div>
-        </div>
-      )}
+      {/* ── F4: post-ride bank-onboard prompt ──────────────────────────── */}
+      <BankOnboardPrompt walletBalanceCents={balance} hasBank={hasBank} />
     </div>
   )
 }

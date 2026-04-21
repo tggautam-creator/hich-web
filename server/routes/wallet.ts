@@ -1,10 +1,13 @@
 import { Router } from 'express'
 import Stripe from 'stripe'
 import { validateJwt } from '../middleware/auth.ts'
+import { idempotency } from '../middleware/idempotency.ts'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { getServerEnv } from '../env.ts'
 
 export const walletRouter = Router()
+
+const MIN_WITHDRAW_CENTS = 100    // $1.00 floor — avoids dust + Stripe minimums
 
 function getStripe(): Stripe {
   const { STRIPE_SECRET_KEY } = getServerEnv()
@@ -164,6 +167,111 @@ walletRouter.post('/confirm-topup', validateJwt, async (req, res, next) => {
     }
 
     res.json({ credited: true, balance: rpcResult.balance })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// ── POST /api/wallet/withdraw — pay out wallet balance to driver's bank ─────
+//
+// F5. Debits the driver's wallet and creates a Stripe Transfer to their
+// connected account. The default Stripe payout schedule moves funds to the
+// linked bank (typically T+2). Requires `Idempotency-Key` — replays return
+// the first response.
+walletRouter.post('/withdraw', validateJwt, idempotency('wallet-withdraw'), async (req, res, next) => {
+  try {
+    const userId = res.locals['userId'] as string
+    const body = (req.body ?? {}) as { amount_cents?: unknown }
+    const amountCents = typeof body.amount_cents === 'number' ? body.amount_cents : NaN
+
+    if (!Number.isInteger(amountCents) || amountCents <= 0) {
+      res.status(400).json({ error: { code: 'INVALID_AMOUNT', message: 'amount_cents must be a positive integer' } })
+      return
+    }
+    if (amountCents < MIN_WITHDRAW_CENTS) {
+      res.status(400).json({ error: { code: 'MIN_AMOUNT', message: `Minimum withdrawal is $${(MIN_WITHDRAW_CENTS / 100).toFixed(2)}` } })
+      return
+    }
+
+    const { data: user, error: userErr } = await supabaseAdmin
+      .from('users')
+      .select('wallet_balance, stripe_account_id, stripe_onboarding_complete')
+      .eq('id', userId)
+      .single()
+
+    if (userErr || !user) {
+      res.status(404).json({ error: { code: 'USER_NOT_FOUND', message: 'User not found' } })
+      return
+    }
+
+    if (!user.stripe_account_id || user.stripe_onboarding_complete !== true) {
+      res.status(400).json({
+        error: { code: 'BANK_NOT_LINKED', message: 'Link a bank account before withdrawing' },
+      })
+      return
+    }
+
+    const balance = (user.wallet_balance as number | null) ?? 0
+    if (amountCents > balance) {
+      res.status(400).json({
+        error: { code: 'INSUFFICIENT_BALANCE', message: 'Withdrawal exceeds wallet balance' },
+      })
+      return
+    }
+
+    // Debit first. If the Stripe transfer fails, we credit back.
+    const { error: debitErr } = await supabaseAdmin.rpc('wallet_apply_delta', {
+      p_user_id: userId,
+      p_delta_cents: -amountCents,
+      p_type: 'withdrawal',
+      p_description: `Withdrawal to bank · $${(amountCents / 100).toFixed(2)}`,
+      p_ride_id: null,
+      p_payment_intent_id: null,
+      p_stripe_event_id: null,
+    })
+
+    if (debitErr) {
+      console.error(`[wallet/withdraw] debit failed for user ${userId}: ${debitErr.message}`)
+      next(debitErr)
+      return
+    }
+
+    const stripe = getStripe()
+    try {
+      const transfer = await stripe.transfers.create({
+        amount: amountCents,
+        currency: 'usd',
+        destination: user.stripe_account_id as string,
+        metadata: { user_id: userId, kind: 'wallet_withdrawal' },
+      })
+
+      res.json({
+        status: 'transferring',
+        transfer_id: transfer.id,
+        amount_cents: amountCents,
+        eta_days: 2,
+      })
+    } catch (stripeErr) {
+      // Credit back the debit so the user isn't out their money.
+      const { error: creditBackErr } = await supabaseAdmin.rpc('wallet_apply_delta', {
+        p_user_id: userId,
+        p_delta_cents: amountCents,
+        p_type: 'withdrawal_failed_refund',
+        p_description: 'Refund — withdrawal failed at Stripe',
+        p_ride_id: null,
+        p_payment_intent_id: null,
+        p_stripe_event_id: null,
+      })
+      if (creditBackErr) {
+        console.error(`[wallet/withdraw] CRITICAL: credit-back failed for user ${userId}: ${creditBackErr.message}`)
+      }
+
+      const message = stripeErr instanceof Stripe.errors.StripeError
+        ? stripeErr.message
+        : stripeErr instanceof Error ? stripeErr.message : 'Unknown Stripe error'
+      console.error(`[wallet/withdraw] Stripe transfer failed for user ${userId}: ${message}`)
+      res.status(502).json({ error: { code: 'TRANSFER_FAILED', message } })
+    }
   } catch (err) {
     next(err)
   }

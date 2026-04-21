@@ -783,6 +783,47 @@ export type Database = {
         Relationships: never[]
       }
 
+      // ── ghost_refunds ───────────────────────────────────────────────────────
+      ghost_refunds: {
+        Row: {
+          id: string
+          ride_id: string
+          driver_id: string
+          rider_id: string
+          amount_cents: number
+          payment_intent_id: string
+          reminder_sent_at: string | null
+          refunded_at: string | null
+          stripe_refund_id: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          ride_id: string
+          driver_id: string
+          rider_id: string
+          amount_cents: number
+          payment_intent_id: string
+          reminder_sent_at?: string | null
+          refunded_at?: string | null
+          stripe_refund_id?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          ride_id?: string
+          driver_id?: string
+          rider_id?: string
+          amount_cents?: number
+          payment_intent_id?: string
+          reminder_sent_at?: string | null
+          refunded_at?: string | null
+          stripe_refund_id?: string | null
+          created_at?: string
+        }
+        Relationships: never[]
+      }
+
       // ── request_idempotency ─────────────────────────────────────────────────
       request_idempotency: {
         Row: {

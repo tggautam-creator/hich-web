@@ -13,7 +13,8 @@ Working rules:
 Statuses: [ ] TODO  |  [~] IN PROGRESS (awaiting user review)  |  [x] DONE  |  [!] BLOCKED
 
 Currently in progress: R.17 ride-board filters + route-match, R.18 small cleanups
-Last updated: 2026-04-19
+New initiative 2026-04-19: P2 — FRICTIONLESS DRIVER ONBOARDING (F1–F7, below)
+Last updated: 2026-04-20
 
 
 ═══════════════════════════════════════════════════════
@@ -168,3 +169,106 @@ Last updated: 2026-04-19
             ride cache parked behind an upgrade trigger (bandwidth meter
             crossing 60% of the Supabase free-tier 2GB/mo egress cap) —
             not worth the surface-area until we see real pressure.
+2026-04-19  P2 initiative launched: frictionless driver onboarding
+            (F1–F7). User decisions locked: platform-custody model,
+            $100 wallet cap, ride-1 modal + wallet banner, 90-day
+            ghost refund. Full architecture in REVIEW.md §D.
+
+
+═══════════════════════════════════════════════════════
+ P2 — FRICTIONLESS DRIVER ONBOARDING (CTO 2026-04-19)
+ Goal: drivers Go Online immediately after car registration; bank
+ connection deferred to first-ride moment. See REVIEW.md §D for full
+ architecture, money-flow diagram, decisions, and risk table.
+═══════════════════════════════════════════════════════
+
+Decisions locked with user 2026-04-19:
+  - Custody: charge rider → TAGO platform balance; credit driver's
+    in-app wallet; transfer to Connect only on withdraw
+  - Wallet cap: $100 hard gate (no broadcasts above cap until bank)
+  - Prompt: modal after ride 1 + persistent WalletPage banner
+  - Ghost driver: 90-day auto-refund, day-60 reminder email
+
+Ship order is strict: F1 → F2 → F3 → F4 → F5 → F6 → F7.
+Reason: F1 (kill transfer_data) is the keystone. Nothing else is safe
+to ship until charges route to the platform balance instead of the
+(possibly non-existent) Connect account.
+
+[~] F1 — Rewire charge to platform (drop transfer_data.destination)
+      chargeRideFare charges rider to TAGO balance; driver wallet
+      credited atomically via wallet_apply_delta('ride_earning').
+      transactions.type has NO CHECK constraint, so migration 049
+      was not needed — 'ride_earning' is a plain string.
+      Files: server/lib/stripeConnect.ts (dropped transfer_data +
+             application_fee_amount + driverAccountId param),
+             server/routes/rides.ts (3 charge sites: /end line 2612,
+             /scan-driver line 2934, /retry-payment line 4210).
+      Tests: src/test/server/stripeConnect.test.ts (NEW, 3 tests —
+             no transfer_data on PaymentIntent; call signature has
+             no driverAccountId; Stripe failure path).
+
+[~] F2 — Remove hard bank gate on DriverHomePage
+      Soft banner on WalletPage; bank-required dialog + hard gate
+      removed from DriverHomePage. Go Online flow no longer requires
+      Connect onboarding.
+      Files: src/components/ride/DriverHomePage.tsx,
+             src/components/ride/WalletPage.tsx
+      Tests: DriverHomePage.test.tsx updated with F2 cases.
+
+[~] F3 — $100 wallet cap hard gate
+      Server: broadcast filter in rides.ts drops drivers at
+      wallet_balance ≥ 10_000 AND !stripe_onboarding_complete.
+      Client: Go Online disabled with "Add bank to keep earning"
+      banner escalation.
+      Files: server/routes/rides.ts (driverIds filter),
+             src/components/ride/DriverHomePage.tsx
+      Tests: DriverHomePage.test.tsx cap-gate cases.
+
+[~] F4 — Ride-1 onboarding modal + persistent Wallet banner
+      BankOnboardPrompt surfaces when a driver has wallet balance
+      but no bank. Dismissal is balance-keyed — a new earning bump
+      re-shows it. Analytics: bank_prompt_shown / dismissed /
+      accepted. Wallet banner + Withdraw CTA wired on WalletPage.
+      Files: src/components/ride/BankOnboardPrompt.tsx (NEW),
+             src/components/ride/DriverHomePage.tsx,
+             src/components/ride/WalletPage.tsx
+      Tests: src/test/ride/BankOnboardPrompt.test.tsx (6 tests).
+
+[~] F5 — Withdraw endpoint + WithdrawSheet UI
+      POST /api/wallet/withdraw debits via wallet_apply_delta
+      ('withdrawal'), creates stripe.transfers.create to Connect
+      account, credit-backs on Stripe failure. Idempotency-Key
+      required (reuses R.4 middleware).
+      Files: server/routes/wallet.ts,
+             src/components/ride/WithdrawSheet.tsx (NEW),
+             src/components/ride/WalletPage.tsx
+      Tests: wallet.test.ts (+8 endpoint cases),
+             WithdrawSheet.test.tsx (NEW, 6 UI cases).
+
+[~] F6 — Wallet UX for pre-bank drivers
+      Header toggles "Pending payout" vs "Your balance" based on
+      bank-linked state. Per-earning rows tagged "· Link bank to
+      withdraw" for drivers without Connect. Riders + onboarded
+      drivers see no tag.
+      Files: src/components/ride/WalletPage.tsx
+      Tests: WalletPage.test.tsx (+3 F6 label cases).
+
+[~] F7 — Ghost-driver auto-refund (90-day)
+      Daily job: day-60 sweep upserts ghost_refunds row with
+      reminder_sent_at (email wiring deferred). Day-90 sweep creates
+      idempotent Stripe refund → debits driver wallet via
+      wallet_apply_delta('ghost_refund') → marks
+      rides.payment_status='refunded_ghost_driver' → finalizes
+      ghost_refunds row. UNIQUE(ride_id) prevents double-refund on
+      replay. Admin queue at /api/admin/ghost-refunds and
+      /api/admin/ghost-refunds/run.
+      Files: supabase/migrations/049_ghost_refunds.sql (NEW),
+             server/jobs/ghostRefund.ts (NEW),
+             server/routes/admin.ts (extended),
+             src/types/database.ts (ghost_refunds type).
+      Tests: src/test/server/ghostRefund.test.ts (NEW, 5 cases —
+             reminder upsert, onboarded-driver skip, day-90 refund
+             full path, replay idempotency, Stripe failure bail).
+      SQL migration: user must run 049 before deploying.
+      Status: 1008 tests passing, lint clean, build clean.
+              Awaiting user local test before push.

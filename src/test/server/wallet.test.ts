@@ -9,16 +9,18 @@ import request from 'supertest'
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────────────
 
-const { mockAuth, mockFrom } = vi.hoisted(() => {
+const { mockAuth, mockFrom, mockRpc } = vi.hoisted(() => {
   const mockAuth = { getUser: vi.fn() }
   const mockFrom = vi.fn()
-  return { mockAuth, mockFrom }
+  const mockRpc = vi.fn()
+  return { mockAuth, mockFrom, mockRpc }
 })
 
 vi.mock('../../../server/lib/supabaseAdmin.ts', () => ({
   supabaseAdmin: {
     auth: mockAuth,
     from: mockFrom,
+    rpc: (...args: unknown[]) => mockRpc(...args),
   },
 }))
 
@@ -44,16 +46,24 @@ vi.mock('../../../server/env.ts', () => ({
 }))
 
 // Mock Stripe
-const mockPaymentIntentCreate = vi.fn()
-const mockCustomerCreate = vi.fn()
+const { mockPaymentIntentCreate, mockCustomerCreate, mockTransferCreate } = vi.hoisted(() => ({
+  mockPaymentIntentCreate: vi.fn(),
+  mockCustomerCreate: vi.fn(),
+  mockTransferCreate: vi.fn(),
+}))
 
 vi.mock('stripe', () => {
+  class StripeError extends Error {}
+  const StripeCtor = vi.fn().mockImplementation(() => ({
+    customers: { create: mockCustomerCreate },
+    paymentIntents: { create: mockPaymentIntentCreate },
+    transfers: { create: mockTransferCreate },
+    webhooks: { constructEvent: vi.fn() },
+  }))
   return {
-    default: vi.fn().mockImplementation(() => ({
-      customers: { create: mockCustomerCreate },
-      paymentIntents: { create: mockPaymentIntentCreate },
-      webhooks: { constructEvent: vi.fn() },
-    })),
+    default: Object.assign(StripeCtor, {
+      errors: { StripeError },
+    }),
   }
 })
 
@@ -262,5 +272,199 @@ describe('GET /api/wallet/transactions', () => {
 
     expect(res.status).toBe(200)
     expect(res.body.transactions).toHaveLength(0)
+  })
+})
+
+// ── F5: POST /api/wallet/withdraw ─────────────────────────────────────────────
+
+describe('POST /api/wallet/withdraw', () => {
+  function mockUserAndIdempotency(
+    user: Record<string, unknown> | null,
+    cachedIdem: { response_status: number; response_body: unknown } | null = null,
+  ) {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'users') {
+        return {
+          select: () => ({
+            eq: () => ({
+              single: () => Promise.resolve({ data: user, error: user ? null : { message: 'nf' } }),
+            }),
+          }),
+        }
+      }
+      if (table === 'request_idempotency') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: () => Promise.resolve({ data: cachedIdem, error: null }),
+                }),
+              }),
+            }),
+          }),
+          insert: () => ({
+            then: (cb: (r: { error: null }) => unknown) => {
+              cb({ error: null })
+              return Promise.resolve({ error: null })
+            },
+          }),
+        }
+      }
+      return {}
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAuthSuccess()
+    mockTransferCreate.mockReset()
+    mockRpc.mockReset()
+  })
+
+  it('returns 401 without auth token', async () => {
+    const res = await request(app).post('/api/wallet/withdraw').send({ amount_cents: 1000 })
+    expect(res.status).toBe(401)
+  })
+
+  it('returns 400 for non-integer amount', async () => {
+    mockUserAndIdempotency({
+      wallet_balance: 5000,
+      stripe_account_id: 'acct_123',
+      stripe_onboarding_complete: true,
+    })
+    const res = await request(app)
+      .post('/api/wallet/withdraw')
+      .set('Authorization', VALID_JWT)
+      .send({ amount_cents: 12.5 })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('INVALID_AMOUNT')
+  })
+
+  it('returns 400 below minimum withdrawal', async () => {
+    mockUserAndIdempotency({
+      wallet_balance: 5000,
+      stripe_account_id: 'acct_123',
+      stripe_onboarding_complete: true,
+    })
+    const res = await request(app)
+      .post('/api/wallet/withdraw')
+      .set('Authorization', VALID_JWT)
+      .send({ amount_cents: 50 })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('MIN_AMOUNT')
+  })
+
+  it('returns 400 BANK_NOT_LINKED when no Connect account', async () => {
+    mockUserAndIdempotency({
+      wallet_balance: 5000,
+      stripe_account_id: null,
+      stripe_onboarding_complete: false,
+    })
+    const res = await request(app)
+      .post('/api/wallet/withdraw')
+      .set('Authorization', VALID_JWT)
+      .send({ amount_cents: 2000 })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('BANK_NOT_LINKED')
+  })
+
+  it('returns 400 INSUFFICIENT_BALANCE when amount exceeds balance', async () => {
+    mockUserAndIdempotency({
+      wallet_balance: 1000,
+      stripe_account_id: 'acct_123',
+      stripe_onboarding_complete: true,
+    })
+    const res = await request(app)
+      .post('/api/wallet/withdraw')
+      .set('Authorization', VALID_JWT)
+      .send({ amount_cents: 5000 })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('INSUFFICIENT_BALANCE')
+  })
+
+  it('debits wallet and creates Stripe transfer on success', async () => {
+    mockUserAndIdempotency({
+      wallet_balance: 5000,
+      stripe_account_id: 'acct_123',
+      stripe_onboarding_complete: true,
+    })
+    mockRpc.mockResolvedValue({ data: { applied: true, balance: 3000 }, error: null })
+    mockTransferCreate.mockResolvedValue({ id: 'tr_abc' })
+
+    const res = await request(app)
+      .post('/api/wallet/withdraw')
+      .set('Authorization', VALID_JWT)
+      .send({ amount_cents: 2000 })
+
+    expect(res.status).toBe(200)
+    expect(res.body.status).toBe('transferring')
+    expect(res.body.transfer_id).toBe('tr_abc')
+    expect(res.body.amount_cents).toBe(2000)
+
+    // Debit RPC called with negative delta and 'withdrawal' type.
+    const debitCall = mockRpc.mock.calls.find(
+      (c) => (c[1] as { p_type: string }).p_type === 'withdrawal',
+    )
+    expect(debitCall).toBeDefined()
+    expect((debitCall?.[1] as { p_delta_cents: number }).p_delta_cents).toBe(-2000)
+
+    expect(mockTransferCreate).toHaveBeenCalledWith({
+      amount: 2000,
+      currency: 'usd',
+      destination: 'acct_123',
+      metadata: { user_id: USER_ID, kind: 'wallet_withdrawal' },
+    })
+  })
+
+  it('credits back the debit when Stripe transfer fails', async () => {
+    mockUserAndIdempotency({
+      wallet_balance: 5000,
+      stripe_account_id: 'acct_123',
+      stripe_onboarding_complete: true,
+    })
+    mockRpc.mockResolvedValue({ data: { applied: true, balance: 3000 }, error: null })
+    mockTransferCreate.mockRejectedValue(new Error('transfer_to_destination_not_allowed'))
+
+    const res = await request(app)
+      .post('/api/wallet/withdraw')
+      .set('Authorization', VALID_JWT)
+      .send({ amount_cents: 2000 })
+
+    expect(res.status).toBe(502)
+    expect(res.body.error.code).toBe('TRANSFER_FAILED')
+
+    // Verify a credit-back RPC was called with the opposite delta.
+    const creditBack = mockRpc.mock.calls.find(
+      (c) => (c[1] as { p_type: string }).p_type === 'withdrawal_failed_refund',
+    )
+    expect(creditBack).toBeDefined()
+    expect((creditBack?.[1] as { p_delta_cents: number }).p_delta_cents).toBe(2000)
+  })
+
+  it('replays cached response for the same Idempotency-Key', async () => {
+    mockUserAndIdempotency(
+      {
+        wallet_balance: 5000,
+        stripe_account_id: 'acct_123',
+        stripe_onboarding_complete: true,
+      },
+      {
+        response_status: 200,
+        response_body: { status: 'transferring', transfer_id: 'tr_cached', amount_cents: 2000, eta_days: 2 },
+      },
+    )
+
+    const res = await request(app)
+      .post('/api/wallet/withdraw')
+      .set('Authorization', VALID_JWT)
+      .set('Idempotency-Key', 'client-key-1')
+      .send({ amount_cents: 2000 })
+
+    expect(res.status).toBe(200)
+    expect(res.body.transfer_id).toBe('tr_cached')
+    // Handler must NOT have run.
+    expect(mockRpc).not.toHaveBeenCalled()
+    expect(mockTransferCreate).not.toHaveBeenCalled()
   })
 })

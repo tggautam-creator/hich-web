@@ -269,6 +269,28 @@ ridesRouter.post(
       stage = 1
     }
 
+    // F3 — $100 wallet cap: drivers who've earned $100+ without linking a
+    // bank are hidden from broadcasts until they onboard. Caps TAGO's
+    // unwithdrawn custody liability per driver.
+    if (driverIds.length > 0) {
+      const { data: driverRows } = await supabaseAdmin
+        .from('users')
+        .select('id, wallet_balance, stripe_onboarding_complete')
+        .in('id', driverIds)
+
+      const capped = new Set(
+        (driverRows ?? [])
+          .filter((d: { wallet_balance: number | null; stripe_onboarding_complete: boolean | null }) =>
+            (d.wallet_balance ?? 0) >= 10_000 && d.stripe_onboarding_complete !== true,
+          )
+          .map((d: { id: string }) => d.id),
+      )
+      if (capped.size > 0) {
+        console.log(`[rides/request] excluded ${capped.size} driver(s) at $100 wallet cap without bank`)
+        driverIds = driverIds.filter((id) => !capped.has(id))
+      }
+    }
+
     console.log(`[rides/request] riderId=${riderId}, stage=${stage}, driverIds=${JSON.stringify(driverIds)}`)
 
     const { data: tokenRows } = await supabaseAdmin
@@ -2586,48 +2608,52 @@ ridesRouter.post(
     const { fare_cents: fareCents, platform_fee_cents: platformFeeCents, driver_earns_cents: driverEarnsCents, distance_miles, duration_min } =
       await computeRideFare(rideForFare, endedAt)
 
-    // Charge rider's card + route to driver via Stripe Connect BEFORE marking
-    // the ride completed. If chargeRideFare throws, we leave the ride in its
-    // current status so the client can retry — no orphaned "completed but
-    // unpaid" rides.
+    // Charge rider's card to TAGO's platform balance BEFORE marking the ride
+    // completed. On success, credit the driver's in-app wallet atomically via
+    // wallet_apply_delta. Driver does NOT need a Connect account at this
+    // point — that's only required when they later withdraw.
     let paymentStatus = 'pending'
     let paymentIntentId: string | undefined
     let stripeFeeCents = 0
 
     if (ride.driver_id) {
-      const [riderRes, driverRes] = await Promise.all([
-        supabaseAdmin.from('users').select('stripe_customer_id, default_payment_method_id').eq('id', ride.rider_id).single(),
-        supabaseAdmin.from('users').select('stripe_account_id, stripe_onboarding_complete').eq('id', ride.driver_id).single(),
-      ])
+      const { data: rider } = await supabaseAdmin
+        .from('users')
+        .select('stripe_customer_id, default_payment_method_id')
+        .eq('id', ride.rider_id)
+        .single()
 
-      const rider = riderRes.data
-      const driver = driverRes.data
-
-      if (
-        rider?.stripe_customer_id &&
-        rider?.default_payment_method_id &&
-        driver?.stripe_account_id &&
-        driver?.stripe_onboarding_complete
-      ) {
+      if (rider?.stripe_customer_id && rider?.default_payment_method_id) {
         const chargeResult = await chargeRideFare({
           rideId,
           fareCents,
           riderCustomerId: rider.stripe_customer_id as string,
           riderPaymentMethodId: rider.default_payment_method_id as string,
-          driverAccountId: driver.stripe_account_id as string,
         })
 
         if (chargeResult.success) {
           paymentStatus = 'processing'
           paymentIntentId = chargeResult.paymentIntentId
           stripeFeeCents = chargeResult.stripFeeCents ?? 0
+
+          const { error: walletErr } = await supabaseAdmin.rpc('wallet_apply_delta', {
+            p_user_id: ride.driver_id,
+            p_delta_cents: driverEarnsCents,
+            p_type: 'ride_earning',
+            p_description: `Ride earning · ${rideId}`,
+            p_ride_id: rideId,
+            p_payment_intent_id: chargeResult.paymentIntentId ?? null,
+          })
+          if (walletErr) {
+            console.error(`[rides/end] wallet credit failed for driver ${ride.driver_id}: ${walletErr.message}`)
+          }
         } else {
           paymentStatus = 'failed'
           console.warn(`[rides/end] Stripe charge failed: ${chargeResult.error}`)
         }
       } else {
         paymentStatus = 'failed'
-        console.warn(`[rides/end] Missing Stripe setup: rider_customer=${!!rider?.stripe_customer_id} rider_pm=${!!rider?.default_payment_method_id} driver_acct=${!!driver?.stripe_account_id} driver_verified=${!!driver?.stripe_onboarding_complete}`)
+        console.warn(`[rides/end] Missing rider Stripe setup: customer=${!!rider?.stripe_customer_id} pm=${!!rider?.default_payment_method_id}`)
       }
     }
 
@@ -2910,46 +2936,51 @@ ridesRouter.post(
     const { fare_cents: fareCents, platform_fee_cents: platformFeeCents, driver_earns_cents: driverEarnsCents, distance_miles, duration_min } =
       await computeRideFare(rideForFare, endedAt)
 
-    // Charge BEFORE marking completed so a Stripe outage leaves the ride
-    // retryable in 'active' state rather than orphaning it as completed+unpaid.
+    // Charge to platform balance BEFORE marking completed. On success, credit
+    // driver's in-app wallet via wallet_apply_delta. Stripe outage → ride
+    // stays retryable in 'active' state.
     let scanPaymentStatus = 'pending'
     let scanPaymentIntentId: string | undefined
     let scanStripeFeeCents = 0
 
     if (ride.driver_id) {
-      const [riderRes, driverRes] = await Promise.all([
-        supabaseAdmin.from('users').select('stripe_customer_id, default_payment_method_id').eq('id', ride.rider_id).single(),
-        supabaseAdmin.from('users').select('stripe_account_id, stripe_onboarding_complete').eq('id', ride.driver_id).single(),
-      ])
+      const { data: scanRider } = await supabaseAdmin
+        .from('users')
+        .select('stripe_customer_id, default_payment_method_id')
+        .eq('id', ride.rider_id)
+        .single()
 
-      const scanRider = riderRes.data
-      const scanDriver = driverRes.data
-
-      if (
-        scanRider?.stripe_customer_id &&
-        scanRider?.default_payment_method_id &&
-        scanDriver?.stripe_account_id &&
-        scanDriver?.stripe_onboarding_complete
-      ) {
+      if (scanRider?.stripe_customer_id && scanRider?.default_payment_method_id) {
         const chargeResult = await chargeRideFare({
           rideId: ride.id,
           fareCents,
           riderCustomerId: scanRider.stripe_customer_id as string,
           riderPaymentMethodId: scanRider.default_payment_method_id as string,
-          driverAccountId: scanDriver.stripe_account_id as string,
         })
 
         if (chargeResult.success) {
           scanPaymentStatus = 'processing'
           scanPaymentIntentId = chargeResult.paymentIntentId
           scanStripeFeeCents = chargeResult.stripFeeCents ?? 0
+
+          const { error: walletErr } = await supabaseAdmin.rpc('wallet_apply_delta', {
+            p_user_id: ride.driver_id,
+            p_delta_cents: driverEarnsCents,
+            p_type: 'ride_earning',
+            p_description: `Ride earning · ${ride.id}`,
+            p_ride_id: ride.id,
+            p_payment_intent_id: chargeResult.paymentIntentId ?? null,
+          })
+          if (walletErr) {
+            console.error(`[rides/scan-driver] wallet credit failed for driver ${ride.driver_id}: ${walletErr.message}`)
+          }
         } else {
           scanPaymentStatus = 'failed'
           console.warn(`[rides/scan-driver] Stripe charge failed: ${chargeResult.error}`)
         }
       } else {
         scanPaymentStatus = 'failed'
-        console.warn(`[rides/scan-driver] Missing Stripe setup for ride ${ride.id}`)
+        console.warn(`[rides/scan-driver] Missing rider Stripe setup for ride ${ride.id}`)
       }
     }
 
@@ -4188,22 +4219,16 @@ ridesRouter.post(
         return
       }
 
-      // Fetch rider + driver Stripe info
-      const [riderRes, driverRes] = await Promise.all([
-        supabaseAdmin.from('users').select('stripe_customer_id, default_payment_method_id').eq('id', ride.rider_id).single(),
-        supabaseAdmin.from('users').select('stripe_account_id, stripe_onboarding_complete').eq('id', ride.driver_id).single(),
-      ])
-
-      const rider = riderRes.data
-      const driver = driverRes.data
+      // Rider-side Stripe setup is required; driver's Connect status is not.
+      // Retry charges to TAGO's platform balance and credits driver wallet.
+      const { data: rider } = await supabaseAdmin
+        .from('users')
+        .select('stripe_customer_id, default_payment_method_id')
+        .eq('id', ride.rider_id)
+        .single()
 
       if (!rider?.stripe_customer_id || !rider?.default_payment_method_id) {
         res.status(400).json({ error: { code: 'NO_PAYMENT_METHOD', message: 'Please add a payment method first' } })
-        return
-      }
-
-      if (!driver?.stripe_account_id || !driver?.stripe_onboarding_complete) {
-        res.status(400).json({ error: { code: 'DRIVER_NOT_SETUP', message: 'Driver payment account not ready' } })
         return
       }
 
@@ -4212,7 +4237,6 @@ ridesRouter.post(
         fareCents,
         riderCustomerId: rider.stripe_customer_id as string,
         riderPaymentMethodId: rider.default_payment_method_id as string,
-        driverAccountId: driver.stripe_account_id as string,
       })
 
       if (chargeResult.success) {
@@ -4224,6 +4248,19 @@ ridesRouter.post(
             stripe_fee_cents: chargeResult.stripFeeCents ?? 0,
           })
           .eq('id', rideId)
+
+        // Platform MVP: driver_earns_cents === fare_cents (0 platform fee).
+        const { error: walletErr } = await supabaseAdmin.rpc('wallet_apply_delta', {
+          p_user_id: ride.driver_id,
+          p_delta_cents: fareCents,
+          p_type: 'ride_earning',
+          p_description: `Ride earning · ${rideId}`,
+          p_ride_id: rideId,
+          p_payment_intent_id: chargeResult.paymentIntentId ?? null,
+        })
+        if (walletErr) {
+          console.error(`[rides/retry-payment] wallet credit failed for driver ${ride.driver_id}: ${walletErr.message}`)
+        }
 
         res.json({ success: true, payment_status: 'processing' })
       } else {

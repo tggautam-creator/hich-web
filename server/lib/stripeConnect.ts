@@ -15,10 +15,17 @@ export function estimateStripeFee(amountCents: number): number {
 }
 
 /**
- * Charge a rider's saved card and route funds to the driver's Stripe Express account.
+ * Charge a rider's saved card to TAGO's platform Stripe balance.
  *
- * Uses destination charges with application_fee_amount = 0 (zero platform commission).
- * Stripe fee is added on top of the fare so the driver receives the full fare_cents.
+ * Funds land in TAGO's balance, not the driver's Connect account. Caller is
+ * responsible for crediting the driver's in-app wallet atomically on success
+ * (via wallet_apply_delta). The driver withdraws from their wallet later,
+ * which is when we create the Stripe Transfer + Payout. This removes the
+ * Connect-onboarded precondition so a driver can take their first ride
+ * without connecting a bank.
+ *
+ * Stripe processing fee is added on top of the fare so the rider covers it
+ * and TAGO's wallet credit to the driver matches fare_cents exactly.
  * Idempotency key prevents double-charging on retries.
  */
 export async function chargeRideFare(params: {
@@ -26,7 +33,6 @@ export async function chargeRideFare(params: {
   fareCents: number
   riderCustomerId: string
   riderPaymentMethodId: string
-  driverAccountId: string
 }): Promise<{ success: boolean; paymentIntentId?: string; stripFeeCents?: number; error?: string }> {
   const stripe = getStripe()
 
@@ -42,10 +48,6 @@ export async function chargeRideFare(params: {
         payment_method: params.riderPaymentMethodId,
         off_session: true,
         confirm: true,
-        transfer_data: {
-          destination: params.driverAccountId,
-        },
-        application_fee_amount: 0,
         metadata: { ride_id: params.rideId },
       },
       {

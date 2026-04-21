@@ -38,7 +38,7 @@ vi.mock('@/lib/env', () => ({
 // ── Mock authStore ─────────────────────────────────────────────────────────────
 
 const mockRefreshProfile = vi.fn().mockResolvedValue(undefined)
-let mockProfile: { id: string; stripe_onboarding_complete?: boolean } | null = { id: 'driver-001', stripe_onboarding_complete: true }
+let mockProfile: { id: string; stripe_onboarding_complete?: boolean; wallet_balance?: number } | null = { id: 'driver-001', stripe_onboarding_complete: true }
 
 vi.mock('@/stores/authStore', () => ({
   useAuthStore: vi.fn(
@@ -272,11 +272,11 @@ describe('DriverHomePage', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/home/rider')
   })
 
-  it('payment tab navigates to /payment/methods', async () => {
+  it('payment tab navigates to /wallet', async () => {
     const user = userEvent.setup()
     renderPage()
     await user.click(screen.getByTestId('payment-tab'))
-    expect(mockNavigate).toHaveBeenCalledWith('/payment/methods')
+    expect(mockNavigate).toHaveBeenCalledWith('/wallet')
   })
 
   it('profile tab navigates to /profile', async () => {
@@ -301,17 +301,51 @@ describe('DriverHomePage', () => {
     expect(screen.queryByTestId('bank-setup-banner')).not.toBeInTheDocument()
   })
 
-  it('blocks going online without bank setup and shows the bank dialog', async () => {
+  it('allows going online without bank setup (F2: soft nudge, not a gate)', async () => {
     mockProfile = { id: 'driver-001', stripe_onboarding_complete: false }
+    // Default record: offline. Driver toggles online without a bank.
+    mockMaybeSingle.mockResolvedValueOnce({ data: { is_online: false }, error: null })
     renderPage()
 
-    // Wait for online state to load (button becomes enabled)
     await waitFor(() => expect(screen.getByTestId('online-toggle')).not.toBeDisabled())
 
-    // Toggle — should be blocked, bank dialog should appear instead
     act(() => { fireEvent.click(screen.getByTestId('online-toggle')) })
-    expect(screen.getByTestId('bank-required-dialog')).toBeInTheDocument()
-    // Should NOT have gone online
-    expect(screen.getByTestId('online-indicator')).toHaveTextContent('Offline')
+
+    // Went online, no blocking dialog.
+    expect(screen.queryByTestId('bank-required-dialog')).not.toBeInTheDocument()
+    expect(screen.getByTestId('online-indicator')).toHaveTextContent('Online')
+  })
+
+  it('still shows soft bank-setup banner when no bank is connected', () => {
+    mockProfile = { id: 'driver-001', stripe_onboarding_complete: false }
+    renderPage()
+    expect(screen.getByTestId('bank-setup-banner')).toBeInTheDocument()
+    expect(screen.getByTestId('bank-setup-banner').textContent).toContain('withdraw')
+  })
+
+  // ── F3: $100 wallet cap gate ───────────────────────────────────────────
+
+  it('disables Go Online and swaps copy when wallet >= $100 without bank', async () => {
+    mockProfile = { id: 'driver-001', stripe_onboarding_complete: false, wallet_balance: 10_000 }
+    mockMaybeSingle.mockResolvedValueOnce({ data: { is_online: false }, error: null })
+    renderPage()
+
+    // Button stays disabled even after load because cap applies.
+    await waitFor(() => {
+      expect(screen.getByTestId('online-toggle')).toBeDisabled()
+    })
+    expect(screen.getByTestId('online-toggle').textContent).toContain('Link a bank')
+    expect(screen.getByTestId('bank-setup-banner').textContent).toContain('$100')
+  })
+
+  it('does NOT cap-gate when wallet is under $100 (soft nudge only)', async () => {
+    mockProfile = { id: 'driver-001', stripe_onboarding_complete: false, wallet_balance: 5_000 }
+    mockMaybeSingle.mockResolvedValueOnce({ data: { is_online: false }, error: null })
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('online-toggle')).not.toBeDisabled()
+    })
+    expect(screen.getByTestId('online-toggle').textContent).toContain('Offline — tap')
   })
 })
