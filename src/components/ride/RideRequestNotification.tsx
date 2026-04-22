@@ -50,6 +50,11 @@ interface BoardAcceptedData {
   ride_id: string
 }
 
+interface BoardDeclinedData {
+  type: 'board_declined'
+  ride_id: string
+}
+
 interface NotificationState {
   rideId: string
   riderName: string
@@ -99,6 +104,19 @@ export default function RideRequestNotification({
       clearInterval(timerRef.current)
       timerRef.current = null
     }
+  }, [])
+
+  // Declined toast — shown when a board request is rejected
+  const [declinedToast, setDeclinedToast] = useState<{ rideId: string } | null>(null)
+  const declinedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const seenDeclinedRideIdsRef = useRef<Set<string>>(new Set())
+
+  const handleBoardDeclined = useCallback((data: BoardDeclinedData) => {
+    if (seenDeclinedRideIdsRef.current.has(data.ride_id)) return
+    seenDeclinedRideIdsRef.current.add(data.ride_id)
+    setDeclinedToast({ rideId: data.ride_id })
+    if (declinedTimerRef.current) clearTimeout(declinedTimerRef.current)
+    declinedTimerRef.current = setTimeout(() => setDeclinedToast(null), 10000)
   }, [])
 
   const profile = useAuthStore((s) => s.profile)
@@ -463,6 +481,9 @@ export default function RideRequestNotification({
       } else if (payload.data?.type === 'board_accepted') {
         const data = payload.data as unknown as BoardAcceptedData
         handleBoardAccepted(data)
+      } else if (payload.data?.type === 'board_declined') {
+        const data = payload.data as unknown as BoardDeclinedData
+        handleBoardDeclined(data)
       } else if (payload.data?.type === 'ride_cancelled') {
         const data = payload.data as unknown as RideCancelledData
         handleRideCancelled(data)
@@ -491,7 +512,7 @@ export default function RideRequestNotification({
     return () => {
       if (unsub) unsub()
     }
-  }, [isDriver, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleRideCancelled, handleRideReminder, handleDriverSelected])
+  }, [isDriver, handleRideRequest, handleBoardRequest, handleBoardAccepted, handleBoardDeclined, handleRideCancelled, handleRideReminder, handleDriverSelected])
 
   // Ref to track current queue so the polling callback can skip when
   // a notification is already being displayed without re-creating the effect.
@@ -813,6 +834,54 @@ export default function RideRequestNotification({
               data-testid="cancelled-view-rides"
             >
               View My Rides
+            </button>
+          </div>
+        </div>
+      </div>,
+      portalTarget,
+    )
+  }
+
+  // Declined toast — shown when a board request is rejected
+  if (declinedToast && !notification) {
+    return createPortal(
+      <div
+        className="fixed top-0 left-0 right-0 z-[1200] animate-slide-down"
+        style={{ paddingTop: 'max(env(safe-area-inset-top), 0px)' }}
+      >
+        <div className="mx-2 mt-2 rounded-2xl border border-danger/30 bg-white shadow-xl">
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-danger/10 shrink-0">
+                <AppIcon name="x-circle" className="h-5 w-5 text-danger" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-text-primary">Request Declined</p>
+                <p className="text-xs text-text-secondary">
+                  Your ride request was declined. Try another ride on the board!
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDeclinedToast(null)}
+              aria-label="Dismiss"
+              className="rounded-full p-1 text-text-secondary hover:bg-surface shrink-0"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="px-3 pb-3">
+            <button
+              type="button"
+              onClick={() => {
+                setDeclinedToast(null)
+                navigate('/rides/board')
+              }}
+              className="w-full rounded-2xl bg-danger py-2.5 text-center text-sm font-semibold text-white active:bg-danger/90"
+              data-testid="declined-browse-board"
+            >
+              Browse Board
             </button>
           </div>
         </div>

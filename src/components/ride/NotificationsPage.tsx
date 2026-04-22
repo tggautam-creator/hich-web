@@ -134,6 +134,8 @@ export default function NotificationsPage({
 
     if (notif.type === 'board_accepted' || notif.type === 'ride_reminder' || notif.type === 'ride_missed') {
       navigate(`/ride/messaging/${rideId}`)
+    } else if (notif.type === 'board_declined') {
+      navigate('/rides/board')
     } else if (notif.type === 'ride_request') {
       navigate(`/ride/suggestion/${rideId}`, {
         state: {

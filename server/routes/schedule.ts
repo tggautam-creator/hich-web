@@ -48,6 +48,36 @@ async function forwardGeocode(address: string): Promise<{ lat: number; lng: numb
   }
 }
 
+async function sendBoardDeclinedPush(
+  userId: string,
+  rideId: string,
+  title: string,
+  body: string,
+): Promise<void> {
+  try {
+    const { data: tokenRows, error } = await supabaseAdmin
+      .from('push_tokens')
+      .select('token')
+      .eq('user_id', userId)
+
+    if (error) {
+      console.error('[schedule/board_declined] Failed to load push tokens:', error.message)
+      return
+    }
+
+    const tokens = (tokenRows ?? []).map((row: { token: string }) => row.token)
+    if (tokens.length === 0) return
+
+    await sendFcmPush(tokens, {
+      title,
+      body,
+      data: { type: 'board_declined', ride_id: rideId },
+    })
+  } catch (err: unknown) {
+    console.error('[schedule/board_declined] Failed to send push:', err instanceof Error ? err.message : String(err))
+  }
+}
+
 // ── Haversine distance (metres) ──────────────────────────────────────────────
 function haversineMetres(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const toRad = Math.PI / 180
@@ -1048,6 +1078,12 @@ scheduleRouter.patch(
               }).then(({ error: notifErr }) => {
                 if (notifErr) console.error('Failed to persist auto-decline notification:', notifErr.message)
               })
+              await sendBoardDeclinedPush(
+                declinedId,
+                other.id,
+                'Request Declined',
+                'All seats are now filled. Try another ride on the board!',
+              )
             }
           }
         }
@@ -1209,6 +1245,13 @@ scheduleRouter.patch(
 
       // Refresh requester's MyRides page
       void realtimeBroadcast(`myrides:${requesterId}`, 'ride_status_changed', { ride_id: rideId, status: 'cancelled' })
+
+      await sendBoardDeclinedPush(
+        requesterId,
+        rideId,
+        'Request Declined',
+        'Your ride request was declined. Try another ride on the board!',
+      )
     }
 
     // Refresh poster's own MyRides page

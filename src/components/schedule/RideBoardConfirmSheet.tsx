@@ -20,6 +20,7 @@ export interface RequestEnrichment {
 interface RideBoardConfirmSheetProps {
   ride: ScheduledRide | null
   isRequesting: boolean
+  initialEnrichment?: RequestEnrichment | null
   onConfirm: (enrichment: RequestEnrichment) => void
   onCancel: () => void
 }
@@ -27,6 +28,7 @@ interface RideBoardConfirmSheetProps {
 export default function RideBoardConfirmSheet({
   ride,
   isRequesting,
+  initialEnrichment,
   onConfirm,
   onCancel,
 }: RideBoardConfirmSheetProps) {
@@ -58,7 +60,7 @@ export default function RideBoardConfirmSheet({
   const [transitSuggestions, setTransitSuggestions] = useState<TransitSuggestion[]>([])
   const [loadingTransit, setLoadingTransit] = useState(false)
 
-  // Reset state when ride changes
+  // Reset/prefill state when ride changes
   useEffect(() => {
     setPickupQuery('')
     setPickupSuggestions([])
@@ -69,7 +71,46 @@ export default function RideBoardConfirmSheet({
     setUseDriverDestination(true)
     setNote('')
     setTransitSuggestions([])
-  }, [ride?.id])
+
+    if (!initialEnrichment) return
+
+    if (initialEnrichment.pickup_lat != null && initialEnrichment.pickup_lng != null) {
+      const pickupName = initialEnrichment.pickup_name ?? 'Selected pickup'
+      setPickupQuery(pickupName)
+      setSelectedPickup({
+        placeId: '',
+        mainText: pickupName,
+        secondaryText: '',
+        fullAddress: pickupName,
+        lat: initialEnrichment.pickup_lat,
+        lng: initialEnrichment.pickup_lng,
+      })
+    }
+
+    if (initialEnrichment.destination_lat != null && initialEnrichment.destination_lng != null) {
+      const destinationName = initialEnrichment.destination_name ?? 'Selected destination'
+      const isDriverDefaultDestination = destinationName === ride?.dest_address
+
+      if (isDriverDefaultDestination) {
+        setUseDriverDestination(true)
+      } else {
+        setUseDriverDestination(false)
+        setQuery(destinationName)
+        setSelectedPlace({
+          placeId: '',
+          mainText: destinationName,
+          secondaryText: '',
+          fullAddress: destinationName,
+          lat: initialEnrichment.destination_lat,
+          lng: initialEnrichment.destination_lng,
+        })
+      }
+    }
+
+    if (initialEnrichment.note) {
+      setNote(initialEnrichment.note)
+    }
+  }, [ride?.id, ride?.dest_address, initialEnrichment])
 
   // Fetch transit suggestions when rider selects a destination
   useEffect(() => {

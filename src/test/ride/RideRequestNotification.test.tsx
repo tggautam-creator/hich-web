@@ -14,6 +14,7 @@
  * 10. Auto-dismisses after 90 seconds
  * 11. Ignores non-ride_request messages
  * 12. Countdown displays seconds remaining
+ * 13. Shows decline toast for board_declined messages
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -99,6 +100,15 @@ const RIDE_REQUEST_PAYLOAD = {
   },
 }
 
+const BOARD_DECLINED_PAYLOAD = {
+  title: 'Request Declined',
+  body: 'Your ride request was declined. Try another ride on the board!',
+  data: {
+    type: 'board_declined',
+    ride_id: 'ride-def-456',
+  },
+}
+
 function triggerRideRequest(
   overrides: Partial<typeof RIDE_REQUEST_PAYLOAD> = {},
 ) {
@@ -108,6 +118,12 @@ function triggerRideRequest(
   }
   act(() => {
     capturedCallback?.(payload)
+  })
+}
+
+function triggerBoardDeclined() {
+  act(() => {
+    capturedCallback?.(BOARD_DECLINED_PAYLOAD)
   })
 }
 
@@ -239,6 +255,17 @@ describe('RideRequestNotification', () => {
     })
 
     expect(screen.queryByTestId('ride-request-content')).not.toBeInTheDocument()
+  })
+
+  it('shows a decline toast for board_declined messages', () => {
+    renderComponent()
+    triggerBoardDeclined()
+
+    expect(screen.getByText('Request Declined')).toBeInTheDocument()
+    expect(screen.getByText('Your ride request was declined. Try another ride on the board!')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('declined-browse-board'))
+    expect(mockNavigate).toHaveBeenCalledWith('/rides/board')
   })
 
   it('countdown displays seconds remaining', () => {

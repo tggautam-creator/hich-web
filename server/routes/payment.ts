@@ -12,6 +12,13 @@ function getStripe(): Stripe {
   return new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2026-02-25.clover' })
 }
 
+function isMissingCustomerError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const stripeErr = err as { code?: string; message?: string }
+  return stripeErr.code === 'resource_missing'
+    || (typeof stripeErr.message === 'string' && stripeErr.message.includes('No such customer'))
+}
+
 /**
  * Ensure the user has a Stripe customer. Creates one if missing.
  * Returns the customer ID.
@@ -25,22 +32,38 @@ async function ensureCustomer(userId: string): Promise<string> {
 
   if (error || !user) throw new Error('User not found')
 
-  let customerId = user.stripe_customer_id as string | null
-  if (customerId) return customerId
-
   const stripe = getStripe()
-  const customer = await stripe.customers.create({
-    email: user.email as string,
-    metadata: { user_id: userId },
-  })
-  customerId = customer.id
+  const createAndPersistCustomer = async (): Promise<string> => {
+    const customer = await stripe.customers.create({
+      email: user.email as string,
+      metadata: { user_id: userId },
+    })
 
-  await supabaseAdmin
-    .from('users')
-    .update({ stripe_customer_id: customerId })
-    .eq('id', userId)
+    await supabaseAdmin
+      .from('users')
+      .update({ stripe_customer_id: customer.id })
+      .eq('id', userId)
 
-  return customerId
+    return customer.id
+  }
+
+  const customerId = user.stripe_customer_id as string | null
+  if (!customerId) {
+    return createAndPersistCustomer()
+  }
+
+  try {
+    const existing = await stripe.customers.retrieve(customerId)
+    if ('deleted' in existing && existing.deleted) {
+      return createAndPersistCustomer()
+    }
+    return customerId
+  } catch (err) {
+    if (isMissingCustomerError(err)) {
+      return createAndPersistCustomer()
+    }
+    throw err
+  }
 }
 
 // ── POST /api/payment/setup-intent — create SetupIntent for saving a card

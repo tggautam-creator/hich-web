@@ -33,6 +33,11 @@ interface RideBoardProps {
   'data-testid'?: string
 }
 
+interface PendingRideRequestState {
+  schedule_id: string
+  enrichment: RequestEnrichment
+}
+
 export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -40,6 +45,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
   const isDriver = useAuthStore((s) => s.isDriver)
 
   const fromTab = (location.state as { fromTab?: string } | null)?.fromTab
+  const pendingRequestState = (location.state as { confirmState?: PendingRideRequestState } | null)?.confirmState ?? null
   const activeNavTab = fromTab === 'drive' ? 'drive' as const : fromTab === 'home' ? 'home' as const : isDriver ? 'drive' as const : 'home' as const
   const postAsDriver = activeNavTab === 'drive'
 
@@ -54,6 +60,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
 
   const [detailRide, setDetailRide] = useState<ScheduledRide | null>(null)
   const [confirmRide, setConfirmRide] = useState<ScheduledRide | null>(null)
+  const [confirmInitialEnrichment, setConfirmInitialEnrichment] = useState<RequestEnrichment | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [requestingId, setRequestingId] = useState<string | null>(null)
   const [requestError, setRequestError] = useState<string | null>(null)
@@ -76,6 +83,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
   const [editTimeType, setEditTimeType] = useState<'departure' | 'arrival'>('departure')
   const [editDays, setEditDays] = useState<number[]>([])
   const [editSaving, setEditSaving] = useState(false)
+  const [restoredPendingRequest, setRestoredPendingRequest] = useState(false)
 
   // ── Client-side filtering (search + time window + seat count) ──────────────
   const filteredRides = useMemo(() => {
@@ -159,6 +167,17 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
     }
   }, [])
 
+  const handleStartRequest = useCallback((ride: ScheduledRide) => {
+    if (ride.mode === 'rider' && !isDriver) {
+      navigate('/become-driver')
+      return
+    }
+
+    setConfirmRide(ride)
+    setConfirmInitialEnrichment(null)
+    setRequestError(null)
+  }, [isDriver, navigate])
+
   // ── Send ride request ───────────────────────────────────────────────────────
   const handleConfirmRequest = useCallback(async (enrichment?: RequestEnrichment) => {
     if (!confirmRide) return
@@ -203,12 +222,23 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
           // B1 — hard redirect rider to /payment/add, come back to the board.
           setRequestingId(null)
           setConfirmRide(null)
-          navigate('/payment/add', { state: { returnTo: '/rides/board' } })
+          setConfirmInitialEnrichment(null)
+          navigate('/payment/add', {
+            state: {
+              returnTo: '/rides/board',
+              fromTab: activeNavTab,
+              confirmState: {
+                schedule_id: confirmRide.id,
+                enrichment: enrichment ?? { destination_flexible: false },
+              },
+            },
+          })
           return
         }
         setRequestError(body.error?.message ?? 'Failed to send request')
         setRequestingId(null)
         setConfirmRide(null)
+        setConfirmInitialEnrichment(null)
         return
       }
 
@@ -216,14 +246,27 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       setRides((prev) => prev.map((r) => r.id === confirmRide.id ? { ...r, already_requested: true } : r))
       setSuccessMessage(isDriverPost ? 'Request sent! They\'ll see it in their notifications.' : 'Offer sent! They\'ll see it in their notifications.')
       setConfirmRide(null)
+      setConfirmInitialEnrichment(null)
       setRequestingId(null)
       setTimeout(() => setSuccessMessage(null), 3000)
     } catch {
       setRequestError('Network error — please try again.')
       setRequestingId(null)
       setConfirmRide(null)
+      setConfirmInitialEnrichment(null)
     }
-  }, [confirmRide, navigate])
+  }, [confirmRide, navigate, activeNavTab])
+
+  useEffect(() => {
+    if (restoredPendingRequest || !pendingRequestState || loading) return
+
+    const matchedRide = rides.find((r) => r.id === pendingRequestState.schedule_id)
+    if (!matchedRide) return
+
+    setConfirmRide(matchedRide)
+    setConfirmInitialEnrichment(pendingRequestState.enrichment)
+    setRestoredPendingRequest(true)
+  }, [pendingRequestState, loading, rides, navigate, restoredPendingRequest])
 
   // ── Delete own schedule ─────────────────────────────────────────────────────
   const handleDeleteSchedule = useCallback(async (scheduleId: string) => {
@@ -604,7 +647,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                 deletingId={deletingId}
                 withdrawingRideId={withdrawingRideId}
                 onCardClick={(r) => { setDetailRide(r) }}
-                onRequestClick={(r) => { setConfirmRide(r); setRequestError(null) }}
+                onRequestClick={(r) => { void handleStartRequest(r) }}
                 onDeleteClick={(id) => { void handleDeleteSchedule(id) }}
                 onOpenMessages={handleOpenMessages}
                 onWithdrawClick={(rideId) => { void handleWithdrawRequest(rideId) }}
@@ -734,7 +777,10 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
               {!isOwn && !dr.already_requested && !(isDriverPost && dr.available_seats != null && dr.available_seats <= 0) && (
                 <button
                   data-testid="detail-request-button"
-                  onClick={() => { setDetailRide(null); setConfirmRide(dr); setRequestError(null) }}
+                  onClick={() => {
+                    setDetailRide(null)
+                    void handleStartRequest(dr)
+                  }}
                   className={[
                     'w-full rounded-2xl py-3 text-sm font-semibold text-white active:opacity-80',
                     isDriverPost ? 'bg-success' : 'bg-primary',
@@ -830,8 +876,9 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       <RideBoardConfirmSheet
         ride={confirmRide}
         isRequesting={requestingId === confirmRide?.id}
+        initialEnrichment={confirmInitialEnrichment}
         onConfirm={(enrichment) => { void handleConfirmRequest(enrichment) }}
-        onCancel={() => setConfirmRide(null)}
+        onCancel={() => { setConfirmRide(null); setConfirmInitialEnrichment(null) }}
       />
 
       {/* ── Filter + sort sheet ───────────────────────────────────────────── */}

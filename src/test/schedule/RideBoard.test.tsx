@@ -26,10 +26,12 @@ import RideBoard from '@/components/schedule/RideBoard'
 // ── Mock react-router-dom ─────────────────────────────────────────────────────
 
 const mockNavigate = vi.fn()
+let mockLocationState: unknown = null
+let mockIsDriver = true
 
 vi.mock('react-router-dom', () => ({
   useNavigate: () => mockNavigate,
-  useLocation: () => ({ state: null, pathname: '/rides/board', search: '', hash: '', key: 'default' }),
+  useLocation: () => ({ state: mockLocationState, pathname: '/rides/board', search: '', hash: '', key: 'default' }),
 }))
 
 // ── Mock auth store ──────────────────────────────────────────────────────────
@@ -38,7 +40,7 @@ vi.mock('@/stores/authStore', () => ({
   useAuthStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
       profile: { id: 'current-user' },
-      isDriver: false,
+      isDriver: mockIsDriver,
     }),
 }))
 
@@ -107,6 +109,8 @@ const mockFetch = vi.fn()
 beforeEach(() => {
   vi.stubGlobal('fetch', mockFetch)
   mockNavigate.mockReset()
+  mockLocationState = null
+  mockIsDriver = true
 })
 
 // ── Sample data ──────────────────────────────────────────────────────────────
@@ -334,6 +338,119 @@ describe('RideBoard', () => {
     await waitFor(() => {
       expect(screen.getByTestId('request-error')).toHaveTextContent('Schedule not found')
     })
+  })
+
+  it('redirects to add-card with the pending request state when no payment method exists', async () => {
+    const user = userEvent.setup()
+    setupBoardFetch()
+    render(<RideBoard />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Request This Ride')).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByText('Request This Ride'))
+
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (typeof url === 'string' && url === '/api/schedule/request' && init?.method === 'POST') {
+        return Promise.resolve({
+          ok: false,
+          json: () => Promise.resolve({ error: { code: 'NO_PAYMENT_METHOD', message: 'Add a payment method before requesting a ride.' } }),
+        })
+      }
+      if (typeof url === 'string' && url.startsWith('/api/schedule/board')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ rides: [DRIVER_RIDE, RIDER_RIDE] }),
+        })
+      }
+      return Promise.resolve({ ok: false, json: () => Promise.resolve({}) })
+    })
+
+    await user.type(screen.getByTestId('pickup-search'), 'Test Pickup')
+    await waitFor(() => {
+      expect(screen.getByTestId('pickup-suggestion')).toBeInTheDocument()
+    })
+    await user.click(screen.getByTestId('pickup-suggestion'))
+
+    await user.type(screen.getByTestId('destination-search'), 'Test Destination')
+    await waitFor(() => {
+      expect(screen.getByTestId('place-suggestion')).toBeInTheDocument()
+    })
+    await user.click(screen.getByTestId('place-suggestion'))
+
+    await user.type(screen.getByTestId('request-note'), 'Please pick up near the main gate')
+    await user.click(screen.getByTestId('confirm-send-button'))
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/payment/add', expect.objectContaining({
+        state: expect.objectContaining({
+          returnTo: '/rides/board',
+          fromTab: 'drive',
+          confirmState: expect.objectContaining({
+            schedule_id: 'sched-1',
+            enrichment: expect.objectContaining({
+              pickup_name: '123 Main St, Davis, CA',
+              destination_name: '123 Main St, Davis, CA',
+              destination_flexible: false,
+              note: 'Please pick up near the main gate',
+            }),
+          }),
+        }),
+      }))
+    })
+  })
+
+  it('restores the confirmation sheet after returning from add-card', async () => {
+    mockLocationState = {
+      fromTab: 'drive',
+      confirmState: {
+        schedule_id: 'sched-1',
+        enrichment: {
+          pickup_lat: 38.54,
+          pickup_lng: -121.74,
+          pickup_name: 'Memorial Union, Davis, CA',
+          destination_lat: 37.78,
+          destination_lng: -122.41,
+          destination_name: 'Market St, San Francisco, CA',
+          destination_flexible: false,
+          note: 'I have one suitcase',
+        },
+      },
+    }
+
+    setupBoardFetch()
+    render(<RideBoard />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('confirm-sheet')).toBeInTheDocument()
+    })
+
+    expect((screen.getByTestId('pickup-search') as HTMLInputElement).value).toBe('Memorial Union, Davis, CA')
+    expect((screen.getByTestId('destination-search') as HTMLInputElement).value).toBe('Market St, San Francisco, CA')
+    expect((screen.getByTestId('request-note') as HTMLTextAreaElement).value).toBe('I have one suitcase')
+  })
+
+  it('prompts non-drivers to register a car before offering to drive', async () => {
+    const user = userEvent.setup()
+    mockIsDriver = false
+    setupBoardFetch()
+    render(<RideBoard />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Request This Ride')).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByTestId('tab-riders'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Offer to Drive')).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByText('Offer to Drive'))
+
+    expect(mockNavigate).toHaveBeenCalledWith('/become-driver')
+    expect(screen.queryByTestId('confirm-sheet')).not.toBeInTheDocument()
   })
 
   it('passes user location in board fetch for relevance sorting', async () => {

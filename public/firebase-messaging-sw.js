@@ -89,6 +89,8 @@ self.addEventListener('notificationclick', (event) => {
     url = '/ride/suggestion/' + data.ride_id
   } else if (inferredType === 'board_accepted' && data.ride_id) {
     url = '/ride/messaging/' + data.ride_id
+  } else if (inferredType === 'board_declined') {
+    url = '/notifications'
   } else if (inferredType === 'ride_reminder' && data.ride_id) {
     url = '/ride/messaging/' + data.ride_id
   }

@@ -15,9 +15,10 @@ interface SaveCardPageProps {
 interface SaveCardFormProps {
   returnTo: string | null
   confirmState: unknown
+  fromTab?: string | null
 }
 
-function SaveCardForm({ returnTo, confirmState }: SaveCardFormProps) {
+function SaveCardForm({ returnTo, confirmState, fromTab }: SaveCardFormProps) {
   const navigate = useNavigate()
   const stripe = useStripe()
   const elements = useElements()
@@ -88,7 +89,10 @@ function SaveCardForm({ returnTo, confirmState }: SaveCardFormProps) {
       // Return to the page that redirected here (ride confirm / ride board),
       // restoring any state that was passed through (destination, fare, etc.).
       if (returnTo) {
-        navigate(returnTo, { replace: true, state: confirmState ?? null })
+        navigate(returnTo, {
+          replace: true,
+          state: fromTab ? { fromTab, confirmState } : confirmState ?? null,
+        })
       } else {
         navigate('/payment/methods', { replace: true })
       }
@@ -138,9 +142,10 @@ export default function SaveCardPage({
 }: SaveCardPageProps) {
   const navigate = useNavigate()
   const location = useLocation()
-  const locationState = location.state as { returnTo?: string; confirmState?: unknown } | null
+  const locationState = location.state as { returnTo?: string; confirmState?: unknown; fromTab?: string } | null
   const returnTo = locationState?.returnTo ?? null
   const confirmState = locationState?.confirmState ?? null
+  const fromTab = locationState?.fromTab ?? null
 
   return (
     <div
@@ -182,7 +187,7 @@ export default function SaveCardPage({
         </p>
 
         <Elements stripe={stripePromise}>
-          <SaveCardForm returnTo={returnTo} confirmState={confirmState} />
+          <SaveCardForm returnTo={returnTo} confirmState={confirmState} fromTab={fromTab} />
         </Elements>
       </div>
     </div>
