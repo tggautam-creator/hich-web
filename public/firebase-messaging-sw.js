@@ -45,23 +45,55 @@ messaging.onBackgroundMessage((payload) => {
   })
 })
 
+function extractNotificationData(notification) {
+  const raw = notification?.data ?? {}
+
+  if (raw && typeof raw === 'object') {
+    if (typeof raw.type === 'string') {
+      return raw
+    }
+
+    if (raw.data && typeof raw.data === 'object') {
+      return raw.data
+    }
+
+    // Some FCM/browser combinations wrap payloads under FCM_MSG.
+    if (raw.FCM_MSG && typeof raw.FCM_MSG === 'object') {
+      const wrapped = raw.FCM_MSG
+      if (wrapped.data && typeof wrapped.data === 'object') {
+        return wrapped.data
+      }
+    }
+  }
+
+  return {}
+}
+
 // Handle notification click — navigate to the relevant page.
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
-  const data = event.notification.data ?? {}
+  const data = extractNotificationData(event.notification)
 
-  let url = '/'
-  if (data.type === 'board_request' && data.ride_id) {
+  const inferredType = typeof data.type === 'string'
+    ? data.type
+    : (event.notification.title === 'Ride Board Request' ? 'board_request' : null)
+
+  // Default to notifications so users land in an actionable context,
+  // even if a browser drops custom data from the notification payload.
+  let url = '/notifications'
+  if (inferredType === 'board_request' && data.ride_id) {
     url = '/ride/board-review/' + data.ride_id
-  } else if (data.type === 'new_message' && data.ride_id) {
+  } else if (inferredType === 'new_message' && data.ride_id) {
     url = '/ride/messaging/' + data.ride_id
-  } else if (data.type === 'ride_request' && data.ride_id) {
+  } else if (inferredType === 'ride_request' && data.ride_id) {
     url = '/ride/suggestion/' + data.ride_id
-  } else if (data.type === 'board_accepted' && data.ride_id) {
+  } else if (inferredType === 'board_accepted' && data.ride_id) {
     url = '/ride/messaging/' + data.ride_id
-  } else if (data.type === 'ride_reminder' && data.ride_id) {
+  } else if (inferredType === 'ride_reminder' && data.ride_id) {
     url = '/ride/messaging/' + data.ride_id
   }
+
+  console.log('[SW] notificationclick route:', { url, inferredType, data })
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {

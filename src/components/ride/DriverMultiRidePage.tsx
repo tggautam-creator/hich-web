@@ -386,14 +386,25 @@ export default function DriverMultiRidePage({
 
               {/* Action buttons per rider */}
               <div className="mt-2.5 pl-10 flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => navigate(`/ride/messaging/${r.ride.id}`)}
-                  className="flex-1 rounded-xl py-2 text-xs font-semibold text-primary bg-primary/5 active:bg-primary/10"
-                  data-testid="chat-rider-button"
-                >
-                  Chat
-                </button>
+                {r.ride.status === 'requested' ? (
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/ride/board-review/${r.ride.id}`)}
+                    className="flex-1 rounded-xl py-2 text-xs font-semibold text-primary bg-primary/5 active:bg-primary/10"
+                    data-testid="review-request-button"
+                  >
+                    Review Request
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/ride/messaging/${r.ride.id}`)}
+                    className="flex-1 rounded-xl py-2 text-xs font-semibold text-primary bg-primary/5 active:bg-primary/10"
+                    data-testid="chat-rider-button"
+                  >
+                    Chat
+                  </button>
+                )}
                 {(r.ride.status === 'coordinating' || r.ride.status === 'accepted') && (
                   <button
                     type="button"

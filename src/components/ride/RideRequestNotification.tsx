@@ -776,7 +776,10 @@ export default function RideRequestNotification({
   // Cancelled toast — shown when the other party cancels the ride
   if (cancelledToast && !notification) {
     return createPortal(
-      <div className="fixed top-0 left-0 right-0 z-[1200] animate-slide-down">
+      <div
+        className="fixed top-0 left-0 right-0 z-[1200] animate-slide-down"
+        style={{ paddingTop: 'max(env(safe-area-inset-top), 0px)' }}
+      >
         <div className="mx-2 mt-2 rounded-2xl border border-danger/30 bg-white shadow-xl">
           <div className="flex items-center justify-between px-4 py-3">
             <div className="flex items-center gap-3 min-w-0">
@@ -821,7 +824,10 @@ export default function RideRequestNotification({
   // Accepted toast — shown when a board request is accepted
   if (acceptedToast && !notification) {
     return createPortal(
-      <div className="fixed top-0 left-0 right-0 z-[1200] animate-slide-down">
+      <div
+        className="fixed top-0 left-0 right-0 z-[1200] animate-slide-down"
+        style={{ paddingTop: 'max(env(safe-area-inset-top), 0px)' }}
+      >
         <div className="mx-2 mt-2 rounded-2xl border border-success/30 bg-white shadow-xl">
           <div className="flex items-center justify-between px-4 py-3">
             <div className="flex items-center gap-3 min-w-0">
@@ -864,7 +870,10 @@ export default function RideRequestNotification({
   // Ride reminder toast — shown when ride is approaching
   if (reminderToast && !notification && !acceptedToast) {
     return createPortal(
-      <div className="fixed top-0 left-0 right-0 z-[1200] animate-slide-down">
+      <div
+        className="fixed top-0 left-0 right-0 z-[1200] animate-slide-down"
+        style={{ paddingTop: 'max(env(safe-area-inset-top), 0px)' }}
+      >
         <div className="mx-2 mt-2 rounded-2xl border border-warning/30 bg-white shadow-xl">
           <div className="flex items-center justify-between px-4 py-3">
             <div className="flex items-center gap-3 min-w-0">
@@ -915,6 +924,7 @@ export default function RideRequestNotification({
     <div
       data-testid={testId}
       className="fixed top-0 left-0 right-0 z-[1200] animate-slide-down"
+      style={{ paddingTop: 'max(env(safe-area-inset-top), 0px)' }}
     >
       {/* Banner card */}
       <div

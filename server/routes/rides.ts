@@ -3565,6 +3565,15 @@ ridesRouter.get(
     })
 
     const visibleRides = enriched.filter((ride) => {
+      const role = ride.my_role
+      const status = (ride as Record<string, unknown>)['status'] as string | undefined
+
+      // Driver-side requested rides are pending approvals, not active rides.
+      // Keep them in notifications/board review instead of the active list.
+      if (role === 'driver' && status === 'requested') {
+        return false
+      }
+
       return !shouldTreatScheduledRideAsExpired(ride as {
         status?: string
         schedule_id?: string | null
