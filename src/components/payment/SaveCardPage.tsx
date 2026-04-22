@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { loadStripe } from '@stripe/stripe-js'
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js'
 import { env } from '@/lib/env'
@@ -12,7 +12,12 @@ interface SaveCardPageProps {
   'data-testid'?: string
 }
 
-function SaveCardForm() {
+interface SaveCardFormProps {
+  returnTo: string | null
+  confirmState: unknown
+}
+
+function SaveCardForm({ returnTo, confirmState }: SaveCardFormProps) {
   const navigate = useNavigate()
   const stripe = useStripe()
   const elements = useElements()
@@ -60,12 +65,12 @@ function SaveCardForm() {
       }
 
       if (setupIntent?.payment_method) {
-        // Set as default payment method
         const pmId = typeof setupIntent.payment_method === 'string'
           ? setupIntent.payment_method
           : setupIntent.payment_method.id
 
-        await fetch('/api/payment/default-method', {
+        // Set as default — critical: check response so we don't silently skip it
+        const defaultResp = await fetch('/api/payment/default-method', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -73,9 +78,20 @@ function SaveCardForm() {
           },
           body: JSON.stringify({ payment_method_id: pmId }),
         })
+        if (!defaultResp.ok) {
+          const body = (await defaultResp.json().catch(() => ({}))) as { error?: { message?: string } }
+          setError(body.error?.message ?? 'Card saved but could not set as default. Please set it manually.')
+          return
+        }
       }
 
-      navigate('/payment/methods', { replace: true })
+      // Return to the page that redirected here (ride confirm / ride board),
+      // restoring any state that was passed through (destination, fare, etc.).
+      if (returnTo) {
+        navigate(returnTo, { replace: true, state: confirmState ?? null })
+      } else {
+        navigate('/payment/methods', { replace: true })
+      }
     } catch {
       setError('Something went wrong. Please try again.')
     } finally {
@@ -121,6 +137,10 @@ export default function SaveCardPage({
   'data-testid': testId = 'save-card-page',
 }: SaveCardPageProps) {
   const navigate = useNavigate()
+  const location = useLocation()
+  const locationState = location.state as { returnTo?: string; confirmState?: unknown } | null
+  const returnTo = locationState?.returnTo ?? null
+  const confirmState = locationState?.confirmState ?? null
 
   return (
     <div
@@ -141,12 +161,28 @@ export default function SaveCardPage({
       </div>
 
       <div className="flex-1 px-4 py-6">
+        {/* Context banner — shown when redirected from a ride request */}
+        {returnTo && (
+          <div
+            data-testid="card-required-banner"
+            className="mb-5 rounded-xl bg-primary/5 border border-primary/20 px-4 py-3 flex items-start gap-2"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true">
+              <rect x="2" y="6" width="20" height="14" rx="2" />
+              <path d="M2 10h20" />
+            </svg>
+            <p className="text-sm text-text-primary">
+              A payment method is required to request rides. Add your card to continue.
+            </p>
+          </div>
+        )}
+
         <p className="mb-6 text-sm text-text-secondary">
           Your card will be charged automatically after each ride. Card details are securely handled by Stripe.
         </p>
 
         <Elements stripe={stripePromise}>
-          <SaveCardForm />
+          <SaveCardForm returnTo={returnTo} confirmState={confirmState} />
         </Elements>
       </div>
     </div>

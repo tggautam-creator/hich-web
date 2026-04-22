@@ -133,9 +133,10 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
       if (!resp.ok) {
         const body = (await resp.json()) as { error?: { code?: string; message?: string } }
         if (body.error?.code === 'NO_PAYMENT_METHOD') {
-          // B1 — server rejected because rider has no card. Push to /payment/add.
+          // B1 — server rejected because rider has no card. Push to /payment/add,
+          // carrying the current location state so it's restored on return.
           setSubmitting(false)
-          navigate('/payment/add', { state: { returnTo: '/ride/confirm' } })
+          navigate('/payment/add', { state: { returnTo: '/ride/confirm', confirmState: state } })
           return
         }
         setError(body.error?.message ?? 'Failed to request ride.')
