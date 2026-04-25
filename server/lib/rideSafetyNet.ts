@@ -153,7 +153,8 @@ async function autoEndRide(
   const gasCostCents = Math.round(gallonsUsed * 3.50 * 100)
   const timeCostCents = Math.round(durationMin * 5)
   const raw = 100 + gasCostCents + timeCostCents
-  const fareCents = Math.max(200, Math.min(4000, raw))
+  // Upper cap removed 2026-04-24 — safety-net fare mirrors the main formula.
+  const fareCents = Math.max(200, raw)
 
   // Update ride
   await supabaseAdmin

@@ -63,14 +63,26 @@ const mockInsert = vi.fn().mockReturnValue(mockInsertReturn({ data: [{ id: 'test
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
-    from: () => ({
-      insert: mockInsert,
-    }),
+    from: () => ({ insert: mockInsert }),
     auth: {
       getSession: () => Promise.resolve({ data: { session: { access_token: 'test-token' } } }),
     },
   },
 }))
+
+/**
+ * Card precondition: rider-mode submit hits /api/payment/methods (Stripe
+ * truth) before inserting. Default to "card on file" so existing happy-path
+ * tests pass; tests for the no-card flow override fetch per-call.
+ */
+const mockFetch = vi.fn().mockResolvedValue({
+  ok: true,
+  json: async () => ({
+    methods: [{ id: 'pm_test', brand: 'visa', last4: '4242', is_default: true }],
+    default_method_id: 'pm_test',
+  }),
+})
+vi.stubGlobal('fetch', mockFetch)
 
 // ── Mock geo ──────────────────────────────────────────────────────────────────
 
@@ -114,6 +126,16 @@ describe('SchedulePage', () => {
     mockSearchPlaces.mockResolvedValue([])
     mockInsert.mockReturnValue(mockInsertReturn({ data: [{ id: 'test-id' }], error: null }))
     mockGetPlaceCoordinates.mockResolvedValue({ lat: 38.54, lng: -121.76 })
+    // restoreAllMocks in afterEach wipes mockResolvedValue on every spy,
+    // so reseat fetch (used by the /api/payment/methods precheck) to its
+    // happy-path "card on file" response.
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        methods: [{ id: 'pm_test', brand: 'visa', last4: '4242', is_default: true }],
+        default_method_id: 'pm_test',
+      }),
+    })
   })
 
   afterEach(() => {
@@ -567,8 +589,22 @@ describe('SchedulePage', () => {
       )?.set?.call(timeInput, '09:30')
       timeInput.dispatchEvent(new Event('change', { bubbles: true }))
 
-      // Mock fetch for /api/schedule/notify
-      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response())
+      // Two endpoints get called: /api/payment/methods (card precheck) and
+      // /api/schedule/notify (post-insert push). Route both through the same
+      // global mock — the precheck has to return a card for the insert path
+      // to run.
+      mockFetch.mockImplementation(async (url: string) => {
+        if (typeof url === 'string' && url.includes('/api/payment/methods')) {
+          return {
+            ok: true,
+            json: async () => ({
+              methods: [{ id: 'pm_test', brand: 'visa', last4: '4242', is_default: true }],
+              default_method_id: 'pm_test',
+            }),
+          } as unknown as Response
+        }
+        return new Response()
+      })
 
       await user.click(screen.getByTestId('submit-schedule-button'))
 
@@ -600,7 +636,40 @@ describe('SchedulePage', () => {
         expect(screen.getByTestId('schedule-confirmation')).toBeInTheDocument()
       })
       expect(screen.getByText('Ride Scheduled!')).toBeInTheDocument()
-      fetchSpy.mockRestore()
+    })
+
+    it('redirects rider-mode submit to /payment/add when poster has no card', async () => {
+      // Card precondition: rider posts charge a card after the ride completes,
+      // so submitting without one would leave a dead-end post on the board.
+      // Simulate "Stripe says no methods" and verify we redirect instead of
+      // calling supabase insert.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ methods: [], default_method_id: null }),
+      })
+
+      const user = await goToScheduleStep()
+
+      const dateInput = screen.getByTestId('trip-date-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(dateInput, '2027-06-15')
+      dateInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      const timeInput = screen.getByTestId('trip-time-input')
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype, 'value',
+      )?.set?.call(timeInput, '09:30')
+      timeInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+      await user.click(screen.getByTestId('submit-schedule-button'))
+
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith('/payment/add', expect.objectContaining({
+          state: expect.objectContaining({ returnTo: '/schedule/rider' }),
+        }))
+      })
+      expect(mockInsert).not.toHaveBeenCalled()
     })
 
     it('shows submit error when supabase insert fails', async () => {

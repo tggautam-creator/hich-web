@@ -219,7 +219,8 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       if (!resp.ok) {
         const body = (await resp.json()) as { error?: { code?: string; message?: string } }
         if (body.error?.code === 'NO_PAYMENT_METHOD') {
-          // B1 — hard redirect rider to /payment/add, come back to the board.
+          // Requester is the rider (driver-post): redirect to /payment/add and
+          // restore the confirmation state when they come back.
           setRequestingId(null)
           setConfirmRide(null)
           setConfirmInitialEnrichment(null)
@@ -235,6 +236,11 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
           })
           return
         }
+        // RIDER_NO_PAYMENT_METHOD: the *poster* of a rider-post lacks a card.
+        // Adding our own card here wouldn't fix anything — surface the message
+        // inline so the driver can pick a different post. (Should be rare now
+        // that schedule creation enforces the card; the trigger is the safety
+        // net for older rows.)
         setRequestError(body.error?.message ?? 'Failed to send request')
         setRequestingId(null)
         setConfirmRide(null)

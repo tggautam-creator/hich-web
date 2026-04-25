@@ -7,7 +7,7 @@ import { getServerEnv } from '../env.ts'
 
 export const paymentRouter = Router()
 
-function getStripe(): Stripe {
+export function getStripe(): Stripe {
   const { STRIPE_SECRET_KEY } = getServerEnv()
   return new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2026-02-25.clover' })
 }
@@ -106,16 +106,33 @@ paymentRouter.get('/methods', validateJwt, async (_req: Request, res: Response, 
       type: 'card',
     })
 
+    // Self-heal a stale default_payment_method_id. Cards can be detached
+    // out-of-band (Stripe Dashboard, test-mode reset, expired card) leaving
+    // the cached column pointing at a payment method that no longer exists.
+    // Downstream guards (rider-post card check + migration 051 trigger) trust
+    // this column, so a stale value lets users slip past. Reconcile here.
+    let effectiveDefault: string | null = user.default_payment_method_id
+    const cachedDefaultStillValid =
+      effectiveDefault != null && methods.data.some((m) => m.id === effectiveDefault)
+
+    if (effectiveDefault != null && !cachedDefaultStillValid) {
+      effectiveDefault = methods.data[0]?.id ?? null
+      await supabaseAdmin
+        .from('users')
+        .update({ default_payment_method_id: effectiveDefault })
+        .eq('id', userId)
+    }
+
     const cards = methods.data.map((m) => ({
       id: m.id,
       brand: m.card?.brand ?? 'unknown',
       last4: m.card?.last4 ?? '****',
       exp_month: m.card?.exp_month ?? 0,
       exp_year: m.card?.exp_year ?? 0,
-      is_default: m.id === user.default_payment_method_id,
+      is_default: m.id === effectiveDefault,
     }))
 
-    res.json({ methods: cards, default_method_id: user.default_payment_method_id })
+    res.json({ methods: cards, default_method_id: effectiveDefault })
   } catch (err) {
     next(err)
   }

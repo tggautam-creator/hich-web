@@ -42,3 +42,14 @@ SESSION_BRIEF.md
 plan.md
 progress.txt
 ANALYSIS.md
+
+# iOS — kept out of the web repo
+ios/
+IOS_PROGRESS.md
+IOS_ROADMAP.md
+.github/workflows/ios.yml
+
+# Xcode per-user workspace state
+Hich.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+xcuserdata/

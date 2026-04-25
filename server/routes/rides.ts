@@ -23,7 +23,7 @@ const DEG_TO_RAD = Math.PI / 180
 const EARTH_RADIUS_M = 6_371_000
 const KM_TO_MILES = 0.621371
 const MIN_FARE_CENTS = 500
-const MAX_FARE_CENTS = 4000
+// Upper cap removed 2026-04-24 — per-ride fare now scales without a ceiling.
 const BASE_CENTS = 200
 const PER_MIN_CENTS = 8
 const PLATFORM_FEE_RATE = 0
@@ -152,7 +152,7 @@ async function computeRideFare(
   const timeCostCents = Math.round(durationMin * PER_MIN_CENTS)
 
   const raw = BASE_CENTS + gasCostCents + timeCostCents
-  const fareCents = Math.max(MIN_FARE_CENTS, Math.min(MAX_FARE_CENTS, raw))
+  const fareCents = Math.max(MIN_FARE_CENTS, raw)
   const platformFeeCents = Math.round(fareCents * PLATFORM_FEE_RATE)
   const driverEarnsCents = fareCents - platformFeeCents
 
@@ -3822,7 +3822,7 @@ ridesRouter.post(
       const gasCostCents = Math.round(gallonsUsed * DEFAULT_GAS_PRICE_PER_GALLON * 100)
       const timeCostCents = Math.round(durationMin * PER_MIN_CENTS)
       const raw = BASE_CENTS + gasCostCents + timeCostCents
-      const fareCents = Math.max(MIN_FARE_CENTS, Math.min(MAX_FARE_CENTS, raw))
+      const fareCents = Math.max(MIN_FARE_CENTS, raw)
       const platformFeeCents = Math.round(fareCents * PLATFORM_FEE_RATE)
       const driverEarnsCents = fareCents - platformFeeCents
 
@@ -4142,7 +4142,7 @@ ridesRouter.post(
         const gasCents = Math.round(gallons * DEFAULT_GAS_PRICE_PER_GALLON * 100)
         const estDurationMin = Math.round(distM / 1000 / 40 * 60) // ~40km/h average
         const timeCents = Math.round(estDurationMin * PER_MIN_CENTS)
-        fareEstimateCents = Math.max(MIN_FARE_CENTS, Math.min(MAX_FARE_CENTS, BASE_CENTS + gasCents + timeCents))
+        fareEstimateCents = Math.max(MIN_FARE_CENTS, BASE_CENTS + gasCents + timeCents)
       } catch { /* non-fatal */ }
     }
 

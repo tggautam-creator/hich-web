@@ -84,7 +84,7 @@ gas_cost_cents  = round((distance_km * 0.621371 / mpg) * gas_price_per_gallon * 
 time_cost_cents = round(duration_min * 8)           // 8 cents/min
 base_cents      = 200                               // $2.00 base
 raw             = base_cents + gas_cost_cents + time_cost_cents
-fare_cents      = max(500, min(4000, raw))          // $5 minimum, $40 maximum
+fare_cents      = max(500, raw)                     // $5 minimum, no upper cap (removed 2026-04-24)
 platform_fee_cents = 0                              // driver keeps 100% during MVP
 driver_earns_cents = fare_cents
 ```

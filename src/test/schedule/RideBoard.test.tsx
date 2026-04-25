@@ -401,6 +401,51 @@ describe('RideBoard', () => {
     })
   })
 
+  it('shows inline error and does NOT redirect when poster of rider-post has no card', async () => {
+    // Driver clicks "Offer this ride" on a rider-post whose poster has no
+    // card. The missing card belongs to the poster, so /payment/add wouldn't
+    // help — surface the message inline and stay on the board.
+    const user = userEvent.setup()
+    setupBoardFetch()
+    render(<RideBoard />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Offer to Drive')).toBeInTheDocument()
+    })
+
+    await user.click(screen.getByText('Offer to Drive'))
+
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (typeof url === 'string' && url === '/api/schedule/request' && init?.method === 'POST') {
+        return Promise.resolve({
+          ok: false,
+          json: () => Promise.resolve({
+            error: {
+              code: 'RIDER_NO_PAYMENT_METHOD',
+              message: 'This rider hasn’t set up payment yet — try a different post.',
+            },
+          }),
+        })
+      }
+      if (typeof url === 'string' && url.startsWith('/api/schedule/board')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ rides: [DRIVER_RIDE, RIDER_RIDE] }),
+        })
+      }
+      return Promise.resolve({ ok: false, json: () => Promise.resolve({}) })
+    })
+
+    await user.click(screen.getByTestId('confirm-send-button'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('request-error')).toHaveTextContent(/rider/i)
+    })
+    // Critical: do NOT push to /payment/add — adding the driver's own card
+    // can't unblock the rider.
+    expect(mockNavigate).not.toHaveBeenCalledWith('/payment/add', expect.anything())
+  })
+
   it('restores the confirmation sheet after returning from add-card', async () => {
     mockLocationState = {
       fromTab: 'drive',

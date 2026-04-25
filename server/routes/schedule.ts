@@ -5,6 +5,7 @@ import { sendFcmPush } from '../lib/fcm.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
 import { checkUpcomingRides, expireMissedRides, expireStaleRequests } from '../lib/scheduledReminders.ts'
+import { getStripe } from './payment.ts'
 
 export const scheduleRouter = Router()
 
@@ -620,25 +621,56 @@ scheduleRouter.post(
       driverId = userId
     }
 
-    // B1 — server-side card precondition on the rider. If the rider has no
-    // saved card the driver will finish the trip and the charge will silently
-    // fail. Whoever ends up as the rider (poster on a rider-post, or
-    // requester on a driver-post) must have stripe_customer_id + default
-    // payment method before we create the ride.
+    // Server-side card precondition on the rider. The charge runs after the
+    // ride completes, so we refuse to create a ride whose rider has no card.
+    // Two distinct cases — distinguished by error code so the client can react
+    // correctly:
+    //   NO_PAYMENT_METHOD       — the requester *is* the rider (driver-post)
+    //                             and needs to add their own card; redirect.
+    //   RIDER_NO_PAYMENT_METHOD — the requester is offering to drive a
+    //                             rider-post whose poster has no card; do
+    //                             NOT redirect the driver to /payment/add.
+    //
+    // We can't trust users.default_payment_method_id alone — cards detached
+    // out-of-band leave a stale id that fooled this check in the past
+    // (BUG-051). Verify against Stripe and self-heal the column if it's
+    // pointing at a payment method that no longer exists.
     const { data: riderPaymentRow } = await supabaseAdmin
       .from('users')
       .select('stripe_customer_id, default_payment_method_id')
       .eq('id', riderId)
       .single()
 
-    if (!riderPaymentRow?.stripe_customer_id || !riderPaymentRow?.default_payment_method_id) {
+    let hasValidCard = false
+    if (riderPaymentRow?.stripe_customer_id && riderPaymentRow?.default_payment_method_id) {
+      try {
+        const stripe = getStripe()
+        const pm = await stripe.paymentMethods.retrieve(
+          riderPaymentRow.default_payment_method_id as string,
+        )
+        hasValidCard = pm.customer === riderPaymentRow.stripe_customer_id
+      } catch {
+        hasValidCard = false
+      }
+    }
+
+    if (!hasValidCard) {
+      // Self-heal: clear the stale id so the migration-051 trigger blocks
+      // future rider-mode posts by this user too.
+      if (riderPaymentRow?.default_payment_method_id) {
+        await supabaseAdmin
+          .from('users')
+          .update({ default_payment_method_id: null })
+          .eq('id', riderId)
+      }
+
       const isSelf = riderId === userId
       res.status(400).json({
         error: {
-          code: 'NO_PAYMENT_METHOD',
+          code: isSelf ? 'NO_PAYMENT_METHOD' : 'RIDER_NO_PAYMENT_METHOD',
           message: isSelf
             ? 'Add a payment method before requesting a ride.'
-            : 'The rider has not added a payment method yet.',
+            : 'This rider hasn’t set up payment yet — try a different post.',
         },
       })
       return

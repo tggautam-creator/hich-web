@@ -262,12 +262,76 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
     setSubmitError(null)
   }
 
+  /**
+   * Send the user to /payment/add with state to bring them back to this
+   * mode of the schedule flow. Mirrors the redirect used by RideBoard's
+   * "Request This Ride" → NO_PAYMENT_METHOD flow, so both card-required
+   * paths land in the same place.
+   */
+  function redirectToAddPayment() {
+    navigate('/payment/add', { state: { returnTo: `/schedule/${activeMode}` } })
+  }
+
+  /**
+   * Detect the migration-051 trigger error coming back from a direct
+   * Supabase insert. The DB raises a CHECK violation with this exact
+   * message; we match on a stable substring rather than the full text.
+   */
+  function isMissingPaymentMethodDbError(message: string | undefined | null): boolean {
+    if (!message) return false
+    return /saved payment method/i.test(message)
+  }
+
+  /**
+   * Rider-mode posts charge a card after the ride completes, so refuse to
+   * create the schedule if the poster has no card on file. We hit
+   * /api/payment/methods (Stripe-backed) rather than reading
+   * users.default_payment_method_id directly — the cached column can go
+   * stale when a card is detached out-of-band, and trusting it has let
+   * card-less users post in the past. The endpoint also self-heals the
+   * column on read, so the migration-051 trigger sees fresh data on the
+   * next attempt. Returns true if the submit can proceed.
+   */
+  async function ensureCardOnFileForRiderMode(): Promise<boolean> {
+    if (activeMode !== 'rider' || !user) return true
+
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) {
+      setSubmitError('Please sign in again.')
+      return false
+    }
+
+    const res = await fetch('/api/payment/methods', {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    })
+    if (!res.ok) {
+      setSubmitError('Could not verify your payment method. Please try again.')
+      return false
+    }
+    const body = (await res.json()) as {
+      methods: Array<unknown>
+      default_method_id: string | null
+    }
+
+    if (!body.default_method_id || body.methods.length === 0) {
+      redirectToAddPayment()
+      return false
+    }
+
+    return true
+  }
+
   async function handleSubmitSchedule() {
     if (!validateSchedule()) return
     if (!user || !fromLocation || !toLocation) return
 
     setSubmitting(true)
     setSubmitError(null)
+
+    if (!(await ensureCardOnFileForRiderMode())) {
+      setSubmitting(false)
+      return
+    }
 
     // When the poster is flexible on time we still need a legal trip_time
     // value (the column is NOT NULL); store noon so anything sorting by time
@@ -307,6 +371,10 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
       }).select('id')
 
       if (error) {
+        if (isMissingPaymentMethodDbError(error.message)) {
+          redirectToAddPayment()
+          return
+        }
         setSubmitError(error.message)
         return
       }
@@ -391,6 +459,11 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
 
     setSubmitting(true)
     setSubmitError(null)
+
+    if (!(await ensureCardOnFileForRiderMode())) {
+      setSubmitting(false)
+      return
+    }
 
     try {
       // Geocode both places

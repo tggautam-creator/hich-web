@@ -4,7 +4,7 @@ import request from 'supertest'
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────────────
 
-const { mockAuth, mockFrom, mockRpc, mockSendFcmPush, mockChannel } = vi.hoisted(() => {
+const { mockAuth, mockFrom, mockRpc, mockSendFcmPush, mockChannel, mockStripeRetrievePm } = vi.hoisted(() => {
   const mockAuth = { getUser: vi.fn() }
   const mockFrom = vi.fn()
   const mockRpc = vi.fn()
@@ -15,7 +15,11 @@ const { mockAuth, mockFrom, mockRpc, mockSendFcmPush, mockChannel } = vi.hoisted
     return { send: mockSend }
   })
   const mockChannel = vi.fn().mockReturnValue({ subscribe: mockSubscribe, send: mockSend })
-  return { mockAuth, mockFrom, mockRpc, mockSendFcmPush, mockChannel }
+  // Default: payment method exists in Stripe and belongs to the customer the
+  // /request endpoint just looked up (see DRIVER_SCHEDULE / RIDER_SCHEDULE
+  // flows below). Individual tests override per-call.
+  const mockStripeRetrievePm = vi.fn().mockResolvedValue({ id: 'pm_123', customer: 'cus_123' })
+  return { mockAuth, mockFrom, mockRpc, mockSendFcmPush, mockChannel, mockStripeRetrievePm }
 })
 
 const { mockRemoveChannel } = vi.hoisted(() => ({
@@ -29,6 +33,27 @@ vi.mock('../../../server/lib/supabaseAdmin.ts', () => ({
 vi.mock('../../../server/lib/fcm.ts', () => ({
   sendFcmPush: mockSendFcmPush,
 }))
+
+vi.mock('../../../server/env.ts', () => ({
+  getServerEnv: () => ({
+    SUPABASE_URL: 'https://test.supabase.co',
+    SUPABASE_SERVICE_ROLE_KEY: 'test-key',
+    FIREBASE_SERVICE_ACCOUNT_PATH: './mock-path.json',
+    QR_HMAC_SECRET: 'test-secret',
+    STRIPE_SECRET_KEY: 'sk_test_mock',
+    STRIPE_WEBHOOK_SECRET: 'whsec_mock',
+    PORT: 3001,
+  }),
+}))
+
+// Stripe is consulted on the rider's payment method to detect a stale
+// default_payment_method_id (see schedule.ts card check).
+vi.mock('stripe', () => {
+  const StripeCtor = vi.fn().mockImplementation(() => ({
+    paymentMethods: { retrieve: mockStripeRetrievePm },
+  }))
+  return { default: StripeCtor }
+})
 
 import { app } from '../../../server/app.ts'
 
@@ -341,5 +366,52 @@ describe('POST /api/schedule/request', () => {
 
     expect(res.status).toBe(400)
     expect(res.body.error.code).toBe('NO_PAYMENT_METHOD')
+  })
+
+  it('returns 400 RIDER_NO_PAYMENT_METHOD when poster of rider-post has no card', async () => {
+    // Driver responds to a rider-post whose poster has no card. The driver's
+    // *own* card is irrelevant; the missing card belongs to the poster, so
+    // the server must return a distinct code so the client doesn't redirect
+    // the driver to /payment/add.
+    authAsUser('driver-me')
+
+    const mockSchedSingle = vi.fn().mockResolvedValue({ data: RIDER_SCHEDULE, error: null })
+    const mockSchedEq = vi.fn().mockReturnValue({ single: mockSchedSingle })
+    const mockSelectSched = vi.fn().mockReturnValue({ eq: mockSchedEq })
+
+    const mockDupLimit = vi.fn().mockResolvedValue({ data: [], error: null })
+    const mockDupNot = vi.fn().mockReturnValue({ limit: mockDupLimit })
+    const mockDupOr = vi.fn().mockReturnValue({ not: mockDupNot })
+    const mockDupEq = vi.fn().mockReturnValue({ or: mockDupOr })
+    const mockDupSelect = vi.fn().mockReturnValue({ eq: mockDupEq })
+
+    // users.select(...).eq(id) — the endpoint queries this table twice for
+    // distinct ids: first the driver's is_driver flag, then the rider's card.
+    // Switch on the eq() argument so each lookup returns the right shape.
+    const mockUsersSelect = vi.fn().mockImplementation(() => ({
+      eq: vi.fn().mockImplementation((_col: string, value: string) => ({
+        single: vi.fn().mockResolvedValue({
+          data: value === 'driver-me'
+            ? { is_driver: true }
+            : { stripe_customer_id: null, default_payment_method_id: null },
+          error: null,
+        }),
+      })),
+    }))
+
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'ride_schedules') return { select: mockSelectSched }
+      if (table === 'rides') return { select: mockDupSelect }
+      if (table === 'users') return { select: mockUsersSelect }
+      return {}
+    })
+
+    const res = await request(app)
+      .post('/api/schedule/request')
+      .set('Authorization', VALID_JWT)
+      .send({ schedule_id: 'sched-002' })
+
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('RIDER_NO_PAYMENT_METHOD')
   })
 })

@@ -5,7 +5,7 @@
  *   gas_cost    = round((distance_km × 0.621371 / mpg) × gas_price × 100)
  *   time_cost   = round(duration_min × 8)
  *   base        = 200 cents ($2.00)
- *   fare_cents  = max(500, min(4000, base + gas_cost + time_cost))
+ *   fare_cents  = max(500, base + gas_cost + time_cost)     // no upper cap
  *   platform_fee = round(fare × 0) = 0 (zero commission)
  *   driver_earns = fare
  *
@@ -46,10 +46,10 @@ describe('calculateFare', () => {
     expect(f.fare_cents).toBe(2030)
   })
 
-  it('clamps to maximum $40.00 for an extremely long ride (300 km, 400 min)', () => {
-    // gas=round((300*0.621371/25)*350)=2610, time=3200, raw=6010 → 4000
+  it('scales linearly for an extremely long ride (300 km, 400 min)', () => {
+    // gas=round((300*0.621371/25)*350)=2610, time=3200, raw=6010 (no upper cap)
     const f = calculateFare(300, 400)
-    expect(f.fare_cents).toBe(4000)
+    expect(f.fare_cents).toBe(6010)
   })
 
   it('clamps to minimum for negative distance and duration', () => {
@@ -67,10 +67,10 @@ describe('calculateFare', () => {
     expect(f.driver_earns_cents).toBe(781)
   })
 
-  it('computes correct breakdown at the maximum cap', () => {
-    const f = calculateFare(300, 400) // fare = 4000
+  it('computes correct breakdown for a long uncapped ride', () => {
+    const f = calculateFare(300, 400) // fare = 6010 (no cap)
     expect(f.platform_fee_cents).toBe(0)
-    expect(f.driver_earns_cents).toBe(4000)
+    expect(f.driver_earns_cents).toBe(6010)
   })
 
   it('computes correct breakdown at the minimum cap', () => {
@@ -117,10 +117,12 @@ describe('calculateFareRange', () => {
     expect(range.high.fare_cents).toBe(500)
   })
 
-  it('both collapse to maximum for very long rides', () => {
+  it('scales proportionally for very long rides (no upper cap)', () => {
+    // low:  (255 km, 340 min) → gas=2218, time=2720, raw=5138
+    // high: (345 km, 460 min) → gas=3001, time=3680, raw=6881
     const range = calculateFareRange(300, 400)
-    expect(range.low.fare_cents).toBe(4000)
-    expect(range.high.fare_cents).toBe(4000)
+    expect(range.low.fare_cents).toBe(5138)
+    expect(range.high.fare_cents).toBe(6881)
   })
 })
 

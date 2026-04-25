@@ -8,7 +8,7 @@
  *   time_cost   = duration_min × $0.08/min (8 cents/min)
  *   base        = $2.00 (200 cents)
  *   subtotal    = base + gas_cost + time_cost
- *   fare_cents  = max(500, min(4000, round(subtotal)))
+ *   fare_cents  = max(500, round(subtotal))     // $5 minimum, no upper cap
  *   platform_fee = round(fare × 0) — driver keeps 100% during MVP
  *   driver_earns = fare
  *
@@ -18,7 +18,6 @@
 import { DEFAULT_MPG } from '@/lib/fuelEconomy'
 
 export const MIN_FARE_CENTS    = 500
-const MAX_FARE_CENTS    = 4000
 const BASE_CENTS        = 200
 const PER_MIN_CENTS     = 8
 const PLATFORM_FEE_RATE = 0
@@ -69,7 +68,7 @@ export function calculateFare(
   const time_cost_cents = Math.round(duration_min * PER_MIN_CENTS)
 
   const raw = BASE_CENTS + gas_cost_cents + time_cost_cents
-  const fare_cents = Math.max(MIN_FARE_CENTS, Math.min(MAX_FARE_CENTS, raw))
+  const fare_cents = Math.max(MIN_FARE_CENTS, raw)
   const platform_fee_cents = Math.round(fare_cents * PLATFORM_FEE_RATE)
   const driver_earns_cents = fare_cents - platform_fee_cents
 
