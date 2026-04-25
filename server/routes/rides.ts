@@ -159,6 +159,37 @@ async function computeRideFare(
   return { fare_cents: fareCents, platform_fee_cents: platformFeeCents, driver_earns_cents: driverEarnsCents, distance_miles: distanceMiles, duration_min: durationMin, distance_source: distanceSource }
 }
 
+/// Compute an estimated fare for a hypothetical pickup→dropoff pair —
+/// used when inserting a `*_suggestion` chat message so both clients
+/// (rider's iOS, driver's web) can render the same `meta.fare_cents`
+/// value instead of each computing it locally against a `rides`
+/// destination column that may have already moved.
+///
+/// This is best-effort: if Google Routes / Maps fails, we fall back
+/// to corrected haversine + an average-speed duration estimate so
+/// the message ALWAYS gets a fare. Returns a positive integer cents
+/// value clamped at the min fare.
+async function estimateFareCentsBetween(
+  pickupLat: number, pickupLng: number,
+  dropoffLat: number, dropoffLng: number,
+): Promise<number> {
+  const apiKey = process.env['GOOGLE_MAPS_KEY']
+  const distanceM = await getRoadDistanceMetres(pickupLat, pickupLng, dropoffLat, dropoffLng)
+  const distanceMiles = (distanceM / 1000) * KM_TO_MILES
+
+  let durationMin = Math.round(distanceMiles * 2) // 30 mph fallback
+  if (apiKey) {
+    const route = await fetchDrivingRoute(pickupLat, pickupLng, dropoffLat, dropoffLng, apiKey)
+    if (route?.durationMin) durationMin = Math.round(route.durationMin)
+  }
+
+  const gallonsUsed = distanceMiles / DEFAULT_MPG
+  const gasCostCents = Math.round(gallonsUsed * DEFAULT_GAS_PRICE_PER_GALLON * 100)
+  const timeCostCents = Math.round(durationMin * PER_MIN_CENTS)
+  const raw = BASE_CENTS + gasCostCents + timeCostCents
+  return Math.max(MIN_FARE_CENTS, raw)
+}
+
 interface RideRequestBody {
   origin: GeoPoint
   destination_bearing?: number
@@ -648,135 +679,16 @@ ridesRouter.patch(
         })
       }
 
-      if (pendingDriverIds.length > 0) {
-        // ── Standby drivers exist → notify only them (they're already aware of the ride) ──
-        const { data: tokenRows } = await supabaseAdmin
-          .from('push_tokens')
-          .select('token')
-          .in('user_id', pendingDriverIds)
-
-        const tokens = (tokenRows ?? []).map((t: { token: string }) => t.token)
-        if (tokens.length > 0) {
-          await sendFcmPush(tokens, {
-            title: 'Rider needs a new driver',
-            body: 'The selected driver cancelled — your offer is still active!',
-            data: { type: 'ride_request_renewed', ride_id: rideId },
-          })
-        }
-
-        // Fetch full ride details so renewed notification has all fields needed by RideRequestNotification
-        const { data: fullRideForStandby } = await supabaseAdmin
-          .from('rides')
-          .select('id, origin, destination, destination_name, rider_id')
-          .eq('id', rideId)
-          .single()
-
-        let renewedPayload: Record<string, unknown> = {
-          type: 'ride_request_renewed', ride_id: rideId,
-        }
-
-        if (fullRideForStandby) {
-          const origin = fullRideForStandby.origin as unknown as { coordinates: number[] }
-          const dest = fullRideForStandby.destination as unknown as { coordinates: number[] } | null
-
-          const { data: riderProfile } = await supabaseAdmin
-            .from('users')
-            .select('full_name')
-            .eq('id', fullRideForStandby.rider_id)
-            .single()
-
-          renewedPayload = {
-            type: 'ride_request_renewed',
-            ride_id: rideId,
-            rider_name: riderProfile?.full_name ?? 'A rider',
-            destination: fullRideForStandby.destination_name ?? 'Nearby destination',
-            distance_km: '–',
-            estimated_earnings_cents: '0',
-            origin_lat: String(origin.coordinates[1]),
-            origin_lng: String(origin.coordinates[0]),
-            destination_lat: dest ? String(dest.coordinates[1]) : '',
-            destination_lng: dest ? String(dest.coordinates[0]) : '',
-          }
-        }
-
-        // Realtime: notify standby drivers their offer is active again (with full ride details)
-        for (const driverId of pendingDriverIds) {
-          void realtimeBroadcast(`driver:${driverId}`, 'ride_request_renewed', renewedPayload)
-        }
-      } else {
-        // ── No standby drivers → re-broadcast to all drivers (existing behavior) ──
-        const { data: allOnlineDrivers } = await supabaseAdmin
-          .from('driver_locations')
-          .select('user_id')
-          .eq('is_online', true)
-
-        const onlineIds = (allOnlineDrivers ?? []).map((d: { user_id: string }) => d.user_id)
-
-        const { data: allDrivers } = await supabaseAdmin
-          .from('users')
-          .select('id')
-          .eq('is_driver', true)
-
-        const driverIds = (allDrivers ?? [])
-          .map((d: { id: string }) => d.id)
-          .filter((id: string) => id !== userId && id !== ride.rider_id && onlineIds.includes(id))
-
-        if (driverIds.length > 0) {
-          const { data: tokenRows } = await supabaseAdmin
-            .from('push_tokens')
-            .select('token')
-            .in('user_id', driverIds)
-
-          const tokens = (tokenRows ?? []).map((t: { token: string }) => t.token)
-          if (tokens.length > 0) {
-            await sendFcmPush(tokens, {
-              title: 'New ride request nearby',
-              body: 'A rider needs a lift — open TAGO to check.',
-              data: { type: 'ride_request', ride_id: rideId },
-            })
-          }
-        }
-
-        // Realtime re-broadcast ride_request to in-app drivers
-        const { data: fullRide } = await supabaseAdmin
-          .from('rides')
-          .select('id, origin, destination, destination_name, rider_id')
-          .eq('id', rideId)
-          .single()
-
-        if (fullRide) {
-          const origin = fullRide.origin as unknown as { coordinates: number[] }
-          const dest = fullRide.destination as unknown as { coordinates: number[] } | null
-
-          const { data: riderProfile } = await supabaseAdmin
-            .from('users')
-            .select('full_name')
-            .eq('id', fullRide.rider_id)
-            .single()
-
-          const realtimePayload = {
-            type: 'ride_request' as const,
-            ride_id: rideId,
-            rider_name: riderProfile?.full_name ?? 'A rider',
-            destination: fullRide.destination_name ?? 'Nearby destination',
-            distance_km: '–',
-            estimated_earnings_cents: '0',
-            origin_lat: String(origin.coordinates[1]),
-            origin_lng: String(origin.coordinates[0]),
-            destination_lat: dest ? String(dest.coordinates[1]) : '',
-            destination_lng: dest ? String(dest.coordinates[0]) : '',
-          }
-
-          const broadcastDriverIds = (allDrivers ?? [])
-            .map((d: { id: string }) => d.id)
-            .filter((id: string) => id !== userId && id !== ride.rider_id)
-
-          await Promise.all(
-            broadcastDriverIds.map((driverId) => realtimeBroadcast(`driver:${driverId}`, 'ride_request', realtimePayload)),
-          )
-        }
-      }
-
+      // Driver-fan-out is now GATED on the rider's explicit opt-in via
+      // POST /api/rides/:id/find-new-driver (handler below). The rider
+      // sees a modal ("Find another driver" / "Cancel ride") on the
+      // `driver_cancelled` broadcast and only when they tap "Find
+      // another driver" do we re-notify standby drivers (or fan out to
+      // all online drivers as a fallback). Standby offers stay in
+      // `pending` here so they're ready to fire when the rider opts in.
+      // This avoids spamming every online driver every time a single
+      // driver bails — Uber-style: the rider stays in control of the
+      // rebroadcast.
       console.log(`[rides/cancel] rideId=${rideId} driver-cancelled by ${userId}, reverted to requested, standby_count=${pendingDriverIds.length}`)
       res.status(200).json({ ride_id: rideId, status: 'requested', driver_cancelled: true, standby_count: pendingDriverIds.length })
       return
@@ -883,6 +795,160 @@ ridesRouter.patch(
       .then(({ error: cleanupErr }) => {
         if (cleanupErr) console.warn(`[rides/cancel] notification cleanup error: ${cleanupErr.message}`)
       })
+  },
+)
+
+/**
+ * POST /api/rides/:id/find-new-driver — rider explicitly asks the
+ * server to re-broadcast the ride after a driver cancelled mid-flow.
+ *
+ * Why this is a separate endpoint: when a driver cancels an
+ * `accepted` / `coordinating` instant ride, Path A in /cancel reverts
+ * the ride to `requested` but does NOT re-fan-out to other drivers
+ * (we used to — it spammed the whole pool every time). Instead, the
+ * rider sees a "Find another driver / Cancel ride" modal and explicit
+ * opt-in calls this endpoint to fire the rebroadcast. Standbys (offers
+ * still in `pending`) are notified first via `ride_request_renewed`;
+ * if there are no standbys we fall back to a fresh `ride_request`
+ * fan-out to all online drivers.
+ */
+ridesRouter.post(
+  '/:id/find-new-driver',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const userId = res.locals['userId'] as string
+    const rideId = req.params['id'] as string
+
+    const { data: ride, error: fetchErr } = await supabaseAdmin
+      .from('rides')
+      .select('id, rider_id, driver_id, status, schedule_id')
+      .eq('id', rideId)
+      .single()
+
+    if (fetchErr ?? !ride) {
+      res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+      return
+    }
+    if (ride.rider_id !== userId) {
+      res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only the rider can request a new driver' } })
+      return
+    }
+    if (ride.schedule_id) {
+      res.status(409).json({ error: { code: 'INVALID_RIDE_TYPE', message: 'Board rides cannot auto-rematch — return to the board to pick a driver' } })
+      return
+    }
+    if (ride.status !== 'requested' || ride.driver_id !== null) {
+      res.status(409).json({
+        error: { code: 'INVALID_STATUS', message: `Ride must be in 'requested' state with no driver to find a new one (currently '${ride.status}')` },
+      })
+      return
+    }
+
+    // Standby drivers — offers we kept in `pending` after the original
+    // driver cancelled. Notify them first; they already saw + were
+    // interested in this ride so the match is fastest here.
+    const { data: pendingOffers } = await supabaseAdmin
+      .from('ride_offers')
+      .select('driver_id')
+      .eq('ride_id', rideId)
+      .eq('status', 'pending')
+    const pendingDriverIds = (pendingOffers ?? []).map((o: { driver_id: string }) => o.driver_id)
+
+    // Fetch full ride details for the renewed/re-broadcast payload.
+    const { data: fullRide } = await supabaseAdmin
+      .from('rides')
+      .select('id, origin, destination, destination_name, rider_id')
+      .eq('id', rideId)
+      .single()
+    const { data: riderProfile } = await supabaseAdmin
+      .from('users')
+      .select('full_name')
+      .eq('id', ride.rider_id)
+      .single()
+
+    const buildPayload = (kind: 'ride_request' | 'ride_request_renewed'): Record<string, unknown> => {
+      if (!fullRide) return { type: kind, ride_id: rideId }
+      const origin = fullRide.origin as unknown as { coordinates: number[] }
+      const dest = fullRide.destination as unknown as { coordinates: number[] } | null
+      return {
+        type: kind,
+        ride_id: rideId,
+        rider_name: riderProfile?.full_name ?? 'A rider',
+        destination: fullRide.destination_name ?? 'Nearby destination',
+        distance_km: '–',
+        estimated_earnings_cents: '0',
+        origin_lat: String(origin.coordinates[1]),
+        origin_lng: String(origin.coordinates[0]),
+        destination_lat: dest ? String(dest.coordinates[1]) : '',
+        destination_lng: dest ? String(dest.coordinates[0]) : '',
+      }
+    }
+
+    if (pendingDriverIds.length > 0) {
+      // ── Standby drivers exist → notify only them ──
+      const { data: tokenRows } = await supabaseAdmin
+        .from('push_tokens')
+        .select('token')
+        .in('user_id', pendingDriverIds)
+      const tokens = (tokenRows ?? []).map((t: { token: string }) => t.token)
+      if (tokens.length > 0) {
+        await sendFcmPush(tokens, {
+          title: 'Rider needs a new driver',
+          body: 'The selected driver cancelled — your offer is still active!',
+          data: { type: 'ride_request_renewed', ride_id: rideId },
+        })
+      }
+
+      const renewedPayload = buildPayload('ride_request_renewed')
+      for (const driverId of pendingDriverIds) {
+        void realtimeBroadcast(`driver:${driverId}`, 'ride_request_renewed', renewedPayload)
+      }
+
+      console.log(`[rides/find-new-driver] rideId=${rideId} notified ${pendingDriverIds.length} standby driver(s)`)
+      res.status(200).json({ ride_id: rideId, notified_kind: 'standby', notified_count: pendingDriverIds.length })
+      return
+    }
+
+    // ── No standby drivers → broadcast to all online drivers ──
+    const { data: allOnlineDrivers } = await supabaseAdmin
+      .from('driver_locations')
+      .select('user_id')
+      .eq('is_online', true)
+    const onlineIds = (allOnlineDrivers ?? []).map((d: { user_id: string }) => d.user_id)
+
+    const { data: allDrivers } = await supabaseAdmin
+      .from('users')
+      .select('id')
+      .eq('is_driver', true)
+    const eligibleDriverIds = (allDrivers ?? [])
+      .map((d: { id: string }) => d.id)
+      .filter((id: string) => id !== ride.rider_id && onlineIds.includes(id))
+
+    if (eligibleDriverIds.length > 0) {
+      const { data: tokenRows } = await supabaseAdmin
+        .from('push_tokens')
+        .select('token')
+        .in('user_id', eligibleDriverIds)
+      const tokens = (tokenRows ?? []).map((t: { token: string }) => t.token)
+      if (tokens.length > 0) {
+        await sendFcmPush(tokens, {
+          title: 'New ride request nearby',
+          body: 'A rider needs a lift — open TAGO to check.',
+          data: { type: 'ride_request', ride_id: rideId },
+        })
+      }
+
+      const realtimePayload = buildPayload('ride_request')
+      const broadcastDriverIds = (allDrivers ?? [])
+        .map((d: { id: string }) => d.id)
+        .filter((id: string) => id !== ride.rider_id)
+      await Promise.all(
+        broadcastDriverIds.map((driverId) => realtimeBroadcast(`driver:${driverId}`, 'ride_request', realtimePayload)),
+      )
+    }
+
+    console.log(`[rides/find-new-driver] rideId=${rideId} fanned out to ${eligibleDriverIds.length} online driver(s)`)
+    res.status(200).json({ ride_id: rideId, notified_kind: 'broadcast', notified_count: eligibleDriverIds.length })
   },
 )
 
@@ -1884,6 +1950,25 @@ ridesRouter.patch(
       return
     }
 
+    // Compute fare for the proposal (new pickup → current rides
+    // destination) and freeze it into the message meta. Both clients
+    // read `meta.fare_cents` and display the same number — without
+    // this, each client computed locally against `rides.destination`
+    // and could see different fares if the destination was edited
+    // between renders.
+    const destForFare = ride.destination as unknown as GeoPoint | null
+    let fareCentsForProposal: number | null = null
+    if (destForFare?.coordinates) {
+      try {
+        fareCentsForProposal = await estimateFareCentsBetween(
+          lat, lng,
+          destForFare.coordinates[1], destForFare.coordinates[0],
+        )
+      } catch (err) {
+        console.error('[rides/pickup-point] fare estimate failed:', err)
+      }
+    }
+
     // Insert a pickup_suggestion message so rider sees it in chat
     const { data: suggestionMsg } = await supabaseAdmin
       .from('messages')
@@ -1892,7 +1977,13 @@ ridesRouter.patch(
         sender_id: driverId,
         content: 'Suggested pickup point',
         type: 'pickup_suggestion',
-        meta: { lat, lng, note: note ?? null, proposed_by: driverId },
+        meta: {
+          lat,
+          lng,
+          note: note ?? null,
+          proposed_by: driverId,
+          fare_cents: fareCentsForProposal,
+        },
       })
       .select('id, ride_id, sender_id, content, type, meta, created_at')
       .single()
@@ -2003,6 +2094,22 @@ ridesRouter.patch(
       return
     }
 
+    // Freeze the fare for this proposal (current rides pickup →
+    // new dropoff) into the message meta so both clients render
+    // the same number. See pickup-point above for context.
+    const pickupForFare = (ride.pickup_point ?? ride.origin) as unknown as GeoPoint | null
+    let fareCentsForProposal: number | null = null
+    if (pickupForFare?.coordinates) {
+      try {
+        fareCentsForProposal = await estimateFareCentsBetween(
+          pickupForFare.coordinates[1], pickupForFare.coordinates[0],
+          lat, lng,
+        )
+      } catch (err) {
+        console.error('[rides/dropoff-point] fare estimate failed:', err)
+      }
+    }
+
     // Insert a dropoff_suggestion message
     const { data: suggestionMsg } = await supabaseAdmin
       .from('messages')
@@ -2011,7 +2118,13 @@ ridesRouter.patch(
         sender_id: driverId,
         content: 'Suggested dropoff change',
         type: 'dropoff_suggestion',
-        meta: { lat, lng, name: name ?? null, proposed_by: driverId },
+        meta: {
+          lat,
+          lng,
+          name: name ?? null,
+          proposed_by: driverId,
+          fare_cents: fareCentsForProposal,
+        },
       })
       .select('id, ride_id, sender_id, content, type, meta, created_at')
       .single()
@@ -3955,6 +4068,22 @@ ridesRouter.post(
     const riderDest = ride.destination as unknown as GeoPoint | null
     const driverDest = (ride as Record<string, unknown>)['driver_destination'] as unknown as GeoPoint | null
 
+    // Freeze the fare for this proposal (current pickup point →
+    // transit station) so both clients render the same number from
+    // `meta.fare_cents` instead of recomputing locally.
+    const pickupForFare = (ride.pickup_point ?? ride.origin) as unknown as GeoPoint | null
+    let fareCentsForProposal: number | null = null
+    if (pickupForFare?.coordinates) {
+      try {
+        fareCentsForProposal = await estimateFareCentsBetween(
+          pickupForFare.coordinates[1], pickupForFare.coordinates[0],
+          station_lat, station_lng,
+        )
+      } catch (err) {
+        console.error('[rides/suggest-transit-dropoff] fare estimate failed:', err)
+      }
+    }
+
     // Insert transit_dropoff_suggestion message
     const { data: msg } = await supabaseAdmin
       .from('messages')
@@ -3988,6 +4117,7 @@ ridesRouter.post(
           driver_dest_lng: driverDest?.coordinates?.[0] ?? null,
           driver_dest_name: (ride as Record<string, unknown>)['driver_destination_name'] ?? null,
           driver_route_polyline: (ride as Record<string, unknown>)['driver_route_polyline'] ?? null,
+          fare_cents: fareCentsForProposal,
         },
       })
       .select('id, ride_id, sender_id, content, type, meta, created_at')
