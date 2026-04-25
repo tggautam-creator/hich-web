@@ -32,15 +32,28 @@ export async function sendFcmPush(
 
   const messaging = getMessaging()
 
-  // Send as data-only messages so the foreground onMessage handler always fires.
-  // If we include 'notification', the service worker may intercept it
-  // and the in-app handler never sees it.
+  // Web: the service worker reads `data` and calls `showNotification`
+  // itself, so we MUST keep the data-only payload for browsers (adding
+  // a top-level `notification` block would let the FCM SDK auto-display
+  // and double up with the SW).
+  // iOS: data-only pushes are silent — APNs needs an `aps.alert` to
+  // render a banner. Inject the alert into `apns.payload.aps` directly
+  // so iOS gets a visible notification + sound while the web flow stays
+  // untouched. Tokens for both platforms can ride the same multicast.
   const response = await messaging.sendEachForMulticast({
     tokens,
     data: {
       ...payload.data,
       title: payload.title,
       body: payload.body,
+    },
+    apns: {
+      payload: {
+        aps: {
+          alert: { title: payload.title, body: payload.body },
+          sound: 'default',
+        },
+      },
     },
   })
 
