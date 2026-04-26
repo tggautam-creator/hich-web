@@ -383,23 +383,48 @@ ridesRouter.post(
 
     const tokens = (tokenRows ?? []).map((t: { token: string }) => t.token)
     console.log(`[rides/request] Found ${tokens.length} push tokens for ${driverIds.length} drivers`)
-    const notifiedCount = await sendFcmPush(tokens, {
-      title: 'New ride request nearby',
-      body: 'A rider needs a lift — open TAGO to check.',
-      data: { type: 'ride_request', ride_id: ride.id },
-    })
 
+    // Compute fare + load rider profile FIRST so the FCM data payload
+    // can carry the same fields the notifications row + Realtime
+    // broadcast use. Previously the FCM blob was just `{type, ride_id}`,
+    // which on iOS landed in `PushManager.routePayload` and got built
+    // into a `RideRequestPayload` with every detail field empty —
+    // origin_lat/lng nil, earnings 0, rider_name "A rider". Page
+    // mounted with stub data and `hydrateRideStatsIfNeeded` bailed
+    // because lat/lng were nil. Sending the full payload here lets
+    // the foreground FCM handler match what the realtime broadcast
+    // delivers (modulo the data-only-vs-envelope unwrap on iOS).
     const fareCents = typeof body.estimated_fare_cents === 'number' ? body.estimated_fare_cents : 0
     const platformFee = Math.round(fareCents * PLATFORM_FEE_RATE)
     const driverEarns = fareCents - platformFee
 
-    // Fetch rider name + rating for notifications and broadcasts
     const riderProfile = await supabaseAdmin
       .from('users')
       .select('full_name, rating_avg, rating_count')
       .eq('id', riderId)
       .single()
     const riderName = riderProfile.data?.full_name ?? 'A rider'
+
+    const fcmDataPayload: Record<string, string> = {
+      type: 'ride_request',
+      ride_id: ride.id,
+      rider_name: riderName,
+      destination: body.destination_name ?? 'Nearby destination',
+      distance_km: String(body.distance_km ?? '–'),
+      estimated_earnings_cents: String(driverEarns),
+      origin_lat: String(body.origin.coordinates[1]),
+      origin_lng: String(body.origin.coordinates[0]),
+      destination_lat: typeof body.destination_lat === 'number' ? String(body.destination_lat) : '',
+      destination_lng: typeof body.destination_lng === 'number' ? String(body.destination_lng) : '',
+      rider_rating: String(riderProfile.data?.rating_avg ?? ''),
+      rider_rating_count: String(riderProfile.data?.rating_count ?? '0'),
+    }
+
+    const notifiedCount = await sendFcmPush(tokens, {
+      title: 'New ride request nearby',
+      body: 'A rider needs a lift — open TAGO to check.',
+      data: fcmDataPayload,
+    })
 
     // Persist notifications as a reliable fallback when realtime/push is delayed.
     if (driverIds.length > 0) {
