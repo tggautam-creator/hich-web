@@ -24,6 +24,7 @@ function SaveCardForm({ returnTo, confirmState, fromTab }: SaveCardFormProps) {
   const elements = useElements()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -65,6 +66,7 @@ function SaveCardForm({ returnTo, confirmState, fromTab }: SaveCardFormProps) {
         return
       }
 
+      let dedupHit = false
       if (setupIntent?.payment_method) {
         const pmId = typeof setupIntent.payment_method === 'string'
           ? setupIntent.payment_method
@@ -84,18 +86,36 @@ function SaveCardForm({ returnTo, confirmState, fromTab }: SaveCardFormProps) {
           setError(body.error?.message ?? 'Card saved but could not set as default. Please set it manually.')
           return
         }
+        // Server detects fingerprint collisions and detaches the new pm,
+        // promoting the existing one instead. Without surfacing this the
+        // user sees the form succeed but the card list is unchanged and
+        // (rightly) gets confused. Show a short notice before navigating.
+        const body = (await defaultResp.json().catch(() => ({}))) as { deduplicated?: boolean }
+        dedupHit = body.deduplicated === true
       }
 
       // Return to the page that redirected here (ride confirm / ride board),
       // restoring any state that was passed through (destination, fare, etc.).
-      if (returnTo) {
-        navigate(returnTo, {
-          replace: true,
-          state: fromTab ? { fromTab, confirmState } : confirmState ?? null,
-        })
-      } else {
-        navigate('/payment/methods', { replace: true })
+      const goNext = () => {
+        if (returnTo) {
+          navigate(returnTo, {
+            replace: true,
+            state: fromTab ? { fromTab, confirmState } : confirmState ?? null,
+          })
+        } else {
+          navigate('/payment/methods', { replace: true })
+        }
       }
+
+      if (dedupHit) {
+        setNotice('This card is already on your account — using the existing one.')
+        // Keep the spinner gone but defer nav so the message is actually read.
+        setLoading(false)
+        setTimeout(goNext, 2200)
+        return
+      }
+
+      goNext()
     } catch {
       setError('Something went wrong. Please try again.')
     } finally {
@@ -118,6 +138,16 @@ function SaveCardForm({ returnTo, confirmState, fromTab }: SaveCardFormProps) {
           }}
         />
       </div>
+
+      {notice && (
+        <div
+          data-testid="card-notice"
+          role="status"
+          className="rounded-xl bg-success/10 border border-success/30 px-4 py-3 text-sm text-success font-medium text-center"
+        >
+          {notice}
+        </div>
+      )}
 
       {error && (
         <p data-testid="card-error" className="text-sm text-danger text-center">
