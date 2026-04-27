@@ -103,12 +103,18 @@ export function TransitSuggestionPicker({
 }: TransitSuggestionPickerProps) {
   const [picking, setPicking] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [selectedIdx, setSelectedIdx] = useState<number | null>(suggestions.length > 0 ? 0 : null)
+  // 'direct' = "take rider all the way" pseudo-option, indices = transit stations.
+  const [selectedIdx, setSelectedIdx] = useState<number | 'direct' | null>(suggestions.length > 0 ? 0 : null)
   const cardRefs = useRef<globalThis.Map<number, HTMLDivElement>>(new globalThis.Map())
+  const directCardRef = useRef<HTMLDivElement | null>(null)
+  const hasRiderDest = riderDestLat != null && riderDestLng != null
+  const hasPickup = pickupLat != null && pickupLng != null
 
   // Scroll selected card into view (e.g. when tapping a map marker)
   useEffect(() => {
-    if (selectedIdx !== null) {
+    if (selectedIdx === 'direct') {
+      directCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    } else if (selectedIdx !== null) {
       const el = cardRefs.current.get(selectedIdx)
       if (el?.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }
@@ -129,6 +135,29 @@ export function TransitSuggestionPicker({
     }
     return pts
   }, [suggestions, pickupLat, pickupLng, riderDestLat, riderDestLng, driverDestLat, driverDestLng, driverRoutePolyline])
+
+  const handlePickDirect = useCallback(async () => {
+    setPicking('__direct__')
+    setError(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) return
+      const resp = await fetch(`/api/rides/${rideId}/confirm-direct-dropoff`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
+      if (!resp.ok) {
+        const body = (await resp.json().catch(() => null)) as { error?: { message?: string } } | null
+        setError(body?.error?.message ?? 'Failed to confirm dropoff')
+        return
+      }
+      onPicked?.()
+    } catch {
+      setError('Network error')
+    } finally {
+      setPicking(null)
+    }
+  }, [rideId, onPicked])
 
   const handlePick = useCallback(async (suggestion: TransitDropoffSuggestion) => {
     setPicking(suggestion.station_place_id)
@@ -234,14 +263,18 @@ export function TransitSuggestionPicker({
               </AdvancedMarker>
             ))}
 
-            {/* Rider destination marker */}
+            {/* Rider destination marker — tap to select "take all the way" */}
             {riderDestLat != null && riderDestLng != null && (
-              <AdvancedMarker position={{ lat: riderDestLat, lng: riderDestLng }} zIndex={2}>
+              <AdvancedMarker
+                position={{ lat: riderDestLat, lng: riderDestLng }}
+                zIndex={selectedIdx === 'direct' ? 11 : 2}
+                onClick={() => setSelectedIdx('direct')}
+              >
                 <div className="flex flex-col items-center">
-                  <div className="bg-danger text-white rounded-full px-1.5 py-0.5 text-[9px] font-bold shadow mb-0.5">
+                  <div className={`bg-danger text-white rounded-full px-1.5 py-0.5 text-[9px] font-bold shadow mb-0.5 transition-transform ${selectedIdx === 'direct' ? 'scale-110' : ''}`}>
                     {riderDestName ? riderDestName.slice(0, 12) : 'RIDER DEST'}
                   </div>
-                  <div className="h-3 w-3 rounded-full bg-danger border-2 border-white shadow" />
+                  <div className={`rounded-full bg-danger border-2 border-white shadow transition-all ${selectedIdx === 'direct' ? 'h-5 w-5 ring-4 ring-danger/30' : 'h-3 w-3'}`} />
                 </div>
               </AdvancedMarker>
             )}
@@ -259,7 +292,7 @@ export function TransitSuggestionPicker({
             )}
 
             {/* Transit polyline preview (station → rider dest) when a station is selected */}
-            {selectedIdx !== null && suggestions[selectedIdx]?.transit_polyline && (
+            {typeof selectedIdx === 'number' && suggestions[selectedIdx]?.transit_polyline && (
               <RoutePolyline
                 encodedPath={suggestions[selectedIdx].transit_polyline as string}
                 color="#10B981"
@@ -268,12 +301,29 @@ export function TransitSuggestionPicker({
               />
             )}
 
-            {/* Pan to selected station */}
-            {selectedIdx !== null && suggestions[selectedIdx] && (
+            {/* Direct-dropoff preview: dashed straight line pickup → rider dest */}
+            {selectedIdx === 'direct' && hasPickup && hasRiderDest && (
+              <RoutePolyline
+                path={[
+                  { lat: pickupLat, lng: pickupLng },
+                  { lat: riderDestLat, lng: riderDestLng },
+                ]}
+                color="#22C55E"
+                weight={4}
+                fitBounds={false}
+                dashed
+              />
+            )}
+
+            {/* Pan to selected station, or to the rider's destination when "direct" is picked */}
+            {typeof selectedIdx === 'number' && suggestions[selectedIdx] && (
               <SelectedStationFocus
                 lat={suggestions[selectedIdx].station_lat}
                 lng={suggestions[selectedIdx].station_lng}
               />
+            )}
+            {selectedIdx === 'direct' && hasRiderDest && (
+              <SelectedStationFocus lat={riderDestLat} lng={riderDestLng} />
             )}
           </Map>
         </div>
@@ -281,6 +331,61 @@ export function TransitSuggestionPicker({
 
       {/* ── Station list ──────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto space-y-2 min-h-0">
+        {/* Direct-dropoff option — always at the top so the driver can choose
+            to skip transit entirely and take the rider all the way. Tap once
+            to preview on the map (dashed green line + highlighted rider-dest
+            marker), tap again or hit "Suggest" to commit. */}
+        {hasRiderDest && (
+          <div
+            ref={(el) => { directCardRef.current = el }}
+            role="button"
+            tabIndex={0}
+            data-testid="direct-dropoff-option"
+            onClick={() => {
+              if (picking) return
+              if (selectedIdx === 'direct') {
+                void handlePickDirect()
+              } else {
+                setSelectedIdx('direct')
+              }
+            }}
+            className={`w-full rounded-2xl bg-success/5 border-2 p-3 text-left transition-colors cursor-pointer ${
+              picking ? 'opacity-60 pointer-events-none' : ''
+            } ${
+              selectedIdx === 'direct' ? 'border-success ring-2 ring-success/20' : 'border-success/30 hover:border-success/60'
+            }`}
+          >
+            <div className="flex items-start gap-2.5">
+              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-success text-[10px] font-bold text-white mt-0.5">
+                100%
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-text-primary">
+                  Take rider all the way
+                </p>
+                <p className="text-[10px] text-text-secondary truncate mt-0.5">
+                  {riderDestName ?? 'Rider\'s destination'} — full journey, no transit
+                </p>
+              </div>
+              {picking === '__direct__' && (
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-success border-t-transparent shrink-0 mt-0.5" />
+              )}
+            </div>
+
+            {selectedIdx === 'direct' && !picking && (
+              <div className="mt-2 pt-2 border-t border-success/20 ml-8">
+                <button
+                  data-testid="suggest-direct-dropoff-button"
+                  onClick={(e) => { e.stopPropagation(); void handlePickDirect() }}
+                  className="w-full rounded-lg bg-success py-2 text-xs font-semibold text-white"
+                >
+                  Suggest dropoff at rider&apos;s destination
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {suggestions.map((s, idx) => (
           <div
             key={s.station_place_id}
