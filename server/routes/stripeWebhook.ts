@@ -116,28 +116,86 @@ async function handleRidePaymentSucceeded(rideId: string, paymentIntentId: strin
 async function handleRidePaymentFailed(rideId: string, paymentIntentId: string): Promise<void> {
   console.log(`[Webhook] Ride payment failed: ride=${rideId} pi=${paymentIntentId}`)
 
-  const { error } = await supabaseAdmin
+  // Atomically transition processing → failed. Without the .neq guard, a
+  // duplicate webhook delivery would re-fire the wallet reversal below and
+  // double-debit the driver. Returning data tells us we owned the change.
+  const { data: transitioned, error: updateErr } = await supabaseAdmin
     .from('rides')
     .update({ payment_status: 'failed' })
     .eq('id', rideId)
+    .neq('payment_status', 'failed')
+    .select('id, rider_id, driver_id')
 
-  if (error) {
-    console.error(`[Webhook] Failed to update ride payment status: ${error.message}`)
+  if (updateErr) {
+    console.error(`[Webhook] Failed to update ride payment status: ${updateErr.message}`)
     return
   }
 
-  // Notify rider to update their payment method
-  const { data: ride } = await supabaseAdmin
-    .from('rides')
-    .select('rider_id')
-    .eq('id', rideId)
-    .single()
+  const ride = transitioned?.[0]
+  const ownedTransition = Boolean(ride)
 
-  if (ride?.rider_id) {
+  // Reverse the wallet credit. chargeRideFare counts a successfully-CREATED
+  // PaymentIntent as success and credits the driver immediately, even though
+  // off_session collection can still fail asynchronously. Before this fix
+  // payment_failed only flipped a status flag, leaving the driver's wallet
+  // showing money TAGO never collected — the screenshot bug.
+  if (ownedTransition && ride?.driver_id) {
+    const { data: earnings } = await supabaseAdmin
+      .from('transactions')
+      .select('amount_cents')
+      .eq('ride_id', rideId)
+      .eq('type', 'ride_earning')
+      .limit(1)
+
+    const earningCents = (earnings?.[0]?.amount_cents as number | null) ?? 0
+
+    if (earningCents > 0) {
+      // Idempotency: if a prior attempt already wrote the reversal, skip.
+      const { data: prior } = await supabaseAdmin
+        .from('transactions')
+        .select('id')
+        .eq('ride_id', rideId)
+        .eq('type', 'fare_reversal')
+        .limit(1)
+
+      if (!prior || prior.length === 0) {
+        const { error: reverseErr } = await supabaseAdmin.rpc('wallet_apply_delta', {
+          p_user_id: ride.driver_id,
+          p_delta_cents: -earningCents,
+          p_type: 'fare_reversal',
+          p_description: `Reversed — rider payment failed (ride ${rideId})`,
+          p_ride_id: rideId,
+          // payment_intent_id stays NULL: the original ride_earning row owns
+          // this PI under the partial-unique index from migration 024 (which
+          // exists to block double-credits). Reusing the PI here would throw
+          // 23505. The reversal is still tied to the ride via p_ride_id.
+          p_payment_intent_id: null,
+          p_stripe_event_id: null,
+        })
+        if (reverseErr) {
+          console.error(`[Webhook] CRITICAL: payment failed but wallet reversal errored for driver ${ride.driver_id} ride ${rideId}: ${reverseErr.message}`)
+        }
+      }
+    }
+  }
+
+  // Look up rider_id for the push (re-uses the row we already fetched if we
+  // owned the transition; otherwise re-read since transitioned[0] is empty).
+  let riderId = ride?.rider_id as string | null | undefined
+  if (!riderId) {
+    const { data: re } = await supabaseAdmin
+      .from('rides')
+      .select('rider_id')
+      .eq('id', rideId)
+      .single()
+    riderId = re?.rider_id as string | null | undefined
+  }
+
+  if (riderId) {
     const { data: tokens } = await supabaseAdmin
       .from('push_tokens')
       .select('token')
-      .eq('user_id', ride.rider_id)
+      .eq('user_id', riderId)
 
     const tokenList = (tokens ?? []).map((t: { token: string }) => t.token)
     if (tokenList.length > 0) {
