@@ -47,6 +47,7 @@ ANALYSIS.md
 ios/
 IOS_PROGRESS.md
 IOS_ROADMAP.md
+IOS_RIDEBOARD_PLAN.md
 .github/workflows/ios.yml
 
 # Xcode per-user workspace state
