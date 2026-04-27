@@ -542,6 +542,10 @@ interface ScheduleRequestBody {
   destination_name?: string
   destination_flexible?: boolean
   note?: string
+  // Set when the rider explicitly chose "drop me at driver's destination"
+  // in the confirm sheet. Server pre-confirms the dropoff so the driver
+  // doesn't have to re-suggest the same endpoint in chat.
+  dropoff_at_driver_destination?: boolean
 }
 
 scheduleRouter.post(
@@ -766,6 +770,16 @@ scheduleRouter.post(
     // Truncate note to 200 chars
     const requesterNote = body.note ? body.note.slice(0, 200) : null
 
+    // Pre-confirm the dropoff when the rider explicitly chose "drop me at
+    // driver's destination" — there's nothing to negotiate, the endpoint
+    // is already agreed. Without this the chat starts with both dots
+    // yellow, the driver gets pushed into Suggest Dropoff for an endpoint
+    // they themselves posted, and the rider waits for a redundant accept.
+    const preConfirmDropoff = body.dropoff_at_driver_destination === true && destGeo != null
+    const dropoffPreconfirmFields: Record<string, unknown> = preConfirmDropoff
+      ? { dropoff_point: destGeo, dropoff_confirmed: true }
+      : {}
+
     // Create ride with status='requested' — poster must accept before coordination
     const { data: ride, error: rideErr } = await supabaseAdmin
       .from('rides')
@@ -789,6 +803,7 @@ scheduleRouter.post(
         requester_destination_name: body.destination_name ?? null,
         requester_note: requesterNote,
         destination_flexible: body.destination_flexible ?? false,
+        ...dropoffPreconfirmFields,
       })
       .select('id')
       .single()

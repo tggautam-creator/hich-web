@@ -212,6 +212,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
             destination_name: enrichment.destination_name,
             destination_flexible: enrichment.destination_flexible,
             note: enrichment.note,
+            dropoff_at_driver_destination: enrichment.dropoff_at_driver_destination,
           } : {}),
         }),
       })

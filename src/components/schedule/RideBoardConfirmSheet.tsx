@@ -15,6 +15,10 @@ export interface RequestEnrichment {
   destination_name?: string
   destination_flexible: boolean
   note?: string
+  // True when the rider explicitly chose "drop me at driver's destination"
+  // — server uses this to pre-confirm the dropoff so the driver doesn't
+  // have to suggest one in chat for an already-agreed endpoint.
+  dropoff_at_driver_destination?: boolean
 }
 
 interface RideBoardConfirmSheetProps {
@@ -226,6 +230,7 @@ export default function RideBoardConfirmSheet({
         enrichment.destination_lng = ride.driver_dest_lng
       }
       enrichment.destination_name = ride.dest_address
+      enrichment.dropoff_at_driver_destination = true
     } else if (selectedPlace?.lat != null && selectedPlace.lng != null) {
       enrichment.destination_lat = selectedPlace.lat
       enrichment.destination_lng = selectedPlace.lng
