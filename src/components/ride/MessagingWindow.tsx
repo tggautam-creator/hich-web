@@ -17,6 +17,11 @@ import { getDirectionsByLatLng } from '@/lib/directions'
 import { isScheduledRideApproaching, formatScheduledRideTime, getMinutesUntilRide } from '@/lib/datetime'
 import { calculateFare, formatCents } from '@/lib/fare'
 
+// Single source of truth for the "Navigate to Pickup" approach window.
+// The threshold and the user-facing "Navigation opens at HH:MM" notice
+// must stay in sync — change here and both update together.
+const PICKUP_NAV_OPENS_MINUTES_BEFORE = 60
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface MessagingWindowProps {
@@ -516,9 +521,7 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   // ── Check if scheduled ride is approaching (15 min before) ───────────────
   useEffect(() => {
     const checkRideApproaching = () => {
-      // Widened from 30 → 60 min so the "Navigate to Pickup" button appears
-      // an hour before the scheduled trip; grace period after stays 120 min.
-      setIsRideApproaching(isScheduledRideApproaching(ride, 60, 120))
+      setIsRideApproaching(isScheduledRideApproaching(ride, PICKUP_NAV_OPENS_MINUTES_BEFORE, 120))
       setMinutesUntilRide(getMinutesUntilRide(ride))
     }
 
@@ -2000,6 +2003,21 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
               <p className="text-xs text-success text-center mb-2 font-semibold">
                 Ride Confirmed! {formatScheduledRideTime(ride) ? `Scheduled for ${formatScheduledRideTime(ride)}.` : "You'll be notified before your ride."}
               </p>
+              {(() => {
+                if (!ride.trip_date || !ride.trip_time) return null
+                const tripDt = new Date(`${ride.trip_date}T${ride.trip_time}`)
+                if (Number.isNaN(tripDt.getTime())) return null
+                const opensAt = new Date(tripDt.getTime() - PICKUP_NAV_OPENS_MINUTES_BEFORE * 60 * 1000)
+                const opensAtLabel = opensAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+                return (
+                  <p
+                    data-testid="navigation-opens-notice"
+                    className="text-[11px] text-text-secondary text-center mb-2 leading-snug"
+                  >
+                    Navigation to pickup opens at <span className="font-semibold text-text-primary">{opensAtLabel}</span>. Make sure to reach the pickup point on time.
+                  </p>
+                )
+              })()}
               <div className="flex gap-2">
                 <button
                   data-testid="cancel-ride-button"
