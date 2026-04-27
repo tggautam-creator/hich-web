@@ -1,36 +1,57 @@
 import { supabaseAdmin } from './supabaseAdmin.ts'
 import { sendFcmPush } from './fcm.ts'
 
+// All trip_date/trip_time values across the app are tz-naive wall-clock
+// strings in the user's local timezone — Davis, CA. Parsing them with the
+// server's local TZ (which is UTC in production) shifts every comparison
+// by 7-8 hours, firing "ride in 30 min" reminders at 1 AM and auto-
+// cancelling rides overnight. Anchor cron logic to Pacific explicitly so
+// behavior is correct regardless of where the host runs.
+const RIDE_TIMEZONE = 'America/Los_Angeles'
+
+/** Returns YYYY-MM-DD for the given instant as seen in RIDE_TIMEZONE. */
 function getLocalDateString(date: Date): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+  // en-CA formats as YYYY-MM-DD natively.
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: RIDE_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date)
 }
 
+/** Returns HH:MM:SS (24h) for the given instant as seen in RIDE_TIMEZONE. */
 function getLocalTimeString(date: Date): string {
-  const hours = String(date.getHours()).padStart(2, '0')
-  const minutes = String(date.getMinutes()).padStart(2, '0')
-  const seconds = String(date.getSeconds()).padStart(2, '0')
-  return `${hours}:${minutes}:${seconds}`
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: RIDE_TIMEZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(date)
+}
+
+/** Returns the GMT offset string (e.g. "-07:00" / "-08:00") for the given
+ *  YYYY-MM-DD as seen in RIDE_TIMEZONE. Handles DST transitions. */
+function pacificOffsetForDate(yyyymmdd: string): string {
+  // Probe at noon UTC of the date to avoid DST transition midnight edges.
+  const probe = new Date(`${yyyymmdd}T12:00:00Z`)
+  const tzName = new Intl.DateTimeFormat('en-US', {
+    timeZone: RIDE_TIMEZONE,
+    timeZoneName: 'longOffset',
+  })
+    .formatToParts(probe)
+    .find((p) => p.type === 'timeZoneName')?.value
+  const m = tzName?.match(/GMT([+-]\d{2}:\d{2})/)
+  return m ? m[1] : '-08:00'
 }
 
 function parseScheduledRideDateTime(tripDate: string, tripTime: string): Date {
-  const [yearStr, monthStr, dayStr] = tripDate.split('-')
-  const [hourStr, minuteStr, secondStr = '0'] = tripTime.split(':')
-
-  const year = Number(yearStr)
-  const month = Number(monthStr)
-  const day = Number(dayStr)
-  const hour = Number(hourStr)
-  const minute = Number(minuteStr)
-  const second = Number(secondStr)
-
-  if ([year, month, day, hour, minute, second].some((part) => Number.isNaN(part))) {
-    return new Date(NaN)
-  }
-
-  return new Date(year, month - 1, day, hour, minute, second)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(tripDate)) return new Date(NaN)
+  if (!/^\d{2}:\d{2}(?::\d{2})?$/.test(tripTime)) return new Date(NaN)
+  const time = tripTime.length === 5 ? `${tripTime}:00` : tripTime
+  const offset = pacificOffsetForDate(tripDate)
+  return new Date(`${tripDate}T${time}${offset}`)
 }
 
 export function shouldTreatScheduledRideAsExpired(
