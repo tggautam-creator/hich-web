@@ -30,3 +30,9 @@ export const env = {
   // Set to 'true' in .env to bypass phone verification (dev/testing only)
   SKIP_PHONE_VERIFICATION: import.meta.env['VITE_SKIP_PHONE_VERIFICATION'] === 'true',
 }
+
+// True when the publishable Stripe key starts with `pk_test_`. Used to
+// render a sandbox banner so testers cannot mistake a test session for
+// a live one (the cross-environment contamination this guards against
+// was traced via `/Users/.../scenario-2-stripe-purring-hollerith.md`).
+export const IS_TEST_STRIPE = !!env.STRIPE_PUBLISHABLE_KEY?.startsWith('pk_test_')

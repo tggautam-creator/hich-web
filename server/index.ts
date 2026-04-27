@@ -3,8 +3,23 @@ import { getServerEnv, validateStripeEnv } from './env.ts'
 import { checkUpcomingRides, expireMissedRides, expireStaleRequests } from './lib/scheduledReminders.ts'
 import { checkActiveRides } from './lib/rideSafetyNet.ts'
 
-const { PORT } = getServerEnv()
+const env = getServerEnv()
+const { PORT, STRIPE_SECRET_KEY, SUPABASE_URL } = env
 validateStripeEnv()
+
+// Fail-fast guard: refuse to boot a prod build with test Stripe keys.
+// This is the safety belt for the cross-environment contamination that
+// caused real-driver wallets to fill up with test-mode "earnings" — see
+// /Users/tarungautam/.claude/plans/scenario-2-stripe-purring-hollerith.md.
+const isProdEnv = process.env['NODE_ENV'] === 'production'
+const isTestKey = STRIPE_SECRET_KEY.startsWith('sk_test_')
+if (isProdEnv && isTestKey) {
+  console.error('[FATAL] sk_test_* secret in NODE_ENV=production. Refusing to start.')
+  process.exit(1)
+}
+// Log the resolved mode + DB host on every boot so deploy logs surface
+// any env mismatch immediately.
+console.log(`[boot] Stripe=${isTestKey ? 'TEST' : 'LIVE'} · supabase=${new URL(SUPABASE_URL).host}`)
 
 process.on('uncaughtException', (err) => {
   console.error('[FATAL] Uncaught exception:', err)

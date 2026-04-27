@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { initAnalytics } from '@/lib/analytics'
+import { IS_TEST_STRIPE } from '@/lib/env'
 import { MapPageSkeleton, ListPageSkeleton, FormPageSkeleton } from '@/components/ui/PageSkeleton'
 import './index.css'
 
@@ -96,6 +97,18 @@ createRoot(rootEl).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        {/* Sandbox banner — only renders when running with a test Stripe
+            publishable key. Anchored above all routes via z-9999 so users
+            cannot mistake test sessions for real ones. */}
+        {IS_TEST_STRIPE && (
+          <div
+            data-testid="sandbox-banner"
+            className="fixed top-0 inset-x-0 z-[9999] bg-warning text-black text-center text-xs font-bold py-1 pointer-events-none"
+            style={{ paddingTop: 'env(safe-area-inset-top)' }}
+          >
+            Sandbox · payments are not real
+          </div>
+        )}
         <Suspense fallback={<FormPageSkeleton />}>
           <Routes>
             {/* ── Public routes — no auth required ──────────────────────────── */}

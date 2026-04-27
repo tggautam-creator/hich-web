@@ -852,7 +852,7 @@ ridesRouter.patch(
 ridesRouter.post(
   '/:id/find-new-driver',
   validateJwt,
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, _next: NextFunction) => {
     const userId = res.locals['userId'] as string
     const rideId = req.params['id'] as string
 
@@ -1939,7 +1939,7 @@ ridesRouter.patch(
 
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, driver_id, rider_id, status')
+      .select('id, driver_id, rider_id, status, destination')
       .eq('id', rideId)
       .single()
 
@@ -2083,7 +2083,7 @@ ridesRouter.patch(
 
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, driver_id, rider_id, status')
+      .select('id, driver_id, rider_id, status, pickup_point, origin')
       .eq('id', rideId)
       .single()
 
@@ -4066,7 +4066,7 @@ ridesRouter.post(
     // Verify ride and driver
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, driver_id, rider_id, status, origin, destination, destination_name, driver_destination, driver_destination_name, driver_route_polyline')
+      .select('id, driver_id, rider_id, status, origin, destination, destination_name, driver_destination, driver_destination_name, driver_route_polyline, pickup_point')
       .eq('id', rideId)
       .single()
 

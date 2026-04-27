@@ -67,7 +67,12 @@ export async function chargeRideFare(params: {
         ? err.message
         : 'Unknown payment error'
 
-    console.error(`[chargeRideFare] Failed for ride ${params.rideId}: ${message}`)
+    // Tag cross-mode contamination so log searches catch it. "No such
+    // customer" is what Stripe returns when a live key is asked to
+    // charge a test customer (or vice-versa) — root cause of the
+    // wallet-balance contamination tracked in /Users/.../scenario-2-stripe-purring-hollerith.md.
+    const crossMode = message.includes('No such customer') ? ' [CROSS_MODE_STRIPE]' : ''
+    console.error(`[chargeRideFare]${crossMode} Failed for ride ${params.rideId}: ${message}`)
     return { success: false, error: message }
   }
 }
