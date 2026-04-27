@@ -5,7 +5,7 @@ import { sendFcmPush } from '../lib/fcm.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
 import { checkUpcomingRides, expireMissedRides, expireStaleRequests } from '../lib/scheduledReminders.ts'
-import { getStripe } from './payment.ts'
+import { resolveAndPersistDefaultPm } from './payment.ts'
 
 export const scheduleRouter = Router()
 
@@ -650,39 +650,27 @@ scheduleRouter.post(
     //                             rider-post whose poster has no card; do
     //                             NOT redirect the driver to /payment/add.
     //
-    // We can't trust users.default_payment_method_id alone — cards detached
-    // out-of-band leave a stale id that fooled this check in the past
-    // (BUG-051). Verify against Stripe and self-heal the column if it's
-    // pointing at a payment method that no longer exists.
+    // Use the shared self-healing helper. The previous inline version
+    // null-out'd the cached column when stripe.retrieve() failed for any
+    // reason (including transient errors) which caused users with valid
+    // saved cards to start seeing "Add a payment method" — the exact bug
+    // that produced duplicate cards when they re-added.
     const { data: riderPaymentRow } = await supabaseAdmin
       .from('users')
       .select('stripe_customer_id, default_payment_method_id')
       .eq('id', riderId)
       .single()
 
-    let hasValidCard = false
-    if (riderPaymentRow?.stripe_customer_id && riderPaymentRow?.default_payment_method_id) {
-      try {
-        const stripe = getStripe()
-        const pm = await stripe.paymentMethods.retrieve(
-          riderPaymentRow.default_payment_method_id as string,
-        )
-        hasValidCard = pm.customer === riderPaymentRow.stripe_customer_id
-      } catch {
-        hasValidCard = false
-      }
+    let effectiveDefaultPm: string | null = null
+    if (riderPaymentRow?.stripe_customer_id) {
+      effectiveDefaultPm = await resolveAndPersistDefaultPm(
+        riderId,
+        riderPaymentRow.stripe_customer_id as string,
+        (riderPaymentRow.default_payment_method_id as string | null) ?? null,
+      )
     }
 
-    if (!hasValidCard) {
-      // Self-heal: clear the stale id so the migration-051 trigger blocks
-      // future rider-mode posts by this user too.
-      if (riderPaymentRow?.default_payment_method_id) {
-        await supabaseAdmin
-          .from('users')
-          .update({ default_payment_method_id: null })
-          .eq('id', riderId)
-      }
-
+    if (!riderPaymentRow?.stripe_customer_id || !effectiveDefaultPm) {
       const isSelf = riderId === userId
       res.status(400).json({
         error: {

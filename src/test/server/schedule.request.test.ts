@@ -4,7 +4,7 @@ import request from 'supertest'
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────────────
 
-const { mockAuth, mockFrom, mockRpc, mockSendFcmPush, mockChannel, mockStripeRetrievePm } = vi.hoisted(() => {
+const { mockAuth, mockFrom, mockRpc, mockSendFcmPush, mockChannel, mockStripeRetrievePm, mockStripeListPm } = vi.hoisted(() => {
   const mockAuth = { getUser: vi.fn() }
   const mockFrom = vi.fn()
   const mockRpc = vi.fn()
@@ -19,7 +19,13 @@ const { mockAuth, mockFrom, mockRpc, mockSendFcmPush, mockChannel, mockStripeRet
   // /request endpoint just looked up (see DRIVER_SCHEDULE / RIDER_SCHEDULE
   // flows below). Individual tests override per-call.
   const mockStripeRetrievePm = vi.fn().mockResolvedValue({ id: 'pm_123', customer: 'cus_123' })
-  return { mockAuth, mockFrom, mockRpc, mockSendFcmPush, mockChannel, mockStripeRetrievePm }
+  // schedule.ts switched from retrieve+self-heal to the shared resolveAndPersistDefaultPm
+  // helper, which paginates via paymentMethods.list. Default the list to one
+  // valid pm matching the cached default so the happy path resolves.
+  const mockStripeListPm = vi.fn().mockResolvedValue({
+    data: [{ id: 'pm_123', customer: 'cus_123', card: { fingerprint: 'fp_x' }, created: 1 }],
+  })
+  return { mockAuth, mockFrom, mockRpc, mockSendFcmPush, mockChannel, mockStripeRetrievePm, mockStripeListPm }
 })
 
 const { mockRemoveChannel } = vi.hoisted(() => ({
@@ -50,7 +56,7 @@ vi.mock('../../../server/env.ts', () => ({
 // default_payment_method_id (see schedule.ts card check).
 vi.mock('stripe', () => {
   const StripeCtor = vi.fn().mockImplementation(() => ({
-    paymentMethods: { retrieve: mockStripeRetrievePm },
+    paymentMethods: { retrieve: mockStripeRetrievePm, list: mockStripeListPm },
   }))
   return { default: StripeCtor }
 })

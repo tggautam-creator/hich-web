@@ -10,12 +10,17 @@ import request from 'supertest'
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────────────
 
-const { mockAuth, mockFrom, mockRpc, mockSendFcmPush } = vi.hoisted(() => {
+const { mockAuth, mockFrom, mockRpc, mockSendFcmPush, mockStripeListPm } = vi.hoisted(() => {
   const mockAuth = { getUser: vi.fn() }
   const mockFrom = vi.fn()
   const mockRpc = vi.fn()
   const mockSendFcmPush = vi.fn()
-  return { mockAuth, mockFrom, mockRpc, mockSendFcmPush }
+  // Default to "rider has one valid card matching pm_123" — individual tests
+  // can override via mockStripeListPm.mockResolvedValueOnce({ data: [] }).
+  const mockStripeListPm = vi.fn().mockResolvedValue({
+    data: [{ id: 'pm_123', customer: 'cus_123', card: { fingerprint: 'fp_x' }, created: 1 }],
+  })
+  return { mockAuth, mockFrom, mockRpc, mockSendFcmPush, mockStripeListPm }
 })
 
 vi.mock('../../../server/lib/supabaseAdmin.ts', () => ({
@@ -29,6 +34,28 @@ vi.mock('../../../server/lib/supabaseAdmin.ts', () => ({
 vi.mock('../../../server/lib/fcm.ts', () => ({
   sendFcmPush: mockSendFcmPush,
 }))
+
+vi.mock('../../../server/env.ts', () => ({
+  getServerEnv: () => ({
+    SUPABASE_URL: 'https://test.supabase.co',
+    SUPABASE_SERVICE_ROLE_KEY: 'test-key',
+    FIREBASE_SERVICE_ACCOUNT_PATH: './mock-path.json',
+    QR_HMAC_SECRET: 'test-secret',
+    STRIPE_SECRET_KEY: 'sk_test_mock',
+    STRIPE_WEBHOOK_SECRET: 'whsec_mock',
+    PORT: 3001,
+  }),
+  validateStripeEnv: () => undefined,
+}))
+
+// rides.ts now self-heals the rider's default PM via Stripe (was inline
+// column-only check). Mock paymentMethods.list so the helper can resolve.
+vi.mock('stripe', () => {
+  const StripeCtor = vi.fn().mockImplementation(() => ({
+    paymentMethods: { list: mockStripeListPm },
+  }))
+  return { default: StripeCtor }
+})
 
 import { app } from '../../../server/app.ts'
 

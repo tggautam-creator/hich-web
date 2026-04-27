@@ -20,6 +20,52 @@ function isMissingCustomerError(err: unknown): boolean {
 }
 
 /**
+ * Self-heals `users.default_payment_method_id` against Stripe and returns
+ * the effective default PM id (or null if the customer truly has no cards).
+ *
+ * Three guards (rides.ts /request, schedule.ts /request, payment.ts /methods)
+ * used to do this inline with diverging behavior — schedule.ts even null-out'd
+ * the column when its retrieve() throw was transient, which is what nuked
+ * users' default and caused "add a payment method" prompts despite saved
+ * cards. Centralizing here makes all three paths heal-forward instead of
+ * heal-backward: we trust Stripe's PM list as the source of truth and
+ * promote any surviving card before declaring "no payment method."
+ */
+export async function resolveAndPersistDefaultPm(
+  userId: string,
+  customerId: string,
+  cachedDefault: string | null,
+): Promise<string | null> {
+  const stripe = getStripe()
+  const list = await stripe.paymentMethods.list({ customer: customerId, type: 'card' })
+  const pms = list.data
+
+  if (pms.length === 0) {
+    if (cachedDefault) {
+      await supabaseAdmin
+        .from('users')
+        .update({ default_payment_method_id: null })
+        .eq('id', userId)
+    }
+    return null
+  }
+
+  const cachedStillValid = cachedDefault != null && pms.some((m) => m.id === cachedDefault)
+  if (cachedStillValid) return cachedDefault
+
+  // Cached default was detached out-of-band but the customer still has other
+  // valid cards — promote the most-recently-created one and persist.
+  const promoted = [...pms].sort((a, b) => b.created - a.created)[0]?.id ?? null
+  if (promoted && promoted !== cachedDefault) {
+    await supabaseAdmin
+      .from('users')
+      .update({ default_payment_method_id: promoted })
+      .eq('id', userId)
+  }
+  return promoted
+}
+
+/**
  * Ensure the user has a Stripe customer. Creates one if missing.
  * Returns the customer ID.
  */
@@ -106,22 +152,11 @@ paymentRouter.get('/methods', validateJwt, async (_req: Request, res: Response, 
       type: 'card',
     })
 
-    // Self-heal a stale default_payment_method_id. Cards can be detached
-    // out-of-band (Stripe Dashboard, test-mode reset, expired card) leaving
-    // the cached column pointing at a payment method that no longer exists.
-    // Downstream guards (rider-post card check + migration 051 trigger) trust
-    // this column, so a stale value lets users slip past. Reconcile here.
-    let effectiveDefault: string | null = user.default_payment_method_id
-    const cachedDefaultStillValid =
-      effectiveDefault != null && methods.data.some((m) => m.id === effectiveDefault)
-
-    if (effectiveDefault != null && !cachedDefaultStillValid) {
-      effectiveDefault = methods.data[0]?.id ?? null
-      await supabaseAdmin
-        .from('users')
-        .update({ default_payment_method_id: effectiveDefault })
-        .eq('id', userId)
-    }
+    const effectiveDefault = await resolveAndPersistDefaultPm(
+      userId,
+      user.stripe_customer_id as string,
+      (user.default_payment_method_id as string | null) ?? null,
+    )
 
     const cards = methods.data.map((m) => ({
       id: m.id,
@@ -175,12 +210,39 @@ paymentRouter.post('/default-method', validateJwt, async (req: Request, res: Res
       return
     }
 
+    // Stripe doesn't dedupe by default — re-saving a card creates a new
+    // pm_xxx with a fresh id but the same card.fingerprint. Without this
+    // check the Payment Methods page accumulates duplicates of the same
+    // physical card. When we detect a fingerprint collision, detach the
+    // *new* pm and promote the *existing* one as default; pm_ids referenced
+    // by existing rows (rides, transactions) keep working.
+    const fingerprint = pm.card?.fingerprint
+    let effectivePmId = payment_method_id
+    if (fingerprint) {
+      const list = await stripe.paymentMethods.list({
+        customer: user.stripe_customer_id as string,
+        type: 'card',
+      })
+      const duplicates = list.data.filter(
+        (m) => m.id !== payment_method_id && m.card?.fingerprint === fingerprint,
+      )
+      if (duplicates.length > 0) {
+        const oldest = [...duplicates].sort((a, b) => a.created - b.created)[0]
+        effectivePmId = oldest.id
+        try {
+          await stripe.paymentMethods.detach(payment_method_id)
+        } catch {
+          // Non-fatal — the existing card is still usable as default.
+        }
+      }
+    }
+
     await supabaseAdmin
       .from('users')
-      .update({ default_payment_method_id: payment_method_id })
+      .update({ default_payment_method_id: effectivePmId })
       .eq('id', userId)
 
-    res.json({ default_method_id: payment_method_id })
+    res.json({ default_method_id: effectivePmId, deduplicated: effectivePmId !== payment_method_id })
   } catch (err) {
     next(err)
   }
@@ -217,15 +279,21 @@ paymentRouter.delete('/methods/:id', validateJwt, async (req: Request, res: Resp
 
     await stripe.paymentMethods.detach(methodId)
 
-    // If this was the default, clear it
+    // If this was the default, promote a remaining card (if any) so the
+    // user isn't left in a "have cards but no default" state — that's the
+    // exact pothole that produced the duplicate-card bug: a NULL column
+    // tripped the on-demand ride blocker even though Stripe still had a
+    // valid card on file.
+    let newDefault: string | null = user.default_payment_method_id as string | null
     if (user.default_payment_method_id === methodId) {
-      await supabaseAdmin
-        .from('users')
-        .update({ default_payment_method_id: null })
-        .eq('id', userId)
+      newDefault = await resolveAndPersistDefaultPm(
+        userId,
+        user.stripe_customer_id as string,
+        null, // cached default just got detached
+      )
     }
 
-    res.json({ detached: true })
+    res.json({ detached: true, default_method_id: newDefault })
   } catch (err) {
     next(err)
   }

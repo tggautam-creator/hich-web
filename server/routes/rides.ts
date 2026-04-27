@@ -10,6 +10,7 @@ import { computeTransitDropoffSuggestions, fetchDrivingRoute, type TransitDropof
 import { realtimeBroadcast, realtimeBroadcastMany } from '../lib/realtimeBroadcast.ts'
 import { chargeRideFare } from '../lib/stripeConnect.ts'
 import { shouldTreatScheduledRideAsExpired } from '../lib/scheduledReminders.ts'
+import { resolveAndPersistDefaultPm } from './payment.ts'
 
 export const ridesRouter = Router()
 
@@ -254,13 +255,28 @@ ridesRouter.post(
     // B1 — server-side card precondition. A rider cannot create a ride
     // without a saved card: otherwise the driver finishes the trip and the
     // charge silently fails, leaving the driver uncompensated.
+    //
+    // Trust Stripe over the cached column. Previously we returned
+    // NO_PAYMENT_METHOD whenever default_payment_method_id was null, which
+    // happened any time the column got nulled out by the schedule.ts
+    // self-heal or when a user added a card outside the SaveCardPage flow.
+    // Now we ask Stripe directly and promote a surviving card if needed.
     const { data: riderPaymentRow } = await supabaseAdmin
       .from('users')
       .select('stripe_customer_id, default_payment_method_id')
       .eq('id', riderId)
       .single()
 
-    if (!riderPaymentRow?.stripe_customer_id || !riderPaymentRow?.default_payment_method_id) {
+    let effectiveDefaultPm: string | null = null
+    if (riderPaymentRow?.stripe_customer_id) {
+      effectiveDefaultPm = await resolveAndPersistDefaultPm(
+        riderId,
+        riderPaymentRow.stripe_customer_id as string,
+        (riderPaymentRow.default_payment_method_id as string | null) ?? null,
+      )
+    }
+
+    if (!riderPaymentRow?.stripe_customer_id || !effectiveDefaultPm) {
       res.status(400).json({
         error: { code: 'NO_PAYMENT_METHOD', message: 'Add a payment method before requesting a ride.' },
       })
