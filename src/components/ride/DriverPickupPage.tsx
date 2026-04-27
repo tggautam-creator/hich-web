@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { calculateInterceptPoint, haversineMetres, calculateBearing } from '@/lib/geo'
 import { useAnimatedPosition } from '@/hooks/useAnimatedPosition'
 import PickupEta from '@/components/ride/PickupEta'
-import { decodePolyline, RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
+import { decodePolyline, RoutePolyline, MapBoundsFitter, RecenterButton } from '@/components/map/RoutePreview'
 import CarMarker from '@/components/map/CarMarker'
 import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
@@ -52,6 +52,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
   const [showQr, setShowQr] = useState(false)
   const [emergencyOpen, setEmergencyOpen] = useState(false)
   const [unreadChat, setUnreadChat] = useState(0)
+  const [fitToken, setFitToken] = useState(0)
 
   // Pickup pin position (driver can drag)
   const [pinLat, setPinLat] = useState<number | null>(null)
@@ -602,20 +603,25 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
               />
             )}
 
-            {/* Fit map to driver + pickup */}
+            {/* Fit map to driver + pickup (initial mount + recenter button only) */}
             {liveDriverLat !== null && liveDriverLng !== null && pickupPos && (
-              <MapBoundsFitter points={[
-                { lat: liveDriverLat, lng: liveDriverLng },
-                pickupPos,
-              ]} />
+              <MapBoundsFitter
+                fitToken={fitToken}
+                points={[
+                  { lat: liveDriverLat, lng: liveDriverLng },
+                  pickupPos,
+                ]}
+              />
             )}
           </Map>
+
+          <RecenterButton onClick={() => setFitToken((t) => t + 1)} />
 
           {/* Rider arriving banner — persistent until ride starts */}
           {riderArriving && (
             <div
               data-testid="rider-arriving-banner"
-              className="absolute top-3 left-3 right-3 bg-success text-white rounded-2xl px-4 py-3 text-sm font-semibold text-center shadow-lg z-10 animate-pulse"
+              className="absolute top-3 left-3 right-16 bg-success text-white rounded-2xl px-4 py-3 text-sm font-semibold text-center shadow-lg z-10 animate-pulse"
             >
               Rider is at the pickup point!
             </div>

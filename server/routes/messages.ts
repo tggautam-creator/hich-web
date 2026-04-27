@@ -78,7 +78,7 @@ messagesRouter.get(
 messagesRouter.post(
   '/:rideId',
   validateJwt,
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, _next: NextFunction) => {
     const senderId = res.locals['userId'] as string
     const rideId = req.params['rideId'] as string
     const { content } = req.body as { content?: string }
@@ -124,7 +124,20 @@ messagesRouter.post(
       .single()
 
     if (insertErr || !msg) {
-      next(insertErr ?? new Error('Failed to insert message'))
+      // Surface the underlying Postgres error so we can diagnose silent
+      // failures (FK violation, RLS, trigger). Without this both the client
+      // and the logs only saw "Failed to send message" with no detail.
+      console.error(
+        `[messages POST] insert failed rideId=${rideId} senderId=${senderId} status=${ride.status}:`,
+        insertErr?.message,
+        insertErr,
+      )
+      res.status(500).json({
+        error: {
+          code: 'MESSAGE_INSERT_FAILED',
+          message: insertErr?.message ?? 'Failed to insert message',
+        },
+      })
       return
     }
 

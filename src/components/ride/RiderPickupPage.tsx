@@ -9,7 +9,7 @@ import { trackEvent } from '@/lib/analytics'
 import { useAuthStore } from '@/stores/authStore'
 import QrScanner from '@/components/ride/QrScanner'
 import EmergencySheet from '@/components/ui/EmergencySheet'
-import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
+import { RoutePolyline, MapBoundsFitter, RecenterButton } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
 import JourneyDrawer from '@/components/ride/JourneyDrawer'
@@ -43,6 +43,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   const [signalled, setSignalled] = useState(false)
   const [unreadChat, setUnreadChat] = useState(0)
   const [cancelledMsg, setCancelledMsg] = useState<string | null>(null)
+  const [fitToken, setFitToken] = useState(0)
 
   // QR scanning / manual code entry state
   const [startRideModal, setStartRideModal] = useState(false)
@@ -600,18 +601,23 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
             <RoutePolyline encodedPath={walkPolyline} color="#16A34A" weight={4} fitBounds={false} />
           )}
 
-          {/* Fit map to rider + pickup */}
+          {/* Fit map to rider + pickup (initial mount + recenter button only) */}
           {riderLat !== null && riderLng !== null && hasPickup && (
-            <MapBoundsFitter points={[
-              { lat: riderLat, lng: riderLng },
-              { lat: pickupLat, lng: pickupLng },
-            ]} />
+            <MapBoundsFitter
+              fitToken={fitToken}
+              points={[
+                { lat: riderLat, lng: riderLng },
+                { lat: pickupLat, lng: pickupLng },
+              ]}
+            />
           )}
         </Map>
 
+        <RecenterButton onClick={() => setFitToken((t) => t + 1)} />
+
         {/* Nearby pulse */}
         {isNearby && (
-          <div data-testid="nearby-alert" className="absolute top-3 left-3 right-3 bg-success text-white rounded-2xl px-4 py-3 text-sm font-semibold text-center shadow-lg animate-pulse">
+          <div data-testid="nearby-alert" className="absolute top-3 left-3 right-16 bg-success text-white rounded-2xl px-4 py-3 text-sm font-semibold text-center shadow-lg animate-pulse">
             🟢 You&apos;re almost there!
           </div>
         )}

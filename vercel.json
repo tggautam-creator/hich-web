@@ -6,8 +6,17 @@
       "destination": "http://3.139.90.248:3001/api/:path*"
     },
     {
-      "source": "/((?!api/).*)",
+      "source": "/((?!api/|.well-known/).*)",
       "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/.well-known/apple-app-site-association",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json" },
+        { "key": "Cache-Control", "value": "public, max-age=3600" }
+      ]
     }
   ]
 }

@@ -7,7 +7,7 @@ import { trackEvent } from '@/lib/analytics'
 import { getDirectionsByLatLng } from '@/lib/directions'
 import QrScanner from '@/components/ride/QrScanner'
 import EmergencySheet from '@/components/ui/EmergencySheet'
-import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
+import { RoutePolyline, MapBoundsFitter, RecenterButton } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
 import JourneyDrawer from '@/components/ride/JourneyDrawer'
@@ -43,6 +43,7 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
   const [routePolyline, setRoutePolyline] = useState<string | null>(null)
   const [riderPos, setRiderPos] = useState<{ lat: number; lng: number } | null>(null)
   const [unreadChat, setUnreadChat] = useState(0)
+  const [fitToken, setFitToken] = useState(0)
 
   // Transit remaining journey
   const [transitInfo, setTransitInfo] = useState<TransitInfoData | null>(null)
@@ -556,8 +557,12 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
               fitBounds={false}
             />
           )}
-          {boundsPoints.length >= 2 && <MapBoundsFitter points={boundsPoints} />}
+          {boundsPoints.length >= 2 && (
+            <MapBoundsFitter fitToken={fitToken} points={boundsPoints} />
+          )}
         </Map>
+
+        <RecenterButton onClick={() => setFitToken((t) => t + 1)} />
       </div>
 
       {/* ── Map legend ─────────────────────────────────────────────────────── */}

@@ -178,7 +178,15 @@ function PickupProposalCard({
     onViewMap({
       type: 'pickup',
       points: [
-        { lat: originLat, lng: originLng, label: 'Your Location', color: '#3B82F6' },
+        // The origin pin is the rider's pickup point. Label it "Your Location"
+        // only when the viewer is the rider; otherwise the driver sees their
+        // counterpart's pickup mislabeled as their own.
+        {
+          lat: originLat,
+          lng: originLng,
+          label: isRider ? 'Your Location' : "Rider's Location",
+          color: '#3B82F6',
+        },
         { lat: pickupLat, lng: pickupLng, label: 'Pickup', color: '#22C55E' },
       ],
       walkPolyline,
@@ -693,7 +701,11 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         setInputText('')
         inputRef.current?.focus()
       } else {
-        setSendError('Failed to send message')
+        // Show the server's actual error message rather than a generic
+        // "Failed to send message" — otherwise it's impossible to tell
+        // a 403 from a 500 from a stale-token 401 in the field.
+        const body = (await resp.json().catch(() => ({}))) as { error?: { message?: string } }
+        setSendError(body.error?.message ?? `Failed to send message (HTTP ${resp.status})`)
       }
     } catch {
       setSendError('Network error — message not sent')

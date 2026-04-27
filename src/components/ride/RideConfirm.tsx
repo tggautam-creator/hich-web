@@ -113,6 +113,13 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
       const originLat = state?.originLat ?? 0
       const originLng = state?.originLng ?? 0
 
+      // Send the rider's local date so the server's duplicate-active-ride
+      // check classifies "today's scheduled ride" the same way the rider
+      // sees it. Without this, server UTC near midnight can drift a day
+      // ahead of the rider's clock and let duplicate requests slip past.
+      const now = new Date()
+      const clientDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+
       const resp = await fetch('/api/rides/request', {
         method: 'POST',
         headers: {
@@ -127,6 +134,7 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
           distance_km: distanceKm,
           estimated_fare_cents: fareRange.low.fare_cents,
           route_polyline: state?.polyline,
+          client_date: clientDate,
         }),
       })
 

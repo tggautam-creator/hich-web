@@ -119,8 +119,9 @@ describe('POST /api/rides/request', () => {
       stripe_customer_id: 'cus_123',
       default_payment_method_id: 'pm_123',
     }))
-    // 2) from('rides') active-ride guard returns an existing ride
-    mockFrom.mockReturnValueOnce(chainOk({ id: 'existing-ride' }))
+    // 2) from('rides') active-ride guard returns an array of candidate rides;
+    //    one without schedule_id (an on-demand ride) flips the in-JS blocker.
+    mockFrom.mockReturnValueOnce(chainOk([{ id: 'existing-ride', schedule_id: null, trip_date: null }]))
 
     const res = await request(app)
       .post('/api/rides/request')

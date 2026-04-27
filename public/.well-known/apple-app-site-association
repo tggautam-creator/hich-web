@@ -1,0 +1,18 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["XFDWGTQH9M.com.tago.rides"],
+        "components": [
+          { "/": "/auth/callback", "comment": "Supabase magic link / OTP / password recovery callback" },
+          { "/": "/auth/callback/*", "comment": "Supabase magic link with subpath" },
+          { "/": "/connect/onboard/return", "comment": "Stripe Connect onboarding return" },
+          { "/": "/connect/onboard/return/*", "comment": "Stripe Connect onboarding return with subpath" }
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": ["XFDWGTQH9M.com.tago.rides"]
+  }
+}

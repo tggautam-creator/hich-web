@@ -199,6 +199,7 @@ interface RideRequestBody {
   distance_km?: number
   estimated_fare_cents?: number
   route_polyline?: string
+  client_date?: string
 }
 
 /**
@@ -266,19 +267,34 @@ ridesRouter.post(
       return
     }
 
-    // Guard: block duplicate ride requests from the same rider (BUG-036)
-    // Exclude scheduled rides for future dates — they shouldn't block on-demand requests
-    const today = new Date().toISOString().split('T')[0]
-    const { data: existingRide } = await supabaseAdmin
+    // Guard: block duplicate ride requests from the same rider (BUG-036).
+    // A future board-scheduled ride must NOT block an on-demand request now.
+    // Earlier we tried to express this with `.or('schedule_id.is.null,
+    // trip_date.is.null,trip_date.eq.${today}')` but the rider was still
+    // being blocked, so do the filter in JS where the semantics are
+    // unambiguous: block on-demand rides + rides without a date + scheduled
+    // rides for today or earlier; allow scheduled rides whose trip_date is
+    // strictly after the rider's local "today".
+    const today =
+      body.client_date && /^\d{4}-\d{2}-\d{2}$/.test(body.client_date)
+        ? body.client_date
+        : (new Date().toISOString().split('T')[0] as string)
+
+    const { data: candidateRides } = await supabaseAdmin
       .from('rides')
-      .select('id')
+      .select('id, schedule_id, trip_date')
       .eq('rider_id', riderId)
       .in('status', ['requested', 'accepted', 'coordinating', 'active'])
-      .or(`schedule_id.is.null,trip_date.is.null,trip_date.eq.${today}`)
-      .limit(1)
-      .maybeSingle()
 
-    if (existingRide) {
+    const blockingRide = (candidateRides ?? []).find((r) => {
+      const scheduleId = (r as Record<string, unknown>)['schedule_id'] as string | null
+      const tripDate = (r as Record<string, unknown>)['trip_date'] as string | null
+      if (!scheduleId) return true       // on-demand active ride
+      if (!tripDate) return true         // scheduled but undated → treat as blocking
+      return tripDate <= today           // same-day or past scheduled ride
+    })
+
+    if (blockingRide) {
       res.status(409).json({
         error: { code: 'ACTIVE_RIDE_EXISTS', message: 'You already have an active ride. Cancel it first.' },
       })
@@ -400,15 +416,17 @@ ridesRouter.post(
 
     const riderProfile = await supabaseAdmin
       .from('users')
-      .select('full_name, rating_avg, rating_count')
+      .select('full_name, avatar_url, rating_avg, rating_count')
       .eq('id', riderId)
       .single()
     const riderName = riderProfile.data?.full_name ?? 'A rider'
+    const riderAvatarUrl = riderProfile.data?.avatar_url ?? ''
 
     const fcmDataPayload: Record<string, string> = {
       type: 'ride_request',
       ride_id: ride.id,
       rider_name: riderName,
+      rider_avatar_url: riderAvatarUrl,
       destination: body.destination_name ?? 'Nearby destination',
       distance_km: String(body.distance_km ?? '–'),
       estimated_earnings_cents: String(driverEarns),
@@ -434,18 +452,7 @@ ridesRouter.post(
         title: 'New ride request nearby',
         body: 'A rider needs a lift — open TAGO to check.',
         data: {
-          type: 'ride_request',
-          ride_id: ride.id,
-          rider_name: riderName,
-          destination: body.destination_name ?? 'Nearby destination',
-          distance_km: String(body.distance_km ?? '–'),
-          estimated_earnings_cents: String(driverEarns),
-          origin_lat: String(body.origin.coordinates[1]),
-          origin_lng: String(body.origin.coordinates[0]),
-          destination_lat: typeof body.destination_lat === 'number' ? String(body.destination_lat) : '',
-          destination_lng: typeof body.destination_lng === 'number' ? String(body.destination_lng) : '',
-          rider_rating: String(riderProfile.data?.rating_avg ?? ''),
-          rider_rating_count: String(riderProfile.data?.rating_count ?? '0'),
+          ...fcmDataPayload,
         },
       }))
 
@@ -458,22 +465,11 @@ ridesRouter.post(
       }
     }
 
-    // Broadcast via Supabase Realtime so in-app listeners receive instantly
-
-    const realtimePayload = {
-      type: 'ride_request' as const,
-      ride_id: ride.id,
-      rider_name: riderName,
-      destination: body.destination_name ?? 'Nearby destination',
-      distance_km: String(body.distance_km ?? '–'),
-      estimated_earnings_cents: String(driverEarns),
-      origin_lat: String(body.origin.coordinates[1]),
-      origin_lng: String(body.origin.coordinates[0]),
-      destination_lat: typeof body.destination_lat === 'number' ? String(body.destination_lat) : '',
-      destination_lng: typeof body.destination_lng === 'number' ? String(body.destination_lng) : '',
-      rider_rating: String(riderProfile.data?.rating_avg ?? ''),
-      rider_rating_count: String(riderProfile.data?.rating_count ?? '0'),
-    }
+    // Broadcast via Supabase Realtime so in-app listeners receive
+    // instantly. Same `fcmDataPayload` shape — single source of truth
+    // across FCM / notifications row / realtime so all three iOS
+    // listener inputs decode identically.
+    const realtimePayload = { ...fcmDataPayload }
 
     const realtimeResults = await Promise.all(
       driverIds.map((driverId) => realtimeBroadcast(`driver:${driverId}`, 'ride_request', realtimePayload)),
@@ -3589,38 +3585,54 @@ ridesRouter.post(
       .eq('id', rideId)
 
     // ── Approaching-dropoff reminder ──
-    // If driver is within 500m of confirmed dropoff and reminder not yet sent
-    if (
-      isDriver &&
-      !ride.dropoff_reminder_sent &&
-      ride.dropoff_point
-    ) {
+    // Fires exactly once per ride when either party (whoever pings first) is
+    // within 500m of the confirmed dropoff. Driver and rider get distinct
+    // copy ("scan the QR" vs "show the QR").
+    if (!ride.dropoff_reminder_sent && ride.dropoff_point) {
       const dropoff = ride.dropoff_point as unknown as { coordinates: [number, number] }
       const distToDropoff = haversineMetres(lat, lng, dropoff.coordinates[1], dropoff.coordinates[0])
 
       if (distToDropoff < 500) {
-        // Mark reminder sent
-        void supabaseAdmin
+        // Atomic claim: only the first ping that flips the flag from
+        // false→true gets a non-empty `claimed` row back. Concurrent pings
+        // (and any in-flight retries) all match zero rows and skip sending.
+        // Without this, the previous fire-and-forget update raced and the
+        // same reminder went out 5–15× while pings stayed inside the radius.
+        const { data: claimed } = await supabaseAdmin
           .from('rides')
           .update({ dropoff_reminder_sent: true })
           .eq('id', rideId)
+          .eq('dropoff_reminder_sent', false)
+          .select('id')
 
-        // Push to both driver and rider
-        const userIds = [ride.driver_id, ride.rider_id].filter(Boolean) as string[]
-        const { data: tokens } = await supabaseAdmin
-          .from('push_tokens')
-          .select('token')
-          .in('user_id', userIds)
+        if (claimed && claimed.length > 0) {
+          const [driverTokensRes, riderTokensRes] = await Promise.all([
+            ride.driver_id
+              ? supabaseAdmin.from('push_tokens').select('token').eq('user_id', ride.driver_id)
+              : Promise.resolve({ data: [] as { token: string }[] }),
+            ride.rider_id
+              ? supabaseAdmin.from('push_tokens').select('token').eq('user_id', ride.rider_id)
+              : Promise.resolve({ data: [] as { token: string }[] }),
+          ])
 
-        if (tokens && tokens.length > 0) {
-          void sendFcmPush(
-            tokens.map((t: { token: string }) => t.token),
-            {
-              title: 'Approaching dropoff!',
-              body: 'You\'re near the dropoff point — don\'t forget to scan the QR code to end the ride.',
-              data: { type: 'dropoff_reminder', ride_id: rideId },
-            },
-          )
+          const driverTokens = (driverTokensRes.data ?? []).map((t: { token: string }) => t.token)
+          const riderTokens = (riderTokensRes.data ?? []).map((t: { token: string }) => t.token)
+
+          if (driverTokens.length > 0) {
+            void sendFcmPush(driverTokens, {
+              title: 'Approaching dropoff',
+              body: 'Almost there — scan the rider\'s QR code to end the ride.',
+              data: { type: 'dropoff_reminder_driver', ride_id: rideId },
+            })
+          }
+
+          if (riderTokens.length > 0) {
+            void sendFcmPush(riderTokens, {
+              title: 'Almost at your dropoff',
+              body: 'Show your QR code to the driver to end the ride.',
+              data: { type: 'dropoff_reminder_rider', ride_id: rideId },
+            })
+          }
         }
       }
     }
@@ -3683,7 +3695,7 @@ ridesRouter.get(
     if (scheduleIds.length > 0) {
       const { data: schedules } = await supabaseAdmin
         .from('ride_schedules')
-        .select('id, origin_address, dest_address, trip_date, trip_time, time_type')
+        .select('id, user_id, mode, origin_address, dest_address, trip_date, trip_time, time_type')
         .in('id', [...new Set(scheduleIds)])
 
       scheduleMap = new Map(

@@ -163,6 +163,7 @@ vi.mock('@/stores/authStore', () => ({
 vi.mock('@/components/map/RoutePreview', () => ({
   RoutePolyline:   () => null,
   MapBoundsFitter: () => null,
+  RecenterButton:  () => null,
   decodePolyline:  () => [],
 }))
 

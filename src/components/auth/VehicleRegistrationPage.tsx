@@ -83,9 +83,17 @@ interface VehicleRegistrationPageProps {
 
 // ── Plate lookup helper ──────────────────────────────────────────────────────
 
+class PlateLookupError extends Error {
+  code: string
+  constructor(code: string, message: string) {
+    super(message)
+    this.code = code
+  }
+}
+
 async function lookupPlate(plate: string, state: string): Promise<PlateLookupResult> {
   const { data: { session } } = await supabase.auth.getSession()
-  if (!session) throw new Error('Not authenticated')
+  if (!session) throw new PlateLookupError('UNAUTHENTICATED', 'Not authenticated')
 
   const res = await fetch('/api/vehicle/plate-lookup', {
     method: 'POST',
@@ -97,8 +105,11 @@ async function lookupPlate(plate: string, state: string): Promise<PlateLookupRes
   })
 
   if (!res.ok) {
-    const body = (await res.json()) as { error?: { message?: string } }
-    throw new Error(body.error?.message ?? 'Plate lookup failed')
+    const body = (await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } }
+    throw new PlateLookupError(
+      body.error?.code ?? 'LOOKUP_FAILED',
+      body.error?.message ?? 'Plate lookup failed',
+    )
   }
 
   return (await res.json()) as PlateLookupResult
@@ -118,6 +129,10 @@ export default function VehicleRegistrationPage({
   const [plateState, setPlateState]         = useState('CA')
   const [plateLooking, setPlateLooking]     = useState(false)
   const [plateFound, setPlateFound]         = useState(false)
+  // True only when the lookup API explicitly returned PLATE_NOT_FOUND.
+  // Service errors (LOOKUP_FAILED, network) leave this false so the user
+  // can still register manually during an outage.
+  const [plateNotFound, setPlateNotFound]   = useState(false)
 
   // Vehicle details (auto-filled or manual)
   const [vin, setVin]                       = useState('')
@@ -136,6 +151,12 @@ export default function VehicleRegistrationPage({
 
   // Auto-lookup plate when plate is 2-8 chars and state is set
   useEffect(() => {
+    // Synchronously invalidate any prior lookup result on every edit so we
+    // never carry a stale `plateFound=true` flag across plate changes.
+    setPlateFound(false)
+    setPlateNotFound(false)
+    setErrors((prev) => ({ ...prev, plate: undefined, submit: undefined }))
+
     const cleanPlate = plate.trim().replace(/[\s-]/g, '')
     if (!/^[A-Z0-9]{2,8}$/i.test(cleanPlate) || !plateState) return
 
@@ -146,13 +167,12 @@ export default function VehicleRegistrationPage({
       lookupRef.current = controller
 
       setPlateLooking(true)
-      setPlateFound(false)
-      setErrors((prev) => ({ ...prev, plate: undefined, submit: undefined }))
 
       lookupPlate(cleanPlate, plateState)
         .then(async (result) => {
           if (controller.signal.aborted) return
           setPlateFound(true)
+          setPlateNotFound(false)
 
           if (result.vin) setVin(result.vin)
           if (result.make) setMake(result.make)
@@ -184,9 +204,19 @@ export default function VehicleRegistrationPage({
         })
         .catch((err: unknown) => {
           if (controller.signal.aborted) return
-          // Not found is not an error — user can fill manually
+          const code = err instanceof PlateLookupError ? err.code : 'LOOKUP_FAILED'
           const msg = err instanceof Error ? err.message : 'Lookup failed'
-          if (!msg.includes('Not authenticated')) {
+          // PLATE_NOT_FOUND means the plate is verifiably bogus — block
+          // submission. Other errors (service down, network) leave the
+          // user free to fill in manually so an outage doesn't lock
+          // them out of driver onboarding.
+          if (code === 'PLATE_NOT_FOUND') {
+            setPlateNotFound(true)
+            setErrors((prev) => ({
+              ...prev,
+              plate: 'No vehicle found for this plate. Please double-check the plate number and state.',
+            }))
+          } else if (code !== 'UNAUTHENTICATED') {
             setErrors((prev) => ({ ...prev, plate: msg }))
           }
         })
@@ -211,6 +241,17 @@ export default function VehicleRegistrationPage({
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
+
+    if (plateLooking) {
+      setErrors({ plate: 'Verifying plate — please wait a moment.' })
+      return
+    }
+    if (plateNotFound) {
+      setErrors({
+        plate: 'No vehicle found for this plate. Please double-check the plate number and state before registering.',
+      })
+      return
+    }
 
     const plateErr = !plate.trim() ? 'License plate is required' : undefined
     const stateErr = !plateState ? 'State is required' : undefined
@@ -600,6 +641,7 @@ export default function VehicleRegistrationPage({
             data-testid="submit-button"
             type="submit"
             isLoading={isLoading}
+            disabled={plateLooking || plateNotFound}
           >
             Register vehicle
           </PrimaryButton>

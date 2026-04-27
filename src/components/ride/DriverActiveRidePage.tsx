@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import DriverQrSheet from '@/components/ride/DriverQrSheet'
 import EmergencySheet from '@/components/ui/EmergencySheet'
-import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
+import { RoutePolyline, MapBoundsFitter, RecenterButton } from '@/components/map/RoutePreview'
 import CarMarker from '@/components/map/CarMarker'
 import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
@@ -37,6 +37,7 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
   const [cancelling, setCancelling] = useState(false)
   const [emergencyOpen, setEmergencyOpen] = useState(false)
   const [unreadChat, setUnreadChat] = useState(0)
+  const [fitToken, setFitToken] = useState(0)
   const signalTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Driver GPS position
@@ -540,9 +541,13 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
             />
           )}
 
-          {/* Fit map bounds */}
-          {boundsPoints.length >= 2 && <MapBoundsFitter points={boundsPoints} />}
+          {/* Fit map bounds (initial mount + recenter button only) */}
+          {boundsPoints.length >= 2 && (
+            <MapBoundsFitter fitToken={fitToken} points={boundsPoints} />
+          )}
         </Map>
+
+        <RecenterButton onClick={() => setFitToken((t) => t + 1)} />
 
         {/* ETA overlay on map (coordinating phase) */}
         {isCoordinating && routeEta && (

@@ -16,6 +16,8 @@ interface OtherUser {
 }
 
 interface Schedule {
+  user_id?: string
+  mode?: 'driver' | 'rider'
   origin_address: string
   dest_address: string
   trip_date: string
@@ -168,11 +170,25 @@ export default function MyRidesPage({
     }
   }, [profile?.id, queryClient])
 
+  // True when the current user is the original board poster and a driver/
+  // rider on the other side has responded with an offer that needs the
+  // poster's accept/decline. Without this branch the card is a dead-end —
+  // the ride sits in 'requested' status with no path to the review page.
+  function isOfferAwaitingMyResponse(ride: ActiveRide): boolean {
+    if (ride.status !== 'requested') return false
+    if (!ride.schedule_id || !ride.schedule) return false
+    return ride.schedule.user_id === profile?.id
+  }
+
   function handleTapRide(ride: ActiveRide) {
     const isRider = ride.my_role === 'rider'
     switch (ride.status) {
       case 'requested':
-        if (!isRider) navigate('/notifications')
+        if (isOfferAwaitingMyResponse(ride)) {
+          navigate(`/ride/board-review/${ride.id}`)
+        } else if (!isRider) {
+          navigate('/notifications')
+        }
         break
       case 'accepted':
         navigate(`/ride/messaging/${ride.id}`)
@@ -466,7 +482,8 @@ export default function MyRidesPage({
 
                   {/* Tap hint */}
                   <p className="text-xs text-primary font-medium mt-2">
-                    {ride.status === 'requested' && ride.my_role === 'rider' ? 'Waiting for poster to respond…' :
+                    {isOfferAwaitingMyResponse(ride) ? "Tap to review driver's offer →" :
+                     ride.status === 'requested' && ride.my_role === 'rider' ? 'Waiting for poster to respond…' :
                      ride.status === 'requested' ? 'Tap to accept or decline →' :
                      ride.status === 'accepted' ? 'Tap to open messaging →' :
                      ride.status === 'coordinating' ? 'Tap to open messaging →' :
@@ -474,16 +491,30 @@ export default function MyRidesPage({
                   </p>
 
                   {ride.status === 'requested' && ride.my_role === 'rider' && (
-                    <button
-                      data-testid="cancel-requested-ride-button"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        cancelMutation.mutate(ride.id)
-                      }}
-                      className="mt-2 rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 text-xs font-semibold text-danger"
-                    >
-                      Cancel Request
-                    </button>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {isOfferAwaitingMyResponse(ride) && (
+                        <button
+                          data-testid="review-offer-button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            navigate(`/ride/board-review/${ride.id}`)
+                          }}
+                          className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white active:opacity-90"
+                        >
+                          Review Offer
+                        </button>
+                      )}
+                      <button
+                        data-testid="cancel-requested-ride-button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          cancelMutation.mutate(ride.id)
+                        }}
+                        className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 text-xs font-semibold text-danger"
+                      >
+                        Cancel Request
+                      </button>
+                    </div>
                   )}
                 </button>
               )

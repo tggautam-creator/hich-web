@@ -594,7 +594,7 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
             body: JSON.stringify({
               origin_place_id: fromLocation.placeId,
               dest_place_id:   toLocation.placeId,
-              trip_date:       new Date().toISOString().split('T')[0],
+              trip_date:       todayString(),
               trip_time:       notifyTime,
               time_type:       notifyTimeType,
               mode: activeMode,

@@ -132,7 +132,9 @@ export default function NotificationsPage({
     const rideId = notif.data['ride_id'] as string | undefined
     if (!rideId) return
 
-    if (notif.type === 'board_accepted' || notif.type === 'ride_reminder' || notif.type === 'ride_missed') {
+    if (notif.type === 'board_request' || notif.type === 'board_request_actioned') {
+      navigate(`/ride/board-review/${rideId}`)
+    } else if (notif.type === 'board_accepted' || notif.type === 'ride_reminder' || notif.type === 'ride_missed') {
       navigate(`/ride/messaging/${rideId}`)
     } else if (notif.type === 'board_declined') {
       navigate('/rides/board')
@@ -235,9 +237,9 @@ export default function NotificationsPage({
                   className={[
                     'px-4 py-4',
                     !notif.is_read ? 'bg-primary/5' : 'bg-white',
-                    (isAccepted || isReminder) ? 'cursor-pointer active:bg-surface' : '',
+                    (isAccepted || isReminder || isBoardRequest || isActioned) ? 'cursor-pointer active:bg-surface' : '',
                   ].join(' ')}
-                  onClick={() => { if (!isBoardRequest && !isActioned) handleTap(notif) }}
+                  onClick={() => handleTap(notif)}
                 >
                   <div className="flex items-start gap-3">
                     {/* Icon */}

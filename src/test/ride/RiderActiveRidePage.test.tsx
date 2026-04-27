@@ -34,6 +34,7 @@ vi.mock('@vis.gl/react-google-maps', () => ({
 vi.mock('@/components/map/RoutePreview', () => ({
   RoutePolyline: () => null,
   MapBoundsFitter: () => null,
+  RecenterButton: () => null,
 }))
 
 vi.mock('@/lib/env', () => ({

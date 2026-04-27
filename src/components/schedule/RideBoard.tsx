@@ -453,6 +453,19 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
         params.set('lat', String(loc.lat))
         params.set('lng', String(loc.lng))
       }
+      // Send the user's local clock so the server filters in the same timezone
+      // the user posted in. Without this, the server's UTC "today" can be a
+      // day ahead of the user's local date, and same-day posts get dropped
+      // by the .gte('trip_date', today) filter.
+      const now = new Date()
+      const yyyy = now.getFullYear()
+      const mm = String(now.getMonth() + 1).padStart(2, '0')
+      const dd = String(now.getDate()).padStart(2, '0')
+      const hh = String(now.getHours()).padStart(2, '0')
+      const mi = String(now.getMinutes()).padStart(2, '0')
+      const ss = String(now.getSeconds()).padStart(2, '0')
+      params.set('client_date', `${yyyy}-${mm}-${dd}`)
+      params.set('client_now', `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}`)
       const qs = params.toString()
       const url = qs ? `/api/schedule/board?${qs}` : '/api/schedule/board'
       const resp = await fetch(url, {
@@ -503,9 +516,17 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
     try {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) return
+      // Send the user's local "today" so routine→board generation seeds the
+      // right calendar dates and day-of-week, regardless of server timezone.
+      const now = new Date()
+      const clientDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
       const resp = await fetch('/api/schedule/sync-routines', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${session.access_token}` },
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ client_date: clientDate }),
       })
       if (resp.ok) {
         const body = (await resp.json()) as { synced: number }

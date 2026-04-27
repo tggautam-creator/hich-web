@@ -91,18 +91,89 @@ export function RoutePolyline({
   return null
 }
 
-/** Fits map bounds to include all given points. */
-export function MapBoundsFitter({ points }: { points: Array<{ lat: number; lng: number }> }) {
+/** Fits map bounds to include all given points.
+ *
+ *  Two modes:
+ *  - Uncontrolled (no `fitToken`): refits on every `points` change. Legacy
+ *    behavior — kept for callers that still expect "always snap to fit".
+ *  - Controlled (`fitToken` provided): refits once when points first become
+ *    valid, then only when `fitToken` changes. Lets the user pan/zoom freely
+ *    without the map snapping back on every GPS tick. Bump `fitToken` from a
+ *    Recenter button to re-frame on demand.
+ */
+export function MapBoundsFitter({
+  points,
+  fitToken,
+}: {
+  points: Array<{ lat: number; lng: number }>
+  fitToken?: number
+}) {
   const map = useMap()
+  const lastFitTokenRef = useRef<number | undefined>(undefined)
+  const fittedOnceRef = useRef(false)
 
   useEffect(() => {
     if (!map || points.length < 2) return
+
+    if (fitToken !== undefined) {
+      if (fittedOnceRef.current && fitToken === lastFitTokenRef.current) return
+      fittedOnceRef.current = true
+      lastFitTokenRef.current = fitToken
+    }
+
     const bounds = new google.maps.LatLngBounds()
     for (const pt of points) bounds.extend(pt)
     map.fitBounds(bounds, { top: 40, right: 40, bottom: 40, left: 40 })
-  }, [map, points])
+  }, [map, points, fitToken])
 
   return null
+}
+
+/** Floating recenter button — drop inside a `relative` map wrapper.
+ *  Default position (top-right) is chosen to match Google/Apple Maps convention
+ *  and avoid the bottom area where ride sheets and toasts sit. Pages render
+ *  full-width banners with `right-16` so the button stays visible underneath. */
+export function RecenterButton({
+  onClick,
+  className,
+  'data-testid': testId,
+}: {
+  onClick: () => void
+  className?: string
+  'data-testid'?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      data-testid={testId ?? 'recenter-button'}
+      aria-label="Recenter map"
+      title="Recenter map"
+      className={
+        className ??
+        'absolute top-3 right-3 z-10 h-11 w-11 rounded-full bg-white/95 backdrop-blur-sm shadow-md ring-1 ring-black/5 flex items-center justify-center text-text-primary hover:bg-white hover:shadow-lg active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary transition-all'
+      }
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="h-5 w-5"
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none" />
+        <circle cx="12" cy="12" r="7" />
+        <line x1="12" y1="2" x2="12" y2="5" />
+        <line x1="12" y1="19" x2="12" y2="22" />
+        <line x1="2" y1="12" x2="5" y2="12" />
+        <line x1="19" y1="12" x2="22" y2="12" />
+      </svg>
+    </button>
+  )
 }
 
 /** Fetches a real route from Google Directions Service and renders it on the map.

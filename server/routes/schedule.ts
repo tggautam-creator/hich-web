@@ -108,7 +108,19 @@ scheduleRouter.get(
   validateJwt,
   async (req: Request, res: Response, next: NextFunction) => {
     const modeFilter = req.query['mode'] as string | undefined
-    const today = new Date().toISOString().split('T')[0] as string
+
+    // Prefer the client's local "today" so the date-window filter matches
+    // the timezone the user posted in. The stored trip_date/trip_time are
+    // raw YYYY-MM-DD / HH:MM:SS in the user's local clock with no TZ info,
+    // so comparing them to server UTC silently drops same-day posts when
+    // the server is ahead of the user (e.g. UTC vs Pacific). Falls back to
+    // server UTC for older clients that don't send these params.
+    const clientDateParam = req.query['client_date'] as string | undefined
+    const clientNowParam = req.query['client_now'] as string | undefined
+    const today =
+      clientDateParam && /^\d{4}-\d{2}-\d{2}$/.test(clientDateParam)
+        ? clientDateParam
+        : (new Date().toISOString().split('T')[0] as string)
 
     // Optional relevance params
     const userLat = parseFloat(req.query['lat'] as string)
@@ -145,8 +157,11 @@ scheduleRouter.get(
       return
     }
 
-    // Filter out rides from today where time has passed beyond grace period (60 minutes)
-    const now = new Date()
+    // Filter out rides from today where the local clock has already passed
+    // the trip time + a 60-minute grace window. We compare in the user's
+    // local clock (taken from `client_now`) because trip_time is stored
+    // tz-naive — comparing against server UTC produces wildly wrong deltas
+    // (e.g. an 8h Pacific→UTC offset would drop every Pacific same-day post).
     const filteredSchedules = schedules.filter((s: Record<string, unknown>) => {
       const tripDate = s['trip_date'] as string
       const tripTime = s['trip_time'] as string
@@ -161,12 +176,16 @@ scheduleRouter.get(
 
       // If trip date is today, check if time has passed beyond grace period
       if (tripDate === today && tripTime) {
+        // No client clock → can't reliably compare; keep the post (the
+        // .gte('trip_date', today) already drops yesterdays).
+        if (!clientNowParam) return true
         try {
           const rideDateTime = new Date(`${tripDate}T${tripTime}`)
-          if (isNaN(rideDateTime.getTime())) return true // Keep if invalid date
+          const clientNow = new Date(clientNowParam)
+          if (isNaN(rideDateTime.getTime()) || isNaN(clientNow.getTime())) return true
 
-          const timeDifferenceMs = now.getTime() - rideDateTime.getTime()
-          const timeDifferenceMinutes = timeDifferenceMs / (1000 * 60)
+          const timeDifferenceMinutes =
+            (clientNow.getTime() - rideDateTime.getTime()) / (1000 * 60)
 
           // Keep if scheduled time is in the future OR within 60 minute grace period
           return timeDifferenceMinutes <= 60
@@ -676,21 +695,30 @@ scheduleRouter.post(
       return
     }
 
-    // Build origin GeoPoint from requester's GPS, profile home_location, or schedule address
+    // Build origin GeoPoint. `ride.origin` represents the rider's pickup
+    // location, NOT whichever party tapped "request". So when the rider is
+    // the requester (driver posted), the requester's body coords are the
+    // rider's pickup. When the driver is the requester (rider posted), the
+    // requester's coords belong to the DRIVER and must be ignored — the
+    // pickup comes from the poster (rider) via the routine/schedule fallback
+    // below. Without this branch, ride.origin ends up at the driver's home,
+    // and the chat's "Suggest Pickup" pin starts on the driver's address.
     let originGeo: { type: 'Point'; coordinates: [number, number] } | null = null
 
-    if (typeof body.origin_lat === 'number' && typeof body.origin_lng === 'number') {
-      originGeo = { type: 'Point', coordinates: [body.origin_lng, body.origin_lat] }
-    } else {
-      // Fallback: requester's home_location from profile
-      const { data: reqProfile } = await supabaseAdmin
-        .from('users')
-        .select('home_location')
-        .eq('id', userId)
-        .single()
-      if (reqProfile?.home_location) {
-        const hl = reqProfile.home_location as { coordinates: [number, number] }
-        originGeo = { type: 'Point', coordinates: hl.coordinates }
+    if (schedule.mode === 'driver') {
+      if (typeof body.origin_lat === 'number' && typeof body.origin_lng === 'number') {
+        originGeo = { type: 'Point', coordinates: [body.origin_lng, body.origin_lat] }
+      } else {
+        // Fallback: requester's home_location from profile (requester is the rider here)
+        const { data: reqProfile } = await supabaseAdmin
+          .from('users')
+          .select('home_location')
+          .eq('id', userId)
+          .single()
+        if (reqProfile?.home_location) {
+          const hl = reqProfile.home_location as { coordinates: [number, number] }
+          originGeo = { type: 'Point', coordinates: hl.coordinates }
+        }
       }
     }
 
@@ -757,7 +785,12 @@ scheduleRouter.post(
         rider_id: riderId,
         driver_id: driverId,
         origin: originGeo,
-        origin_name: body.origin_name ?? null,
+        // Same reasoning as origin coords: origin_name describes the rider's
+        // pickup, so when the requester is the driver we must use the
+        // schedule's address rather than the driver's pickup name.
+        origin_name: schedule.mode === 'driver'
+          ? (body.origin_name ?? null)
+          : (schedule.origin_address ?? null),
         ...(destGeo ? { destination: destGeo } : {}),
         destination_name: schedule.dest_address,
         status: 'requested',
@@ -1458,8 +1491,9 @@ scheduleRouter.patch(
 scheduleRouter.post(
   '/sync-routines',
   validateJwt,
-  async (_req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const userId = res.locals['userId'] as string
+    const body = (req.body ?? {}) as { client_date?: string }
 
     // Fetch user's active routines
     const { data: routines, error: routineErr } = await supabaseAdmin
@@ -1487,12 +1521,25 @@ scheduleRouter.post(
 
     const mode: 'driver' | 'rider' = userRow?.is_driver ? 'driver' : 'rider'
 
-    // Fetch existing ride_schedules for the next 7 days to avoid duplicates
-    const today = new Date()
-    const todayStr = today.toISOString().split('T')[0] as string
+    // Anchor "today" to the user's local calendar date. We then do all date
+    // math via the UTC- methods on a UTC-midnight Date, which makes the
+    // arithmetic immune to whatever timezone the server happens to run in.
+    // Fallback to server UTC for older clients that don't send client_date.
+    let todayY: number, todayM: number, todayD: number
+    if (body.client_date && /^\d{4}-\d{2}-\d{2}$/.test(body.client_date)) {
+      const parts = body.client_date.split('-').map(Number) as [number, number, number]
+      todayY = parts[0]; todayM = parts[1]; todayD = parts[2]
+    } else {
+      const utcNow = new Date()
+      todayY = utcNow.getUTCFullYear()
+      todayM = utcNow.getUTCMonth() + 1
+      todayD = utcNow.getUTCDate()
+    }
+    const today = new Date(Date.UTC(todayY, todayM - 1, todayD))
+    const todayStr = `${todayY}-${String(todayM).padStart(2, '0')}-${String(todayD).padStart(2, '0')}`
     const weekOut = new Date(today)
-    weekOut.setDate(today.getDate() + 7)
-    const weekOutStr = weekOut.toISOString().split('T')[0] as string
+    weekOut.setUTCDate(today.getUTCDate() + 7)
+    const weekOutStr = `${weekOut.getUTCFullYear()}-${String(weekOut.getUTCMonth() + 1).padStart(2, '0')}-${String(weekOut.getUTCDate()).padStart(2, '0')}`
 
     const { data: existingSchedules } = await supabaseAdmin
       .from('ride_schedules')
@@ -1516,7 +1563,7 @@ scheduleRouter.post(
       direction_type: 'one_way' | 'roundtrip'; trip_date: string;
       time_type: 'departure' | 'arrival'; trip_time: string;
     }> = []
-    const todayDow = today.getDay() // 0=Sun
+    const todayDow = today.getUTCDay() // 0=Sun (UTC anchor matches the user's local date)
 
     for (const routine of routines as Array<{
       id: string; route_name: string; direction_type: string;
@@ -1562,11 +1609,11 @@ scheduleRouter.post(
         if (daysUntil === 0) daysUntil = 7 // skip today, post for next week
 
         const nextDate = new Date(today)
-        nextDate.setDate(today.getDate() + daysUntil)
+        nextDate.setUTCDate(today.getUTCDate() + daysUntil)
 
         if (nextDate > weekOut) continue // only within 7 days
 
-        const dateStr = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}-${String(nextDate.getDate()).padStart(2, '0')}`
+        const dateStr = `${nextDate.getUTCFullYear()}-${String(nextDate.getUTCMonth() + 1).padStart(2, '0')}-${String(nextDate.getUTCDate()).padStart(2, '0')}`
         const key = `${dateStr}|${timeStr}|${routine.route_name}`
 
         if (existingKeys.has(key)) continue // already exists
