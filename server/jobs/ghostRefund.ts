@@ -161,7 +161,12 @@ export async function processGhostDriverRefunds(): Promise<JobResult> {
         p_type: 'ghost_refund',
         p_description: `Auto-refund — bank not linked within 90 days (ride ${row.ride_id})`,
         p_ride_id: row.ride_id,
-        p_payment_intent_id: row.payment_intent_id,
+        // payment_intent_id stays NULL — the original ride_earning row already
+        // owns this PI under the partial-unique index from migration 024.
+        // Reusing it would throw 23505 the moment this job actually runs in
+        // prod. The audit link is preserved by p_ride_id and the
+        // ghost_refunds.stripe_refund_id row written below.
+        p_payment_intent_id: null,
         p_stripe_event_id: null,
       })
 

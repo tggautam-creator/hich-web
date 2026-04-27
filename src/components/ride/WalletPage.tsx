@@ -15,6 +15,8 @@ interface Transaction {
   balance_after_cents: number
   description: string | null
   created_at: string
+  ride_id?: string | null
+  counterparty_name?: string | null
 }
 
 interface PendingEarning {
@@ -121,9 +123,22 @@ export default function WalletPage() {
       case 'fare_debit': return 'Ride fare'
       case 'fare_credit': return 'Ride earnings'
       case 'ride_earning': return 'Ride earnings'
+      case 'fare_reversal': return 'Refunded — payment failed'
       case 'refund': return 'Refund'
       default: return type
     }
+  }
+
+  // Pretty primary line for a transaction: "Ride earnings · Tarun Gautam"
+  // when we know the other party, otherwise fall back to the type label.
+  // We deliberately ignore tx.description for ride-linked rows — it stored a
+  // raw uuid before the rider-name enrichment was added.
+  function transactionTitle(tx: Transaction): string {
+    const base = typeLabel(tx.type)
+    if (tx.counterparty_name && tx.ride_id) {
+      return `${base} · ${tx.counterparty_name}`
+    }
+    return tx.description ?? base
   }
 
   function typeIcon(type: string): string {
@@ -132,6 +147,7 @@ export default function WalletPage() {
       case 'fare_credit': return '+'
       case 'ride_earning': return '+'
       case 'fare_debit': return '−'
+      case 'fare_reversal': return '−'
       case 'refund': return '+'
       default: return ''
     }
@@ -319,7 +335,7 @@ export default function WalletPage() {
               >
                 <div>
                   <p className="font-medium text-text-primary">
-                    {tx.description ?? typeLabel(tx.type)}
+                    {transactionTitle(tx)}
                   </p>
                   <p className="text-xs text-text-secondary">
                     {formatDate(tx.created_at)}

@@ -355,7 +355,57 @@ walletRouter.get('/transactions', validateJwt, async (_req, res, next) => {
       return
     }
 
-    res.json({ transactions: data })
+    const txList = data ?? []
+
+    // Enrich ride-linked rows with the OTHER party's name so the wallet UI
+    // can show "Ride earning · Tarun Gautam" instead of "Ride earning ·
+    // 96b85b…" (the bare ride uuid was unreadable for the driver).
+    const rideIds = Array.from(
+      new Set(txList.map((t) => t.ride_id as string | null).filter((v): v is string => Boolean(v))),
+    )
+    const counterpartyByRide = new Map<string, string>()
+    if (rideIds.length > 0) {
+      const { data: rides } = await supabaseAdmin
+        .from('rides')
+        .select('id, rider_id, driver_id')
+        .in('id', rideIds)
+
+      const otherIds = new Set<string>()
+      const rideOtherById = new Map<string, string>()
+      for (const r of rides ?? []) {
+        const otherId = r.rider_id === userId
+          ? (r.driver_id as string | null)
+          : (r.rider_id as string | null)
+        if (otherId) {
+          otherIds.add(otherId)
+          rideOtherById.set(r.id as string, otherId)
+        }
+      }
+
+      const nameById = new Map<string, string>()
+      if (otherIds.size > 0) {
+        const { data: users } = await supabaseAdmin
+          .from('users')
+          .select('id, full_name')
+          .in('id', Array.from(otherIds))
+        for (const u of users ?? []) {
+          if (u.id) nameById.set(u.id as string, (u.full_name as string | null) ?? '')
+        }
+      }
+
+      for (const [rideId, otherId] of rideOtherById) {
+        const name = nameById.get(otherId)
+        if (name) counterpartyByRide.set(rideId, name)
+      }
+    }
+
+    const enriched = txList.map((t) => {
+      const rideId = t.ride_id as string | null
+      const counterpartyName = rideId ? counterpartyByRide.get(rideId) ?? null : null
+      return { ...t, counterparty_name: counterpartyName }
+    })
+
+    res.json({ transactions: enriched })
   } catch (err) {
     next(err)
   }
