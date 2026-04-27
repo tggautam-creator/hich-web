@@ -516,7 +516,9 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   // ── Check if scheduled ride is approaching (15 min before) ───────────────
   useEffect(() => {
     const checkRideApproaching = () => {
-      setIsRideApproaching(isScheduledRideApproaching(ride, 30, 120))
+      // Widened from 30 → 60 min so the "Navigate to Pickup" button appears
+      // an hour before the scheduled trip; grace period after stays 120 min.
+      setIsRideApproaching(isScheduledRideApproaching(ride, 60, 120))
       setMinutesUntilRide(getMinutesUntilRide(ride))
     }
 
