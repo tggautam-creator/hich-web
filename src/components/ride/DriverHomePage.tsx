@@ -42,6 +42,12 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
   const [onlineStateLoaded, setOnlineStateLoaded] = useState(false)
   const [activeRideCount, setActiveRideCount] = useState(0)
   const [unreadCount, setUnreadCount] = useState(0)
+  // Slice 6 — pending earnings: rides where the driver has finished but the
+  // rider's payment hasn't settled (B2 path: rider had no card at end-of-ride
+  // OR off-session retry hit a Stripe decline). Surfaced as a pill on home
+  // so a driver who never opens /wallet still sees they're owed money.
+  const [pendingTotalCents, setPendingTotalCents] = useState(0)
+  const [pendingCount, setPendingCount] = useState(0)
   const [statusToast, setStatusToast] = useState<string | null>(null)
   const [userPanned, setUserPanned] = useState(false)
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -49,15 +55,17 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
   const gpsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const mapRef = useRef<google.maps.Map | null>(null)
 
-  // Fetch active ride count + unread notifications
+  // Fetch active ride count + unread notifications + pending earnings
   useEffect(() => {
     async function fetchCounts() {
       try {
         const { data: { session } } = await supabase.auth.getSession()
         if (!session) return
-        const [ridesResp, notifResp] = await Promise.all([
-          fetch('/api/rides/active', { headers: { Authorization: `Bearer ${session.access_token}` } }),
-          fetch('/api/notifications/unread-count', { headers: { Authorization: `Bearer ${session.access_token}` } }),
+        const auth = { Authorization: `Bearer ${session.access_token}` }
+        const [ridesResp, notifResp, pendingResp] = await Promise.all([
+          fetch('/api/rides/active', { headers: auth }),
+          fetch('/api/notifications/unread-count', { headers: auth }),
+          fetch('/api/wallet/pending-earnings', { headers: auth }),
         ])
         if (ridesResp.ok) {
           const body = (await ridesResp.json()) as { rides: unknown[] }
@@ -66,6 +74,11 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         if (notifResp.ok) {
           const body = (await notifResp.json()) as { count: number }
           setUnreadCount(body.count)
+        }
+        if (pendingResp.ok) {
+          const body = (await pendingResp.json()) as { pending: unknown[]; total_cents: number }
+          setPendingTotalCents(body.total_cents)
+          setPendingCount(body.pending.length)
         }
       } catch {
         // non-fatal
@@ -431,6 +444,37 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
             <div className={['absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform', isOnline ? 'translate-x-4' : 'translate-x-0.5'].join(' ')} />
           </div>
         </button>
+
+        {/* ── Pending earnings pill (Slice 6) ─────────────────────────────
+            Shown only when there's at least $1 pending. Tap → /payment so
+            the driver can see the rides + retry-payment context. Money is
+            real but unsettled — make it visible without shouting. */}
+        {pendingTotalCents >= 100 && (
+          <button
+            data-testid="pending-earnings-pill"
+            onClick={() => { navigate('/wallet') }}
+            aria-label={`View ${pendingCount} pending payment${pendingCount === 1 ? '' : 's'}, total $${(pendingTotalCents / 100).toFixed(2)}`}
+            className="w-full bg-warning/10 border border-warning/25 rounded-2xl px-4 py-3 flex items-center gap-3 active:scale-[0.99] transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning focus-visible:ring-offset-1"
+          >
+            <div className="h-9 w-9 rounded-full bg-warning/20 flex items-center justify-center shrink-0">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-warning" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <polyline points="12 7 12 12 15 14" />
+              </svg>
+            </div>
+            <div className="flex-1 text-left">
+              <p className="text-sm font-semibold text-text-primary">
+                ${(pendingTotalCents / 100).toFixed(2)} pending
+              </p>
+              <p className="text-xs text-text-secondary">
+                {pendingCount} ride{pendingCount === 1 ? '' : 's'} awaiting rider payment
+              </p>
+            </div>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+          </button>
+        )}
 
         {/* ── Ride Board card ────────────────────────────────────────────── */}
         <button

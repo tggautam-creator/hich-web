@@ -141,11 +141,35 @@ function AddFundsForm() {
     )
   }
 
+  // Slice 11: iOS Safari doesn't auto-dismiss the keyboard when you tap
+  // outside an input. Without this, the on-screen keyboard sits over the
+  // Pay button and the user has no obvious way to get past it. Blur the
+  // active element on any tap that isn't on an interactive control.
+  function dismissKeyboardIfBlankTap(e: React.PointerEvent<HTMLFormElement>) {
+    const target = e.target as HTMLElement
+    // Don't dismiss when the tap is on (or inside) an input, button, or label
+    if (target.closest('input, textarea, button, label, [contenteditable], [role="button"]')) return
+    const active = document.activeElement as HTMLElement | null
+    if (active && typeof active.blur === 'function') active.blur()
+  }
+
   return (
-    <div className="space-y-6">
+    <form
+      className="space-y-6"
+      onSubmit={(e) => { e.preventDefault(); void handleSubmit() }}
+      onPointerDown={dismissKeyboardIfBlankTap}
+    >
       {/* Amount pills */}
       <div>
-        <p className="mb-2 text-sm font-medium text-text-secondary">Select amount</p>
+        <div className="mb-2 flex items-baseline justify-between">
+          <p className="text-sm font-medium text-text-secondary">Select amount</p>
+          {/* Slice 9: surface the topup range upfront so the rider doesn't
+              hit a wall after typing $300. Was: error appeared only after a
+              bad submit. */}
+          <p className="text-xs text-text-secondary" data-testid="amount-range-hint">
+            {formatCents(MIN_CENTS)} – {formatCents(MAX_CENTS)} per topup
+          </p>
+        </div>
         <div className="grid grid-cols-3 gap-3" data-testid="amount-pills">
           {AMOUNT_PILLS.map((cents) => (
             <button
@@ -172,10 +196,20 @@ function AddFundsForm() {
           <input
             type="text"
             inputMode="decimal"
+            enterKeyHint="done"
             placeholder="0.00"
             value={customInput}
             onFocus={handleCustomFocus}
             onChange={(e) => handleCustomChange(e.target.value)}
+            onKeyDown={(e) => {
+              // Slice 11: tapping the iOS keyboard's "Done" key fires
+              // Enter — blur so the keyboard collapses and the Pay
+              // button comes back into view.
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                (e.target as HTMLInputElement).blur()
+              }
+            }}
             className={`w-full rounded-2xl border py-3 pl-8 pr-4 text-lg ${
               isCustom ? 'border-primary ring-1 ring-primary' : 'border-border'
             }`}
@@ -184,7 +218,10 @@ function AddFundsForm() {
         </div>
         {isCustom && customInput && !isValidAmount && (
           <p className="mt-1 text-xs text-danger" data-testid="amount-error">
-            Amount must be between $5.00 and $200.00
+            {/* Specific reason instead of generic range — Slice 9 */}
+            {amountCents < MIN_CENTS
+              ? `Minimum is ${formatCents(MIN_CENTS)}`
+              : `Maximum is ${formatCents(MAX_CENTS)} per topup`}
           </p>
         )}
       </div>
@@ -214,14 +251,16 @@ function AddFundsForm() {
 
       {/* Submit */}
       <PrimaryButton
+        type="submit"
         onClick={handleSubmit}
         disabled={!isValidAmount || !stripe}
         isLoading={processing}
+        loadingLabel="Processing payment…"
         data-testid="pay-button"
       >
         {isValidAmount ? `Add ${formatCents(amountCents)}` : 'Select an amount'}
       </PrimaryButton>
-    </div>
+    </form>
   )
 }
 

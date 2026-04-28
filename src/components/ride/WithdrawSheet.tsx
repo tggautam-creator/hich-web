@@ -105,11 +105,17 @@ export default function WithdrawSheet({ open, onClose, balanceCents, hasBank, on
             <PrimaryButton
               data-testid="withdraw-sheet-confirm"
               onClick={handleWithdraw}
-              disabled={status === 'submitting' || balanceCents <= 0}
+              disabled={balanceCents <= 0}
+              isLoading={status === 'submitting'}
+              loadingLabel="Transferring to bank…"
             >
-              {status === 'submitting' ? 'Transferring…' : 'Confirm withdrawal'}
+              Confirm withdrawal
             </PrimaryButton>
-            <button onClick={onClose} className="mt-3 w-full py-2 text-sm font-medium text-text-secondary">
+            <button
+              onClick={onClose}
+              disabled={status === 'submitting'}
+              className="mt-3 w-full py-2 text-sm font-medium text-text-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+            >
               Cancel
             </button>
           </>

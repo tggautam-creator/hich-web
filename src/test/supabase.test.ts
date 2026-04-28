@@ -148,6 +148,8 @@ describe('database types — row aliases', () => {
       id: 't1', user_id: 'u1', ride_id: null, type: 'topup',
       amount_cents: 1000, balance_after_cents: 1000,
       description: '$10 top-up', created_at: new Date().toISOString(),
+      payment_intent_id: null, stripe_event_id: null,
+      transfer_id: null, transfer_paid_at: null,
     }
     expect(Number.isInteger(tx.amount_cents)).toBe(true)
     expect(Number.isInteger(tx.balance_after_cents)).toBe(true)

@@ -349,6 +349,13 @@ export type Database = {
           balance_after_cents: number   // snapshot for audit trail
           description: string | null
           created_at: string
+          payment_intent_id: string | null
+          stripe_event_id: string | null
+          // Phase 5 — withdrawal tracking. Set by /wallet/withdraw after
+          // stripe.transfers.create succeeds; transfer_paid_at is filled
+          // by the transfer.paid webhook handler.
+          transfer_id: string | null
+          transfer_paid_at: string | null
         }
         Insert: {
           id?: string
@@ -359,6 +366,10 @@ export type Database = {
           balance_after_cents: number
           description?: string | null
           created_at?: string
+          payment_intent_id?: string | null
+          stripe_event_id?: string | null
+          transfer_id?: string | null
+          transfer_paid_at?: string | null
         }
         Update: {
           id?: string
@@ -369,6 +380,10 @@ export type Database = {
           balance_after_cents?: number
           description?: string | null
           created_at?: string
+          payment_intent_id?: string | null
+          stripe_event_id?: string | null
+          transfer_id?: string | null
+          transfer_paid_at?: string | null
         }
         Relationships: never[]
       }

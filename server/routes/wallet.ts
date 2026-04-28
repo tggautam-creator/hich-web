@@ -259,6 +259,26 @@ walletRouter.post('/withdraw', validateJwt, idempotency('wallet-withdraw'), asyn
         { idempotencyKey: `withdraw-${userId}-${amountCents}-${dayKey}` },
       )
 
+      // Stamp the just-written withdrawal row with the Stripe transfer id
+      // so the wallet UI can render an "in transit" pill for it, and so
+      // the transfer.paid webhook can find it later. Targets the most
+      // recent un-tagged withdrawal for this user (the one we just wrote
+      // a few lines above; the HTTP idempotency middleware + Stripe-side
+      // idempotency key together prevent any other withdrawal from
+      // racing in between). Failure here is non-fatal — the money has
+      // already moved; worst case the UI doesn't show "in transit".
+      const { error: tagErr } = await supabaseAdmin
+        .from('transactions')
+        .update({ transfer_id: transfer.id })
+        .eq('user_id', userId)
+        .eq('type', 'withdrawal')
+        .is('transfer_id', null)
+        .order('created_at', { ascending: false })
+        .limit(1)
+      if (tagErr) {
+        console.error(`[wallet/withdraw] failed to attach transfer_id ${transfer.id} to txn for user ${userId}: ${tagErr.message}`)
+      }
+
       res.json({
         status: 'transferring',
         transfer_id: transfer.id,

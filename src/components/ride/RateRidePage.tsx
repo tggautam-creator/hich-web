@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { supabase } from '@/lib/supabase'
 import PrimaryButton from '@/components/ui/PrimaryButton'
+import { estimateStripeFee } from '@/lib/fare'
 import type { Ride, User } from '@/types/database'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -92,6 +93,7 @@ export default function RateRidePage({ 'data-testid': testId }: RateRidePageProp
   const { rideId } = useParams<{ rideId: string }>()
   const navigate = useNavigate()
   const profile = useAuthStore((s) => s.profile)
+  const refreshProfile = useAuthStore((s) => s.refreshProfile)
 
   const [ride, setRide] = useState<Ride | null>(null)
   const [otherUser, setOtherUser] = useState<User | null>(null)
@@ -112,6 +114,29 @@ export default function RateRidePage({ 'data-testid': testId }: RateRidePageProp
   const [tipping, setTipping] = useState(false)
   const [tipSent, setTipSent] = useState(false)
   const [tipError, setTipError] = useState<string | null>(null)
+  // Captured from server response so post-send banner can be specific.
+  const [tipResult, setTipResult] = useState<{ method: 'card' | 'wallet'; cents: number; feeCents?: number } | null>(null)
+
+  // Effective tip cents from picker (preset chips → cents directly; -1 means
+  // custom input which is in dollars; null means nothing selected yet).
+  const tipCents = useMemo(() => {
+    if (selectedTip == null) return null
+    if (selectedTip === -1) {
+      const dollars = parseFloat(customTip)
+      if (!Number.isFinite(dollars)) return null
+      return Math.round(dollars * 100)
+    }
+    return selectedTip
+  }, [selectedTip, customTip])
+
+  // Match server-side path-selection in tipPayment.ts: card-first if a
+  // saved card is on file; otherwise wallet if it covers the tip.
+  const hasCard = !!profile?.stripe_customer_id && !!profile?.default_payment_method_id
+  const walletBalanceCents = profile?.wallet_balance ?? 0
+  const willUseCard = hasCard
+  const walletCovers = tipCents != null && walletBalanceCents >= tipCents
+  const tipFeeCents = willUseCard && tipCents && tipCents > 0 ? estimateStripeFee(tipCents) : 0
+  const tipTotalCents = (tipCents ?? 0) + (willUseCard ? tipFeeCents : 0)
 
   const isDriver = profile?.id === ride?.driver_id
   const isPositive = stars >= 4
@@ -220,11 +245,7 @@ export default function RateRidePage({ 'data-testid': testId }: RateRidePageProp
 
   // ── Send tip ────────────────────────────────────────────────────────────
   const handleSendTip = async () => {
-    // Resolve picker → cents. Preset chips store cents directly; the custom
-    // field is in whole dollars for display but the API speaks cents.
-    const cents = selectedTip === -1
-      ? Math.round(parseFloat(customTip) * 100)
-      : selectedTip
+    const cents = tipCents
     if (cents == null || !Number.isFinite(cents) || cents < 100 || cents > 2000) {
       setTipError('Enter between $1 and $20')
       return
@@ -242,13 +263,25 @@ export default function RateRidePage({ 'data-testid': testId }: RateRidePageProp
         },
         body: JSON.stringify({ tip_cents: cents }),
       })
-      const body = (await resp.json()) as { error?: { message?: string } }
+      const body = (await resp.json()) as {
+        method?: 'card' | 'wallet'
+        stripe_fee_cents?: number
+        error?: { message?: string }
+      }
       if (!resp.ok) {
         setTipError(body.error?.message ?? 'Tip failed')
         setTipping(false)
         return
       }
+      setTipResult({
+        method: body.method ?? (willUseCard ? 'card' : 'wallet'),
+        cents,
+        feeCents: body.stripe_fee_cents,
+      })
       setTipSent(true)
+      // Wallet path drains the rider's balance — refresh so any other
+      // open screen (or the next nav) sees the new amount immediately.
+      void refreshProfile()
     } catch {
       setTipError('Network error — try again')
     } finally {
@@ -317,6 +350,13 @@ export default function RateRidePage({ 'data-testid': testId }: RateRidePageProp
               <p className="text-sm font-semibold text-success">
                 Tip sent — {otherUser?.full_name ?? 'Your driver'} will see it.
               </p>
+              {tipResult && (
+                <p className="mt-1 text-xs text-success/80" data-testid="tip-method-confirm">
+                  {tipResult.method === 'card'
+                    ? `Charged $${((tipResult.cents + (tipResult.feeCents ?? 0)) / 100).toFixed(2)} to your card${tipResult.feeCents ? ` (incl. $${(tipResult.feeCents / 100).toFixed(2)} fee)` : ''}`
+                    : `$${(tipResult.cents / 100).toFixed(2)} deducted from your wallet`}
+                </p>
+              )}
             </div>
           ) : (
             <div
@@ -340,7 +380,13 @@ export default function RateRidePage({ 'data-testid': testId }: RateRidePageProp
                       type="button"
                       onClick={() => { setSelectedTip(cents); setTipError(null) }}
                       data-testid={`tip-${label.toLowerCase()}`}
-                      className={`rounded-xl py-2 text-sm font-semibold transition-colors ${
+                      // Slice 12: tab-keyboard users had no visible focus
+                      // signal — `focus-visible` ring restores it without
+                      // affecting mouse/touch users (which would otherwise
+                      // see the ring on click).
+                      aria-pressed={active}
+                      aria-label={label === 'Custom' ? 'Custom tip amount' : `Tip ${label}`}
+                      className={`rounded-xl py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 ${
                         active
                           ? 'bg-primary text-white'
                           : 'bg-surface text-text-primary'
@@ -359,12 +405,52 @@ export default function RateRidePage({ 'data-testid': testId }: RateRidePageProp
                     min="1"
                     max="20"
                     step="0.01"
+                    inputMode="decimal"
+                    enterKeyHint="done"
                     value={customTip}
                     onChange={(e) => setCustomTip(e.target.value)}
+                    onKeyDown={(e) => {
+                      // Slice 11: tap "Done" / Enter on the iOS keyboard
+                      // collapses it so the Send Tip button stays reachable.
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        (e.target as HTMLInputElement).blur()
+                      }
+                    }}
                     placeholder="1 – 20"
                     data-testid="tip-custom-input"
                     className="flex-1 rounded-xl border border-border bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none"
                   />
+                </div>
+              )}
+              {/* Method preview — appears once a tip amount is picked so the
+                  rider knows whether their card or wallet will be hit, and
+                  exactly how much (incl. Stripe fee on the card path). */}
+              {tipCents != null && tipCents >= 100 && tipCents <= 2000 && (
+                <div
+                  className="rounded-xl bg-surface px-3 py-2 text-xs text-text-secondary"
+                  data-testid="tip-method-preview"
+                >
+                  {willUseCard ? (
+                    <>
+                      <p className="text-text-primary font-medium">
+                        Charged to your card
+                      </p>
+                      <p className="mt-0.5">
+                        ${(tipCents / 100).toFixed(2)} tip + ${(tipFeeCents / 100).toFixed(2)} processing fee
+                        {' = '}
+                        <span className="font-semibold">${(tipTotalCents / 100).toFixed(2)}</span>
+                      </p>
+                    </>
+                  ) : walletCovers ? (
+                    <p className="text-text-primary font-medium">
+                      ${(tipCents / 100).toFixed(2)} from your wallet (no fee)
+                    </p>
+                  ) : (
+                    <p className="text-danger">
+                      Add a card or top up your wallet (${(walletBalanceCents / 100).toFixed(2)} available) to tip ${(tipCents / 100).toFixed(2)}
+                    </p>
+                  )}
                 </div>
               )}
               {tipError && (
@@ -372,11 +458,19 @@ export default function RateRidePage({ 'data-testid': testId }: RateRidePageProp
               )}
               <PrimaryButton
                 onClick={() => { void handleSendTip() }}
-                disabled={tipping || selectedTip == null || (selectedTip === -1 && !customTip)}
+                disabled={
+                  selectedTip == null
+                  || (selectedTip === -1 && !customTip)
+                  || (tipCents != null && !willUseCard && !walletCovers)
+                }
+                isLoading={tipping}
+                loadingLabel={willUseCard ? 'Charging card…' : 'Sending tip…'}
                 className="w-full"
                 data-testid="send-tip-button"
               >
-                {tipping ? 'Sending…' : 'Send tip'}
+                {tipCents != null && willUseCard
+                  ? `Send $${(tipCents / 100).toFixed(2)} tip · $${(tipTotalCents / 100).toFixed(2)} charged`
+                  : 'Send tip'}
               </PrimaryButton>
             </div>
           )

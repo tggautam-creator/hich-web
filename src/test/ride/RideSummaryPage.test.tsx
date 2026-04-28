@@ -51,18 +51,23 @@ const { mockSingle } = vi.hoisted(() => ({
 vi.mock('@/lib/supabase', () => ({
   supabase: {
     from: (table: string) => ({
-      select: () => ({
-        eq: () => ({
-          single: () => {
-            const fn = mockSingleFns[table]
-            return fn ? fn() : mockSingle()
-          },
-          maybeSingle: () => {
-            const fn = mockSingleFns[table]
-            return fn ? fn() : mockSingle()
-          },
-        }),
-      }),
+      select: () => {
+        // Chained .eq().eq().in() lands here as a "list" query — used by
+        // the wallet/card-split fetch in RideSummaryPage. Default: empty
+        // list so the split row stays hidden in tests that don't care.
+        const listResult = Promise.resolve({ data: [], error: null })
+        const single = () => {
+          const fn = mockSingleFns[table]
+          return fn ? fn() : mockSingle()
+        }
+        const eqChain = () => ({
+          eq: eqChain,
+          in: () => listResult,
+          single,
+          maybeSingle: single,
+        })
+        return { eq: eqChain }
+      },
     }),
   },
 }))

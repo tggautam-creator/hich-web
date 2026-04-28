@@ -70,6 +70,17 @@ stripeWebhookRouter.post('/', async (req: Request, res: Response) => {
     await handleAccountUpdated(account)
   }
 
+  // ── transfer.paid — driver withdrawal landed in bank ────────────────────
+  // Stamps the matching `withdrawal` transactions row so the wallet UI can
+  // flip the "in transit" pill to "completed". Idempotent: a duplicate
+  // delivery re-runs the same UPDATE which is a no-op after the first.
+  // (Type cast: 2026-02-25.clover's Stripe.Event union doesn't list
+  // transfer.paid yet but the event is real and delivered today.)
+  if ((event.type as string) === 'transfer.paid') {
+    const transfer = event.data.object as Stripe.Transfer
+    await handleTransferPaid(transfer.id)
+  }
+
   res.json({ received: true })
 })
 
@@ -242,6 +253,30 @@ async function handleRidePaymentFailed(rideId: string, paymentIntentId: string):
       })
     }
   }
+}
+
+async function handleTransferPaid(transferId: string): Promise<void> {
+  // Mark the matching withdrawal row as landed. A duplicate delivery
+  // re-runs the same UPDATE — `transfer_paid_at` will already be set,
+  // and overwriting it with NOW() is a benign cosmetic no-op (the
+  // value advances by milliseconds). If the route's tag-step missed
+  // (rare), there'll be no matching row and this UPDATE simply
+  // affects 0 rows — log so we can reconcile.
+  const { data, error } = await supabaseAdmin
+    .from('transactions')
+    .update({ transfer_paid_at: new Date().toISOString() })
+    .eq('transfer_id', transferId)
+    .select('id, user_id')
+
+  if (error) {
+    console.error(`[Webhook] transfer.paid update failed for ${transferId}: ${error.message}`)
+    return
+  }
+  if (!data || data.length === 0) {
+    console.warn(`[Webhook] transfer.paid received for unknown transfer ${transferId} — no matching withdrawal row`)
+    return
+  }
+  console.log(`[Webhook] transfer.paid: marked ${data.length} withdrawal row(s) complete (transfer=${transferId})`)
 }
 
 async function handleAccountUpdated(account: Stripe.Account): Promise<void> {

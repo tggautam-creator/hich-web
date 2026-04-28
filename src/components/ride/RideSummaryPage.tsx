@@ -106,6 +106,12 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
   const [vehicle, setVehicle] = useState<Vehicle | null>(null)
   const [loading, setLoading] = useState(true)
   const [showBreakdown, setShowBreakdown] = useState(false)
+  // Phase 3a: net amount actually pulled from the rider's wallet for this
+  // ride (sum of fare_debit minus sum of wallet_refund). The remainder of
+  // ride.fare_cents was paid by the rider's card. Used to render a "Paid
+  // · $X wallet + $Y card" row so the rider doesn't think the two
+  // transactions in their history mean they were charged twice.
+  const [walletPaidCents, setWalletPaidCents] = useState<number>(0)
 
   const isDriver = profile?.id === ride?.driver_id
 
@@ -152,6 +158,26 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
         if (vehicleData) setVehicle(vehicleData)
       }
 
+      // Compute the rider's wallet contribution to this ride's payment.
+      // Sum of fare_debit (stored negative) minus sum of wallet_refund
+      // (stored positive). RLS allows the rider to read their own rows.
+      if (rideData.rider_id === profileId) {
+        const { data: txRows } = await supabase
+          .from('transactions')
+          .select('amount_cents, type')
+          .eq('user_id', profileId)
+          .eq('ride_id', rideData.id)
+          .in('type', ['fare_debit', 'wallet_refund'])
+        let debited = 0
+        let refunded = 0
+        for (const r of txRows ?? []) {
+          const amt = (r.amount_cents as number | null) ?? 0
+          if (r.type === 'fare_debit') debited += -amt
+          else if (r.type === 'wallet_refund') refunded += amt
+        }
+        setWalletPaidCents(Math.max(0, debited - refunded))
+      }
+
       setLoading(false)
     }
 
@@ -160,10 +186,26 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
 
   // ── Derived fare values ────────────────────────────────────────────────
   const fareCents = ride?.fare_cents ?? 0
-  const stripeFeeCents = ride?.stripe_fee_cents ?? estimateStripeFee(fareCents)
+  const paymentStatus = (ride as Record<string, unknown>)?.payment_status as string | undefined
+  // Phase 3a wallet/card split:
+  //   walletPaidCents — net pulled from rider's wallet (already netted of
+  //     wallet_refund rollbacks above)
+  //   cardPaidCents   — remainder taken from the card; 0 when wallet
+  //     covered the whole fare
+  // We only show the split row to the rider once payment has actually
+  // settled (paid / processing). For pending / failed states the existing
+  // retry UI handles the messaging.
+  const walletApplied = Math.min(walletPaidCents, fareCents)
+  const cardPaidCents = Math.max(0, fareCents - walletApplied)
+  // The Stripe fee row only makes sense for the card portion.
+  const stripeFeeCents = cardPaidCents > 0
+    ? (ride?.stripe_fee_cents ?? estimateStripeFee(cardPaidCents))
+    : 0
   const totalCharged = fareCents + stripeFeeCents
   const driverEarnsCents = fareCents // driver gets full fare (0% platform commission)
-  const paymentStatus = (ride as Record<string, unknown>)?.payment_status as string | undefined
+  const showSplit = !isDriver
+    && (paymentStatus === 'paid' || paymentStatus === 'processing')
+    && fareCents > 0
 
   // ── Fare breakdown details ────────────────────────────────────────────
   const fareBreakdown = (() => {
@@ -432,7 +474,7 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
                   <span className="text-text-primary">{formatCents(fareCents)}</span>
                 </div>
               )}
-              {!isDriver && (
+              {!isDriver && cardPaidCents > 0 && (
                 <div className="flex justify-between">
                   <span className="text-text-secondary">Processing fee</span>
                   <span className="text-text-primary">{formatCents(stripeFeeCents)}</span>
@@ -444,6 +486,33 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
                   {formatCents(isDriver ? driverEarnsCents : totalCharged)}
                 </span>
               </div>
+
+              {/* Phase 3a — wallet/card split. Lives below "Total charged"
+                  so the totals read top-to-bottom and the split line just
+                  explains where the money came from. Hidden when payment
+                  hasn't settled (the retry-payment banner above handles
+                  pending/failed messaging). */}
+              {showSplit && (
+                <div className="rounded-xl bg-surface px-3 py-2 text-xs" data-testid="payment-split">
+                  {walletApplied === 0 && cardPaidCents > 0 && (
+                    <p className="text-text-secondary">
+                      Paid by <span className="font-semibold text-text-primary">card</span> · {formatCents(totalCharged)}
+                    </p>
+                  )}
+                  {walletApplied > 0 && cardPaidCents === 0 && (
+                    <p className="text-text-secondary">
+                      Paid from your <span className="font-semibold text-text-primary">wallet</span> · {formatCents(walletApplied)} (no processing fee)
+                    </p>
+                  )}
+                  {walletApplied > 0 && cardPaidCents > 0 && (
+                    <p className="text-text-secondary">
+                      Paid · <span className="font-semibold text-text-primary">{formatCents(walletApplied)}</span> wallet
+                      {' + '}
+                      <span className="font-semibold text-text-primary">{formatCents(cardPaidCents + stripeFeeCents)}</span> card
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}

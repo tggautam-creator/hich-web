@@ -146,7 +146,10 @@ describe('WalletPage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('empty-state')).toBeInTheDocument()
     })
-    expect(screen.getByText('No transactions yet')).toBeInTheDocument()
+    // Slice 10: rider-default profile lands on the "Top up to ride
+    // fee-free" variant with an Add Funds CTA.
+    expect(screen.getByText('Top up to ride fee-free')).toBeInTheDocument()
+    expect(screen.getByTestId('empty-state-add-funds')).toBeInTheDocument()
   })
 
   it('displays topup as green +amount', async () => {

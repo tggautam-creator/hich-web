@@ -210,14 +210,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       authLog('supabaseAuth', 'getSession', session !== null, session ? 'session found in storage' : 'no session in storage')
     })
 
-    // Re-validate session when app resumes (tab focus, phone unlock, PWA foreground)
+    // Re-validate session AND refresh profile when app resumes (tab focus,
+    // phone unlock, PWA foreground). The profile refresh is what keeps
+    // wallet_balance honest across screens — Phase 3a wallet-first means a
+    // ride/tip/refund/topup that happened on another device or in the
+    // background must show through here. Throttled so rapid Cmd+Tab
+    // bursts don't fan out into a query storm.
+    let lastFocusRefreshAt = 0
+    const FOCUS_REFRESH_MIN_INTERVAL_MS = 5_000
     const handleVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return
       authLog('supabaseAuth', 'visibility changed to visible', true)
       void supabase.auth.getSession().then(async ({ data: { session } }) => {
         if (session) {
           set({ session, user: session.user, sessionExpired: false })
-          if (!get().profile) void get().refreshProfile()
+          // Always re-pull the profile when coming back to focus, not just
+          // when missing. (Was: `if (!get().profile)` — that was correct
+          // for the auth-bootstrap case but meant wallet_balance went
+          // stale every time the tab was backgrounded.)
+          const now = Date.now()
+          if (now - lastFocusRefreshAt > FOCUS_REFRESH_MIN_INTERVAL_MS) {
+            lastFocusRefreshAt = now
+            void get().refreshProfile()
+          }
         } else if (get().session) {
           // Had a session but it's gone now — try server recovery first
           authLog('recovery', 'session lost on foreground — attempting recovery', true)

@@ -106,6 +106,20 @@ function mockUserQuery(user: Record<string, unknown> | null, error: unknown = nu
             }),
           }),
         }),
+        // Slice 5b: /wallet/withdraw stamps the just-written withdrawal
+        // row with transfer_id via .update().eq().eq().is().order().limit().
+        // The chain returns a thenable so the route's `await` resolves
+        // without needing further extension.
+        update: () => {
+          const result = Promise.resolve({ error: null })
+          const chain = () => Object.assign(result, {
+            eq: chain,
+            is: chain,
+            order: chain,
+            limit: chain,
+          })
+          return chain()
+        },
       }
     }
     return {}
@@ -403,6 +417,23 @@ describe('POST /api/wallet/withdraw', () => {
               return Promise.resolve({ error: null })
             },
           }),
+        }
+      }
+      if (table === 'transactions') {
+        // Slice 5b: /wallet/withdraw stamps transfer_id on the just-written
+        // withdrawal row via .update().eq().eq().is().order().limit().
+        // Awaiting the chain resolves to {error:null}.
+        return {
+          update: () => {
+            const result = Promise.resolve({ error: null })
+            const chain = () => Object.assign(result, {
+              eq: chain,
+              is: chain,
+              order: chain,
+              limit: chain,
+            })
+            return chain()
+          },
         }
       }
       return {}

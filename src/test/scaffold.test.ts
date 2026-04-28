@@ -106,6 +106,10 @@ describe('scaffold — @/ alias and database types', () => {
       balance_after_cents: 1000,
       description: 'Top-up $10',
       created_at: new Date().toISOString(),
+      payment_intent_id: null,
+      stripe_event_id: null,
+      transfer_id: null,
+      transfer_paid_at: null,
     }
     expect(Number.isInteger(tx.amount_cents)).toBe(true)
   })

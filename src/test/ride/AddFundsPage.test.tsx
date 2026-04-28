@@ -134,20 +134,20 @@ describe('AddFundsPage', () => {
     expect(screen.getByTestId('pay-button')).not.toBeDisabled()
   })
 
-  it('custom amount below $5 shows error', () => {
+  it('custom amount below $5 shows minimum error', () => {
     renderAddFunds()
     const input = screen.getByTestId('custom-amount-input')
     fireEvent.focus(input)
     fireEvent.change(input, { target: { value: '3.00' } })
-    expect(screen.getByTestId('amount-error')).toHaveTextContent('between $5.00 and $200.00')
+    expect(screen.getByTestId('amount-error')).toHaveTextContent('Minimum is $5.00')
   })
 
-  it('custom amount above $200 shows error', () => {
+  it('custom amount above $200 shows maximum error', () => {
     renderAddFunds()
     const input = screen.getByTestId('custom-amount-input')
     fireEvent.focus(input)
     fireEvent.change(input, { target: { value: '250' } })
-    expect(screen.getByTestId('amount-error')).toHaveTextContent('between $5.00 and $200.00')
+    expect(screen.getByTestId('amount-error')).toHaveTextContent('Maximum is $200.00 per topup')
   })
 
   it('valid custom amount enables pay button', () => {

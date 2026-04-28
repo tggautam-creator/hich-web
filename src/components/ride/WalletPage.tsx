@@ -17,6 +17,11 @@ interface Transaction {
   created_at: string
   ride_id?: string | null
   counterparty_name?: string | null
+  // Slice 5 — withdrawal tracking. Set when the withdrawal row has been
+  // tied to a Stripe Transfer; transfer_paid_at flips when the
+  // transfer.paid webhook fires (~T+2 business days).
+  transfer_id?: string | null
+  transfer_paid_at?: string | null
 }
 
 interface PendingEarning {
@@ -126,20 +131,52 @@ export default function WalletPage() {
       case 'fare_reversal': return 'Refunded — payment failed'
       case 'wallet_refund': return 'Refund — payment failed'
       case 'refund': return 'Refund'
+      case 'tip_debit': return 'Tip to driver'
+      case 'tip_credit': return 'Tip from rider'
+      case 'withdrawal': return 'Withdrawal to bank'
+      case 'withdrawal_failed_refund': return 'Refund — withdrawal failed'
       default: return type
     }
+  }
+
+  // Slice 8: refund/reversal rows all surface as the same generic label
+  // ("Refund — payment failed") even though they come from three distinct
+  // server paths. Parse the description prefix the server writes so the
+  // rider/driver can tell *why* the refund happened. No schema change —
+  // pure read-side enrichment. If the prefix doesn't match a known case,
+  // fall back to the generic typeLabel so older rows still render.
+  function refinedRefundLabel(tx: Transaction): string | null {
+    const desc = (tx.description ?? '').toLowerCase()
+    if (tx.type === 'wallet_refund') {
+      if (desc.includes('no card on file')) return 'Refund · no card on file'
+      if (desc.includes('card charge failed')) return 'Refund · card charge failed'
+      if (desc.includes('card portion failed') || desc.includes('rider wallet restored')) return 'Refund · card payment failed'
+    }
+    if (tx.type === 'fare_reversal') {
+      if (desc.includes('test-mode')) return 'Reversed · test-mode cleanup'
+      if (desc.includes('rider payment failed')) return 'Reversed · rider payment failed'
+    }
+    if (tx.type === 'withdrawal_failed_refund') {
+      return 'Refund · withdrawal failed at bank'
+    }
+    return null
   }
 
   // Pretty primary line for a transaction: "Ride earnings · Tarun Gautam"
   // when we know the other party, otherwise fall back to the type label.
   // We deliberately ignore tx.description for ride-linked rows — it stored a
   // raw uuid before the rider-name enrichment was added.
+  //
+  // For refund/reversal rows we prefer the description-parsed label
+  // (Slice 8) so the rider can tell *which* refund cause this was. The
+  // counterparty name is appended when known.
   function transactionTitle(tx: Transaction): string {
-    const base = typeLabel(tx.type)
+    const refined = refinedRefundLabel(tx)
+    const base = refined ?? typeLabel(tx.type)
     if (tx.counterparty_name && tx.ride_id) {
       return `${base} · ${tx.counterparty_name}`
     }
-    return tx.description ?? base
+    return refined ?? tx.description ?? base
   }
 
   function typeIcon(type: string): string {
@@ -148,15 +185,35 @@ export default function WalletPage() {
       case 'fare_credit': return '+'
       case 'ride_earning': return '+'
       case 'wallet_refund': return '+'
+      case 'tip_credit': return '+'
+      case 'withdrawal_failed_refund': return '+'
       case 'fare_debit': return '−'
       case 'fare_reversal': return '−'
+      case 'tip_debit': return '−'
+      case 'withdrawal': return '−'
       case 'refund': return '+'
       default: return ''
     }
   }
 
   function isCredit(type: string): boolean {
-    return type === 'topup' || type === 'fare_credit' || type === 'ride_earning' || type === 'wallet_refund' || type === 'refund'
+    return type === 'topup' || type === 'fare_credit' || type === 'ride_earning'
+      || type === 'wallet_refund' || type === 'refund' || type === 'tip_credit'
+      || type === 'withdrawal_failed_refund'
+  }
+
+  // ETA helper — adds 2 business days (skipping Sat/Sun) for the
+  // "expected by" hint on in-transit withdrawals. Coarse but matches the
+  // copy in WithdrawSheet's success state.
+  function withdrawalEta(createdAt: string): string {
+    const d = new Date(createdAt)
+    let added = 0
+    while (added < 2) {
+      d.setDate(d.getDate() + 1)
+      const dow = d.getDay()
+      if (dow !== 0 && dow !== 6) added++
+    }
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   }
 
   function isDriverEarning(type: string): boolean {
@@ -167,12 +224,20 @@ export default function WalletPage() {
     <div className="min-h-screen bg-surface pb-20 safe-top" data-testid="wallet-page">
       {/* Header */}
       <div className="bg-primary px-6 pb-8 pt-12 text-white">
-        <p className="text-sm text-white/80">
+        <p className="text-sm text-white/80" id="wallet-balance-label">
           {showBankBanner ? 'Pending payout' : 'Your balance'}
         </p>
-        <p className="text-4xl font-bold" data-testid="wallet-balance">
+        {/* Slice 12: bare <p> gave screen readers no landmark + no
+            announcement context. <h1> + aria-labelledby reads as
+            "Your balance: $25.30" / "Pending payout: $25.30". */}
+        <h1
+          className="text-4xl font-bold"
+          data-testid="wallet-balance"
+          aria-labelledby="wallet-balance-label"
+          aria-live="polite"
+        >
           {formatCents(balance)}
-        </p>
+        </h1>
       </div>
 
       {/* Bank-not-connected banner for drivers with earnings */}
@@ -318,44 +383,147 @@ export default function WalletPage() {
         )}
 
         {!loading && transactions.length === 0 && (
+          // Slice 10: rider and driver land here for opposite reasons —
+          // riders haven't topped up yet (frame as benefit + CTA), drivers
+          // haven't completed a ride yet (frame as expectation, no CTA).
+          // Default text on each branch is concrete enough that a first-time
+          // user understands what this screen will eventually show.
           <div className="rounded-2xl bg-white p-8 text-center" data-testid="empty-state">
-            <p className="text-3xl">💳</p>
-            <p className="mt-2 font-semibold text-text-primary">No transactions yet</p>
-            <p className="mt-1 text-sm text-text-secondary">
-              Add funds to your wallet to get started
-            </p>
+            {isDriver ? (
+              <>
+                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6 text-primary">
+                    <line x1="12" y1="1" x2="12" y2="23" />
+                    <path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" />
+                  </svg>
+                </div>
+                <p className="mt-3 font-semibold text-text-primary">No earnings yet</p>
+                <p className="mt-1 text-sm text-text-secondary">
+                  Your fare for each completed ride lands here. Link a bank to withdraw to your account.
+                </p>
+                {!hasBank && (
+                  <button
+                    onClick={() => navigate('/stripe/payouts')}
+                    className="mt-4 rounded-full bg-primary px-5 py-2 text-sm font-semibold text-white"
+                    data-testid="empty-state-link-bank"
+                  >
+                    Link a bank account
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-success/10">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6 text-success">
+                    <rect x="2" y="6" width="20" height="14" rx="2" />
+                    <line x1="2" y1="10" x2="22" y2="10" />
+                    <line x1="6" y1="15" x2="10" y2="15" />
+                  </svg>
+                </div>
+                <p className="mt-3 font-semibold text-text-primary">Top up to ride fee-free</p>
+                <p className="mt-1 text-sm text-text-secondary">
+                  Wallet rides skip the card processing fee (~9% on a $5 ride). Add funds once, ride for weeks.
+                </p>
+                <button
+                  onClick={() => navigate('/wallet/add')}
+                  className="mt-4 rounded-full bg-primary px-5 py-2 text-sm font-semibold text-white"
+                  data-testid="empty-state-add-funds"
+                >
+                  Add funds
+                </button>
+              </>
+            )}
           </div>
         )}
 
         {!loading && transactions.length > 0 && (
           <div className="space-y-2" data-testid="transaction-list">
-            {transactions.map((tx) => (
-              <div
-                key={tx.id}
-                className="flex items-center justify-between rounded-2xl bg-white px-4 py-3"
-                data-testid="transaction-item"
-              >
-                <div>
-                  <p className="font-medium text-text-primary">
-                    {transactionTitle(tx)}
-                  </p>
-                  <p className="text-xs text-text-secondary">
-                    {formatDate(tx.created_at)}
-                    {isDriver && !hasBank && isDriverEarning(tx.type) && (
-                      <span data-testid="tx-pending-payout-tag" className="ml-2 text-primary">
-                        · Link bank to withdraw
+            {transactions.map((tx) => {
+              // Slice 5c: a withdrawal is "in transit" once Stripe accepted
+              // the transfer (transfer_id set) but the bank hasn't confirmed
+              // landing yet (transfer_paid_at still null). Until the
+              // transfer.paid webhook fires (~T+2 business days) we show
+              // the driver a pill so they can see their money is moving,
+              // not lost.
+              const isInTransitWithdrawal = tx.type === 'withdrawal'
+                && !!tx.transfer_id
+                && !tx.transfer_paid_at
+              const isLandedWithdrawal = tx.type === 'withdrawal'
+                && !!tx.transfer_paid_at
+              // Slice 7: ride-linked rows tap through to the ride receipt
+              // so a rider/driver auditing their wallet can answer "which
+              // ride was this?" in one tap. Non-ride rows (topups,
+              // withdrawals) stay non-interactive.
+              const rideId = tx.ride_id ?? null
+              const isTappable = !!rideId
+              const innerContent = (
+                <>
+                  <div>
+                    <p className="font-medium text-text-primary">
+                      {transactionTitle(tx)}
+                    </p>
+                    <p className="text-xs text-text-secondary">
+                      {formatDate(tx.created_at)}
+                      {isDriver && !hasBank && isDriverEarning(tx.type) && (
+                        <span data-testid="tx-pending-payout-tag" className="ml-2 text-primary">
+                          · Link bank to withdraw
+                        </span>
+                      )}
+                      {isInTransitWithdrawal && (
+                        <span data-testid="tx-withdrawal-in-transit" className="ml-2 inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-warning">
+                          <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20"><circle cx="10" cy="10" r="4" /></svg>
+                          In transit · expected by {withdrawalEta(tx.created_at)}
+                        </span>
+                      )}
+                      {isLandedWithdrawal && (
+                        <span data-testid="tx-withdrawal-landed" className="ml-2 text-success">
+                          · Landed in your bank
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <p
+                      className={`font-semibold ${isCredit(tx.type) ? 'text-success' : 'text-danger'}`}
+                      data-testid="transaction-amount"
+                      // Slice 12: color alone is inaccessible (color-blind +
+                      // screen reader). Spoken label always says "credited"
+                      // or "debited" so the meaning carries without color.
+                      aria-label={`${formatCents(Math.abs(tx.amount_cents))} ${isCredit(tx.type) ? 'credited' : 'debited'}`}
+                    >
+                      <span aria-hidden="true">
+                        {typeIcon(tx.type)}{formatCents(Math.abs(tx.amount_cents))}
                       </span>
+                    </p>
+                    {isTappable && (
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
+                        <path d="M9 18l6-6-6-6" />
+                      </svg>
                     )}
-                  </p>
-                </div>
-                <p
-                  className={`font-semibold ${isCredit(tx.type) ? 'text-success' : 'text-danger'}`}
-                  data-testid="transaction-amount"
+                  </div>
+                </>
+              )
+              return isTappable ? (
+                <button
+                  key={tx.id}
+                  type="button"
+                  onClick={() => { navigate(`/ride/summary/${rideId}`) }}
+                  className="w-full flex items-center justify-between rounded-2xl bg-white px-4 py-3 text-left active:scale-[0.99] transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  data-testid="transaction-item"
+                  aria-label={`View ride summary — ${transactionTitle(tx)}`}
                 >
-                  {typeIcon(tx.type)}{formatCents(Math.abs(tx.amount_cents))}
-                </p>
-              </div>
-            ))}
+                  {innerContent}
+                </button>
+              ) : (
+                <div
+                  key={tx.id}
+                  className="flex items-center justify-between rounded-2xl bg-white px-4 py-3"
+                  data-testid="transaction-item"
+                >
+                  {innerContent}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

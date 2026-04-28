@@ -487,9 +487,26 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
             data-testid="request-ride-button"
             onClick={() => { handleRequestRide() }}
             isLoading={isSubmitting}
+            loadingLabel="Requesting ride…"
             disabled={!selectedCard && !walletCoversFare && !loadingCards}
           >
-            {(!selectedCard && !walletCoversFare && !loadingCards) ? 'Add a payment method' : 'Request Ride'}
+            {(() => {
+              if (loadingCards) return 'Request Ride'
+              if (!selectedCard && !walletCoversFare) {
+                // No card AND wallet won't cover — guide the rider to the
+                // correct fix instead of saying just "Add a payment method".
+                return walletBalanceCents > 0
+                  ? 'Add a card or top up wallet'
+                  : 'Add a payment method'
+              }
+              if (!selectedCard && walletCoversFare) {
+                // Wallet-only path — make it explicit so the rider knows
+                // their card won't be touched. Closes the "is this safe?"
+                // gap of the previous generic "Request Ride" text.
+                return `Pay with wallet · ${fareDisplay}`
+              }
+              return 'Request Ride'
+            })()}
           </PrimaryButton>
 
           <button
