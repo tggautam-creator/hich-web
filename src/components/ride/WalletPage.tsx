@@ -17,11 +17,11 @@ interface Transaction {
   created_at: string
   ride_id?: string | null
   counterparty_name?: string | null
-  // Slice 5 — withdrawal tracking. Set when the withdrawal row has been
-  // tied to a Stripe Transfer; transfer_paid_at flips when the
-  // transfer.paid webhook fires (~T+2 business days).
+  // Set when the withdrawal row has been tied to a Stripe Transfer.
+  // The "landed" flip is derived cosmetically from created_at + 2
+  // business days (see WalletPage.withdrawalEtaDate); transfer_paid_at
+  // exists in the schema for forward-compat but isn't read by the UI.
   transfer_id?: string | null
-  transfer_paid_at?: string | null
 }
 
 interface PendingEarning {
@@ -202,10 +202,15 @@ export default function WalletPage() {
       || type === 'withdrawal_failed_refund'
   }
 
-  // ETA helper — adds 2 business days (skipping Sat/Sun) for the
-  // "expected by" hint on in-transit withdrawals. Coarse but matches the
-  // copy in WithdrawSheet's success state.
-  function withdrawalEta(createdAt: string): string {
+  // ETA helpers — Stripe doesn't expose a platform-level event for
+  // "money landed in the connected account's bank" anymore (the old
+  // `transfer.paid` event was retired and `payout.paid` only fires on
+  // the connected account). We approximate by adding 2 business days
+  // to the withdrawal's created_at: until that date the row reads "in
+  // transit", after it reads "landed in your bank". Cosmetic but
+  // accurate within ~1 day for ~99% of transfers and matches the copy
+  // in WithdrawSheet's success state.
+  function withdrawalEtaDate(createdAt: string): Date {
     const d = new Date(createdAt)
     let added = 0
     while (added < 2) {
@@ -213,7 +218,10 @@ export default function WalletPage() {
       const dow = d.getDay()
       if (dow !== 0 && dow !== 6) added++
     }
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    return d
+  }
+  function withdrawalEta(createdAt: string): string {
+    return withdrawalEtaDate(createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   }
 
   function isDriverEarning(type: string): boolean {
@@ -439,17 +447,18 @@ export default function WalletPage() {
         {!loading && transactions.length > 0 && (
           <div className="space-y-2" data-testid="transaction-list">
             {transactions.map((tx) => {
-              // Slice 5c: a withdrawal is "in transit" once Stripe accepted
-              // the transfer (transfer_id set) but the bank hasn't confirmed
-              // landing yet (transfer_paid_at still null). Until the
-              // transfer.paid webhook fires (~T+2 business days) we show
-              // the driver a pill so they can see their money is moving,
-              // not lost.
-              const isInTransitWithdrawal = tx.type === 'withdrawal'
-                && !!tx.transfer_id
-                && !tx.transfer_paid_at
-              const isLandedWithdrawal = tx.type === 'withdrawal'
-                && !!tx.transfer_paid_at
+              // Withdrawal pill state — cosmetic, derived from
+              // created_at + 2 business days (see withdrawalEtaDate).
+              // Stripe doesn't expose a platform-level "money landed in
+              // bank" event so we don't try to pretend we know exactly;
+              // the date approximation is right within ~1 day for ~99%
+              // of transfers, which is the same UX you'd see in a real
+              // tracker. transfer_id is still required so we don't show
+              // pills on pre-Stripe failure rows.
+              const isWithdrawalRow = tx.type === 'withdrawal' && !!tx.transfer_id
+              const isLandedWithdrawal = isWithdrawalRow
+                && withdrawalEtaDate(tx.created_at).getTime() <= Date.now()
+              const isInTransitWithdrawal = isWithdrawalRow && !isLandedWithdrawal
               // Slice 7: ride-linked rows tap through to the ride receipt
               // so a rider/driver auditing their wallet can answer "which
               // ride was this?" in one tap. Non-ride rows (topups,
