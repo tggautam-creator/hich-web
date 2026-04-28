@@ -63,7 +63,25 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
   const handleDeleteAccount = async () => {
     if (!profile?.id) return
     setDeleting(true)
-    await supabase.from('users').update({ is_driver: false }).eq('id', profile.id)
+    // Hit the real purge endpoint instead of just flipping
+    // `is_driver = false` (which left the user's row + RLS-scoped
+    // data behind in the DB and silently failed App Store 5.1.1(v)
+    // compliance). Server cascades through every table and finally
+    // calls `auth.admin.deleteUser` — see server/routes/account.ts.
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (token) {
+        await fetch('/api/account/delete', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      }
+    } catch {
+      // Best-effort — even if the endpoint fails we still want
+      // to sign the user out locally so they're not stuck on a
+      // page implying their account was deleted.
+    }
     await signOut()
     navigate('/', { replace: true })
   }

@@ -22,6 +22,7 @@ import { vehicleRouter } from './routes/vehicle.ts'
 import { reportRouter } from './routes/report.ts'
 import { adminRouter } from './routes/admin.ts'
 import { accountRouter } from './routes/account.ts'
+import { usersRouter } from './routes/users.ts'
 import { errorHandler } from './middleware/errorHandler.ts'
 import { metricsMiddleware } from './middleware/metrics.ts'
 
@@ -125,6 +126,7 @@ app.use('/api/vehicle', vehicleRouter)
 app.use('/api/report', reportRouter)
 app.use('/api/admin', adminRouter)
 app.use('/api/account', accountRouter)
+app.use('/api/users', usersRouter)
 
 // ── SPA fallback — serve built frontend in production ─────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
