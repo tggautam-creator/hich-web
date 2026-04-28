@@ -6,6 +6,8 @@ import { supabase } from '@/lib/supabase'
 import { trackEvent } from '@/lib/analytics'
 import { parseStateFromSecondaryText, fetchGasPrice } from '@/lib/gasPrice'
 import PrimaryButton from '@/components/ui/PrimaryButton'
+import CardBrandBadge from '@/components/ui/CardBrandBadge'
+import { useAuthStore } from '@/stores/authStore'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -47,6 +49,13 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
   const [cards, setCards] = useState<CardInfo[]>([])
   const [selectedCard, setSelectedCard] = useState<string | null>(null)
   const [loadingCards, setLoadingCards] = useState(true)
+
+  // Wallet-first preview: rider's wallet pays before card. profile.wallet_balance
+  // comes from authStore (refreshed on app focus). The high end of the fare
+  // range is the conservative threshold for "covered by wallet" so we don't
+  // over-promise zero-card-charge for a ride that lands at the upper bound.
+  const profile = useAuthStore((s) => s.profile)
+  const walletBalanceCents = profile?.wallet_balance ?? 0
 
   const fetchCards = useCallback(async () => {
     try {
@@ -98,6 +107,11 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
 
   // Use the midpoint breakdown for display
   const breakdown = fareRange.low
+
+  // Wallet covers the fare entirely if it can absorb the upper-bound estimate.
+  // Conservative — actual settle uses the precise computed fare at /end time.
+  const walletCoversFare = walletBalanceCents >= fareRange.high.fare_cents
+  const walletShortfallCents = Math.max(0, fareRange.high.fare_cents - walletBalanceCents)
 
   async function handleRequestRide() {
     setSubmitting(true)
@@ -370,19 +384,58 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
               <span className="text-sm text-text-secondary">Loading...</span>
             </div>
-          ) : cards.length === 0 ? (
-            <div className="space-y-2">
-              <p className="text-sm text-text-secondary">No payment method saved.</p>
-              <button
-                data-testid="add-card-button"
-                onClick={() => { navigate('/payment/add', { state: { returnTo: '/ride/confirm', confirmState: state } }) }}
-                className="text-sm font-medium text-primary"
-              >
-                + Add a card
-              </button>
-            </div>
           ) : (
             <div className="space-y-2">
+              {/* Wallet-first preview — visible whenever the rider has any
+                  wallet balance. Tells them upfront whether the wallet
+                  alone covers this ride or only part of it. */}
+              {walletBalanceCents > 0 && (
+                <div
+                  data-testid="wallet-row"
+                  className={`flex items-center gap-3 rounded-xl border p-3 ${
+                    walletCoversFare
+                      ? 'border-success/30 bg-success/5'
+                      : 'border-border bg-white'
+                  }`}
+                >
+                  <div className="flex h-8 w-11 items-center justify-center rounded-md bg-primary/10 text-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+                      <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4" />
+                      <path d="M3 5v14a2 2 0 0 0 2 2h16v-5" />
+                      <path d="M18 12a2 2 0 0 0 0 4h4v-4Z" />
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-text-primary">
+                      Wallet · {formatCents(walletBalanceCents)}
+                    </p>
+                    <p className="text-[11px] text-text-secondary">
+                      {walletCoversFare
+                        ? 'Covers this ride · no card charge'
+                        : `Covers ${formatCents(walletBalanceCents)}, card charged ${formatCents(walletShortfallCents)}`}
+                    </p>
+                  </div>
+                  {walletCoversFare && (
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-success" aria-hidden="true">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  )}
+                </div>
+              )}
+
+              {cards.length === 0 && !walletCoversFare && (
+                <>
+                  <p className="text-sm text-text-secondary">No payment method saved.</p>
+                  <button
+                    data-testid="add-card-button"
+                    onClick={() => { navigate('/payment/add', { state: { returnTo: '/ride/confirm', confirmState: state } }) }}
+                    className="text-sm font-medium text-primary"
+                  >
+                    + Add a card
+                  </button>
+                </>
+              )}
+
               {cards.map((card) => (
                 <button
                   key={card.id}
@@ -394,9 +447,7 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
                       : 'bg-white border border-border'
                   }`}
                 >
-                  <div className="flex h-8 w-11 items-center justify-center rounded-md bg-gray-100 text-[10px] font-bold text-text-secondary">
-                    {card.brand.charAt(0).toUpperCase() + card.brand.slice(1, 4)}
-                  </div>
+                  <CardBrandBadge brand={card.brand} size="sm" />
                   <span className="text-sm font-medium text-text-primary flex-1">
                     •••• {card.last4}
                   </span>
@@ -436,9 +487,9 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
             data-testid="request-ride-button"
             onClick={() => { handleRequestRide() }}
             isLoading={isSubmitting}
-            disabled={!selectedCard && !loadingCards}
+            disabled={!selectedCard && !walletCoversFare && !loadingCards}
           >
-            {!selectedCard && !loadingCards ? 'Add a payment method' : 'Request Ride'}
+            {(!selectedCard && !walletCoversFare && !loadingCards) ? 'Add a payment method' : 'Request Ride'}
           </PrimaryButton>
 
           <button

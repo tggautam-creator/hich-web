@@ -33,6 +33,14 @@ export async function chargeRideFare(params: {
   fareCents: number
   riderCustomerId: string
   riderPaymentMethodId: string
+  /**
+   * Optional Stripe idempotency key. When wallet-first payment splits a
+   * ride into wallet + card portions, a retry with a different split must
+   * not collide with a prior attempt's idempotent-replay response — pass
+   * a key that includes the card-portion amount, e.g.
+   * `ride-payment-${rideId}-card-${cardCents}`.
+   */
+  idempotencyKey?: string
 }): Promise<{ success: boolean; paymentIntentId?: string; stripFeeCents?: number; error?: string }> {
   const stripe = getStripe()
 
@@ -51,7 +59,7 @@ export async function chargeRideFare(params: {
         metadata: { ride_id: params.rideId },
       },
       {
-        idempotencyKey: `ride-payment-${params.rideId}`,
+        idempotencyKey: params.idempotencyKey ?? `ride-payment-${params.rideId}`,
       },
     )
 

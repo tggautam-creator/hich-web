@@ -124,6 +124,7 @@ export default function WalletPage() {
       case 'fare_credit': return 'Ride earnings'
       case 'ride_earning': return 'Ride earnings'
       case 'fare_reversal': return 'Refunded — payment failed'
+      case 'wallet_refund': return 'Refund — payment failed'
       case 'refund': return 'Refund'
       default: return type
     }
@@ -146,6 +147,7 @@ export default function WalletPage() {
       case 'topup': return '+'
       case 'fare_credit': return '+'
       case 'ride_earning': return '+'
+      case 'wallet_refund': return '+'
       case 'fare_debit': return '−'
       case 'fare_reversal': return '−'
       case 'refund': return '+'
@@ -154,7 +156,7 @@ export default function WalletPage() {
   }
 
   function isCredit(type: string): boolean {
-    return type === 'topup' || type === 'fare_credit' || type === 'ride_earning' || type === 'refund'
+    return type === 'topup' || type === 'fare_credit' || type === 'ride_earning' || type === 'wallet_refund' || type === 'refund'
   }
 
   function isDriverEarning(type: string): boolean {

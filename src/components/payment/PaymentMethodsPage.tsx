@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import BottomNav from '@/components/ui/BottomNav'
+import CardBrandBadge from '@/components/ui/CardBrandBadge'
 
 interface PaymentMethodsPageProps {
   'data-testid'?: string
@@ -89,16 +90,6 @@ export default function PaymentMethodsPage({
     }
   }
 
-  function brandIcon(brand: string): string {
-    switch (brand.toLowerCase()) {
-      case 'visa': return 'Visa'
-      case 'mastercard': return 'MC'
-      case 'amex': return 'Amex'
-      case 'discover': return 'Disc'
-      default: return brand.slice(0, 4)
-    }
-  }
-
   return (
     <div
       data-testid={testId}
@@ -155,9 +146,7 @@ export default function PaymentMethodsPage({
                 className="flex items-center gap-3 rounded-xl bg-white p-4 shadow-sm border border-border"
               >
                 {/* Brand badge */}
-                <div className="flex h-10 w-14 items-center justify-center rounded-lg bg-gray-100 text-xs font-bold text-text-secondary">
-                  {brandIcon(card.brand)}
-                </div>
+                <CardBrandBadge brand={card.brand} size="md" />
 
                 {/* Card info */}
                 <div className="flex-1 min-w-0">

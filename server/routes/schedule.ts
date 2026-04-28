@@ -546,6 +546,10 @@ interface ScheduleRequestBody {
   // in the confirm sheet. Server pre-confirms the dropoff so the driver
   // doesn't have to re-suggest the same endpoint in chat.
   dropoff_at_driver_destination?: boolean
+  // Optional client-computed fare estimate (cents). When the rider's wallet
+  // balance ≥ this estimate we let the request through even without a
+  // saved card — Phase 3a wallet-first parity with /api/rides/request.
+  estimated_fare_cents?: number
 }
 
 scheduleRouter.post(
@@ -661,7 +665,7 @@ scheduleRouter.post(
     // that produced duplicate cards when they re-added.
     const { data: riderPaymentRow } = await supabaseAdmin
       .from('users')
-      .select('stripe_customer_id, default_payment_method_id')
+      .select('stripe_customer_id, default_payment_method_id, wallet_balance')
       .eq('id', riderId)
       .single()
 
@@ -674,13 +678,24 @@ scheduleRouter.post(
       )
     }
 
-    if (!riderPaymentRow?.stripe_customer_id || !effectiveDefaultPm) {
+    // Wallet-first parity with /api/rides/request: allow the request through
+    // when the rider's wallet alone covers the client-supplied fare estimate
+    // — even without a card. Otherwise we still require a card on file
+    // (the wallet may only partially cover, in which case the card is
+    // needed for the shortfall). When the requester is the driver
+    // (rider-posted board ride), we still gate on the rider's payment.
+    const riderWalletCents = (riderPaymentRow?.wallet_balance as number | null) ?? 0
+    const estimatedFareCents = body.estimated_fare_cents ?? 0
+    const walletCoversEstimate = estimatedFareCents > 0 && riderWalletCents >= estimatedFareCents
+    const hasCardOnFile = !!riderPaymentRow?.stripe_customer_id && !!effectiveDefaultPm
+
+    if (!walletCoversEstimate && !hasCardOnFile) {
       const isSelf = riderId === userId
       res.status(400).json({
         error: {
           code: isSelf ? 'NO_PAYMENT_METHOD' : 'RIDER_NO_PAYMENT_METHOD',
           message: isSelf
-            ? 'Add a payment method before requesting a ride.'
+            ? 'Add a payment method or top up your wallet before requesting a ride.'
             : 'This rider hasn’t set up payment yet — try a different post.',
         },
       })

@@ -503,12 +503,17 @@ describe('POST /api/wallet/withdraw', () => {
     expect(debitCall).toBeDefined()
     expect((debitCall?.[1] as { p_delta_cents: number }).p_delta_cents).toBe(-2000)
 
-    expect(mockTransferCreate).toHaveBeenCalledWith({
-      amount: 2000,
-      currency: 'usd',
-      destination: 'acct_123',
-      metadata: { user_id: USER_ID, kind: 'wallet_withdrawal' },
-    })
+    expect(mockTransferCreate).toHaveBeenCalledWith(
+      {
+        amount: 2000,
+        currency: 'usd',
+        destination: 'acct_123',
+        metadata: { user_id: USER_ID, kind: 'wallet_withdrawal' },
+      },
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(/^withdraw-user-wallet-001-2000-\d{4}-\d{2}-\d{2}$/),
+      }),
+    )
   })
 
   it('credits back the debit when Stripe transfer fails', async () => {

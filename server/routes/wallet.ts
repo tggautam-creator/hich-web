@@ -238,12 +238,26 @@ walletRouter.post('/withdraw', validateJwt, idempotency('wallet-withdraw'), asyn
 
     const stripe = getStripe()
     try {
-      const transfer = await stripe.transfers.create({
-        amount: amountCents,
-        currency: 'usd',
-        destination: user.stripe_account_id as string,
-        metadata: { user_id: userId, kind: 'wallet_withdrawal' },
-      })
+      // Stripe-side idempotency: a network blip between our debit and the
+      // Transfer (or a server crash + client retry) could otherwise create
+      // a duplicate transfer and pay the driver twice. The route also has
+      // HTTP-level idempotency middleware, but that protects only against
+      // matching `Idempotency-Key` headers — a fresh retry without the
+      // header would slip past. Tying the key to (user, amount, today) is
+      // a coarse but safe dedupe: a same-day repeat withdrawal of the
+      // exact same cents reuses Stripe's cached response. Driver wanting
+      // to withdraw twice in a day for the same exact amount must wait
+      // for date rollover or pick a different amount — acceptable trade.
+      const dayKey = new Date().toISOString().split('T')[0]
+      const transfer = await stripe.transfers.create(
+        {
+          amount: amountCents,
+          currency: 'usd',
+          destination: user.stripe_account_id as string,
+          metadata: { user_id: userId, kind: 'wallet_withdrawal' },
+        },
+        { idempotencyKey: `withdraw-${userId}-${amountCents}-${dayKey}` },
+      )
 
       res.json({
         status: 'transferring',

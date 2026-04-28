@@ -11,6 +11,7 @@ import { supabaseAdmin } from './supabaseAdmin.ts'
 import { sendFcmPush } from './fcm.ts'
 import { realtimeBroadcast } from './realtimeBroadcast.ts'
 import { haversineMetres } from './polyline.ts'
+import { chargeRideViaWallet, creditDriverEarning } from './walletPayment.ts'
 
 const GPS_DIVERGE_THRESHOLD_M = 500      // 500m apart = likely separated
 const GPS_DIVERGE_MIN_AGE_MS = 2 * 60_000 // both pings must be 2+ min old
@@ -156,6 +157,63 @@ async function autoEndRide(
   // Upper cap removed 2026-04-24 — safety-net fare mirrors the main formula.
   const fareCents = Math.max(200, raw)
 
+  // ── Charge the rider + credit the driver, same way as rides.ts /end. ───
+  // Without this, an auto-ended ride leaves payment_status=NULL forever:
+  // the rider is never billed and the driver's wallet never credited. (C2
+  // money leak — the safety net was 100% leaky pre-fix.)
+  const riderId = ride.rider_id as string | null
+  const driverId = ride.driver_id as string | null
+
+  let paymentStatus: 'paid' | 'processing' | 'pending' | 'failed' = 'pending'
+  let paymentIntentId: string | undefined
+  let stripeFeeCents = 0
+
+  if (driverId && riderId) {
+    const { data: rider } = await supabaseAdmin
+      .from('users')
+      .select('stripe_customer_id, default_payment_method_id, wallet_balance')
+      .eq('id', riderId)
+      .single()
+
+    const walletBalance = (rider?.wallet_balance as number | null) ?? 0
+    const hasCard = !!rider?.stripe_customer_id && !!rider?.default_payment_method_id
+    const walletCoversFare = walletBalance >= fareCents
+
+    if (walletCoversFare || hasCard) {
+      const chargeResult = await chargeRideViaWallet({
+        rideId,
+        riderId,
+        fareCents,
+        riderCustomerId: (rider?.stripe_customer_id as string | null) ?? null,
+        riderPaymentMethodId: (rider?.default_payment_method_id as string | null) ?? null,
+      })
+
+      if (chargeResult.success) {
+        paymentStatus = chargeResult.cardChargeCents === 0 ? 'paid' : 'processing'
+        paymentIntentId = chargeResult.paymentIntentId
+        stripeFeeCents = chargeResult.stripeFeeCents ?? 0
+
+        // MVP: platform_fee=0, driver_earns = fare. If that ever changes,
+        // mirror computeRideFare here.
+        await creditDriverEarning({
+          driverId,
+          fareCents,
+          rideId,
+          paymentIntentId: chargeResult.paymentIntentId ?? null,
+          ctx: 'rideSafetyNet',
+          description: `Ride earning · ${rideId} (auto-ended)`,
+        })
+      } else {
+        paymentStatus = 'failed'
+        console.warn(`[rideSafetyNet] Charge failed for ride ${rideId}: ${chargeResult.error}`)
+      }
+    } else {
+      // No card AND wallet < fare. Leave 'pending' so retry-payment can
+      // settle once the rider adds funds.
+      console.warn(`[rideSafetyNet] No card & wallet=${walletBalance}<${fareCents} for rider ${riderId} (pending retry)`)
+    }
+  }
+
   // Update ride
   await supabaseAdmin
     .from('rides')
@@ -164,12 +222,15 @@ async function autoEndRide(
       ended_at: endedAt,
       fare_cents: fareCents,
       auto_ended: true,
+      payment_status: paymentStatus,
+      stripe_fee_cents: stripeFeeCents,
+      ...(paymentIntentId ? { payment_intent_id: paymentIntentId } : {}),
       ...(dropoffGeo ? { dropoff_point: dropoffGeo } : {}),
     })
     .eq('id', rideId)
 
   // Notify both parties
-  const userIds = [ride.driver_id as string, ride.rider_id as string].filter(Boolean)
+  const userIds = [driverId, riderId].filter(Boolean) as string[]
   const { data: tokens } = await supabaseAdmin
     .from('push_tokens')
     .select('token')
@@ -190,6 +251,23 @@ async function autoEndRide(
     )
   }
 
+  // If the rider has no card and the wallet was short, prompt them to add
+  // a payment method so retry-payment can settle the ride.
+  if (paymentStatus === 'pending' && riderId) {
+    const { data: riderTokens } = await supabaseAdmin
+      .from('push_tokens')
+      .select('token')
+      .eq('user_id', riderId)
+    const list = (riderTokens ?? []).map((t: { token: string }) => t.token)
+    if (list.length > 0) {
+      void sendFcmPush(list, {
+        title: 'Payment needed',
+        body: 'Your auto-ended ride needs payment. Add a card or top up your wallet.',
+        data: { type: 'payment_needed', ride_id: rideId },
+      })
+    }
+  }
+
   // Broadcast to both parties so their UI updates
   for (const uid of userIds) {
     void realtimeBroadcast(`rider:${uid}`, 'ride_ended', {
@@ -199,5 +277,5 @@ async function autoEndRide(
     })
   }
 
-  console.log(`[rideSafetyNet] Auto-ended ride ${rideId} — reason=${reason}, fare=${fareCents}c, gps_distance=${Math.round(gpsDistanceM)}m, duration=${durationMin}min`)
+  console.log(`[rideSafetyNet] Auto-ended ride ${rideId} — reason=${reason}, fare=${fareCents}c, gps_distance=${Math.round(gpsDistanceM)}m, duration=${durationMin}min, payment_status=${paymentStatus}`)
 }

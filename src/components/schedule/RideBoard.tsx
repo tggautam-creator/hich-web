@@ -16,6 +16,7 @@ import { formatDays, formatDate, formatTime, formatTripSchedule, SHORT_DAYS } fr
 import type { ScheduledRide, TabFilter } from './boardTypes'
 import type { DriverRoutine } from '@/types/database'
 import { haversineMetres } from '@/lib/geo'
+import { estimateScheduleFare } from '@/lib/fareEstimate'
 
 // Same-metro radius for "Near me". Cities routinely span 20-30 km across, so
 // a tighter corridor would exclude a poster living in the same town as the
@@ -196,6 +197,11 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       // Use rider's explicit pickup location from enrichment, fall back to GPS
       const originLat = enrichment?.pickup_lat ?? loc?.lat
       const originLng = enrichment?.pickup_lng ?? loc?.lng
+      // Wallet-first parity (C4): pass the high end of the local fare
+      // estimate so server can let wallet-only riders through when balance
+      // covers the worst-case fare.
+      const fareEst = estimateScheduleFare(confirmRide)
+      const estimatedFareCents = fareEst?.high_cents ?? null
       const resp = await fetch('/api/schedule/request', {
         method: 'POST',
         headers: {
@@ -206,6 +212,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
           schedule_id: confirmRide.id,
           ...(originLat != null && originLng != null ? { origin_lat: originLat, origin_lng: originLng } : {}),
           origin_name: enrichment?.pickup_name ?? null,
+          ...(estimatedFareCents != null ? { estimated_fare_cents: estimatedFareCents } : {}),
           ...(enrichment ? {
             destination_lat: enrichment.destination_lat,
             destination_lng: enrichment.destination_lng,

@@ -116,14 +116,18 @@ async function handleRidePaymentSucceeded(rideId: string, paymentIntentId: strin
 async function handleRidePaymentFailed(rideId: string, paymentIntentId: string): Promise<void> {
   console.log(`[Webhook] Ride payment failed: ride=${rideId} pi=${paymentIntentId}`)
 
-  // Atomically transition processing → failed. Without the .neq guard, a
-  // duplicate webhook delivery would re-fire the wallet reversal below and
-  // double-debit the driver. Returning data tells us we owned the change.
+  // Atomically transition only from processing/pending → failed. The
+  // tighter .in() (was .neq('payment_status','failed')) closes a race:
+  // when /retry-payment succeeds and flips status back to 'paid', a late
+  // payment_failed webhook for the *original* PI would otherwise still
+  // win the .neq check, mark the ride failed, and reverse a credit that
+  // was already settled. Now 'paid' is filtered out — only in-flight
+  // states can transition. Returning data tells us we owned the change.
   const { data: transitioned, error: updateErr } = await supabaseAdmin
     .from('rides')
     .update({ payment_status: 'failed' })
     .eq('id', rideId)
-    .neq('payment_status', 'failed')
+    .in('payment_status', ['processing', 'pending'])
     .select('id, rider_id, driver_id')
 
   if (updateErr) {
@@ -175,6 +179,38 @@ async function handleRidePaymentFailed(rideId: string, paymentIntentId: string):
         if (reverseErr) {
           console.error(`[Webhook] CRITICAL: payment failed but wallet reversal errored for driver ${ride.driver_id} ride ${rideId}: ${reverseErr.message}`)
         }
+      }
+    }
+
+    // ── Restore rider's wallet portion if this was a wallet+card payment ──
+    // Phase 3a (wallet-first) splits a fare into wallet_debit + card charge
+    // when wallet < fare. If the card charge later fails async, we owe the
+    // rider their wallet portion back. refundWalletPortion is idempotent
+    // (skips if a wallet_refund row already exists for this ride).
+    if (ride?.rider_id) {
+      // Sum every fare_debit on this ride (a retry-after-refund may insert
+      // more than one) and let refundWalletPortion's net-balance check
+      // decide what's actually still owed.
+      const { data: debitRows } = await supabaseAdmin
+        .from('transactions')
+        .select('amount_cents')
+        .eq('user_id', ride.rider_id)
+        .eq('ride_id', rideId)
+        .eq('type', 'fare_debit')
+
+      let debitedCents = 0
+      for (const r of debitRows ?? []) {
+        debitedCents += -((r.amount_cents as number | null) ?? 0)
+      }
+
+      if (debitedCents > 0) {
+        const { refundWalletPortion } = await import('../lib/walletPayment.ts')
+        await refundWalletPortion({
+          rideId,
+          riderId: ride.rider_id,
+          amountCents: debitedCents,
+          reason: 'Refunded — card portion failed (rider wallet restored)',
+        })
       }
     }
   }
