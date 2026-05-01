@@ -138,6 +138,8 @@ describe('database types — row aliases', () => {
       last_rider_ping_at: null,
       dropoff_reminder_sent: false,
       auto_ended: false,
+      time_flexible: false,
+      reminder_today_sent: false,
     }
     expect(ride.fare_cents).not.toBeNull()
     expect(Number.isInteger(ride.fare_cents)).toBe(true)
@@ -150,6 +152,7 @@ describe('database types — row aliases', () => {
       description: '$10 top-up', created_at: new Date().toISOString(),
       payment_intent_id: null, stripe_event_id: null,
       transfer_id: null, transfer_paid_at: null,
+      pm_brand: null, pm_last4: null, pm_wallet: null,
     }
     expect(Number.isInteger(tx.amount_cents)).toBe(true)
     expect(Number.isInteger(tx.balance_after_cents)).toBe(true)
@@ -165,6 +168,7 @@ describe('database types — row aliases', () => {
       arrival_time: '08:30', origin_address: null, dest_address: null,
       route_polyline: null, available_seats: null, end_date: null, note: null,
       is_active: true, created_at: new Date().toISOString(),
+      skip_dates: null,
     }
     expect(Array.isArray(r.day_of_week)).toBe(true)
   })

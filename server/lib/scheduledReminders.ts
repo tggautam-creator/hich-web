@@ -93,6 +93,9 @@ export async function checkUpcomingRides(): Promise<{ checked: number; reminded:
 
   const todayDate = getLocalDateString(now)
   const tomorrowDate = getLocalDateString(thirtyMinLater)
+  // Local-clock HH:MM:SS — used by the Anytime branch to gate the
+  // 9 AM "Today's the day" push so it doesn't fire at midnight.
+  const nowTime = getLocalTimeString(now)
 
   // Query rides that still have at least one unsent reminder
   const { data: rides, error } = await supabaseAdmin

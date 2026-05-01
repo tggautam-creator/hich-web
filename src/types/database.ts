@@ -234,6 +234,13 @@ export type Database = {
           last_rider_ping_at: string | null
           dropoff_reminder_sent: boolean
           auto_ended: boolean
+          // Migration 059 — Anytime ride support. `time_flexible`
+          // mirrors the parent `ride_schedules.time_flexible` flag so
+          // cron paths can branch without joining; `reminder_today_sent`
+          // gates the 9 AM "Today's the day" push to fire once per
+          // Anytime ride per day.
+          time_flexible: boolean
+          reminder_today_sent: boolean
         }
         Insert: {
           id?: string
@@ -284,6 +291,8 @@ export type Database = {
           last_rider_ping_at?: string | null
           dropoff_reminder_sent?: boolean
           auto_ended?: boolean
+          time_flexible?: boolean
+          reminder_today_sent?: boolean
         }
         Update: {
           id?: string
@@ -334,6 +343,8 @@ export type Database = {
           last_rider_ping_at?: string | null
           dropoff_reminder_sent?: boolean
           auto_ended?: boolean
+          time_flexible?: boolean
+          reminder_today_sent?: boolean
         }
         Relationships: never[]
       }
@@ -356,6 +367,14 @@ export type Database = {
           // by the transfer.paid webhook handler.
           transfer_id: string | null
           transfer_paid_at: string | null
+          // Migration 060 — funding-source labels for top-up rows.
+          // `pm_brand` = card brand (visa/mastercard/...), `pm_last4`
+          // = last 4 of the funding card, `pm_wallet` = "apple_pay" /
+          // "google_pay" / "samsung_pay" when tokenized through a
+          // wallet. Nil on non-card-funded rows + legacy rows.
+          pm_brand: string | null
+          pm_last4: string | null
+          pm_wallet: string | null
         }
         Insert: {
           id?: string
@@ -370,6 +389,9 @@ export type Database = {
           stripe_event_id?: string | null
           transfer_id?: string | null
           transfer_paid_at?: string | null
+          pm_brand?: string | null
+          pm_last4?: string | null
+          pm_wallet?: string | null
         }
         Update: {
           id?: string
@@ -384,6 +406,9 @@ export type Database = {
           stripe_event_id?: string | null
           transfer_id?: string | null
           transfer_paid_at?: string | null
+          pm_brand?: string | null
+          pm_last4?: string | null
+          pm_wallet?: string | null
         }
         Relationships: never[]
       }
@@ -409,6 +434,12 @@ export type Database = {
           note: string | null
           is_active: boolean
           created_at: string
+          // Migration 057 — anti-resurrection: dates the user explicitly
+          // skipped on this routine via DELETE /api/schedule/:id of a
+          // routine-projected ride. The cron projector consults this list
+          // before re-creating ride_schedules rows so a deleted date stays
+          // deleted forever.
+          skip_dates: string[] | null
         }
         Insert: {
           id?: string
@@ -429,6 +460,7 @@ export type Database = {
           note?: string | null
           is_active?: boolean
           created_at?: string
+          skip_dates?: string[] | null
         }
         Update: {
           id?: string
@@ -449,6 +481,7 @@ export type Database = {
           note?: string | null
           is_active?: boolean
           created_at?: string
+          skip_dates?: string[] | null
         }
         Relationships: never[]
       }
@@ -705,6 +738,11 @@ export type Database = {
           user_id: string
           expires_at: string
           created_at: string
+          // Migration 063 (SAFETY.1) — soft-revoke. When the user
+          // taps Stop sharing on EmergencySheet before the 4hr TTL,
+          // server writes the timestamp here. The track endpoint
+          // returns 410 TOKEN_REVOKED for any subsequent fetch.
+          revoked_at: string | null
         }
         Insert: {
           id?: string
@@ -713,6 +751,7 @@ export type Database = {
           user_id: string
           expires_at: string
           created_at?: string
+          revoked_at?: string | null
         }
         Update: {
           id?: string
@@ -720,6 +759,35 @@ export type Database = {
           ride_id?: string
           user_id?: string
           expires_at?: string
+          created_at?: string
+          revoked_at?: string | null
+        }
+        Relationships: never[]
+      }
+
+      // ── trusted_contacts (Migration 063 — SAFETY.1) ─────────────────────────
+      // Per-user list of names + phones the user wants to text in an
+      // emergency. Cap of 5 enforced server-side.
+      trusted_contacts: {
+        Row: {
+          id: string
+          user_id: string
+          name: string
+          phone: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          name: string
+          phone: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          name?: string
+          phone?: string
           created_at?: string
         }
         Relationships: never[]

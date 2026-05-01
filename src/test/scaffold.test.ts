@@ -110,6 +110,9 @@ describe('scaffold — @/ alias and database types', () => {
       stripe_event_id: null,
       transfer_id: null,
       transfer_paid_at: null,
+      pm_brand: null,
+      pm_last4: null,
+      pm_wallet: null,
     }
     expect(Number.isInteger(tx.amount_cents)).toBe(true)
   })
@@ -134,6 +137,7 @@ describe('scaffold — @/ alias and database types', () => {
       note: null,
       is_active: true,
       created_at: new Date().toISOString(),
+      skip_dates: null,
     }
     expect(Array.isArray(routine.day_of_week)).toBe(true)
     expect(routine.day_of_week).toContain(1)

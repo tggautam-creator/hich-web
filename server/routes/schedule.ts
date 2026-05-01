@@ -80,15 +80,10 @@ async function sendBoardDeclinedPush(
   }
 }
 
-// ── Haversine distance (metres) ──────────────────────────────────────────────
-function haversineMetres(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const toRad = Math.PI / 180
-  const R = 6_371_000
-  const dLat = (lat2 - lat1) * toRad
-  const dLng = (lng2 - lng1) * toRad
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLng / 2) ** 2
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-}
+// haversineMetres is imported from `../lib/polyline.ts` at the top
+// of this file. The local copy that lived here got removed once the
+// shared lib version landed (it was duplicate code that triggered a
+// TS2440 import-conflict on Vercel build).
 
 /**
  * GET /api/schedule/board
