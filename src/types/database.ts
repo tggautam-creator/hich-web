@@ -161,6 +161,7 @@ export type Database = {
           speed: number | null
           recorded_at: string
           is_online: boolean
+          snoozed_until: string | null
         }
         Insert: {
           id?: string
@@ -170,6 +171,7 @@ export type Database = {
           speed?: number | null
           recorded_at?: string
           is_online?: boolean
+          snoozed_until?: string | null
         }
         Update: {
           id?: string
@@ -179,6 +181,36 @@ export type Database = {
           speed?: number | null
           recorded_at?: string
           is_online?: boolean
+          snoozed_until?: string | null
+        }
+        Relationships: never[]
+      }
+
+      // ── driver_decline_reasons ──────────────────────────────────────────────
+      driver_decline_reasons: {
+        Row: {
+          id: string
+          driver_id: string
+          ride_id: string | null
+          reason: string
+          snooze_minutes: number | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          driver_id: string
+          ride_id?: string | null
+          reason: string
+          snooze_minutes?: number | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          driver_id?: string
+          ride_id?: string | null
+          reason?: string
+          snooze_minutes?: number | null
+          created_at?: string
         }
         Relationships: never[]
       }

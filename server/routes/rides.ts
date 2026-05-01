@@ -373,11 +373,12 @@ ridesRouter.post(
       driverIds = nearbyIds
       stage = 2
     } else {
-      // Stage 1 fallback — notify all online drivers
+      // Stage 1 fallback — notify all online drivers (excluding snoozed)
       const { data: onlineRows } = await supabaseAdmin
         .from('driver_locations')
         .select('user_id')
         .eq('is_online', true)
+        .or('snoozed_until.is.null,snoozed_until.lte.now()')
 
       const onlineIds = new Set((onlineRows ?? []).map((r: { user_id: string }) => r.user_id))
 
@@ -520,9 +521,72 @@ ridesRouter.post(
 )
 
 /**
+ * Apply a driver-side snooze + log the decline reason as part of any
+ * cancel-by-driver path. Reads optional `snooze_minutes` (15 / 60 / 120
+ * / 1440 etc.) and `reason` (free-text label from the iOS sheet) off
+ * the cancel request body. Both are best-effort — any failure here is
+ * logged and swallowed so the cancel itself still succeeds.
+ *
+ * Why: a driver declining a ride is the moment we have the most signal
+ * about their availability ("not now, busy"). Letting them snooze in
+ * the same gesture removes the "constant ride-request bombardment"
+ * complaint without forcing them into the offline toggle.
+ */
+async function applyDriverDeclineSideEffects(
+  driverId: string,
+  rideId: string,
+  body: unknown,
+): Promise<void> {
+  const payload = (body ?? {}) as { snooze_minutes?: unknown; reason?: unknown }
+  const snoozeMinutesRaw = typeof payload.snooze_minutes === 'number' ? payload.snooze_minutes : null
+  // Clamp to the iOS sheet's allowed durations so a malicious client
+  // can't snooze themselves for years and stay invisible to the matcher.
+  const allowedDurations = new Set([15, 60, 120, 240, 480, 1440])
+  const snoozeMinutes = snoozeMinutesRaw != null && allowedDurations.has(snoozeMinutesRaw) ? snoozeMinutesRaw : null
+
+  const reasonRaw = typeof payload.reason === 'string' ? payload.reason.trim() : ''
+  // Truncate to a sensible cap; reasons are append-only analytics, not free essays.
+  const reason = reasonRaw.length > 0 ? reasonRaw.slice(0, 200) : null
+
+  if (snoozeMinutes != null) {
+    const snoozedUntil = new Date(Date.now() + snoozeMinutes * 60_000).toISOString()
+    const { error: snoozeErr } = await supabaseAdmin
+      .from('driver_locations')
+      .update({ snoozed_until: snoozedUntil })
+      .eq('user_id', driverId)
+    if (snoozeErr) {
+      console.warn(`[snooze] Failed to set snoozed_until for driver ${driverId}:`, snoozeErr.message)
+    } else {
+      console.log(`[snooze] Driver ${driverId} snoozed for ${snoozeMinutes}m (until ${snoozedUntil})`)
+    }
+  }
+
+  if (reason != null || snoozeMinutes != null) {
+    const { error: reasonErr } = await supabaseAdmin
+      .from('driver_decline_reasons')
+      .insert({
+        driver_id: driverId,
+        ride_id: rideId,
+        reason: reason ?? 'unspecified',
+        snooze_minutes: snoozeMinutes,
+      })
+    if (reasonErr) {
+      console.warn(`[snooze] Failed to log decline reason for driver ${driverId}:`, reasonErr.message)
+    }
+  }
+}
+
+/**
  * PATCH /api/rides/:id/cancel — rider or driver cancels the ride.
  * Allowed in statuses: requested, accepted, coordinating.
  * Broadcasts cancellation to the other party via Realtime.
+ *
+ * **Driver-side body extension (2026-05-01)**: when the caller is the
+ * driver, accepts optional `{ snooze_minutes?: 15|60|120|240|480|1440,
+ * reason?: string }`. If `snooze_minutes` is present, the driver is
+ * marked snoozed in `driver_locations` until now+N min and the matcher
+ * skips them. Reason is logged to `driver_decline_reasons` for analytics.
+ * Both are no-ops for rider-side cancels.
  */
 ridesRouter.patch(
   '/:id/cancel',
@@ -620,6 +684,9 @@ ridesRouter.patch(
       ])
 
       console.log(`[rides/cancel] Path C: driver ${userId} cancelled offer for ride ${rideId} (pre-selection)`)
+      // Path C is a driver decline → apply snooze + log reason if the
+      // iOS sheet sent them. Best-effort; failures don't block the cancel.
+      await applyDriverDeclineSideEffects(userId, rideId, req.body)
       res.status(200).json({ ride_id: rideId, status: ride.status, driver_cancelled: true, standby_count: standbyCount })
       return
     }
@@ -740,6 +807,9 @@ ridesRouter.patch(
       // driver bails — Uber-style: the rider stays in control of the
       // rebroadcast.
       console.log(`[rides/cancel] rideId=${rideId} driver-cancelled by ${userId}, reverted to requested, standby_count=${pendingDriverIds.length}`)
+      // Path A is a driver decline → apply snooze + log reason if the
+      // iOS sheet sent them. Best-effort; failures don't block the cancel.
+      await applyDriverDeclineSideEffects(userId, rideId, req.body)
       res.status(200).json({ ride_id: rideId, status: 'requested', driver_cancelled: true, standby_count: pendingDriverIds.length })
       return
     }
@@ -844,6 +914,11 @@ ridesRouter.patch(
     }
 
     console.log(`[rides/cancel] rideId=${rideId} cancelled by ${cancellerRole} (${userId})`)
+    // Path B: also a driver decline if cancellerRole === 'driver' (e.g.
+    // scheduled-ride driver bails). Apply snooze + log reason if sent.
+    if (isDriverCancel) {
+      await applyDriverDeclineSideEffects(userId, rideId, req.body)
+    }
     res.status(200).json({ ride_id: rideId, status: 'cancelled' })
 
     // Clean up stale ride_request notifications for this ride (fire-and-forget)
@@ -970,11 +1045,12 @@ ridesRouter.post(
       return
     }
 
-    // ── No standby drivers → broadcast to all online drivers ──
+    // ── No standby drivers → broadcast to all online drivers (excluding snoozed) ──
     const { data: allOnlineDrivers } = await supabaseAdmin
       .from('driver_locations')
       .select('user_id')
       .eq('is_online', true)
+      .or('snoozed_until.is.null,snoozed_until.lte.now()')
     const onlineIds = (allOnlineDrivers ?? []).map((d: { user_id: string }) => d.user_id)
 
     const { data: allDrivers } = await supabaseAdmin
@@ -1465,11 +1541,12 @@ ridesRouter.patch(
       return
     }
 
-    // Re-notify online drivers (Stage 1 fallback — notify all online)
+    // Re-notify online drivers (Stage 1 fallback — notify all online, excluding snoozed)
     const { data: onlineRows } = await supabaseAdmin
       .from('driver_locations')
       .select('user_id')
       .eq('is_online', true)
+      .or('snoozed_until.is.null,snoozed_until.lte.now()')
 
     const onlineIds = new Set((onlineRows ?? []).map((r: { user_id: string }) => r.user_id))
 
@@ -4728,6 +4805,74 @@ ridesRouter.post(
       }
 
       res.status(200).json({ timed_out: timedOutCount, stale_requested: staleCount })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// ── Driver snooze (cousin of online-toggle, not ride-specific) ─────────────
+
+/**
+ * POST /api/driver/snooze — manually snooze the caller for N minutes.
+ *
+ * The cancel/decline flow auto-snoozes via PATCH /api/rides/:id/cancel
+ * (see `applyDriverDeclineSideEffects`). This endpoint covers the case
+ * where a driver wants to snooze without declining a specific ride —
+ * e.g. a "Snooze for an hour" affordance on the home screen. Body:
+ * `{ snooze_minutes: 15 | 60 | 120 | 240 | 480 | 1440 }`.
+ *
+ * Mounted at `/api/rides/snooze` (not `/api/driver/snooze`) only because
+ * this router is `/api/rides/*`. Keeping it here colocates with the
+ * matcher logic that reads `snoozed_until`.
+ */
+ridesRouter.post(
+  '/snooze',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = res.locals['userId'] as string
+      const body = (req.body ?? {}) as { snooze_minutes?: unknown }
+      const minutes = typeof body.snooze_minutes === 'number' ? body.snooze_minutes : null
+      const allowed = new Set([15, 60, 120, 240, 480, 1440])
+      if (minutes == null || !allowed.has(minutes)) {
+        res.status(400).json({
+          error: { code: 'INVALID_PARAMS', message: 'snooze_minutes must be one of 15, 60, 120, 240, 480, 1440' },
+        })
+        return
+      }
+      const snoozedUntil = new Date(Date.now() + minutes * 60_000).toISOString()
+      const { error } = await supabaseAdmin
+        .from('driver_locations')
+        .update({ snoozed_until: snoozedUntil })
+        .eq('user_id', userId)
+      if (error) { next(error); return }
+      res.status(200).json({ snoozed_until: snoozedUntil })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+/**
+ * DELETE /api/rides/snooze — clear the caller's active snooze.
+ *
+ * Powers the "Resume now" tap on the iOS DriverTopBar Snoozed indicator
+ * (and the equivalent web header chip). Idempotent — clearing an already-
+ * cleared snooze is a no-op, returns 200.
+ */
+ridesRouter.delete(
+  '/snooze',
+  validateJwt,
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = res.locals['userId'] as string
+      const { error } = await supabaseAdmin
+        .from('driver_locations')
+        .update({ snoozed_until: null })
+        .eq('user_id', userId)
+      if (error) { next(error); return }
+      res.status(200).json({ snoozed_until: null })
     } catch (err) {
       next(err)
     }

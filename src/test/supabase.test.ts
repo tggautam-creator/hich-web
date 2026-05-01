@@ -93,6 +93,7 @@ describe('database types — row aliases', () => {
       id: 'd1', user_id: 'u1',
       location: { type: 'Point', coordinates: [-121.74, 38.54] },
       heading: 180, speed: 30, recorded_at: new Date().toISOString(), is_online: true,
+      snoozed_until: null,
     }
     expect(dl.location.type).toBe('Point')
     expect(dl.location.coordinates).toHaveLength(2)
