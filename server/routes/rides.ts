@@ -197,6 +197,7 @@ async function estimateFareCentsBetween(
 
 interface RideRequestBody {
   origin: GeoPoint
+  origin_name?: string
   destination_bearing?: number
   destination_name?: string
   destination_lat?: number
@@ -339,6 +340,9 @@ ridesRouter.post(
       .insert({
         rider_id: riderId,
         origin: body.origin,
+        origin_name: typeof body.origin_name === 'string' && body.origin_name.trim() !== ''
+          ? body.origin_name.trim()
+          : null,
         destination: destinationGeo,
         destination_name: body.destination_name ?? null,
         destination_bearing: body.destination_bearing ?? null,
@@ -457,6 +461,12 @@ ridesRouter.post(
       ride_id: ride.id,
       rider_name: riderName,
       rider_avatar_url: riderAvatarUrl,
+      // Use the rider's reverse-geocoded label if they sent one
+      // (RideConfirm on iOS does); fall back to a generic label so the
+      // suggestion card never shows an empty pickup row.
+      origin_name: typeof body.origin_name === 'string' && body.origin_name.trim() !== ''
+        ? body.origin_name.trim()
+        : 'Pickup location',
       destination: body.destination_name ?? 'Nearby destination',
       distance_km: String(body.distance_km ?? '–'),
       estimated_earnings_cents: String(driverEarns),
@@ -472,6 +482,10 @@ ridesRouter.post(
       title: 'New ride request nearby',
       body: 'A rider needs a lift — open TAGO to check.',
       data: fcmDataPayload,
+      // iOS picks up these action buttons (Decline / Snooze 15m / Snooze 1h)
+      // from the `RIDE_REQUEST` UNNotificationCategory the app registers at
+      // launch — driver can act from the lock screen without unlocking.
+      category: 'RIDE_REQUEST',
     })
 
     // Persist notifications as a reliable fallback when realtime/push is delayed.
