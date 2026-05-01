@@ -133,8 +133,17 @@ export default function TrackPage({ 'data-testid': testId = 'track-page' }: { 'd
 
         {pageState === 'tracking' && (
           <>
-            {/* Map — full remaining height */}
-            <div className="flex-1" style={{ minHeight: '60vh' }}>
+            {/* Map — needs explicit height (NOT just flex-1 + minHeight)
+                because @vis.gl/react-google-maps' inner `.gm-style` div
+                uses `height: 100%`, and `100%` of a flex-1 parent
+                resolves to 0 if no explicit height is set on any
+                ancestor. The map mounted + tiles loaded but rendered
+                invisibly because of this — caught via DevTools showing
+                gm-style {w: 414, h: 0} on 2026-05-01. Fix: set explicit
+                viewport-relative height on the wrapper + use absolute
+                positioning on Map so its dimensions don't depend on
+                the inner library's height-percentage chain. */}
+            <div className="flex-1" style={{ position: 'relative', minHeight: '60vh' }}>
               {env.GOOGLE_MAPS_KEY ? (
                 <APIProvider apiKey={env.GOOGLE_MAPS_KEY}>
                   <Map
@@ -159,7 +168,11 @@ export default function TrackPage({ 'data-testid': testId = 'track-page' }: { 'd
                     defaultZoom={15}
                     gestureHandling="greedy"
                     disableDefaultUI
-                    style={{ width: '100%', height: '100%' }}
+                    // Absolute fill so the Map sizes itself off the
+                    // wrapper's box rather than its own intrinsic
+                    // height-percentage chain (which was collapsing
+                    // to 0 — see comment on wrapper).
+                    style={{ position: 'absolute', inset: 0 }}
                   >
                     {trackData?.lat != null && trackData.lng != null && (
                       <AdvancedMarker
