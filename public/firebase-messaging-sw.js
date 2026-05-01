@@ -40,7 +40,8 @@ messaging.onBackgroundMessage((payload) => {
 
   self.registration.showNotification(title, {
     body,
-    icon: '/favicon.ico',
+    icon: '/icon-192x192.png',
+    badge: '/icon-192x192.png',
     data,
   })
 })
