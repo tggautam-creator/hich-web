@@ -17,6 +17,7 @@ import type { ScheduledRide, TabFilter } from './boardTypes'
 import type { DriverRoutine } from '@/types/database'
 import { haversineMetres } from '@/lib/geo'
 import { estimateScheduleFare } from '@/lib/fareEstimate'
+import { useGasPriceSeed } from '@/lib/gasPriceCache'
 
 // Same-metro radius for "Near me". Cities routinely span 20-30 km across, so
 // a tighter corridor would exclude a poster living in the same town as the
@@ -40,6 +41,11 @@ interface PendingRideRequestState {
 }
 
 export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
+  // Seed the live EIA gas price into the synchronous cache that
+  // `estimateScheduleFare` reads. Without this the cards render against
+  // the hardcoded $3.50 fallback and disagree with iOS by ~30%.
+  useGasPriceSeed('CA')
+
   const navigate = useNavigate()
   const location = useLocation()
   const profile = useAuthStore((s) => s.profile)

@@ -1,9 +1,24 @@
 /**
  * Client-side fare estimator for ride-board cards / confirm sheet.
  *
- * Uses haversine × 1.3 road fudge for distance, and an assumed 35 mph
- * average speed to infer duration. The result is labelled as a range
- * via calculateFareRange so users see this is an estimate, not a quote.
+ * Uses haversine × 1.3 road fudge for distance, and an assumed 60 mph
+ * (was 35 mph until 2026-05-01) average speed to infer duration. The
+ * result is labelled as a range via calculateFareRange so users see
+ * this is an estimate, not a quote.
+ *
+ * 35 → 60 mph: the previous 35 mph default was city-only and inflated
+ * duration on routes that include freeway segments — a Davis → San
+ * Jose row came out at 181 min vs Apple Maps' real 104 min, pushing
+ * the time component from $5 to $9 and making the listing read ~$30
+ * when the ride-confirm calculation for the same route showed ~$25.
+ * 60 mph is closer to a realistic blended highway+city average for
+ * typical inter-city carpool routes; cards are still framed as an "~$X"
+ * range so the user understands it's a rough number, not a quote.
+ *
+ * Gas price defaults to the in-process EIA value cached by `gasPriceCache`
+ * (seeded once per cold load), so web ride-board fares match iOS
+ * ride-board fares within rounding. Falls back to the formula's hardcoded
+ * $3.50 when no live value has been seeded yet.
  *
  * Prefers generic `origin_lat/lng/dest_lat/dest_lng` (stored directly on
  * the ride_schedules row since migration 048, populated for BOTH driver
@@ -13,6 +28,7 @@
 
 import { haversineMetres } from '@/lib/geo'
 import { calculateFareRange, formatCents } from '@/lib/fare'
+import { getCurrentGasPricePerGallon } from '@/lib/gasPriceCache'
 
 interface FareEstimateInput {
   origin_lat?: number | null
@@ -34,7 +50,7 @@ export interface FareEstimateResult {
 }
 
 const ROAD_FUDGE = 1.3
-const AVG_SPEED_KPH = 56 // ≈ 35 mph
+const AVG_SPEED_KPH = 96 // ≈ 60 mph (was 56 / 35 mph — see header)
 
 export function estimateScheduleFare(
   input: FareEstimateInput,
@@ -52,7 +68,12 @@ export function estimateScheduleFare(
   const distance_km = (metres / 1000) * ROAD_FUDGE
   const duration_min = (distance_km / AVG_SPEED_KPH) * 60
 
-  const { low, high } = calculateFareRange(distance_km, duration_min)
+  const { low, high } = calculateFareRange(
+    distance_km,
+    duration_min,
+    undefined,
+    getCurrentGasPricePerGallon(),
+  )
 
   return {
     distance_km,
