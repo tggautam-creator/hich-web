@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { APIProvider, Map, AdvancedMarker } from '@vis.gl/react-google-maps'
+import { APIProvider, Map, AdvancedMarker, useMap } from '@vis.gl/react-google-maps'
 import { env } from '@/lib/env'
 
 interface TrackData {
@@ -21,6 +21,13 @@ export default function TrackPage({ 'data-testid': testId = 'track-page' }: { 'd
   const [trackData, setTrackData] = useState<TrackData | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Auto-follow state — true while the map is following the moving
+  // location; false the moment the user pans manually. Recenter
+  // button below the map flips it back to true (and bumps
+  // `recenterNonce` so the helper component picks up the request).
+  // Uber/Lyft pattern.
+  const [autoFollow, setAutoFollow] = useState(true)
+  const [recenterNonce, setRecenterNonce] = useState(0)
 
   async function fetchLocation() {
     if (!token) return
@@ -148,30 +155,20 @@ export default function TrackPage({ 'data-testid': testId = 'track-page' }: { 'd
                 <APIProvider apiKey={env.GOOGLE_MAPS_KEY}>
                   <Map
                     data-testid="track-map"
-                    // mapId is REQUIRED for <AdvancedMarker> to render.
-                    // Without it the Map silently shows a blank white
-                    // container — the bug Tarun's friend hit on the
-                    // shared link 2026-04-30. Created in Google Cloud
-                    // Console → Maps Management; must also be set on
-                    // Vercel env as VITE_GOOGLE_MAP_ID for production.
                     mapId={env.GOOGLE_MAP_ID}
+                    // Uncontrolled center — `defaultCenter` only runs
+                    // on initial mount, so the user can pan freely
+                    // without the map snapping back on every poll
+                    // tick. The `MapAutoFollow` child below handles
+                    // pan-detection + follow-mode toggling.
                     defaultCenter={
                       trackData?.lat != null && trackData.lng != null
                         ? { lat: trackData.lat, lng: trackData.lng }
                         : defaultCenter
                     }
-                    center={
-                      trackData?.lat != null && trackData.lng != null
-                        ? { lat: trackData.lat, lng: trackData.lng }
-                        : undefined
-                    }
                     defaultZoom={15}
                     gestureHandling="greedy"
                     disableDefaultUI
-                    // Absolute fill so the Map sizes itself off the
-                    // wrapper's box rather than its own intrinsic
-                    // height-percentage chain (which was collapsing
-                    // to 0 — see comment on wrapper).
                     style={{ position: 'absolute', inset: 0 }}
                   >
                     {trackData?.lat != null && trackData.lng != null && (
@@ -186,7 +183,35 @@ export default function TrackPage({ 'data-testid': testId = 'track-page' }: { 'd
                         </div>
                       </AdvancedMarker>
                     )}
+                    <MapAutoFollow
+                      lat={trackData?.lat ?? null}
+                      lng={trackData?.lng ?? null}
+                      autoFollow={autoFollow}
+                      onUserPan={() => setAutoFollow(false)}
+                      recenterNonce={recenterNonce}
+                    />
                   </Map>
+                  {!autoFollow && trackData?.lat != null && trackData.lng != null && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAutoFollow(true)
+                        setRecenterNonce((n) => n + 1)
+                      }}
+                      data-testid="recenter-button"
+                      className="absolute bottom-4 right-4 flex items-center gap-1.5 rounded-full bg-white px-3 py-2 text-xs font-semibold text-text-primary shadow-lg border border-border active:bg-surface"
+                      style={{ zIndex: 10 }}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                        <circle cx="12" cy="12" r="3" />
+                        <line x1="12" y1="2" x2="12" y2="5" />
+                        <line x1="12" y1="19" x2="12" y2="22" />
+                        <line x1="2" y1="12" x2="5" y2="12" />
+                        <line x1="19" y1="12" x2="22" y2="12" />
+                      </svg>
+                      Recenter
+                    </button>
+                  )}
                 </APIProvider>
               ) : (
                 <div data-testid="track-map" className="flex h-full items-center justify-center bg-surface">
@@ -222,4 +247,58 @@ export default function TrackPage({ 'data-testid': testId = 'track-page' }: { 'd
       </div>
     </div>
   )
+}
+
+/**
+ * Pan-detection + auto-follow helper for the public TrackPage map.
+ * Renders nothing — its only job is to subscribe to the underlying
+ * Google Map's events via `useMap()` (only available inside a
+ * `<Map>` ancestor) and run the follow-mode behavior:
+ *
+ *   • While `autoFollow` is true, every (lat, lng) tick pans the
+ *     map smoothly to the new location.
+ *   • A `dragstart` event from the user fires `onUserPan()` so the
+ *     parent can flip `autoFollow=false` and surface the Recenter
+ *     button.
+ *   • Bumping `recenterNonce` re-pans to current location even if
+ *     (lat, lng) hasn't changed since the last pan.
+ *
+ * Lives inline in TrackPage because it's only used here. If we ever
+ * add another map-with-recenter surface, extract.
+ */
+function MapAutoFollow({
+  lat,
+  lng,
+  autoFollow,
+  onUserPan,
+  recenterNonce,
+}: {
+  lat: number | null
+  lng: number | null
+  autoFollow: boolean
+  onUserPan: () => void
+  recenterNonce: number
+}) {
+  const map = useMap()
+
+  // Subscribe to user-drag once per Map instance. Drag-start is the
+  // earliest signal the user touched the map — flip auto-follow off
+  // immediately so the in-flight tick doesn't snap us back mid-pan.
+  useEffect(() => {
+    if (!map) return
+    const listener = map.addListener('dragstart', () => onUserPan())
+    return () => listener.remove()
+  }, [map, onUserPan])
+
+  // Pan to current location whenever location changes AND auto-follow
+  // is on, OR whenever Recenter button bumps the nonce (always pans
+  // even with auto-follow already true so the click feels responsive).
+  useEffect(() => {
+    if (!map || lat == null || lng == null) return
+    if (!autoFollow && recenterNonce === 0) return
+    map.panTo({ lat, lng })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, lat, lng, autoFollow, recenterNonce])
+
+  return null
 }

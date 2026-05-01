@@ -121,40 +121,62 @@ safetyRouter.get('/track/:token', async (req, res) => {
     return
   }
 
-  // Get the ride to find the driver
+  // Pull the ride row + per-party GPS pings. Each party has their
+  // own safety toolkit, so the share creator is who we track —
+  // rider-shared link → rider's GPS, driver-shared link → driver's
+  // GPS. Symmetry matters: a rider sharing for safety wants the
+  // friend to see WHERE THE RIDER IS, not where the driver is
+  // (those diverge during pickup walk + after drop-off).
   const { data: ride } = await supabaseAdmin
     .from('rides')
-    .select('driver_id, rider_id')
+    .select('driver_id, rider_id, last_rider_gps_lat, last_rider_gps_lng, last_rider_ping_at, last_driver_gps_lat, last_driver_gps_lng, last_driver_ping_at')
     .eq('id', share.ride_id)
     .single()
 
-  // Track the driver's location (fall back to share creator if no driver yet)
-  const trackUserId = ride?.driver_id ?? share.user_id
+  let lat: number | null = null
+  let lng: number | null = null
+  let recordedAt: string | null = null
 
-  const { data: loc, error: locError } = await supabaseAdmin
-    .from('driver_locations')
-    .select('location, recorded_at')
-    .eq('user_id', trackUserId)
-    .single()
-
-  if (locError ?? !loc) {
-    res.status(200).json({
-      ride_id: share.ride_id,
-      expires_at: share.expires_at,
-      lat: null,
-      lng: null,
-      recorded_at: null,
-    })
-    return
+  if (ride) {
+    const isRiderShare = share.user_id === ride.rider_id
+    if (isRiderShare) {
+      // Rider's per-ride GPS lives directly on the rides row (written
+      // by /api/rides/:id/gps-ping during status='active'). Riders
+      // don't write to driver_locations — that table is the driver's
+      // pre-ride GPS broadcast for matching.
+      lat = ride.last_rider_gps_lat as number | null
+      lng = ride.last_rider_gps_lng as number | null
+      recordedAt = ride.last_rider_ping_at as string | null
+    } else {
+      // Driver share — try the per-ride driver ping first (active
+      // ride). If unset (status<active), fall back to the standalone
+      // `driver_locations` table where drivers broadcast GPS while
+      // online before any specific ride.
+      lat = ride.last_driver_gps_lat as number | null
+      lng = ride.last_driver_gps_lng as number | null
+      recordedAt = ride.last_driver_ping_at as string | null
+      if (lat == null || lng == null) {
+        const { data: loc } = await supabaseAdmin
+          .from('driver_locations')
+          .select('location, recorded_at')
+          .eq('user_id', share.user_id)
+          .single()
+        if (loc) {
+          const coords = (loc.location as { coordinates: [number, number] }).coordinates
+          lat = coords[1]
+          lng = coords[0]
+          recordedAt = loc.recorded_at as string
+        }
+      }
+    }
   }
 
-  const coords = (loc.location as { coordinates: [number, number] }).coordinates
   res.status(200).json({
     ride_id: share.ride_id,
     expires_at: share.expires_at,
-    lat: coords[1],
-    lng: coords[0],
-    recorded_at: loc.recorded_at,
+    lat,
+    lng,
+    recorded_at: recordedAt,
   })
 })
 
