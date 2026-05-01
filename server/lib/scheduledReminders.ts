@@ -97,10 +97,10 @@ export async function checkUpcomingRides(): Promise<{ checked: number; reminded:
   // Query rides that still have at least one unsent reminder
   const { data: rides, error } = await supabaseAdmin
     .from('rides')
-    .select('id, rider_id, driver_id, trip_date, trip_time, destination_name, reminder_30_sent, reminder_15_sent')
+    .select('id, rider_id, driver_id, trip_date, trip_time, destination_name, reminder_30_sent, reminder_15_sent, reminder_today_sent, time_flexible')
     .not('schedule_id', 'is', null)
     .in('status', ['accepted', 'coordinating'])
-    .or('reminder_30_sent.eq.false,reminder_15_sent.eq.false')
+    .or('reminder_30_sent.eq.false,reminder_15_sent.eq.false,reminder_today_sent.eq.false')
     .in('trip_date', [todayDate, tomorrowDate])
 
   if (error) {
@@ -117,6 +117,31 @@ export async function checkUpcomingRides(): Promise<{ checked: number; reminded:
   for (const ride of rides) {
     if (!ride.trip_date || !ride.trip_time) continue
 
+    const isFlex = ride.time_flexible === true
+    const destName = ride.destination_name ?? 'your destination'
+    const userIds = [ride.rider_id, ride.driver_id].filter(Boolean) as string[]
+
+    // ── Anytime path: ONE 9 AM reminder on the trip date ─────────────
+    // The 30/15-min reminders are noise for flex rides — they fire
+    // off the noon placeholder. Replace with a single morning push.
+    if (isFlex) {
+      if (ride.reminder_today_sent) continue
+      // Only fire when (a) trip_date is today AND (b) local clock is
+      // past 9 AM. Trip dates in the future stay queued; dates in
+      // the past won't be picked up because the SQL filter only
+      // includes today + tomorrow.
+      if (ride.trip_date !== todayDate) continue
+      if (nowTime < '09:00:00') continue
+
+      const title = 'Today\'s the day!'
+      const body = `Your scheduled ride to ${destName} is anytime today. Open Tago when you're ready to head out.`
+      await sendReminderNotification(ride.id, userIds, title, body)
+      await supabaseAdmin.from('rides').update({ reminder_today_sent: true }).eq('id', ride.id)
+      reminded++
+      continue
+    }
+
+    // ── Specific-time path (existing) ────────────────────────────────
     const rideDateTime = parseScheduledRideDateTime(ride.trip_date, ride.trip_time)
     if (isNaN(rideDateTime.getTime())) continue
 
@@ -124,9 +149,6 @@ export async function checkUpcomingRides(): Promise<{ checked: number; reminded:
 
     // Skip rides more than 30 min away or more than 5 min past
     if (minutesUntil > 30 || minutesUntil < -5) continue
-
-    const destName = ride.destination_name ?? 'your destination'
-    const userIds = [ride.rider_id, ride.driver_id].filter(Boolean) as string[]
 
     // 30-min reminder: ride is 15–30 min away
     if (!ride.reminder_30_sent && minutesUntil > 0 && minutesUntil <= 30) {
@@ -214,7 +236,7 @@ export async function expireStaleRequests(): Promise<{ checked: number; expired:
   // Find requested rides whose trip has already passed
   const { data: rides, error } = await supabaseAdmin
     .from('rides')
-    .select('id, rider_id, driver_id, trip_date, trip_time, destination_name, schedule_id')
+    .select('id, rider_id, driver_id, trip_date, trip_time, destination_name, schedule_id, time_flexible')
     .not('schedule_id', 'is', null)
     .eq('status', 'requested')
     .not('trip_date', 'is', null)
@@ -235,8 +257,16 @@ export async function expireStaleRequests(): Promise<{ checked: number; expired:
   for (const ride of rides) {
     if (!ride.trip_date || !ride.trip_time) continue
 
-    // For today's rides, only expire if trip_time has passed
-    if (ride.trip_date === todayDate && ride.trip_time > nowTime) continue
+    const isFlex = ride.time_flexible === true
+
+    // Anytime rides stay valid the entire trip date — only expire
+    // once the date itself is in the past. The SQL `.lte` window
+    // already includes today, so explicitly skip flex rides whose
+    // trip_date is still today.
+    if (isFlex && ride.trip_date === todayDate) continue
+
+    // Specific-time rides: on today, only expire if trip_time has passed
+    if (!isFlex && ride.trip_date === todayDate && ride.trip_time > nowTime) continue
 
     // Update status to cancelled so the ride disappears from active views.
     const { error: updateErr } = await supabaseAdmin
@@ -308,7 +338,7 @@ export async function expireMissedRides(): Promise<{ checked: number; expired: n
   // Find confirmed rides whose trip time is more than 2 hours ago
   const { data: rides, error } = await supabaseAdmin
     .from('rides')
-    .select('id, rider_id, driver_id, trip_date, trip_time, destination_name')
+    .select('id, rider_id, driver_id, trip_date, trip_time, destination_name, time_flexible')
     .not('schedule_id', 'is', null)
     .in('status', ['accepted', 'coordinating'])
     .not('trip_date', 'is', null)
@@ -329,12 +359,25 @@ export async function expireMissedRides(): Promise<{ checked: number; expired: n
   for (const ride of rides) {
     if (!ride.trip_date || !ride.trip_time) continue
 
-    const rideDateTime = parseScheduledRideDateTime(ride.trip_date, ride.trip_time)
-    if (isNaN(rideDateTime.getTime())) continue
+    const isFlex = ride.time_flexible === true
 
-    const minutesSince = (now.getTime() - rideDateTime.getTime()) / (1000 * 60)
+    let minutesSince: number
+    if (isFlex) {
+      // Anytime rides: anchor expiry to END of the trip date
+      // (next day midnight in local time). We treat 23:59:59 of the
+      // trip_date as the effective deadline so any time during the
+      // day stays valid; 2h grace then carries into ~02:00 the next
+      // morning before auto-cancel.
+      const endOfDay = parseScheduledRideDateTime(ride.trip_date, '23:59:59')
+      if (isNaN(endOfDay.getTime())) continue
+      minutesSince = (now.getTime() - endOfDay.getTime()) / (1000 * 60)
+    } else {
+      const rideDateTime = parseScheduledRideDateTime(ride.trip_date, ride.trip_time)
+      if (isNaN(rideDateTime.getTime())) continue
+      minutesSince = (now.getTime() - rideDateTime.getTime()) / (1000 * 60)
+    }
 
-    // Only expire if more than 2 hours (120 min) past trip time
+    // Only expire if more than 2 hours (120 min) past the deadline
     if (minutesSince < 120) continue
 
     const { error: updateErr } = await supabaseAdmin
@@ -392,4 +435,160 @@ export async function expireMissedRides(): Promise<{ checked: number; expired: n
 
   console.log(`[missed] Checked ${rides.length} rides, expired ${expired}`)
   return { checked: rides.length, expired }
+}
+
+/**
+ * Daily-cron projection of every active driver_routine into the next
+ * 7 days of `ride_schedules`. Closes the gap where the per-user
+ * `/api/schedule/sync-routines` endpoint only fires when a user opens
+ * the Routines sheet — without this cron, a routine for "every Monday
+ * 8am" stops projecting after the user stops opening the app.
+ *
+ * Idempotent on three layers:
+ *   1. Skip-dates tombstone (migration 057 — user explicitly deleted
+ *      this date for this routine).
+ *   2. (date|time|route) dedup against existing ride_schedules rows.
+ *   3. Self-skip if the routine was deactivated.
+ *
+ * Anchors "today" to America/Los_Angeles (matches the rest of the
+ * scheduled-reminder helpers + the routine UX expectation that "today"
+ * means the user's local calendar day, not server UTC).
+ *
+ * Called from `GET /api/schedule/check-reminders` (PM2 cron, every
+ * 5 min — daily firing is OK because the projection is idempotent so
+ * running it more often than needed is just a no-op after the first
+ * pass each day).
+ */
+export async function syncAllRoutines(): Promise<{ users: number; inserted: number }> {
+  // Pull every active routine in one round-trip. Filter out users
+  // with zero routines. Each row carries skip_dates so we tombstone
+  // correctly per (routine, date) without a join.
+  const { data: routines, error } = await supabaseAdmin
+    .from('driver_routines')
+    .select('id, user_id, route_name, direction_type, day_of_week, departure_time, arrival_time, origin_address, dest_address, skip_dates')
+    .eq('is_active', true)
+
+  if (error) {
+    console.error('[sync-cron] Failed to load active routines:', error.message)
+    return { users: 0, inserted: 0 }
+  }
+
+  if (!routines || routines.length === 0) return { users: 0, inserted: 0 }
+
+  // Group by user so we can read each user's existing schedules in
+  // one batched query per user.
+  const byUser = new Map<string, typeof routines>()
+  for (const r of routines) {
+    const list = byUser.get(r.user_id as string) ?? []
+    list.push(r)
+    byUser.set(r.user_id as string, list)
+  }
+
+  // Anchor "today" to LA — matches RIDE_TIMEZONE used throughout
+  // this file. UTC math after that point makes day-of-week stable.
+  const now = new Date()
+  const todayLocal = getLocalDateString(now) // YYYY-MM-DD
+  const [tyStr, tmStr, tdStr] = todayLocal.split('-') as [string, string, string]
+  const todayY = Number(tyStr); const todayM = Number(tmStr); const todayD = Number(tdStr)
+  const today = new Date(Date.UTC(todayY, todayM - 1, todayD))
+  const todayDow = today.getUTCDay()
+  const weekOut = new Date(today)
+  weekOut.setUTCDate(today.getUTCDate() + 7)
+  const todayStr = todayLocal
+  const weekOutStr = `${weekOut.getUTCFullYear()}-${String(weekOut.getUTCMonth() + 1).padStart(2, '0')}-${String(weekOut.getUTCDate()).padStart(2, '0')}`
+
+  let totalInserted = 0
+  let usersTouched = 0
+
+  for (const [userId, userRoutines] of byUser.entries()) {
+    // Existing rows for the next 7 days for this user — used to dedup
+    // by (date | time | route_name) without re-inserting duplicates.
+    const { data: existing } = await supabaseAdmin
+      .from('ride_schedules')
+      .select('trip_date, trip_time, route_name')
+      .eq('user_id', userId)
+      .gte('trip_date', todayStr)
+      .lte('trip_date', weekOutStr)
+
+    const existingKeys = new Set(
+      (existing ?? []).map((s: Record<string, unknown>) =>
+        `${s['trip_date'] as string}|${s['trip_time'] as string}|${s['route_name'] as string}`,
+      ),
+    )
+
+    // Mode lookup (one query per user, cheap).
+    const { data: userRow } = await supabaseAdmin
+      .from('users')
+      .select('is_driver')
+      .eq('id', userId)
+      .single()
+    const mode: 'driver' | 'rider' = userRow?.is_driver ? 'driver' : 'rider'
+
+    const inserts: Array<{
+      user_id: string; mode: 'driver' | 'rider'; route_name: string;
+      origin_place_id: string; origin_address: string;
+      dest_place_id: string; dest_address: string;
+      direction_type: 'one_way' | 'roundtrip'; trip_date: string;
+      time_type: 'departure' | 'arrival'; trip_time: string;
+    }> = []
+
+    for (const r of userRoutines as Array<Record<string, unknown>>) {
+      const skipSet = new Set((r['skip_dates'] as string[] | null) ?? [])
+      const departureTime = r['departure_time'] as string | null
+      const arrivalTime = r['arrival_time'] as string | null
+      const timeStr = departureTime ?? arrivalTime ?? '08:00:00'
+      const timeType: 'departure' | 'arrival' = departureTime ? 'departure' : 'arrival'
+      const routeName = r['route_name'] as string
+      const directionType = r['direction_type'] as 'one_way' | 'roundtrip'
+      const originAddr = (r['origin_address'] as string | null) ?? routeName
+      const destAddr = (r['dest_address'] as string | null) ?? routeName
+      const dows = (r['day_of_week'] as number[] | null) ?? []
+      const routineID = r['id'] as string
+
+      for (const dow of dows) {
+        let daysUntil = dow - todayDow
+        if (daysUntil < 0) daysUntil += 7
+        if (daysUntil === 0) daysUntil = 7
+
+        const nextDate = new Date(today)
+        nextDate.setUTCDate(today.getUTCDate() + daysUntil)
+        if (nextDate > weekOut) continue
+
+        const dateStr = `${nextDate.getUTCFullYear()}-${String(nextDate.getUTCMonth() + 1).padStart(2, '0')}-${String(nextDate.getUTCDate()).padStart(2, '0')}`
+        if (skipSet.has(dateStr)) continue
+        const key = `${dateStr}|${timeStr}|${routeName}`
+        if (existingKeys.has(key)) continue
+        existingKeys.add(key)
+
+        inserts.push({
+          user_id: userId,
+          mode,
+          route_name: routeName,
+          origin_place_id: `routine:${routineID}`,
+          origin_address: originAddr,
+          dest_place_id: `routine:${routineID}:dest`,
+          dest_address: destAddr,
+          direction_type: directionType,
+          trip_date: dateStr,
+          time_type: timeType,
+          trip_time: timeStr,
+        })
+      }
+    }
+
+    if (inserts.length > 0) {
+      const { error: insertErr } = await supabaseAdmin
+        .from('ride_schedules')
+        .insert(inserts)
+      if (insertErr) {
+        console.error(`[sync-cron] insert failed user=${userId}:`, insertErr.message)
+        continue
+      }
+      totalInserted += inserts.length
+      usersTouched++
+    }
+  }
+
+  console.log(`[sync-cron] Synced routines for ${usersTouched} user(s), inserted ${totalInserted} row(s)`)
+  return { users: usersTouched, inserted: totalInserted }
 }

@@ -37,8 +37,35 @@ export async function resolveAndPersistDefaultPm(
   cachedDefault: string | null,
 ): Promise<string | null> {
   const stripe = getStripe()
-  const list = await stripe.paymentMethods.list({ customer: customerId, type: 'card' })
-  const pms = list.data
+
+  // Heal-forward against stale customer IDs from a different Stripe
+  // environment (live → test, or vice versa). When a Tago account was
+  // first hit by web app on Stripe LIVE keys and is later hit by iOS
+  // on TEST keys (or vice versa), the cached `users.stripe_customer_id`
+  // refers to a customer that doesn't exist in the active environment
+  // and Stripe throws `resource_missing`. Without this guard the
+  // error bubbles as a 500 to /api/schedule/request, /api/rides/request,
+  // and /api/payment/methods. We treat it as "user has no PM in this
+  // environment", clear the stale ids so `ensureCustomer()` mints a
+  // fresh customer the next time the user adds a card, and let the
+  // caller fall through to its existing NO_PAYMENT_METHOD path.
+  let pms: Stripe.PaymentMethod[]
+  try {
+    const list = await stripe.paymentMethods.list({ customer: customerId, type: 'card' })
+    pms = list.data
+  } catch (err) {
+    if (isMissingCustomerError(err)) {
+      await supabaseAdmin
+        .from('users')
+        .update({
+          stripe_customer_id: null,
+          default_payment_method_id: null,
+        })
+        .eq('id', userId)
+      return null
+    }
+    throw err
+  }
 
   if (pms.length === 0) {
     if (cachedDefault) {

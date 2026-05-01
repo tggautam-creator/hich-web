@@ -79,8 +79,43 @@ export async function chargeRideFare(params: {
     // customer" is what Stripe returns when a live key is asked to
     // charge a test customer (or vice-versa) — root cause of the
     // wallet-balance contamination tracked in /Users/.../scenario-2-stripe-purring-hollerith.md.
-    const crossMode = message.includes('No such customer') ? ' [CROSS_MODE_STRIPE]' : ''
+    const isStaleCustomer = message.includes('No such customer')
+    const crossMode = isStaleCustomer ? ' [CROSS_MODE_STRIPE]' : ''
     console.error(`[chargeRideFare]${crossMode} Failed for ride ${params.rideId}: ${message}`)
+
+    // Self-heal — if Stripe rejects the customer id, it can NEVER
+    // succeed against the current key. Clear the stale id + payment
+    // method on the user row so the next save-card flow mints a fresh
+    // customer. Surfaces a structured error code the client can read
+    // to render "Re-add your card to retry" (vs the generic
+    // "card declined" copy). 2026-04-30, CTO call after a real
+    // cross-mode incident burned an hour of debugging on a test
+    // account.
+    if (isStaleCustomer) {
+      try {
+        const { supabaseAdmin } = await import('./supabaseAdmin.ts')
+        const { data: ride } = await supabaseAdmin
+          .from('rides')
+          .select('rider_id')
+          .eq('id', params.rideId)
+          .single()
+        if (ride?.rider_id) {
+          await supabaseAdmin
+            .from('users')
+            .update({
+              stripe_customer_id: null,
+              default_payment_method_id: null,
+            })
+            .eq('id', ride.rider_id)
+          console.log(`[chargeRideFare] Cleared stale stripe_customer_id on user=${ride.rider_id}`)
+        }
+      } catch (clearErr) {
+        const clearMessage = clearErr instanceof Error ? clearErr.message : 'unknown'
+        console.error(`[chargeRideFare] Self-heal clear failed: ${clearMessage}`)
+      }
+      return { success: false, error: 'STALE_CUSTOMER' }
+    }
+
     return { success: false, error: message }
   }
 }

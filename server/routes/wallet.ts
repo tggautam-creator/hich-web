@@ -81,7 +81,15 @@ walletRouter.post('/topup', validateJwt, async (req, res, next) => {
 // ── POST /api/wallet/confirm-topup — verify payment and credit wallet ──────
 // Called by the client after Stripe confirmCardPayment succeeds.
 // Verifies the PaymentIntent status with Stripe before crediting.
-walletRouter.post('/confirm-topup', validateJwt, async (req, res, next) => {
+//
+// `idempotency()` middleware added 2026-04-28 (PAY.0 H3). Without it,
+// a double-tap on "I've paid" or a network retry could race on the
+// `payment_intent_id` partial-unique index — Postgres serializes the
+// 23505 collision correctly but the response body to the racing
+// client could echo a stale balance (the SELECT runs before the
+// other path's RPC commits). Reservation-pattern idempotency
+// guarantees a single handler run per key.
+walletRouter.post('/confirm-topup', validateJwt, idempotency('wallet-confirm-topup'), async (req, res, next) => {
   try {
     const userId = res.locals['userId'] as string
     const { payment_intent_id } = req.body as { payment_intent_id: unknown }
@@ -134,6 +142,11 @@ walletRouter.post('/confirm-topup', validateJwt, async (req, res, next) => {
 
     // Atomic credit via RPC: balance update + transaction insert in one tx.
     // A unique-index conflict on payment_intent_id rolls back the balance.
+    // `p_transfer_id: null` is REQUIRED — there are two overloaded
+    // `wallet_apply_delta` functions in DB (7-param topup-era + 8-param
+    // withdrawal-era). Calling with exactly 7 named args triggers
+    // PostgREST PGRST203 "could not choose the best candidate function".
+    // Pinning the 8th arg explicitly disambiguates to the newer signature.
     const { data: rpcResult, error: rpcErr } = await supabaseAdmin.rpc('wallet_apply_delta', {
       p_user_id: userId,
       p_delta_cents: amountCents,
@@ -142,6 +155,7 @@ walletRouter.post('/confirm-topup', validateJwt, async (req, res, next) => {
       p_ride_id: null,
       p_payment_intent_id: payment_intent_id,
       p_stripe_event_id: null,
+      p_transfer_id: null,
     })
 
     if (rpcErr) {
@@ -166,11 +180,54 @@ walletRouter.post('/confirm-topup', validateJwt, async (req, res, next) => {
       return
     }
 
+    // PAY.12 (2026-04-29): write the funding-source columns onto the
+    // freshly-inserted transactions row so the wallet UI can show
+    // "Apple Pay" / "Visa •••• 4242" instead of a generic subtitle.
+    // Best-effort — failure here doesn't unwind the credit; row just
+    // stays with null pm_* fields and falls back to the legacy copy.
+    await populateTransactionPaymentSource(payment_intent_id, paymentIntent)
+
     res.json({ credited: true, balance: rpcResult.balance })
   } catch (err) {
     next(err)
   }
 })
+
+/// Decorate the `transactions` row matching `paymentIntentId` with the
+/// funding source we read off the PaymentIntent. Called from both
+/// `/confirm-topup` (which already retrieved the PI) and the
+/// `payment_intent.succeeded` webhook (which receives the event
+/// object). Idempotent — running both paths writes the same data.
+export async function populateTransactionPaymentSource(
+  paymentIntentId: string,
+  paymentIntent: Stripe.PaymentIntent,
+): Promise<void> {
+  try {
+    const stripe = getStripe()
+    let pm: Stripe.PaymentMethod | null = null
+    if (typeof paymentIntent.payment_method === 'string') {
+      pm = await stripe.paymentMethods.retrieve(paymentIntent.payment_method)
+    } else if (paymentIntent.payment_method) {
+      pm = paymentIntent.payment_method as Stripe.PaymentMethod
+    }
+    if (!pm || pm.type !== 'card' || !pm.card) return
+
+    const wallet = pm.card.wallet?.type ?? null
+    await supabaseAdmin
+      .from('transactions')
+      .update({
+        pm_brand: pm.card.brand,
+        pm_last4: pm.card.last4,
+        pm_wallet: wallet,
+      })
+      .eq('payment_intent_id', paymentIntentId)
+  } catch (err) {
+    // Best-effort — never propagate. The row already has the credit
+    // applied; the source label is a UX nicety, not financial data.
+    const message = err instanceof Error ? err.message : String(err)
+    console.warn(`[wallet] populateTransactionPaymentSource failed for pi=${paymentIntentId}: ${message}`)
+  }
+}
 
 // ── POST /api/wallet/withdraw — pay out wallet balance to driver's bank ─────
 //
@@ -220,6 +277,10 @@ walletRouter.post('/withdraw', validateJwt, idempotency('wallet-withdraw'), asyn
     }
 
     // Debit first. If the Stripe transfer fails, we credit back.
+    // `p_transfer_id: null` here too — see wallet_apply_delta dispatch
+    // note above. Withdrawals get the real `transfer_id` written via a
+    // direct `transactions` UPDATE after `stripe.transfers.create`
+    // succeeds (further down in this handler), not at insert time.
     const { error: debitErr } = await supabaseAdmin.rpc('wallet_apply_delta', {
       p_user_id: userId,
       p_delta_cents: -amountCents,
@@ -228,6 +289,7 @@ walletRouter.post('/withdraw', validateJwt, idempotency('wallet-withdraw'), asyn
       p_ride_id: null,
       p_payment_intent_id: null,
       p_stripe_event_id: null,
+      p_transfer_id: null,
     })
 
     if (debitErr) {
@@ -238,17 +300,23 @@ walletRouter.post('/withdraw', validateJwt, idempotency('wallet-withdraw'), asyn
 
     const stripe = getStripe()
     try {
-      // Stripe-side idempotency: a network blip between our debit and the
-      // Transfer (or a server crash + client retry) could otherwise create
-      // a duplicate transfer and pay the driver twice. The route also has
-      // HTTP-level idempotency middleware, but that protects only against
-      // matching `Idempotency-Key` headers — a fresh retry without the
-      // header would slip past. Tying the key to (user, amount, today) is
-      // a coarse but safe dedupe: a same-day repeat withdrawal of the
-      // exact same cents reuses Stripe's cached response. Driver wanting
-      // to withdraw twice in a day for the same exact amount must wait
-      // for date rollover or pick a different amount — acceptable trade.
+      // Stripe-side idempotency: prefer the HTTP `Idempotency-Key`
+      // header (now reservation-protected by `idempotency()`
+      // middleware as of PAY.0 H1) so a legitimate retry with the
+      // same key reuses Stripe's cached transfer, while a genuinely
+      // new withdrawal-of-same-amount with a fresh key creates a
+      // fresh transfer. Closes the H4 finding from the 2026-04-28
+      // payments security audit: the prior `(user, amount, dayKey)`
+      // formulation incorrectly aliased two different same-day
+      // withdrawals of the same cents to one Stripe transfer,
+      // letting the second debit succeed but the second transfer
+      // silently no-op. iOS clients always send the header; web
+      // legacy clients fall back to the day-keyed scheme.
+      const httpIdempotencyKey = req.header('Idempotency-Key') ?? req.header('idempotency-key')
       const dayKey = new Date().toISOString().split('T')[0]
+      const stripeKey = httpIdempotencyKey
+        ? `withdraw-${httpIdempotencyKey}`
+        : `withdraw-${userId}-${amountCents}-${dayKey}`
       const transfer = await stripe.transfers.create(
         {
           amount: amountCents,
@@ -256,7 +324,7 @@ walletRouter.post('/withdraw', validateJwt, idempotency('wallet-withdraw'), asyn
           destination: user.stripe_account_id as string,
           metadata: { user_id: userId, kind: 'wallet_withdrawal' },
         },
-        { idempotencyKey: `withdraw-${userId}-${amountCents}-${dayKey}` },
+        { idempotencyKey: stripeKey },
       )
 
       // Stamp the just-written withdrawal row with the Stripe transfer id
@@ -286,25 +354,39 @@ walletRouter.post('/withdraw', validateJwt, idempotency('wallet-withdraw'), asyn
         eta_days: 2,
       })
     } catch (stripeErr) {
+      // Capture Stripe's reason FIRST so we can both log it AND
+      // include it in the credit-back row's description (PAY.15,
+      // 2026-04-29). Earlier the row just said "Refund — withdrawal
+      // failed at Stripe" which left the user wondering whether
+      // their bank rejected, the platform balance was insufficient,
+      // or the connected account got disabled. Surfacing the
+      // verbatim Stripe message makes the detail page actionable.
+      const failureReason = stripeErr instanceof Stripe.errors.StripeError
+        ? stripeErr.message
+        : stripeErr instanceof Error ? stripeErr.message : 'Unknown Stripe error'
+
       // Credit back the debit so the user isn't out their money.
+      // Truncate to 500 chars so a verbose Stripe response can't
+      // bloat the transactions row.
+      const truncatedReason = failureReason.length > 500
+        ? failureReason.slice(0, 497) + '…'
+        : failureReason
       const { error: creditBackErr } = await supabaseAdmin.rpc('wallet_apply_delta', {
         p_user_id: userId,
         p_delta_cents: amountCents,
         p_type: 'withdrawal_failed_refund',
-        p_description: 'Refund — withdrawal failed at Stripe',
+        p_description: `Refund — withdrawal declined: ${truncatedReason}`,
         p_ride_id: null,
         p_payment_intent_id: null,
         p_stripe_event_id: null,
+        p_transfer_id: null,
       })
       if (creditBackErr) {
         console.error(`[wallet/withdraw] CRITICAL: credit-back failed for user ${userId}: ${creditBackErr.message}`)
       }
 
-      const message = stripeErr instanceof Stripe.errors.StripeError
-        ? stripeErr.message
-        : stripeErr instanceof Error ? stripeErr.message : 'Unknown Stripe error'
-      console.error(`[wallet/withdraw] Stripe transfer failed for user ${userId}: ${message}`)
-      res.status(502).json({ error: { code: 'TRANSFER_FAILED', message } })
+      console.error(`[wallet/withdraw] Stripe transfer failed for user ${userId}: ${failureReason}`)
+      res.status(502).json({ error: { code: 'TRANSFER_FAILED', message: failureReason } })
     }
   } catch (err) {
     next(err)
@@ -371,16 +453,42 @@ walletRouter.get('/pending-earnings', validateJwt, async (_req, res, next) => {
 })
 
 // ── GET /api/wallet/transactions — fetch transaction history ───────────────
-walletRouter.get('/transactions', validateJwt, async (_req, res, next) => {
+//
+// Cursor pagination (PAY.7, 2026-04-28). Query params:
+//   - `cursor` — ISO 8601 timestamp from prior response's `next_cursor`.
+//     When omitted, returns the newest page. Filter is `created_at <
+//     cursor`, so the cursor row itself is not returned (avoids overlap).
+//   - `limit` — clamped to [1, 50]. Default 25 (one screenful on iOS).
+//
+// Response shape: `{ transactions, next_cursor }`. `next_cursor` is the
+// last row's `created_at` ISO string, or null when fewer than `limit`
+// rows came back (caller can stop fetching).
+walletRouter.get('/transactions', validateJwt, async (req, res, next) => {
   try {
     const userId = res.locals['userId'] as string
+    const cursorRaw = req.query['cursor']
+    const limitRaw = req.query['limit']
 
-    const { data, error } = await supabaseAdmin
+    let limit = 25
+    if (typeof limitRaw === 'string') {
+      const parsed = Number.parseInt(limitRaw, 10)
+      if (Number.isFinite(parsed)) {
+        limit = Math.min(Math.max(parsed, 1), 50)
+      }
+    }
+
+    let query = supabaseAdmin
       .from('transactions')
       .select('*')
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
-      .limit(50)
+      .limit(limit)
+
+    if (typeof cursorRaw === 'string' && cursorRaw.length > 0) {
+      query = query.lt('created_at', cursorRaw)
+    }
+
+    const { data, error } = await query
 
     if (error) {
       res.status(500).json({
@@ -390,6 +498,9 @@ walletRouter.get('/transactions', validateJwt, async (_req, res, next) => {
     }
 
     const txList = data ?? []
+    const nextCursor = txList.length === limit
+      ? (txList[txList.length - 1]!.created_at as string)
+      : null
 
     // Enrich ride-linked rows with the OTHER party's name so the wallet UI
     // can show "Ride earning · Tarun Gautam" instead of "Ride earning ·
@@ -439,7 +550,7 @@ walletRouter.get('/transactions', validateJwt, async (_req, res, next) => {
       return { ...t, counterparty_name: counterpartyName }
     })
 
-    res.json({ transactions: enriched })
+    res.json({ transactions: enriched, next_cursor: nextCursor })
   } catch (err) {
     next(err)
   }

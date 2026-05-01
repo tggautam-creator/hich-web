@@ -7,6 +7,15 @@ interface FcmPayload {
   title: string
   body: string
   data: Record<string, string>
+  /**
+   * Optional iOS notification-category identifier. When set, iOS surfaces
+   * the action buttons registered against this category in
+   * `UNUserNotificationCenter.setNotificationCategories(...)`. Used today
+   * for `BOARD_REQUEST` (Accept / Decline buttons on the lock-screen
+   * banner so a driver can act without opening Tago). Web ignores this
+   * field; only `apns.payload.aps.category` consumes it.
+   */
+  category?: string
 }
 
 function getMessaging(): admin.messaging.Messaging {
@@ -52,6 +61,7 @@ export async function sendFcmPush(
         aps: {
           alert: { title: payload.title, body: payload.body },
           sound: 'default',
+          ...(payload.category ? { category: payload.category } : {}),
         },
       },
     },

@@ -1,7 +1,9 @@
 import { app } from './app.ts'
 import { getServerEnv, validateStripeEnv } from './env.ts'
-import { checkUpcomingRides, expireMissedRides, expireStaleRequests } from './lib/scheduledReminders.ts'
+import { checkUpcomingRides, expireMissedRides, expireStaleRequests, syncAllRoutines } from './lib/scheduledReminders.ts'
 import { checkActiveRides } from './lib/rideSafetyNet.ts'
+import { startRideEtaTick } from './lib/rideEtaTick.ts'
+import { sendPendingPaymentNudges } from './jobs/paymentDunning.ts'
 
 const env = getServerEnv()
 const { PORT, STRIPE_SECRET_KEY, SUPABASE_URL } = env
@@ -41,13 +43,26 @@ async function runReminderSweep(reason: string): Promise<void> {
 
   try {
     console.log(`[cron/fallback] Starting reminder sweep (${reason})`)
-    const [reminders, expiry, missed, safetyNet] = await Promise.all([
+    const [reminders, expiry, missed, safetyNet, sync, dunning] = await Promise.all([
       checkUpcomingRides(),
       expireStaleRequests(),
       expireMissedRides(),
       checkActiveRides(),
+      syncAllRoutines(),
+      // Z4b (2026-04-30) — wire the 24/48/72h payment-dunning cron
+      // into the auto-sweep. Bucket logic + UNIQUE constraint on
+      // `payment_nudges (ride_id, bucket)` mean firing every 5 min
+      // can't double-push: only one pass per ride per bucket sends
+      // a nudge, the rest no-op via INSERT 23505. Defensive .catch()
+      // so a query error in this branch doesn't tank the other
+      // sweeps via Promise.all rejection.
+      sendPendingPaymentNudges().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[cron/fallback] dunning failed: ${msg}`)
+        return { scanned: 0, nudged: 0, skipped: 0, errors: [] }
+      }),
     ])
-    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}`)
+    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, sync: users=${sync.users} inserted=${sync.inserted}, dunning: scanned=${dunning.scanned} nudged=${dunning.nudged}`)
   } catch (err) {
     console.error('[cron/fallback] Failed reminder sweep:', err)
   } finally {
@@ -62,6 +77,14 @@ if (!runningUnderPm2) {
     void runReminderSweep('interval')
   }, 5 * 60 * 1000)
   reminderInterval.unref?.()
+}
+
+// LIVE.5 (2026-04-30) — server-driven ETA tick for the rider's
+// Live Activity. 30s cadence; no-ops when no Live Activity tokens
+// are registered. Skipped under PM2 in case the user runs multi-
+// worker setups where only one process should own the ticker.
+if (!runningUnderPm2) {
+  startRideEtaTick()
 }
 
 process.on('SIGTERM', () => {

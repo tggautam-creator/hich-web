@@ -5,13 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:server": "tsx --env-file=.env server/index.ts",
+    "dev:server": "tsx watch --env-file=.env server/index.ts",
     "build": "tsc -b && tsc -p tsconfig.server.json --noEmit && vite build",
     "lint": "eslint . --max-warnings 0",
     "preview": "vite preview",
     "test": "vitest"
   },
   "dependencies": {
+    "@parse/node-apn": "^8.1.0",
     "@stripe/react-stripe-js": "^5.6.1",
     "@stripe/stripe-js": "^8.9.0",
     "@supabase/supabase-js": "^2.45.4",

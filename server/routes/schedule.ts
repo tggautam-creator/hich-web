@@ -4,7 +4,8 @@ import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
-import { checkUpcomingRides, expireMissedRides, expireStaleRequests } from '../lib/scheduledReminders.ts'
+import { haversineMetres } from '../lib/polyline.ts'
+import { checkUpcomingRides, expireMissedRides, expireStaleRequests, syncAllRoutines } from '../lib/scheduledReminders.ts'
 import { resolveAndPersistDefaultPm } from './payment.ts'
 
 export const scheduleRouter = Router()
@@ -399,6 +400,12 @@ scheduleRouter.post(
   validateJwt,
   async (req: Request, res: Response, next: NextFunction) => {
     const body = req.body as NotifyBody
+    // The JWT-authed user is the POSTER. Never push to themselves —
+    // their own driver_routine matches their own bearing+time, which
+    // would otherwise add their user_id to stage3DriverIds and ping
+    // their own phone with "A driver has a trip…" right after they
+    // posted. Bug reported 2026-04-28.
+    const posterUserId = res.locals['userId'] as string
 
     if (!body.origin_place_id || !body.dest_place_id || !body.trip_date || !body.trip_time) {
       res.status(400).json({
@@ -419,21 +426,38 @@ scheduleRouter.post(
       )
     }
 
-    // ── Stage 3: query driver_routines ──────────────────────────────────
+    // ── Stage 3: query routines belonging to the OPPOSITE role ──────────
+    //
+    // Semantics: when a rider posts a needs-ride (mode='rider'), we
+    // notify drivers whose routines fit. When a driver posts a trip
+    // (mode='driver'), we notify riders whose routines fit. The
+    // `driver_routines` table itself is mode-agnostic (it stores
+    // everyone's routes); we filter by joining to `users.is_driver`.
+    //
+    // Bug surfaced 2026-04-28: prior version always queried for
+    // drivers regardless of body.mode, so a driver posting a trip
+    // got matched against other drivers (and themselves — see the
+    // posterUserId guard).
+    const targetIsDriver = body.mode === 'rider' // rider posts → match drivers
 
     const { data: routines, error: routineErr } = await supabaseAdmin
       .from('driver_routines')
-      .select('user_id, destination_bearing, departure_time, arrival_time')
+      .select('user_id, destination_bearing, departure_time, arrival_time, users!inner(is_driver)')
       .eq('is_active', true)
+      .eq('users.is_driver', targetIsDriver)
 
     if (routineErr) {
       next(routineErr)
       return
     }
 
-    const stage3DriverIds = new Set<string>()
+    const stage3UserIds = new Set<string>()
 
     for (const routine of routines ?? []) {
+      // Skip the poster's own routine — they shouldn't be matched
+      // against their own post.
+      if (routine.user_id === posterUserId) continue
+
       // Bearing check: only applies when rider bearing is available
       if (riderBearing !== null) {
         const diff = bearingDifference(routine.destination_bearing, riderBearing)
@@ -451,14 +475,18 @@ scheduleRouter.post(
         if (timeDiff > 30) continue
       }
 
-      stage3DriverIds.add(routine.user_id)
+      stage3UserIds.add(routine.user_id)
     }
 
     // ── Stage 2 fallback: nearby active drivers ─────────────────────────
+    //
+    // Only meaningful for rider-mode posts — driver-mode posts have
+    // no equivalent "nearby riders" RPC, and the targets are riders
+    // anyway. Stage 2 stays driver-side only.
 
-    const stage2DriverIds = new Set<string>()
+    const stage2UserIds = new Set<string>()
 
-    if (body.origin_lat != null && body.origin_lng != null) {
+    if (body.mode === 'rider' && body.origin_lat != null && body.origin_lng != null) {
       const { data: nearbyRows, error: nearbyErr } = await supabaseAdmin.rpc(
         'nearby_active_drivers',
         {
@@ -469,9 +497,11 @@ scheduleRouter.post(
 
       if (!nearbyErr && Array.isArray(nearbyRows)) {
         for (const row of nearbyRows as Array<{ user_id: string }>) {
-          // Only add Stage 2 drivers who don't already appear in Stage 3
-          if (!stage3DriverIds.has(row.user_id)) {
-            stage2DriverIds.add(row.user_id)
+          // Skip the poster — same reason as Stage 3.
+          if (row.user_id === posterUserId) continue
+          // Only add Stage 2 users who don't already appear in Stage 3
+          if (!stage3UserIds.has(row.user_id)) {
+            stage2UserIds.add(row.user_id)
           }
         }
       }
@@ -479,9 +509,9 @@ scheduleRouter.post(
 
     // ── Combine and send notifications ──────────────────────────────────
 
-    const allDriverIds = [...stage3DriverIds, ...stage2DriverIds]
+    const allUserIds = [...stage3UserIds, ...stage2UserIds]
 
-    if (allDriverIds.length === 0) {
+    if (allUserIds.length === 0) {
       res.status(200).json({
         notified: 0,
         stage3_count: 0,
@@ -493,32 +523,43 @@ scheduleRouter.post(
     const { data: tokenRows } = await supabaseAdmin
       .from('push_tokens')
       .select('token')
-      .in('user_id', allDriverIds)
+      .in('user_id', allUserIds)
 
     const tokens = (tokenRows ?? []).map((t: { token: string }) => t.token)
 
+    // Body copy reads naturally on the recipient's side: a rider
+    // gets "A driver has a trip…", a driver gets "A rider needs a
+    // ride…". Without this branch the driver-mode push reads as the
+    // poster's own role instead of "what's available to you".
+    const recipientFacingActor = body.mode === 'driver' ? 'driver' : 'rider'
+    const recipientFacingBody = body.mode === 'driver'
+      ? `A driver has a trip on ${body.trip_date} — check TAGO.`
+      : `A rider needs a ride on ${body.trip_date} — check TAGO.`
+
     const notifiedCount = await sendFcmPush(tokens, {
       title: 'Scheduled ride match',
-      body: `A ${body.mode} has a trip on ${body.trip_date} — check TAGO.`,
+      body: recipientFacingBody,
       data: {
         type: 'schedule_match',
         trip_date: body.trip_date,
         trip_time: body.trip_time,
+        actor_role: recipientFacingActor,
       },
     })
 
     // Log for observability
     console.log(JSON.stringify({
       type: 'schedule_notify',
-      stage3_count: stage3DriverIds.size,
-      stage2_count: stage2DriverIds.size,
-      drivers_notified: notifiedCount,
+      poster_mode: body.mode,
+      stage3_count: stage3UserIds.size,
+      stage2_count: stage2UserIds.size,
+      users_notified: notifiedCount,
     }))
 
     res.status(200).json({
       notified: notifiedCount,
-      stage3_count: stage3DriverIds.size,
-      stage2_count: stage2DriverIds.size,
+      stage3_count: stage3UserIds.size,
+      stage2_count: stage2UserIds.size,
     })
   },
 )
@@ -790,9 +831,54 @@ scheduleRouter.post(
     // is already agreed. Without this the chat starts with both dots
     // yellow, the driver gets pushed into Suggest Dropoff for an endpoint
     // they themselves posted, and the rider waits for a redundant accept.
-    const preConfirmDropoff = body.dropoff_at_driver_destination === true && destGeo != null
+    // Slice 9.5 (2026-04-30) — rider-posted rides also pre-confirm
+    // both pickup AND dropoff at offer-accept time. Driver's act of
+    // offering = implicit agreement to the rider's posted points;
+    // both green from start, no friction. The chat keeps a "Change
+    // pickup / dropoff" affordance so either party can re-negotiate
+    // up until the ride flips to active. Reverses the prior 9.4
+    // "two proposals" decision after Tarun's CTO review (re-suggest
+    // post-confirm covers the change-of-mind case more cleanly).
+    const isRiderPostedRide = schedule.mode === 'rider'
+    const preConfirmDropoff = (
+      body.dropoff_at_driver_destination === true || isRiderPostedRide
+    ) && destGeo != null
     const dropoffPreconfirmFields: Record<string, unknown> = preConfirmDropoff
       ? { dropoff_point: destGeo, dropoff_confirmed: true }
+      : {}
+
+    // Slice 9.4 (2026-04-30) — pre-confirm pickup ONLY when the rider's
+    // chosen pickup is at (or within ~50m of) the driver's posted
+    // origin. Cases:
+    //   • Same-spot pickup → no negotiation needed → pre-confirm,
+    //     audit-trail `location_accepted` message inserted.
+    //   • Custom pickup (rider asked to be picked up elsewhere) →
+    //     stays unconfirmed and a `pickup_suggestion` message is
+    //     inserted attributed to the rider, so the driver sees an
+    //     Accept / Counter card in chat. Closes the case-3/4 gap
+    //     surfaced by Tarun on 2026-04-30 ("driver auto-confirmed a
+    //     pickup spot they never agreed to").
+    //
+    // Earlier behaviour (Slice 9.1.1) pre-confirmed pickup
+    // unconditionally to keep chats clean; this revision restores
+    // symmetry with dropoff: if the rider deviated from the posted
+    // route, the driver gets a chance to Accept or Counter.
+    const driverOriginGeo = posterRoutine?.origin
+      ? { type: 'Point' as const, coordinates: posterRoutine.origin.coordinates }
+      : null
+    const pickupSameAsDriverOrigin = !!(originGeo && driverOriginGeo
+      && haversineMetres(
+        originGeo.coordinates[1], originGeo.coordinates[0],
+        driverOriginGeo.coordinates[1], driverOriginGeo.coordinates[0],
+      ) <= 50)
+    // Pickup pre-confirm: same-spot match (driver-posted) OR rider-
+    // posted (driver implicitly agrees to rider's posted pickup).
+    const preConfirmPickup = originGeo != null && (
+      (schedule.mode === 'driver' && pickupSameAsDriverOrigin)
+      || isRiderPostedRide
+    )
+    const pickupPreconfirmFields: Record<string, unknown> = preConfirmPickup
+      ? { pickup_point: originGeo, pickup_confirmed: true }
       : {}
 
     // Create ride with status='requested' — poster must accept before coordination
@@ -814,11 +900,17 @@ scheduleRouter.post(
         schedule_id: schedule.id,
         trip_date: schedule.trip_date,
         trip_time: schedule.trip_time,
+        // Mirror the parent schedule's time_flexible flag so the
+        // reminder + expiry cron paths can branch correctly. Without
+        // this the cron treats the '12:00:00' Anytime placeholder as
+        // a literal trip time (migration 059).
+        time_flexible: schedule.time_flexible === true,
         requester_destination: requesterDestGeo,
         requester_destination_name: body.destination_name ?? null,
         requester_note: requesterNote,
         destination_flexible: body.destination_flexible ?? false,
         ...dropoffPreconfirmFields,
+        ...pickupPreconfirmFields,
       })
       .select('id')
       .single()
@@ -827,6 +919,169 @@ scheduleRouter.post(
       next(rideErr ?? new Error('Failed to create ride'))
       return
     }
+
+    // Slice I (2026-04-28) — the missing half of `0d2033c`. When the
+    // dropoff was pre-confirmed at request time (rider chose "Drop
+    // me at driver's destination"), insert a `location_accepted`
+    // message so the chat opens with an audit-trail line explaining
+    // the green dot. Mirrors the `messages` shape in
+    // `POST /api/rides/:id/confirm-direct-dropoff` so the existing
+    // chat renderers (web + iOS) handle it without any client work.
+    if (preConfirmDropoff && destGeo) {
+      const presetSenderId = userId  // the requester — rider on driver-post, driver on rider-post
+      const dropoffName = schedule.dest_address ?? body.destination_name ?? null
+      const { data: agreementMsg, error: msgErr } = await supabaseAdmin
+        .from('messages')
+        .insert({
+          ride_id: ride.id,
+          sender_id: presetSenderId,
+          content: 'Dropoff agreed at the posted destination',
+          type: 'location_accepted',
+          meta: {
+            location_type: 'dropoff',
+            accepted_by: presetSenderId,
+            lat: destGeo.coordinates[1],
+            lng: destGeo.coordinates[0],
+            name: dropoffName ?? undefined,
+            direct_dropoff: true,
+            pre_confirmed_at_request: true,
+          },
+        })
+        .select('id, ride_id, sender_id, content, type, meta, created_at')
+        .single()
+
+      if (msgErr) {
+        console.error('Failed to insert pre-confirm chat message:', msgErr.message)
+      } else if (agreementMsg) {
+        // Broadcast to chat channels so any open subscriber updates
+        // immediately. The poster joins the chat after acceptance —
+        // they'll see the message either via the realtime broadcast
+        // or via the `messages` SELECT on chat-mount.
+        void realtimeBroadcast(`chat:${ride.id}`, 'new_message', agreementMsg as Record<string, unknown>)
+        void realtimeBroadcast(`chat-badge:${ride.id}`, 'new_message', agreementMsg as Record<string, unknown>)
+      }
+    }
+
+    // Slice 9.1 (2026-04-30) — when the dropoff is NOT pre-confirmed
+    // (rider chose a custom destination different from the driver's
+    // posted destination), insert a `dropoff_suggestion` message
+    // attributed to the requester so the chat opens with a real
+    // proposal card the other party can Accept or Counter. Without
+    // this both sides would see "Dropoff pending" in the action bar
+    // with no proposal anywhere — surfaced 2026-04-30 by Tarun.
+    //
+    // Same shape PickupProposalCard / DropoffProposalCard already
+    // render — `proposed_by` matches what `POST /api/rides/:id/propose-pickup`
+    // and the transit-dropoff path already write, so the existing
+    // chat renderers handle it without client work. Driver sees
+    // Accept / Counter on the rider's senderID; rider sees their own
+    // proposal without the buttons.
+    if (!preConfirmDropoff && requesterDestGeo) {
+      const proposerId = userId  // requester — rider on driver-post, driver on rider-post
+      const dropoffName = body.destination_name ?? schedule.dest_address ?? 'the requested destination'
+      const { data: dropoffMsg, error: dErr } = await supabaseAdmin
+        .from('messages')
+        .insert({
+          ride_id: ride.id,
+          sender_id: proposerId,
+          content: `Drop-off at ${dropoffName}`,
+          type: 'dropoff_suggestion',
+          meta: {
+            lat: requesterDestGeo.coordinates[1],
+            lng: requesterDestGeo.coordinates[0],
+            name: dropoffName,
+            proposed_by: proposerId,
+          },
+        })
+        .select('id, ride_id, sender_id, content, type, meta, created_at')
+        .single()
+
+      if (dErr) {
+        console.error('Failed to insert dropoff_suggestion at request time:', dErr.message)
+      } else if (dropoffMsg) {
+        void realtimeBroadcast(`chat:${ride.id}`, 'new_message', dropoffMsg as Record<string, unknown>)
+        void realtimeBroadcast(`chat-badge:${ride.id}`, 'new_message', dropoffMsg as Record<string, unknown>)
+      }
+    }
+
+    // Slice 9.1.1 (2026-04-30) — pickup is pre-confirmed at request
+    // time (see `preConfirmPickup` block above) instead of getting a
+    // proposal card. Insert a `location_accepted` audit-trail message
+    // so the chat opens with a green-pickup-dot indicator + a system
+    // line explaining the agreement, mirroring the Slice I dropoff
+    // pattern. If the driver wants to negotiate the pickup spot they
+    // can still tap the "Suggest Pickup" chip in the chat action bar
+    // — that uses the existing `propose-pickup` flow.
+    if (preConfirmPickup && originGeo) {
+      const presetSenderId = userId  // requester (rider)
+      const pickupName = body.origin_name ?? 'the rider\'s requested pickup'
+      const { data: pickupAck, error: pErr } = await supabaseAdmin
+        .from('messages')
+        .insert({
+          ride_id: ride.id,
+          sender_id: presetSenderId,
+          content: 'Pickup agreed at the rider\'s requested point',
+          type: 'location_accepted',
+          meta: {
+            location_type: 'pickup',
+            accepted_by: presetSenderId,
+            lat: originGeo.coordinates[1],
+            lng: originGeo.coordinates[0],
+            name: pickupName,
+            pre_confirmed_at_request: true,
+          },
+        })
+        .select('id, ride_id, sender_id, content, type, meta, created_at')
+        .single()
+
+      if (pErr) {
+        console.error('Failed to insert pickup pre-confirm chat message:', pErr.message)
+      } else if (pickupAck) {
+        void realtimeBroadcast(`chat:${ride.id}`, 'new_message', pickupAck as Record<string, unknown>)
+        void realtimeBroadcast(`chat-badge:${ride.id}`, 'new_message', pickupAck as Record<string, unknown>)
+      }
+    }
+
+    // Slice 9.4 (2026-04-30) — custom-pickup case (rider asked to be
+    // picked up at a different spot than the driver's posted origin).
+    // Insert a `pickup_suggestion` message attributed to the rider so
+    // the driver sees an Accept / Counter card in chat. Symmetric
+    // with the dropoff_suggestion path. Skips when the pickup was
+    // pre-confirmed (same-spot case handled above).
+    if (!preConfirmPickup && originGeo && schedule.mode === 'driver') {
+      const proposerId = userId  // requester (rider)
+      const pickupName = body.origin_name ?? 'the rider\'s requested pickup'
+      const { data: pickupMsg, error: pmErr } = await supabaseAdmin
+        .from('messages')
+        .insert({
+          ride_id: ride.id,
+          sender_id: proposerId,
+          content: `Pickup at ${pickupName}`,
+          type: 'pickup_suggestion',
+          meta: {
+            lat: originGeo.coordinates[1],
+            lng: originGeo.coordinates[0],
+            name: pickupName,
+            proposed_by: proposerId,
+          },
+        })
+        .select('id, ride_id, sender_id, content, type, meta, created_at')
+        .single()
+
+      if (pmErr) {
+        console.error('Failed to insert pickup_suggestion at request time:', pmErr.message)
+      } else if (pickupMsg) {
+        void realtimeBroadcast(`chat:${ride.id}`, 'new_message', pickupMsg as Record<string, unknown>)
+        void realtimeBroadcast(`chat-badge:${ride.id}`, 'new_message', pickupMsg as Record<string, unknown>)
+      }
+    }
+
+    // Slice 9.5 (2026-04-30) — rider-posted rides now use the
+    // pre-confirm path above (both pickup + dropoff auto-confirmed
+    // via `preConfirmPickup`/`preConfirmDropoff` gates). The earlier
+    // 9.4 "two proposals at offer-accept time" was reversed after
+    // CTO review: auto-confirm + chat-level "Change pickup / dropoff"
+    // affordance is cleaner than forcing two Accept taps up front.
 
     // Fetch requester's name for the notification
     const { data: requester } = await supabaseAdmin
@@ -895,6 +1150,9 @@ scheduleRouter.post(
           schedule_id: schedule.id,
           requester_name: requesterName,
         },
+        // iOS: surface Accept / Decline buttons on the lock-screen
+        // banner. Category id matches `PushManager.boardRequestCategory`.
+        category: 'BOARD_REQUEST',
       })
     }
 
@@ -923,10 +1181,13 @@ scheduleRouter.delete(
     const userId = res.locals['userId'] as string
     const scheduleId = req.params['id'] as string
 
-    // Fetch the schedule
+    // Fetch the schedule. Pull origin_place_id + trip_date so we can
+    // detect routine-projected rows ('routine:{id}' prefix) and
+    // tombstone the date on the parent routine — without that, the
+    // next sync resurrects the row the user just deleted.
     const { data: schedule, error: fetchErr } = await supabaseAdmin
       .from('ride_schedules')
-      .select('id, user_id')
+      .select('id, user_id, origin_place_id, trip_date')
       .eq('id', scheduleId)
       .single()
 
@@ -942,6 +1203,35 @@ scheduleRouter.delete(
         error: { code: 'FORBIDDEN', message: 'You can only delete your own schedules' },
       })
       return
+    }
+
+    // Routine-projected rows carry origin_place_id = `routine:{id}`.
+    // Append trip_date to that routine's skip_dates so the next
+    // sync-routines run won't re-create this exact date. Migration
+    // 057 added the column. Best-effort — DB error here only affects
+    // the resurrection-prevention; the underlying delete still goes
+    // through.
+    const originPlaceID = schedule.origin_place_id as string | null
+    const routineMatch = originPlaceID?.match(/^routine:([0-9a-f-]+)/i)
+    if (routineMatch && schedule.trip_date) {
+      const routineID = routineMatch[1]
+      const tripDate = schedule.trip_date as string
+      const { data: routineRow } = await supabaseAdmin
+        .from('driver_routines')
+        .select('skip_dates')
+        .eq('id', routineID)
+        .single()
+      const existing = ((routineRow?.skip_dates as string[] | null) ?? [])
+      if (!existing.includes(tripDate)) {
+        const updated = [...existing, tripDate]
+        const { error: skipErr } = await supabaseAdmin
+          .from('driver_routines')
+          .update({ skip_dates: updated })
+          .eq('id', routineID)
+        if (skipErr) {
+          console.error('Failed to append routine skip_date:', skipErr.message)
+        }
+      }
     }
 
     // BUG-054: Cancel ALL non-completed, non-cancelled rides linked to this schedule
@@ -1426,17 +1716,46 @@ scheduleRouter.patch(
 
     // Notify the poster so their pending-request UI clears
     if (posterId) {
+      // Flip the original board_request notification on the poster's
+      // inbox to `board_request_actioned` so the Accept / Decline
+      // buttons disappear (matches accept-board / decline-board paths).
+      // Without this, the screenshot bug from 2026-04-28 returns:
+      // a stale row keeps offering buttons for a ride that's already
+      // cancelled, and tapping Accept hits a 4xx INVALID_STATUS.
+      supabaseAdmin.from('notifications')
+        .update({ type: 'board_request_actioned' })
+        .eq('user_id', posterId)
+        .eq('type', 'board_request')
+        .contains('data', { ride_id: rideId })
+        .then(({ error: flipErr }) => {
+          if (flipErr) console.error('Failed to mark withdrawn board_request actioned:', flipErr.message)
+        })
+
+      // Resolve the withdrawer's display name so the inbox copy is
+      // specific ("Test User 1 withdrew their ride request") instead
+      // of the generic "The other party". Falls back gracefully.
+      const { data: requester } = await supabaseAdmin
+        .from('users')
+        .select('full_name')
+        .eq('id', userId)
+        .single()
+      const withdrawerName = (requester?.full_name as string | undefined) ?? 'The other party'
+
       supabaseAdmin.from('notifications').insert({
         user_id: posterId,
         type: 'board_withdrawn',
         title: 'Request Withdrawn',
-        body: 'The other party withdrew their ride request.',
-        data: { ride_id: rideId },
+        body: `${withdrawerName} withdrew their ride request.`,
+        data: { ride_id: rideId, requester_name: withdrawerName },
       }).then(({ error: notifErr }) => {
         if (notifErr) console.error('Failed to persist withdraw notification:', notifErr.message)
       })
 
-      void realtimeBroadcast(`board:${posterId}`, 'board_withdrawn', { type: 'board_withdrawn', ride_id: rideId })
+      void realtimeBroadcast(`board:${posterId}`, 'board_withdrawn', {
+        type: 'board_withdrawn',
+        ride_id: rideId,
+        requester_name: withdrawerName,
+      })
       void realtimeBroadcast(`myrides:${posterId}`, 'ride_status_changed', { ride_id: rideId, status: 'cancelled' })
     }
 
@@ -1513,10 +1832,13 @@ scheduleRouter.post(
     const userId = res.locals['userId'] as string
     const body = (req.body ?? {}) as { client_date?: string }
 
-    // Fetch user's active routines
+    // Fetch user's active routines. `skip_dates` is the per-routine
+    // tombstone array (migration 057) — dates the user has opted out
+    // of are excluded from projection so a deleted "Wednesday" doesn't
+    // resurrect on the next sync.
     const { data: routines, error: routineErr } = await supabaseAdmin
       .from('driver_routines')
-      .select('id, user_id, route_name, origin, destination, destination_bearing, direction_type, day_of_week, departure_time, arrival_time, origin_address, dest_address')
+      .select('id, user_id, route_name, origin, destination, destination_bearing, direction_type, day_of_week, departure_time, arrival_time, origin_address, dest_address, skip_dates')
       .eq('user_id', userId)
       .eq('is_active', true)
 
@@ -1587,8 +1909,10 @@ scheduleRouter.post(
       id: string; route_name: string; direction_type: string;
       day_of_week: number[]; departure_time: string | null; arrival_time: string | null;
       origin: { coordinates: [number, number] }; destination: { coordinates: [number, number] };
-      origin_address: string | null; dest_address: string | null
+      origin_address: string | null; dest_address: string | null;
+      skip_dates: string[] | null
     }>) {
+      const skipSet = new Set(routine.skip_dates ?? [])
       const timeStr = routine.departure_time ?? routine.arrival_time ?? '08:00:00'
       const timeType: 'departure' | 'arrival' = routine.departure_time ? 'departure' : 'arrival'
 
@@ -1632,6 +1956,8 @@ scheduleRouter.post(
         if (nextDate > weekOut) continue // only within 7 days
 
         const dateStr = `${nextDate.getUTCFullYear()}-${String(nextDate.getUTCMonth() + 1).padStart(2, '0')}-${String(nextDate.getUTCDate()).padStart(2, '0')}`
+        // Per-routine tombstone — user explicitly deleted this date.
+        if (skipSet.has(dateStr)) continue
         const key = `${dateStr}|${timeStr}|${routine.route_name}`
 
         if (existingKeys.has(key)) continue // already exists
@@ -1676,12 +2002,13 @@ scheduleRouter.get(
   '/check-reminders',
   async (_req: Request, res: Response, next: NextFunction) => {
     try {
-      const [reminders, expiry, missed] = await Promise.all([
+      const [reminders, expiry, missed, sync] = await Promise.all([
         checkUpcomingRides(),
         expireStaleRequests(),
         expireMissedRides(),
+        syncAllRoutines(),
       ])
-      res.json({ reminders, expiry, missed })
+      res.json({ reminders, expiry, missed, sync })
     } catch (err) {
       next(err)
     }

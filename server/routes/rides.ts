@@ -8,6 +8,7 @@ import { idempotency } from '../middleware/idempotency.ts'
 import { generateQrToken, validateQrToken } from '../lib/qrToken.ts'
 import { computeTransitDropoffSuggestions, fetchDrivingRoute, type TransitDropoffSuggestion } from '../lib/transitSuggestions.ts'
 import { realtimeBroadcast, realtimeBroadcastMany } from '../lib/realtimeBroadcast.ts'
+import { pushLiveActivityUpdateForRide, endLiveActivitiesForRide } from '../lib/apns.ts'
 import { chargeRideViaWallet, creditDriverEarning } from '../lib/walletPayment.ts'
 import { chargeTip } from '../lib/tipPayment.ts'
 import { shouldTreatScheduledRideAsExpired } from '../lib/scheduledReminders.ts'
@@ -752,6 +753,17 @@ ridesRouter.patch(
       next(updateErr)
       return
     }
+
+    // LIVE.2 (2026-04-30) — end any rider-side Live Activity bound
+    // to this ride so the lock-screen card disappears immediately.
+    // Fire-and-forget: APNs failures are logged inside `lib/apns.ts`,
+    // and the activity going slightly stale is acceptable on a
+    // cancellation (UI surface dies on the next phone unlock anyway).
+    void endLiveActivitiesForRide(rideId, {
+      phase: 'enRoute',
+      etaMinutes: 0,
+      statusLine: 'Ride cancelled',
+    })
 
     // Release any pending ride_offers for this ride
     await supabaseAdmin
@@ -3064,6 +3076,17 @@ ridesRouter.post(
 
       if (updateErr) { next(updateErr); return }
 
+      // LIVE.2 (2026-04-30) — flip the rider's Live Activity to the
+      // .active phase the moment we commit the start. iOS's local
+      // path will also fire on the realtime broadcast below, but the
+      // APNs push covers the case where iOS is suspended (lock
+      // screen still updates without the iOS app waking).
+      void pushLiveActivityUpdateForRide(ride.id, {
+        phase: 'active',
+        etaMinutes: 0,
+        statusLine: 'Ride started',
+      })
+
       // Lock seats on the schedule so no new riders can be accepted after ride starts
       if (ride.schedule_id) {
         await supabaseAdmin
@@ -3225,6 +3248,16 @@ ridesRouter.post(
       .eq('id', ride.id)
 
     if (updateErr) { next(updateErr); return }
+
+    // LIVE.2 (2026-04-30) — end the rider's Live Activity now that
+    // the ride completed. `.immediate` dismissal happens client-side
+    // when iOS's local handler fires too; the APNs push covers the
+    // backgrounded case so the lock-screen card clears right away.
+    void endLiveActivitiesForRide(ride.id, {
+      phase: 'active',
+      etaMinutes: 0,
+      statusLine: 'Ride completed',
+    })
 
     // B2 — rider had no card at scan-end. Nudge them to add one.
     if (scanPaymentStatus === 'pending' && ride.rider_id) {
@@ -4443,7 +4476,7 @@ ridesRouter.patch(
  * Uses the rider's current default payment method.
  */
 ridesRouter.post(
-  ':id/retry-payment',
+  '/:id/retry-payment',
   validateJwt,
   async (req: Request, res: Response, next: NextFunction) => {
     const userId = res.locals['userId'] as string
@@ -4535,6 +4568,20 @@ ridesRouter.post(
 
         res.json({ success: true, payment_status: newPaymentStatus })
       } else {
+        // Self-heal sentinel from `chargeRideFare`: the customer ID
+        // belonged to a different Stripe key (cross-mode drift) and
+        // was just cleared on the user row. Surface a specific code
+        // so the iOS dunning banner can read "Re-add your card to
+        // retry" instead of the generic "Card declined" copy.
+        if (chargeResult.error === 'STALE_CUSTOMER') {
+          res.status(409).json({
+            error: {
+              code: 'STALE_CUSTOMER',
+              message: 'Your saved card is no longer on file. Re-add a card to retry.',
+            },
+          })
+          return
+        }
         res.status(402).json({ error: { code: 'CHARGE_FAILED', message: chargeResult.error ?? 'Payment failed' } })
       }
     } catch (err) {

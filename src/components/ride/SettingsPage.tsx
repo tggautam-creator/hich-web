@@ -1,7 +1,12 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
+
+/// Server-side keys (snake_case to match the API). The local-state
+/// React names map onto these in `handleToggle`. Tracking the same
+/// strings as the iOS client so a flip on either platform converges.
+type PrefServerKey = 'push_rides' | 'push_promos' | 'email_marketing' | 'sms_alerts'
 
 interface SettingsPageProps {
   'data-testid'?: string
@@ -12,13 +17,51 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
   const profile = useAuthStore((s) => s.profile)
   const signOut = useAuthStore((s) => s.signOut)
 
-  // Notification preferences (localStorage-based for now)
+  // Notification preferences. Seed from localStorage cache for an
+  // instant first paint, then `refreshFromServer()` overwrites with
+  // the canonical server values. P.9 (2026-04-27) replaced the
+  // localStorage-only stub with this server-backed flow — see
+  // server/routes/users.ts.
   const [pushRides, setPushRides] = useState(() => localStorage.getItem('pref_push_rides') !== 'false')
   const [pushPromos, setPushPromos] = useState(() => localStorage.getItem('pref_push_promos') !== 'false')
   const [emailNotifs, setEmailNotifs] = useState(() => localStorage.getItem('pref_email') !== 'false')
 
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        const token = session?.access_token
+        if (!token) return
+        const resp = await fetch('/api/users/me/notification-preferences', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!resp.ok) return
+        const body = await resp.json() as {
+          push_rides: boolean
+          push_promos: boolean
+          email_marketing: boolean
+          sms_alerts: boolean
+        }
+        if (cancelled) return
+        setPushRides(body.push_rides)
+        setPushPromos(body.push_promos)
+        setEmailNotifs(body.email_marketing)
+        // Mirror to localStorage so a hard offline session keeps the
+        // values across refreshes.
+        localStorage.setItem('pref_push_rides', String(body.push_rides))
+        localStorage.setItem('pref_push_promos', String(body.push_promos))
+        localStorage.setItem('pref_email', String(body.email_marketing))
+      } catch {
+        // Silent — local cache already painted the toggles.
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
   // Password change state
   const [showPassword, setShowPassword] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [passwordError, setPasswordError] = useState<string | null>(null)
@@ -29,33 +72,104 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
-  const handleToggle = (key: string, value: boolean, setter: (v: boolean) => void) => {
-    localStorage.setItem(key, String(value))
+  const handleToggle = (
+    cacheKey: string,
+    serverKey: PrefServerKey,
+    value: boolean,
+    setter: (v: boolean) => void,
+  ) => {
+    // Update the local React state + cache immediately so the toggle
+    // animates without waiting on the network. Then fire-and-forget
+    // a PUT to persist server-side.
+    localStorage.setItem(cacheKey, String(value))
     setter(value)
+    void (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        const token = session?.access_token
+        if (!token) return
+        await fetch('/api/users/me/notification-preferences', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ [serverKey]: value }),
+        })
+      } catch {
+        // Silent failure — local cache + state still reflect the
+        // user's choice; next refresh will re-sync from server.
+      }
+    })()
   }
 
   const handlePasswordChange = async () => {
     setPasswordError(null)
     setPasswordSuccess(false)
 
+    if (!currentPassword) {
+      setPasswordError('Current password is required')
+      return
+    }
     if (newPassword.length < 8) {
-      setPasswordError('Password must be at least 8 characters')
+      setPasswordError('New password must be at least 8 characters')
       return
     }
     if (newPassword !== confirmPassword) {
-      setPasswordError('Passwords do not match')
+      setPasswordError('New passwords do not match')
+      return
+    }
+    if (newPassword === currentPassword) {
+      setPasswordError('New password must be different from current')
       return
     }
 
     setSavingPassword(true)
-    const { error } = await supabase.auth.updateUser({ password: newPassword })
-    if (error) {
-      setPasswordError(error.message)
-    } else {
+    // Hit the new server endpoint that re-auths via the GoTrue
+    // password grant before flipping. Replaces the prior
+    // `auth.updateUser({ password })` call which silently rotated
+    // the password without proving knowledge of the old one.
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) {
+        setPasswordError('Not signed in')
+        setSavingPassword(false)
+        return
+      }
+
+      const resp = await fetch('/api/account/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ current: currentPassword, new: newPassword }),
+      })
+
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => null) as
+          | { error?: { code?: string; message?: string } }
+          | null
+        const code = body?.error?.code
+        if (code === 'WRONG_PASSWORD') {
+          setPasswordError('Current password is incorrect')
+        } else if (code === 'WEAK_PASSWORD') {
+          setPasswordError('New password must be at least 8 characters')
+        } else {
+          setPasswordError(body?.error?.message ?? 'Could not update password')
+        }
+        setSavingPassword(false)
+        return
+      }
+
       setPasswordSuccess(true)
+      setCurrentPassword('')
       setNewPassword('')
       setConfirmPassword('')
       setShowPassword(false)
+    } catch {
+      setPasswordError('Network error — try again')
     }
     setSavingPassword(false)
   }
@@ -116,21 +230,21 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
               label="Ride updates"
               description="Ride requests, pickups, and completions"
               checked={pushRides}
-              onChange={(v) => handleToggle('pref_push_rides', v, setPushRides)}
+              onChange={(v) => handleToggle('pref_push_rides', 'push_rides', v, setPushRides)}
             />
             <ToggleRow
               testId="toggle-push-promos"
               label="Promotions"
               description="Special offers and new features"
               checked={pushPromos}
-              onChange={(v) => handleToggle('pref_push_promos', v, setPushPromos)}
+              onChange={(v) => handleToggle('pref_push_promos', 'push_promos', v, setPushPromos)}
             />
             <ToggleRow
               testId="toggle-email"
               label="Email notifications"
               description="Ride receipts and account updates"
               checked={emailNotifs}
-              onChange={(v) => handleToggle('pref_email', v, setEmailNotifs)}
+              onChange={(v) => handleToggle('pref_email', 'email_marketing', v, setEmailNotifs)}
             />
           </div>
         </section>
@@ -151,19 +265,30 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
             ) : (
               <div className="space-y-3">
                 <input
+                  data-testid="current-password-input"
+                  type="password"
+                  placeholder="Current password"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  autoComplete="current-password"
+                  className="w-full rounded-lg border border-border px-3 py-2 text-base text-text-primary focus:border-primary focus:outline-none"
+                />
+                <input
                   data-testid="new-password-input"
                   type="password"
                   placeholder="New password (min 8 chars)"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
+                  autoComplete="new-password"
                   className="w-full rounded-lg border border-border px-3 py-2 text-base text-text-primary focus:border-primary focus:outline-none"
                 />
                 <input
                   data-testid="confirm-password-input"
                   type="password"
-                  placeholder="Confirm password"
+                  placeholder="Confirm new password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
+                  autoComplete="new-password"
                   className="w-full rounded-lg border border-border px-3 py-2 text-base text-text-primary focus:border-primary focus:outline-none"
                 />
                 {passwordError && (
@@ -182,7 +307,14 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
                     {savingPassword ? 'Saving...' : 'Save'}
                   </button>
                   <button
-                    onClick={() => { setShowPassword(false); setPasswordError(null); setPasswordSuccess(false) }}
+                    onClick={() => {
+                      setShowPassword(false)
+                      setPasswordError(null)
+                      setPasswordSuccess(false)
+                      setCurrentPassword('')
+                      setNewPassword('')
+                      setConfirmPassword('')
+                    }}
                     className="rounded-lg bg-surface px-4 py-2 text-xs font-medium text-text-secondary"
                   >
                     Cancel

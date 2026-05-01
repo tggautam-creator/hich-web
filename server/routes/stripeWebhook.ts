@@ -4,6 +4,7 @@ import Stripe from 'stripe'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
 import { getServerEnv } from '../env.ts'
+import { populateTransactionPaymentSource } from './wallet.ts'
 
 export const stripeWebhookRouter = Router()
 
@@ -32,6 +33,30 @@ stripeWebhookRouter.post('/', async (req: Request, res: Response) => {
     const message = err instanceof Error ? err.message : 'Signature verification failed'
     console.error('Webhook signature verification failed:', message)
     res.status(400).json({ error: { code: 'INVALID_SIGNATURE', message } })
+    return
+  }
+
+  // ── Livemode-mode mismatch defense (H5, PAY.0 audit 2026-04-28) ───
+  // A correctly-configured pair of (server secret key, webhook secret)
+  // for the same Stripe project will only verify webhook events from
+  // that project's mode. But a misconfigured deployment that mixes
+  // test-mode + live-mode keys (which has happened in this repo's
+  // history — see `[CROSS_MODE_STRIPE]` tags in `stripeConnect.ts`)
+  // would accept events from the wrong mode and credit wallets from
+  // a sandbox PaymentIntent. Belt-and-braces: assert the event's
+  // `livemode` flag matches the secret key's prefix.
+  const { STRIPE_SECRET_KEY } = getServerEnv()
+  const expectedLivemode = STRIPE_SECRET_KEY.startsWith('sk_live_')
+  if (event.livemode !== expectedLivemode) {
+    console.error(
+      `[Webhook] livemode mismatch: event.livemode=${event.livemode} expected=${expectedLivemode} event_id=${event.id}`,
+    )
+    res.status(400).json({
+      error: {
+        code: 'LIVEMODE_MISMATCH',
+        message: 'Webhook event livemode does not match server mode',
+      },
+    })
     return
   }
 
@@ -181,6 +206,7 @@ async function handleRidePaymentFailed(rideId: string, paymentIntentId: string):
           // 23505. The reversal is still tied to the ride via p_ride_id.
           p_payment_intent_id: null,
           p_stripe_event_id: null,
+          p_transfer_id: null,
         })
         if (reverseErr) {
           console.error(`[Webhook] CRITICAL: payment failed but wallet reversal errored for driver ${ride.driver_id} ride ${rideId}: ${reverseErr.message}`)
@@ -296,6 +322,7 @@ async function handleWalletTopup(eventId: string, paymentIntent: Stripe.PaymentI
     p_ride_id: null,
     p_payment_intent_id: paymentIntent.id,
     p_stripe_event_id: eventId,
+    p_transfer_id: null,
   })
 
   if (rpcErr) {
@@ -309,5 +336,33 @@ async function handleWalletTopup(eventId: string, paymentIntent: Stripe.PaymentI
 
   if (!rpcResult?.applied) {
     console.error('User not found for topup:', userId, rpcResult?.error)
+    return
+  }
+
+  // PAY.12 (2026-04-29): backfill funding-source columns. The webhook
+  // path may also be the FIRST inserter (when the rider closes the
+  // app before /confirm-topup fires) — we still want to label the
+  // row's source. The /confirm-topup path runs the same call;
+  // idempotent UPDATE writes the same data either way.
+  await populateTransactionPaymentSource(paymentIntent.id, paymentIntent)
+
+  // PAY.14 (2026-04-29): foreground in-app banner push. The iOS
+  // PaymentEventStore listens for `topup_succeeded` and shows a
+  // top-of-screen banner regardless of which tab the user is on.
+  // System banner also fires when app is backgrounded. Best-effort —
+  // a missing push token list just means the credit happened
+  // silently, which is the same behavior as before this slice.
+  const { data: tokens } = await supabaseAdmin
+    .from('push_tokens')
+    .select('token')
+    .eq('user_id', userId)
+  const tokenList = (tokens ?? []).map((t: { token: string }) => t.token)
+  if (tokenList.length > 0) {
+    const dollars = (amountCents / 100).toFixed(2)
+    await sendFcmPush(tokenList, {
+      title: 'Wallet topped up',
+      body: `$${dollars} added to your Tago credit.`,
+      data: { type: 'topup_succeeded', amount: `$${dollars}` },
+    })
   }
 }

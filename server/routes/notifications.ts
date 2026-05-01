@@ -114,7 +114,49 @@ notificationsRouter.get(
       return
     }
 
-    res.status(200).json({ notifications: data ?? [] })
+    // Read-time downgrade for `board_request` rows whose underlying
+    // ride has moved past `requested`. Without this the inbox keeps
+    // showing Accept / Decline buttons forever for rides that were
+    // already accepted, declined, withdrawn, or cancelled — every
+    // state-change site would have to remember to flip the
+    // notification, which has bitten us repeatedly. Computing it at
+    // read time means the inbox is always in sync regardless of how
+    // the ride got out of `requested`. No DB mutation; the row stays
+    // `board_request` in the table so we don't lose history.
+    const rows = (data ?? []) as Array<Record<string, unknown>>
+    const rideIDsToCheck = new Set<string>()
+    for (const row of rows) {
+      if (row['type'] !== 'board_request') continue
+      const dataField = row['data'] as Record<string, unknown> | null
+      const rideID = dataField?.['ride_id']
+      if (typeof rideID === 'string') rideIDsToCheck.add(rideID)
+    }
+
+    if (rideIDsToCheck.size > 0) {
+      const { data: rideRows } = await supabaseAdmin
+        .from('rides')
+        .select('id, status')
+        .in('id', Array.from(rideIDsToCheck))
+      const statusByRideID = new Map<string, string>()
+      for (const r of rideRows ?? []) {
+        statusByRideID.set(r.id as string, r.status as string)
+      }
+      for (const row of rows) {
+        if (row['type'] !== 'board_request') continue
+        const dataField = row['data'] as Record<string, unknown> | null
+        const rideID = dataField?.['ride_id']
+        if (typeof rideID !== 'string') continue
+        const status = statusByRideID.get(rideID)
+        // Missing ride row = deleted; treat as actioned/terminal.
+        // Anything other than 'requested' means the request was
+        // resolved by some path (accept / decline / withdraw / cancel).
+        if (!status || status !== 'requested') {
+          row['type'] = 'board_request_actioned'
+        }
+      }
+    }
+
+    res.status(200).json({ notifications: rows })
   },
 )
 
