@@ -24,7 +24,6 @@ import { getServerEnv } from '../env.ts'
 
 export const accountRouter = Router()
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function purge(table: string, column: string, userId: string): Promise<void> {
   const { error } = await supabaseAdmin
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

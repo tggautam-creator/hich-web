@@ -377,14 +377,23 @@ ridesRouter.post(
       driverIds = nearbyIds
       stage = 2
     } else {
-      // Stage 1 fallback — notify all online drivers (excluding snoozed)
+      // Stage 1 fallback — notify all online drivers (excluding snoozed).
+      // Filter snooze in JS rather than chaining `.or(...)` so the mock-
+      // Supabase client used by rides.endpoints.test (which doesn't stub
+      // `.or`) keeps working — same wire behaviour either way.
       const { data: onlineRows } = await supabaseAdmin
         .from('driver_locations')
-        .select('user_id')
+        .select('user_id, snoozed_until')
         .eq('is_online', true)
-        .or('snoozed_until.is.null,snoozed_until.lte.now()')
 
-      const onlineIds = new Set((onlineRows ?? []).map((r: { user_id: string }) => r.user_id))
+      const nowMs = Date.now()
+      const onlineIds = new Set(
+        (onlineRows ?? [])
+          .filter((r: { user_id: string; snoozed_until: string | null }) =>
+            r.snoozed_until == null || new Date(r.snoozed_until).getTime() <= nowMs,
+          )
+          .map((r: { user_id: string }) => r.user_id),
+      )
 
       const { data: allDrivers, error: allErr } = await supabaseAdmin
         .from('users')
@@ -530,7 +539,83 @@ ridesRouter.post(
     if (fallbackTriggered) logEntry['fallback_triggered'] = true
     console.log(JSON.stringify(logEntry))
 
-    res.status(201).json({ ride_id: ride.id })
+    // 2026-05-01 — visibility layer (driver-notification reliability).
+    // Return the fanout counts so the rider's WaitingRoomPage can show
+    // "Reached N drivers" / "No drivers nearby — try Ride Board"
+    // immediately on the request response, instead of staring at a
+    // bare spinner with no feedback. `drivers_eligible` is the pre-
+    // delivery count (drivers in the radius / online filter set);
+    // `drivers_notified` is the post-delivery count (FCM successCount).
+    // A delta indicates dead tokens / unregistered installs.
+    res.status(201).json({
+      ride_id: ride.id,
+      drivers_eligible: driverIds.length,
+      drivers_notified: notifiedCount,
+      realtime_broadcast_count: realtimeSentCount,
+    })
+
+    // 2026-05-01 — reliability layer (re-fire). 30 s after the initial
+    // fanout, if the ride is still `requested` and no driver has
+    // acknowledged via `ride_offers.selected`, re-broadcast the push +
+    // realtime to the same eligible-driver pool. iOS's collapse-id
+    // (set in `lib/fcm.ts`) ensures this REPLACES the original banner
+    // on every driver's lock screen, not stacks. Idempotent: silently
+    // skips when status != 'requested' or a driver already accepted.
+    //
+    // Set up as a `setTimeout` because it lives only for the lifetime
+    // of THIS Node process — fine for the dev server's single-instance
+    // setup. For multi-instance deploys this would need to move into
+    // a per-ride scheduled job (BullMQ / pg-boss / etc.), tracked as
+    // a follow-up.
+    if (driverIds.length > 0) {
+      const refireRideId = ride.id
+      const refireDriverIds = driverIds
+      const refirePayload = realtimePayload
+      const refireFcmTitle = 'New ride request nearby'
+      const refireFcmBody = 'A rider needs a lift — open TAGO to check.'
+      setTimeout(() => {
+        void (async () => {
+          try {
+            const { data: rideRow } = await supabaseAdmin
+              .from('rides')
+              .select('status')
+              .eq('id', refireRideId)
+              .maybeSingle()
+            if (!rideRow || rideRow.status !== 'requested') return
+
+            const { data: pendingOffers } = await supabaseAdmin
+              .from('ride_offers')
+              .select('id')
+              .eq('ride_id', refireRideId)
+              .eq('status', 'selected')
+              .limit(1)
+            if ((pendingOffers ?? []).length > 0) return // someone accepted, no re-fire
+
+            const { data: refireTokens } = await supabaseAdmin
+              .from('push_tokens')
+              .select('token')
+              .in('user_id', refireDriverIds)
+            const tokensToRefire = ((refireTokens ?? []) as { token: string }[])
+              .map((t) => t.token)
+            if (tokensToRefire.length > 0) {
+              const refiredCount = await sendFcmPush(tokensToRefire, {
+                title: refireFcmTitle,
+                body: refireFcmBody,
+                data: refirePayload,
+              })
+              console.log(`[rides/request:refire] rideId=${refireRideId} re-fired to ${refiredCount} driver(s) (no acceptance after 30 s)`)
+            }
+            await Promise.all(
+              refireDriverIds.map((driverId) =>
+                realtimeBroadcast(`driver:${driverId}`, 'ride_request', refirePayload),
+              ),
+            )
+          } catch (err) {
+            console.error(`[rides/request:refire] rideId=${refireRideId} errored:`, err)
+          }
+        })()
+      }, 30_000)
+    }
   },
 )
 
@@ -1062,10 +1147,14 @@ ridesRouter.post(
     // ── No standby drivers → broadcast to all online drivers (excluding snoozed) ──
     const { data: allOnlineDrivers } = await supabaseAdmin
       .from('driver_locations')
-      .select('user_id')
+      .select('user_id, snoozed_until')
       .eq('is_online', true)
-      .or('snoozed_until.is.null,snoozed_until.lte.now()')
-    const onlineIds = (allOnlineDrivers ?? []).map((d: { user_id: string }) => d.user_id)
+    const broadcastNowMs = Date.now()
+    const onlineIds = (allOnlineDrivers ?? [])
+      .filter((d: { user_id: string; snoozed_until: string | null }) =>
+        d.snoozed_until == null || new Date(d.snoozed_until).getTime() <= broadcastNowMs,
+      )
+      .map((d: { user_id: string }) => d.user_id)
 
     const { data: allDrivers } = await supabaseAdmin
       .from('users')
@@ -1124,6 +1213,80 @@ ridesRouter.get(
     }
 
     res.status(200).json({ ride_id: rideId, status: data.status })
+  },
+)
+
+/**
+ * GET /api/rides/:id/notification-status — driver-fanout telemetry for
+ * the rider's waiting-room page (2026-05-01).
+ *
+ * Aggregates from the existing `notifications` table that
+ * `/api/rides/request` writes a row per eligible driver into. Status
+ * progresses through the ride_offers state machine: `pending` (driver
+ * hasn't seen / acted), `selected` (accepted into the ride), `released`
+ * (declined or expired). The rider polls this every 5s while the ride
+ * is in `requested` and the page renders "Reached N drivers, M
+ * declined" instead of a bare spinner.
+ *
+ * Auth: only the rider on the ride can read this — RLS would let any
+ * driver see their own `notifications` row, but the aggregate here is
+ * intentionally rider-private (it would let drivers see each other's
+ * decision counts otherwise).
+ */
+ridesRouter.get(
+  '/:id/notification-status',
+  validateJwt,
+  async (req: Request, res: Response, _next: NextFunction) => {
+    const rideId = req.params['id'] as string
+    const userId = res.locals['userId'] as string
+
+    const { data: ride, error: rideErr } = await supabaseAdmin
+      .from('rides')
+      .select('rider_id, status, driver_id, created_at')
+      .eq('id', rideId)
+      .single()
+    if (rideErr || !ride) {
+      res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+      return
+    }
+    if (ride.rider_id !== userId) {
+      res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Not your ride' } })
+      return
+    }
+
+    // Drivers we attempted to notify — read from the notifications
+    // table that `/request` writes. Counts unique driver_ids so a
+    // re-fire that double-inserts doesn't inflate the count.
+    const { data: notifRows } = await supabaseAdmin
+      .from('notifications')
+      .select('user_id')
+      .eq('type', 'ride_request')
+      .filter('data->>ride_id', 'eq', rideId)
+    const notifiedDrivers = new Set(
+      ((notifRows ?? []) as { user_id: string }[]).map((r) => r.user_id),
+    )
+
+    // Driver decisions — `ride_offers` carries one row per driver per
+    // ride with `status` in (pending|selected|released). `selected`
+    // means accepted, `released` means declined/expired.
+    const { data: offerRows } = await supabaseAdmin
+      .from('ride_offers')
+      .select('status')
+      .eq('ride_id', rideId)
+    const offers = (offerRows ?? []) as { status: string }[]
+    const acceptedCount = offers.filter((o) => o.status === 'selected').length
+    const declinedCount = offers.filter((o) => o.status === 'released').length
+    const pendingCount = offers.filter((o) => o.status === 'pending').length
+
+    res.status(200).json({
+      ride_id: rideId,
+      ride_status: ride.status,
+      drivers_notified: notifiedDrivers.size,
+      drivers_pending: pendingCount,
+      drivers_accepted: acceptedCount,
+      drivers_declined: declinedCount,
+      driver_id: ride.driver_id,
+    })
   },
 )
 
@@ -1555,14 +1718,20 @@ ridesRouter.patch(
       return
     }
 
-    // Re-notify online drivers (Stage 1 fallback — notify all online, excluding snoozed)
+    // Re-notify online drivers (Stage 1 fallback — all online, excluding snoozed).
     const { data: onlineRows } = await supabaseAdmin
       .from('driver_locations')
-      .select('user_id')
+      .select('user_id, snoozed_until')
       .eq('is_online', true)
-      .or('snoozed_until.is.null,snoozed_until.lte.now()')
 
-    const onlineIds = new Set((onlineRows ?? []).map((r: { user_id: string }) => r.user_id))
+    const renotifyNowMs = Date.now()
+    const onlineIds = new Set(
+      (onlineRows ?? [])
+        .filter((r: { user_id: string; snoozed_until: string | null }) =>
+          r.snoozed_until == null || new Date(r.snoozed_until).getTime() <= renotifyNowMs,
+        )
+        .map((r: { user_id: string }) => r.user_id),
+    )
 
     const { data: allDrivers } = await supabaseAdmin
       .from('users')

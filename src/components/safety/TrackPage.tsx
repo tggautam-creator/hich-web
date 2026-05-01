@@ -297,7 +297,6 @@ function MapAutoFollow({
     if (!map || lat == null || lng == null) return
     if (!autoFollow && recenterNonce === 0) return
     map.panTo({ lat, lng })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, lat, lng, autoFollow, recenterNonce])
 
   return null
