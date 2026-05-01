@@ -40,6 +40,50 @@
     <meta name="twitter:title" content="TAGO — Smarter Rides, Shared Routes" />
     <meta name="twitter:description" content="Student carpooling for UC Davis. Share rides to Sacramento, the Bay Area, and beyond." />
     <meta name="twitter:image" content="https://www.tagorides.com/og-image.png" />
+
+    <!--
+      Apple Smart App Banner — passive native banner that surfaces at the
+      top of Safari on iPhone/iPad with a "View" / "Open" CTA. Apple
+      shows it automatically; user can dismiss it with no friction.
+      Replace `app-id=PLACEHOLDER` with your Apple Numeric App ID once
+      App Store Connect issues it (visible at App Store Connect → My
+      Apps → your app → "Apple ID" — a 10-digit number).
+    -->
+    <meta name="apple-itunes-app" content="app-id=PLACEHOLDER" />
+
+    <!--
+      Aggressive iPhone redirect to App Store on first paint.
+      Inline + before any other JS so iOS Safari follows the
+      window.location.replace before React mounts — no flash of webapp.
+      Skipped when:
+        - User is in a known in-app browser (Instagram / Facebook /
+          Twitter / TikTok in-app webviews) — those don't have the App
+          Store available and would just show an error sheet.
+        - User explicitly opts out via `?web=1` (so we can hand a "use
+          the web app" link to power users / TestFlight reviewers).
+        - User is on a non-iOS device (Android / desktop) — they go
+          straight into the SPA.
+      Replace `idPLACEHOLDER` with your real App Store URL once the
+      App Store Connect listing is live (e.g.
+      `https://apps.apple.com/app/tago-rides/id1234567890`).
+    -->
+    <script>
+      (function () {
+        try {
+          var ua = navigator.userAgent || ''
+          var isIOS = /iPhone|iPod/.test(ua) && !window.MSStream
+          var isInAppBrowser = /(FBAN|FBAV|Instagram|Twitter|Snapchat|TikTok|Line|WeChat)/i.test(ua)
+          var url = new URL(window.location.href)
+          var optedOutOfRedirect = url.searchParams.get('web') === '1'
+          var APP_STORE_URL = 'https://apps.apple.com/app/idPLACEHOLDER'
+          if (isIOS && !isInAppBrowser && !optedOutOfRedirect) {
+            window.location.replace(APP_STORE_URL)
+          }
+        } catch (_) {
+          // Best-effort. If anything throws, fall through to the web app.
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

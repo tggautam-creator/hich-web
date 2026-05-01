@@ -72,6 +72,34 @@ export default function Landing({ 'data-testid': testId }: LandingProps) {
           >
             I have an account
           </SecondaryButton>
+
+          {/*
+            Cross-platform iOS app callout — visible to Android + desktop
+            visitors (iPhone visitors get redirected to the App Store
+            before this even renders, via the inline script in
+            `index.html`). Tapped from desktop = opens App Store in a
+            new tab; tapped from Android = same. Replace the placeholder
+            App Store URL once App Store Connect issues your numeric
+            App ID (10-digit number under My Apps → app → Apple ID).
+          */}
+          <a
+            data-testid="cta-app-store"
+            href="https://apps.apple.com/app/idPLACEHOLDER"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-2 flex items-center justify-center gap-2 text-sm font-semibold text-text-secondary hover:text-text-primary transition-colors"
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path d="M17.5 12.5c0-2.4 2-3.5 2.1-3.6-1.1-1.7-2.9-1.9-3.5-1.9-1.5-.2-2.9.9-3.7.9-.7 0-1.9-.9-3.2-.8-1.6 0-3.2 1-4 2.4-1.7 3-.4 7.4 1.2 9.8.8 1.2 1.8 2.5 3.1 2.4 1.3 0 1.7-.8 3.2-.8 1.5 0 1.9.8 3.2.8 1.3 0 2.2-1.2 3-2.4.9-1.4 1.3-2.7 1.4-2.8-.1 0-2.7-1-2.8-4M14.7 5.5c.7-.8 1.2-2 1-3.2-1.1.1-2.3.7-3 1.6-.7.7-1.3 2-1.1 3.1 1.2.1 2.4-.7 3.1-1.5"/>
+            </svg>
+            Get the iOS app
+          </a>
         </div>
       </main>
 
