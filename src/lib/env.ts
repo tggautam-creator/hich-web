@@ -20,6 +20,12 @@ export const env = {
   SUPABASE_ANON_KEY: import.meta.env['VITE_SUPABASE_ANON_KEY'] as string,
   GOOGLE_PLACES_KEY: import.meta.env['VITE_GOOGLE_PLACES_KEY'] as string | undefined,
   GOOGLE_MAPS_KEY: import.meta.env['VITE_GOOGLE_MAPS_KEY'] as string | undefined,
+  // Required by `<AdvancedMarker>` — without it the Map silently
+  // renders as a blank container. Provisioned in Google Cloud
+  // Console → Maps Management. MUST also exist on Vercel project
+  // env vars for production tagorides.com to render the public
+  // TrackPage map.
+  GOOGLE_MAP_ID: import.meta.env['VITE_GOOGLE_MAP_ID'] as string | undefined,
   STRIPE_PUBLISHABLE_KEY: import.meta.env['VITE_STRIPE_PUBLISHABLE_KEY'] as string | undefined,
   FIREBASE_API_KEY: import.meta.env['VITE_FIREBASE_API_KEY'] as string | undefined,
   FIREBASE_AUTH_DOMAIN: import.meta.env['VITE_FIREBASE_AUTH_DOMAIN'] as string | undefined,

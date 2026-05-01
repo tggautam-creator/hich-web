@@ -43,6 +43,15 @@ plan.md
 progress.txt
 ANALYSIS.md
 
+# Apple Developer secrets (APNs auth keys, signing certs, CSRs).
+# The .p8 file is downloadable only ONCE from Apple Developer Console
+# at key creation time — losing it means revoking + re-creating, so
+# treat it like a secret. Same for .cer / .certSigningRequest.
+Apple keys/
+*.p8
+*.cer
+*.certSigningRequest
+
 # iOS — kept out of the web repo
 ios/
 IOS_PROGRESS.md

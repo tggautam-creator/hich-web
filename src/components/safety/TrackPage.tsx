@@ -139,6 +139,13 @@ export default function TrackPage({ 'data-testid': testId = 'track-page' }: { 'd
                 <APIProvider apiKey={env.GOOGLE_MAPS_KEY}>
                   <Map
                     data-testid="track-map"
+                    // mapId is REQUIRED for <AdvancedMarker> to render.
+                    // Without it the Map silently shows a blank white
+                    // container — the bug Tarun's friend hit on the
+                    // shared link 2026-04-30. Created in Google Cloud
+                    // Console → Maps Management; must also be set on
+                    // Vercel env as VITE_GOOGLE_MAP_ID for production.
+                    mapId={env.GOOGLE_MAP_ID}
                     defaultCenter={
                       trackData?.lat != null && trackData.lng != null
                         ? { lat: trackData.lat, lng: trackData.lng }
