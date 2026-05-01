@@ -140,18 +140,36 @@ safetyRouter.get('/track/:token', async (req, res) => {
   if (ride) {
     const isRiderShare = share.user_id === ride.rider_id
     if (isRiderShare) {
-      // Rider's per-ride GPS lives directly on the rides row (written
-      // by /api/rides/:id/gps-ping during status='active'). Riders
-      // don't write to driver_locations — that table is the driver's
-      // pre-ride GPS broadcast for matching.
+      // Rider GPS sources, in order of recency:
+      //   1. `rides.last_rider_gps_lat/lng` — written by
+      //      /api/rides/:id/gps-ping during pre-active + active
+      //      (post-2026-05-01 patch loosened the active gate).
+      //   2. `rider_locations.location` keyed by ride_id — upserted
+      //      every 15s by the rider's iOS pickup-page GPS broadcast
+      //      loop (see DriverPickupPage+Live.swift::startGPSBroadcast).
+      //      Catches the pickup-walk window before status=active.
       lat = ride.last_rider_gps_lat as number | null
       lng = ride.last_rider_gps_lng as number | null
       recordedAt = ride.last_rider_ping_at as string | null
+      if (lat == null || lng == null) {
+        const { data: rloc } = await supabaseAdmin
+          .from('rider_locations')
+          .select('location, recorded_at')
+          .eq('ride_id', share.ride_id)
+          .single()
+        if (rloc) {
+          const coords = (rloc.location as { coordinates: [number, number] }).coordinates
+          lat = coords[1]
+          lng = coords[0]
+          recordedAt = rloc.recorded_at as string
+        }
+      }
     } else {
-      // Driver share — try the per-ride driver ping first (active
-      // ride). If unset (status<active), fall back to the standalone
-      // `driver_locations` table where drivers broadcast GPS while
-      // online before any specific ride.
+      // Driver GPS sources, in order of recency:
+      //   1. `rides.last_driver_gps_lat/lng` — per-ride ping.
+      //   2. `driver_locations` keyed by user_id — driver's standalone
+      //      GPS broadcast while online (every 30s, used for the
+      //      matching pipeline + now for safety-toolkit fallback).
       lat = ride.last_driver_gps_lat as number | null
       lng = ride.last_driver_gps_lng as number | null
       recordedAt = ride.last_driver_ping_at as string | null

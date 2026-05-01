@@ -765,6 +765,32 @@ export type Database = {
         Relationships: never[]
       }
 
+      // ── rider_locations (Migration 052) ─────────────────────────────────────
+      // Per-ride upserted GPS for the rider's pickup-walk position.
+      // Driver's pickup map reads from here to bootstrap the rider
+      // person glyph immediately on mount; the safety-toolkit track
+      // endpoint (SAFETY.1) reads from here as a fallback when
+      // `rides.last_rider_gps_lat/lng` is null (pre-active phase).
+      // PK on `ride_id` (one row per ride, latest position wins).
+      rider_locations: {
+        Row: {
+          ride_id: string
+          location: GeoPoint
+          recorded_at: string
+        }
+        Insert: {
+          ride_id: string
+          location: GeoPoint
+          recorded_at?: string
+        }
+        Update: {
+          ride_id?: string
+          location?: GeoPoint
+          recorded_at?: string
+        }
+        Relationships: never[]
+      }
+
       // ── trusted_contacts (Migration 063 — SAFETY.1) ─────────────────────────
       // Per-user list of names + phones the user wants to text in an
       // emergency. Cap of 5 enforced server-side.

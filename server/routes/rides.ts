@@ -3591,33 +3591,31 @@ ridesRouter.post(
       return
     }
 
-    if (ride.status !== 'active') {
+    // Skip terminal statuses entirely — no point updating GPS on a
+    // ride that's done. Pre-active statuses (requested/accepted/
+    // coordinating) DO write per-party GPS so the safety-toolkit
+    // tracking link can resolve a location during pickup walk too.
+    // Caught 2026-05-01: rider-shared safety link rendered "Waiting
+    // for location data…" because gps-ping was previously gated on
+    // status==='active', leaving rider's GPS unwritten until QR
+    // scan started the active phase. Distance accumulation still
+    // gates on 'active' below — that's the GPS-divergence safety
+    // net which only meaningfully runs once both parties are in the
+    // car together.
+    const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'expired'])
+    if (TERMINAL_STATUSES.has(ride.status)) {
       res.status(200).json({ gps_distance_metres: ride.gps_distance_metres ?? 0 })
       return
     }
 
     const isDriver = userId === ride.driver_id
+    const isActive = ride.status === 'active'
     const now = new Date().toISOString()
 
-    // ── Accumulate distance from last shared ping ──
-    let deltaM = 0
-    if (ride.last_gps_lat != null && ride.last_gps_lng != null) {
-      deltaM = haversineMetres(ride.last_gps_lat, ride.last_gps_lng, lat, lng)
-      if (deltaM < 5 || deltaM > 500) {
-        deltaM = 0
-      }
-    }
+    // ── Build update payload — per-party GPS ALWAYS, distance
+    // accumulation + safety-net fields ONLY during active phase.
+    const updatePayload: Record<string, unknown> = {}
 
-    const newTotal = (ride.gps_distance_metres ?? 0) + deltaM
-
-    // ── Build update payload ──
-    const updatePayload: Record<string, unknown> = {
-      gps_distance_metres: newTotal,
-      last_gps_lat: lat,
-      last_gps_lng: lng,
-    }
-
-    // Store per-party GPS for divergence detection
     if (isDriver) {
       updatePayload.last_driver_gps_lat = lat
       updatePayload.last_driver_gps_lng = lng
@@ -3628,6 +3626,20 @@ ridesRouter.post(
       updatePayload.last_rider_ping_at = now
     }
 
+    if (isActive) {
+      // Accumulate distance from last shared ping (active only).
+      let deltaM = 0
+      if (ride.last_gps_lat != null && ride.last_gps_lng != null) {
+        deltaM = haversineMetres(ride.last_gps_lat, ride.last_gps_lng, lat, lng)
+        if (deltaM < 5 || deltaM > 500) {
+          deltaM = 0
+        }
+      }
+      updatePayload.gps_distance_metres = (ride.gps_distance_metres ?? 0) + deltaM
+      updatePayload.last_gps_lat = lat
+      updatePayload.last_gps_lng = lng
+    }
+
     await supabaseAdmin
       .from('rides')
       .update(updatePayload)
@@ -3636,8 +3648,10 @@ ridesRouter.post(
     // ── Approaching-dropoff reminder ──
     // Fires exactly once per ride when either party (whoever pings first) is
     // within 500m of the confirmed dropoff. Driver and rider get distinct
-    // copy ("scan the QR" vs "show the QR").
-    if (!ride.dropoff_reminder_sent && ride.dropoff_point) {
+    // copy ("scan the QR" vs "show the QR"). Active-only — pre-active GPS
+    // pings (added 2026-05-01 for safety-toolkit support) shouldn't trigger
+    // this since the ride hasn't started yet.
+    if (isActive && !ride.dropoff_reminder_sent && ride.dropoff_point) {
       const dropoff = ride.dropoff_point as unknown as { coordinates: [number, number] }
       const distToDropoff = haversineMetres(lat, lng, dropoff.coordinates[1], dropoff.coordinates[0])
 
@@ -3686,7 +3700,12 @@ ridesRouter.post(
       }
     }
 
-    res.status(200).json({ gps_distance_metres: newTotal })
+    // Distance only changes during active phase; pre-active pings
+    // return whatever the row already had (typically 0).
+    const responseDistance = isActive
+      ? (updatePayload.gps_distance_metres as number)
+      : (ride.gps_distance_metres ?? 0)
+    res.status(200).json({ gps_distance_metres: responseDistance })
   },
 )
 
