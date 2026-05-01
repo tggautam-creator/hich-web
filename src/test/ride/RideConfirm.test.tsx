@@ -168,7 +168,7 @@ describe('RideConfirm', () => {
     expect(screen.queryByTestId('fare-breakdown')).not.toBeInTheDocument()
   })
 
-  it('clicking toggle shows fare breakdown with gas, time, and base', async () => {
+  it('clicking toggle shows fare breakdown with gas and time rows', async () => {
     const user = userEvent.setup()
     renderWithState({
       destination: MOCK_DESTINATION,
@@ -177,7 +177,6 @@ describe('RideConfirm', () => {
     })
     await user.click(screen.getByTestId('breakdown-toggle'))
     expect(screen.getByTestId('fare-breakdown')).toBeInTheDocument()
-    expect(screen.getByTestId('breakdown-base')).toBeInTheDocument()
     expect(screen.getByTestId('breakdown-gas')).toBeInTheDocument()
     expect(screen.getByTestId('breakdown-time')).toBeInTheDocument()
     expect(screen.getByTestId('breakdown-fee')).toBeInTheDocument()

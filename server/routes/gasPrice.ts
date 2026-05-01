@@ -122,6 +122,36 @@ function getPriceForState(
   return null
 }
 
+// ── Server-internal helper (used by rides.ts for fare calculation) ────────
+
+/**
+ * Resolve the current gas price for a US state.
+ * Returns the cached EIA value if fresh, otherwise refetches from EIA,
+ * with a hard fallback to $3.50 (national avg) on errors.
+ *
+ * Used by fare-calculation paths in `rides.ts` so the canonical fare
+ * stored on the rides row reflects real-world fuel cost (rather than
+ * the legacy $3.50 hardcode). Hardcoded CA at the call site for
+ * tonight (2026-05-01); state-aware lookup is a follow-up.
+ */
+export async function getGasPriceForState(stateAbbrev: string): Promise<number> {
+  try {
+    const prices = await fetchEiaPrices()
+    const direct = getPriceForState(prices, stateAbbrev)
+    if (direct != null) return direct
+    // Fall back to PADD region average
+    const paddPrices = ['R10', 'R20', 'R30', 'R40', 'R50']
+      .map((code) => prices[code])
+      .filter((p): p is number => p != null && p > 0)
+    if (paddPrices.length > 0) {
+      return paddPrices.reduce((a, b) => a + b, 0) / paddPrices.length
+    }
+  } catch (err) {
+    console.error('[gas-price] getGasPriceForState error:', err)
+  }
+  return 3.50
+}
+
 // ── Route ───────────────────────────────────────────────────────────────────
 
 /**

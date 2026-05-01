@@ -444,10 +444,8 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
             <div className="space-y-2 border-t border-border pt-3 text-sm">
               {fareBreakdown && (
                 <>
-                  <div className="flex justify-between">
-                    <span className="text-text-secondary">Base fare</span>
-                    <span className="text-text-primary">{formatCents(fareBreakdown.base_cents)}</span>
-                  </div>
+                  {/* Base fare line removed 2026-05-01 — pricing is
+                      now gas + time only (with a $5 minimum). */}
                   <div className="flex justify-between">
                     <span className="text-text-secondary">Gas cost ({fareBreakdown.distance_miles.toFixed(1)} mi)</span>
                     <span className="text-text-primary">{formatCents(fareBreakdown.gas_cost_cents)}</span>
@@ -456,7 +454,7 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
                     <span className="text-text-secondary">Time ({fareBreakdown.duration_min} min × ${(fareBreakdown.time_cost_cents / Math.max(1, fareBreakdown.duration_min) / 100).toFixed(2)})</span>
                     <span className="text-text-primary">{formatCents(fareBreakdown.time_cost_cents)}</span>
                   </div>
-                  {fareCents > fareBreakdown.base_cents + fareBreakdown.gas_cost_cents + fareBreakdown.time_cost_cents && (
+                  {fareCents > fareBreakdown.gas_cost_cents + fareBreakdown.time_cost_cents && (
                     <div className="flex justify-between text-xs">
                       <span className="text-text-secondary italic">Minimum fare applied</span>
                       <span className="text-text-secondary italic">{formatCents(fareCents)}</span>

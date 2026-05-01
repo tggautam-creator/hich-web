@@ -3,14 +3,18 @@
  *
  * Money is always in cents (integers). Display only as dollars.
  *
- * Gas-cost-aware formula:
+ * Gas-cost-aware formula (no base fare since 2026-05-01):
  *   gas_cost    = (distance_km × 0.621371 / mpg) × gas_price_per_gallon
- *   time_cost   = duration_min × $0.08/min (8 cents/min)
- *   base        = $2.00 (200 cents)
- *   subtotal    = base + gas_cost + time_cost
+ *   time_cost   = duration_min × $0.05/min (5 cents/min)
+ *   subtotal    = gas_cost + time_cost
  *   fare_cents  = max(500, round(subtotal))     // $5 minimum, no upper cap
  *   platform_fee = round(fare × 0) — driver keeps 100% during MVP
  *   driver_earns = fare
+ *
+ * The $2 flat base fare was removed 2026-05-01 to make the price
+ * structure feel more like Uber's "you pay for what you use." The
+ * $5 minimum still protects drivers from sub-$1 ride payouts on
+ * very short trips.
  *
  * If mpg/gas_price are not available, falls back to flat per-km rate.
  */
@@ -18,8 +22,7 @@
 import { DEFAULT_MPG } from '@/lib/fuelEconomy'
 
 export const MIN_FARE_CENTS    = 500
-const BASE_CENTS        = 200
-const PER_MIN_CENTS     = 8
+const PER_MIN_CENTS     = 5
 const PLATFORM_FEE_RATE = 0
 const KM_TO_MILES       = 0.621371
 
@@ -29,7 +32,6 @@ export const DEFAULT_GAS_PRICE_PER_GALLON = 3.50
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface FareBreakdown {
-  base_cents: number
   gas_cost_cents: number
   time_cost_cents: number
   platform_fee_cents: number
@@ -67,13 +69,12 @@ export function calculateFare(
   const gas_cost_cents = Math.round(gallons_used * gas_price_per_gallon * 100)
   const time_cost_cents = Math.round(duration_min * PER_MIN_CENTS)
 
-  const raw = BASE_CENTS + gas_cost_cents + time_cost_cents
+  const raw = gas_cost_cents + time_cost_cents
   const fare_cents = Math.max(MIN_FARE_CENTS, raw)
   const platform_fee_cents = Math.round(fare_cents * PLATFORM_FEE_RATE)
   const driver_earns_cents = fare_cents - platform_fee_cents
 
   return {
-    base_cents: BASE_CENTS,
     gas_cost_cents,
     time_cost_cents,
     platform_fee_cents,

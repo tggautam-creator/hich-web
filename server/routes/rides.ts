@@ -13,6 +13,7 @@ import { chargeRideViaWallet, creditDriverEarning } from '../lib/walletPayment.t
 import { chargeTip } from '../lib/tipPayment.ts'
 import { shouldTreatScheduledRideAsExpired } from '../lib/scheduledReminders.ts'
 import { resolveAndPersistDefaultPm } from './payment.ts'
+import { getGasPriceForState } from './gasPrice.ts'
 
 export const ridesRouter = Router()
 
@@ -27,11 +28,10 @@ const EARTH_RADIUS_M = 6_371_000
 const KM_TO_MILES = 0.621371
 const MIN_FARE_CENTS = 500
 // Upper cap removed 2026-04-24 — per-ride fare now scales without a ceiling.
-const BASE_CENTS = 200
-const PER_MIN_CENTS = 8
+// Base fare removed 2026-05-01 — pure gas + time, $5 min protects driver on short trips.
+const PER_MIN_CENTS = 5
 const PLATFORM_FEE_RATE = 0
 const DEFAULT_MPG = 25
-const DEFAULT_GAS_PRICE_PER_GALLON = 3.50
 
 /**
  * M4 — fare invariant. The driver's credit + platform fee must always equal
@@ -149,12 +149,13 @@ async function computeRideFare(
 
   const distanceMiles = (distanceM / 1000) * KM_TO_MILES
 
-  // Gas cost
+  // Gas cost — uses live EIA price (CA hardcoded for now; full state-aware is a follow-up)
+  const gasPricePerGallon = await getGasPriceForState('CA')
   const gallonsUsed = distanceMiles / DEFAULT_MPG
-  const gasCostCents = Math.round(gallonsUsed * DEFAULT_GAS_PRICE_PER_GALLON * 100)
+  const gasCostCents = Math.round(gallonsUsed * gasPricePerGallon * 100)
   const timeCostCents = Math.round(durationMin * PER_MIN_CENTS)
 
-  const raw = BASE_CENTS + gasCostCents + timeCostCents
+  const raw = gasCostCents + timeCostCents
   const fareCents = Math.max(MIN_FARE_CENTS, raw)
   const platformFeeCents = Math.round(fareCents * PLATFORM_FEE_RATE)
   const driverEarnsCents = fareCents - platformFeeCents
@@ -186,10 +187,11 @@ async function estimateFareCentsBetween(
     if (route?.durationMin) durationMin = Math.round(route.durationMin)
   }
 
+  const gasPricePerGallon = await getGasPriceForState('CA')
   const gallonsUsed = distanceMiles / DEFAULT_MPG
-  const gasCostCents = Math.round(gallonsUsed * DEFAULT_GAS_PRICE_PER_GALLON * 100)
+  const gasCostCents = Math.round(gallonsUsed * gasPricePerGallon * 100)
   const timeCostCents = Math.round(durationMin * PER_MIN_CENTS)
-  const raw = BASE_CENTS + gasCostCents + timeCostCents
+  const raw = gasCostCents + timeCostCents
   return Math.max(MIN_FARE_CENTS, raw)
 }
 
@@ -4036,10 +4038,11 @@ ridesRouter.post(
       const routeInfo = await fetchDrivingRoute(originLat, originLng, riderDestLat, riderDestLng, apiKey)
       const durationMin = routeInfo?.durationMin ?? Math.round(distanceMiles * 2) // fallback estimate
 
+      const gasPricePerGallon = await getGasPriceForState('CA')
       const gallonsUsed = distanceMiles / DEFAULT_MPG
-      const gasCostCents = Math.round(gallonsUsed * DEFAULT_GAS_PRICE_PER_GALLON * 100)
+      const gasCostCents = Math.round(gallonsUsed * gasPricePerGallon * 100)
       const timeCostCents = Math.round(durationMin * PER_MIN_CENTS)
-      const raw = BASE_CENTS + gasCostCents + timeCostCents
+      const raw = gasCostCents + timeCostCents
       const fareCents = Math.max(MIN_FARE_CENTS, raw)
       const platformFeeCents = Math.round(fareCents * PLATFORM_FEE_RATE)
       const driverEarnsCents = fareCents - platformFeeCents
@@ -4374,10 +4377,11 @@ ridesRouter.post(
         )
         const distMiles = (distM / 1000) * KM_TO_MILES
         const gallons = distMiles / DEFAULT_MPG
-        const gasCents = Math.round(gallons * DEFAULT_GAS_PRICE_PER_GALLON * 100)
+        const gasPricePerGallon = await getGasPriceForState('CA')
+        const gasCents = Math.round(gallons * gasPricePerGallon * 100)
         const estDurationMin = Math.round(distM / 1000 / 40 * 60) // ~40km/h average
         const timeCents = Math.round(estDurationMin * PER_MIN_CENTS)
-        fareEstimateCents = Math.max(MIN_FARE_CENTS, BASE_CENTS + gasCents + timeCents)
+        fareEstimateCents = Math.max(MIN_FARE_CENTS, gasCents + timeCents)
       } catch { /* non-fatal */ }
     }
 

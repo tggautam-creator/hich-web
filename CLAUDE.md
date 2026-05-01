@@ -81,14 +81,15 @@ STRIPE_WEBHOOK_SECRET
 ## Fare Formula
 ```
 gas_cost_cents  = round((distance_km * 0.621371 / mpg) * gas_price_per_gallon * 100)
-time_cost_cents = round(duration_min * 8)           // 8 cents/min
-base_cents      = 200                               // $2.00 base
-raw             = base_cents + gas_cost_cents + time_cost_cents
+time_cost_cents = round(duration_min * 5)           // 5 cents/min (was 8 before 2026-05-01)
+raw             = gas_cost_cents + time_cost_cents  // base fare removed 2026-05-01
 fare_cents      = max(500, raw)                     // $5 minimum, no upper cap (removed 2026-04-24)
 platform_fee_cents = 0                              // driver keeps 100% during MVP
 driver_earns_cents = fare_cents
 ```
-Default: mpg=25, gas_price=$3.50/gal
+Default: mpg=25. `gas_price_per_gallon` comes from EIA via `GET /api/gas-price?state=CA`
+(server-cached 6h, iOS-cached 30min via `GasPriceStore`); falls back to $3.50 if EIA is
+unreachable.
 
 ## Matching — What to Build (read before touching any notification code)
 The matching logic has stages. Build in order, do not skip ahead.

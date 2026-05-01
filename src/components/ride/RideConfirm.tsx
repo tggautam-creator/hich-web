@@ -325,10 +325,8 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
 
         {showBreakdown && (
           <div data-testid="fare-breakdown" className="bg-surface rounded-2xl p-5 space-y-3 text-sm">
-            <div className="flex justify-between text-text-primary">
-              <span>Base fare</span>
-              <span data-testid="breakdown-base">{formatCents(breakdown.base_cents)}</span>
-            </div>
+            {/* Base fare line removed 2026-05-01 per the simplified
+                "you pay only for gas + time" pricing model. */}
             <div className="flex justify-between text-text-primary">
               <div>
                 <span>Gas cost</span>

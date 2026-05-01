@@ -104,10 +104,11 @@ export default function TermsPage() {
           <section>
             <h2 className="mb-2 text-lg font-semibold text-text-primary">6. Payments</h2>
             <p>
-              Ride fares are calculated based on distance, estimated travel time, and a base fare.
-              All amounts are displayed and charged in US dollars. Payments are processed securely
-              through Stripe — TAGO does not store your credit card information. By using the
-              Service, you agree to Stripe&apos;s terms and conditions for payment processing.
+              Ride fares are calculated based on distance and estimated travel time, with a $5
+              minimum per ride. All amounts are displayed and charged in US dollars. Payments are
+              processed securely through Stripe — TAGO does not store your credit card information.
+              By using the Service, you agree to Stripe&apos;s terms and conditions for payment
+              processing.
             </p>
           </section>
 
