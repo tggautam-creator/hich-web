@@ -53,8 +53,14 @@
     <script>
       (function () {
         // App Store Connect numeric App ID — appstoreconnect.apple.com URL
-        // pattern is `/apps/{this-id}/distribution`. Set 2026-05-01.
-        var APP_STORE_NUMERIC_ID = '6763382426'
+        // pattern is `/apps/{this-id}/distribution`. The listing is
+        // created (id 6763382426) but no build has been uploaded yet,
+        // so the App Store URL 404s. Leaving this `null` short-circuits
+        // both the iPhone auto-redirect AND the Smart App Banner so
+        // visitors don't bounce to a broken App Store page. Flip back
+        // to `'6763382426'` the moment a build ships to TestFlight /
+        // App Store.
+        var APP_STORE_NUMERIC_ID = null
 
         if (!APP_STORE_NUMERIC_ID) return
 
