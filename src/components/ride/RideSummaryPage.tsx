@@ -444,8 +444,14 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
             <div className="space-y-2 border-t border-border pt-3 text-sm">
               {fareBreakdown && (
                 <>
-                  {/* Base fare line removed 2026-05-01 — pricing is
-                      now gas + time only (with a $5 minimum). */}
+                  {/* Base fare row — currently $0.00 in MVP. Surfaced
+                      explicitly so riders + drivers see it from day
+                      one; if monetization later flips it non-zero,
+                      the line item is already in place. */}
+                  <div className="flex justify-between">
+                    <span className="text-text-secondary">Base fare</span>
+                    <span className="text-text-primary">{formatCents(fareBreakdown.base_fare_cents)}</span>
+                  </div>
                   <div className="flex justify-between">
                     <span className="text-text-secondary">Gas cost ({fareBreakdown.distance_miles.toFixed(1)} mi)</span>
                     <span className="text-text-primary">{formatCents(fareBreakdown.gas_cost_cents)}</span>

@@ -70,6 +70,7 @@ describe('database types — row aliases', () => {
       stripe_onboarding_complete: false,
       default_payment_method_id: null,
       phone_verified: false,
+      date_of_birth: null,
       created_at: new Date().toISOString(),
     }
     expect(user.wallet_balance).toBe(500)
@@ -80,7 +81,7 @@ describe('database types — row aliases', () => {
     const v: Vehicle = {
       id: 'v1', user_id: 'u1', vin: '1HGBH41JXMN109186',
       make: 'Honda', model: 'Civic', year: 2022, color: 'blue',
-      plate: 'ABC123', license_plate_photo_url: 'https://x.com/p.jpg',
+      plate: 'ABC123',
       car_photo_url: 'https://x.com/c.jpg', seats_available: 3,
       fuel_efficiency_mpg: null, is_active: true,
       body_type: 'suv', deleted_at: null,

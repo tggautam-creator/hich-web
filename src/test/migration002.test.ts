@@ -38,8 +38,11 @@ describe('migration 002 — vehicles table', () => {
     expect(sql).toMatch(/\bplate\b/)
   })
 
-  it('has license_plate_photo_url and car_photo_url columns', () => {
-    expect(sql).toMatch(/license_plate_photo_url/)
+  it('has car_photo_url column', () => {
+    // `license_plate_photo_url` was dropped in migration 065 once we
+    // decided the plate string + car photo are sufficient for rider
+    // trust at pickup. Migration 002 still introduces the column;
+    // this test was tightened to only assert the column we still keep.
     expect(sql).toMatch(/car_photo_url/)
   })
 

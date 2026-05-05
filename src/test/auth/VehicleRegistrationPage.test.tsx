@@ -88,17 +88,17 @@ function fillValidForm() {
   fireEvent.change(screen.getByTestId('model-input'), { target: { value: 'Accord' } })
   fireEvent.change(screen.getByTestId('year-input'), { target: { value: '2020' } })
   fireEvent.click(screen.getByTestId('color-blue'))
-  const licFile = new File(['lic'], 'license.jpg', { type: 'image/jpeg' })
-  fireEvent.change(screen.getByTestId('license-photo-input'), { target: { files: [licFile] } })
-}
-
-/** Fill required fields + both optional photos. */
-function fillValidFormWithPhotos() {
-  fillValidForm()
+  // Car photo is now mandatory (2026-05-04). License plate photo
+  // was removed from the form entirely.
   const carFile = new File(['car'], 'car.jpg', { type: 'image/jpeg' })
   fireEvent.change(screen.getByTestId('car-photo-input'), { target: { files: [carFile] } })
-  const licFile = new File(['lic'], 'license.jpg', { type: 'image/jpeg' })
-  fireEvent.change(screen.getByTestId('license-photo-input'), { target: { files: [licFile] } })
+}
+
+/** Backwards-compat shim — was the "with both photos" helper before the
+ *  license-plate photo was dropped. Now identical to `fillValidForm`
+ *  since car photo is mandatory and the only photo we collect. */
+function fillValidFormWithPhotos() {
+  fillValidForm()
 }
 
 // ── Unit tests for validators ────────────────────────────────────────────────
@@ -197,10 +197,10 @@ describe('VehicleRegistrationPage', () => {
       })
     })
 
-    it('renders file inputs', () => {
+    it('renders the car photo input (license-plate photo removed 2026-05-04)', () => {
       renderPage()
       expect(screen.getByTestId('car-photo-input')).toBeDefined()
-      expect(screen.getByTestId('license-photo-input')).toBeDefined()
+      expect(screen.queryByTestId('license-photo-input')).toBeNull()
     })
 
     it('renders seats stepper defaulting to 2', () => {
@@ -321,7 +321,7 @@ describe('VehicleRegistrationPage', () => {
 
   // ── Successful submit ────────────────────────────────────────────────────
   describe('successful submit', () => {
-    it('inserts vehicle, updates user, and navigates with license photo', async () => {
+    it('inserts vehicle, updates user, and navigates with the (mandatory) car photo', async () => {
       renderPage()
       fillValidForm()
 
@@ -330,7 +330,7 @@ describe('VehicleRegistrationPage', () => {
       })
 
       await waitFor(() => {
-        // License photo upload is mandatory, so storage upload should be called
+        // Car photo upload is mandatory, so storage upload should be called
         expect(mockStorageUpload).toHaveBeenCalled()
         // Inserted vehicle
         expect(mockInsert).toHaveBeenCalledTimes(1)
@@ -341,7 +341,8 @@ describe('VehicleRegistrationPage', () => {
         expect(insertArg.year).toBe(2020)
         expect(insertArg.color).toBe('Blue')
         expect(insertArg.seats_available).toBe(2)
-        expect(insertArg.car_photo_url).toBeNull()
+        // Car photo IS the publicUrl from storage (mandatory now).
+        expect(insertArg.car_photo_url).toBe('https://storage.example.com/car.jpg')
         // Updated user is_driver
         expect(mockUpdate).toHaveBeenCalledWith({ is_driver: true })
         // Navigated
@@ -349,7 +350,7 @@ describe('VehicleRegistrationPage', () => {
       })
     })
 
-    it('uploads both photos when provided', async () => {
+    it('uploads exactly one photo (license-plate photo removed 2026-05-04)', async () => {
       renderPage()
       fillValidFormWithPhotos()
 
@@ -358,11 +359,12 @@ describe('VehicleRegistrationPage', () => {
       })
 
       await waitFor(() => {
-        expect(mockStorageUpload).toHaveBeenCalledTimes(2)
+        // Only the car-photo upload remains; license-plate photo was dropped.
+        expect(mockStorageUpload).toHaveBeenCalledTimes(1)
       })
     })
 
-    it('stores license photo path (not public URL) when provided', async () => {
+    it('does NOT include license_plate_photo_url on the insert (column dropped 2026-05-04)', async () => {
       renderPage()
       fillValidFormWithPhotos()
 
@@ -372,13 +374,11 @@ describe('VehicleRegistrationPage', () => {
 
       await waitFor(() => {
         const insertArg = mockInsert.mock.calls[0][0] as Record<string, unknown>
-        // license_plate_photo_url should be a storage path, NOT a public URL
-        expect(insertArg.license_plate_photo_url).toMatch(/^u-1-/)
-        expect(insertArg.license_plate_photo_url).not.toContain('https://')
+        expect(insertArg).not.toHaveProperty('license_plate_photo_url')
       })
     })
 
-    it('stores public URL for car photo when provided', async () => {
+    it('stores public URL for car photo (mandatory)', async () => {
       renderPage()
       fillValidFormWithPhotos()
 
@@ -449,11 +449,7 @@ describe('VehicleRegistrationPage', () => {
       expect(screen.getByTestId('car-photo-name').textContent).toBe('my-car.png')
     })
 
-    it('shows license photo filename after selection', () => {
-      renderPage()
-      const file = new File(['img'], 'plate.jpg', { type: 'image/jpeg' })
-      fireEvent.change(screen.getByTestId('license-photo-input'), { target: { files: [file] } })
-      expect(screen.getByTestId('license-photo-name').textContent).toBe('plate.jpg')
-    })
+    // The license-photo input was removed entirely on 2026-05-04 —
+    // the prior "shows license photo filename" test no longer applies.
   })
 })

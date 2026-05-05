@@ -1,6 +1,6 @@
 import { app } from './app.ts'
 import { getServerEnv, validateStripeEnv } from './env.ts'
-import { checkUpcomingRides, expireMissedRides, expireStaleRequests, syncAllRoutines } from './lib/scheduledReminders.ts'
+import { checkUpcomingRides, clearExpiredSnoozes, clearStaleOnlineFlags, expireMissedRides, expireStaleRequests, syncAllRoutines } from './lib/scheduledReminders.ts'
 import { checkActiveRides } from './lib/rideSafetyNet.ts'
 import { startRideEtaTick } from './lib/rideEtaTick.ts'
 import { sendPendingPaymentNudges } from './jobs/paymentDunning.ts'
@@ -43,7 +43,7 @@ async function runReminderSweep(reason: string): Promise<void> {
 
   try {
     console.log(`[cron/fallback] Starting reminder sweep (${reason})`)
-    const [reminders, expiry, missed, safetyNet, sync, dunning] = await Promise.all([
+    const [reminders, expiry, missed, safetyNet, sync, dunning, snooze, staleOnline] = await Promise.all([
       checkUpcomingRides(),
       expireStaleRequests(),
       expireMissedRides(),
@@ -61,8 +61,27 @@ async function runReminderSweep(reason: string): Promise<void> {
         console.error(`[cron/fallback] dunning failed: ${msg}`)
         return { scanned: 0, nudged: 0, skipped: 0, errors: [] }
       }),
+      // 2026-05-01 — clear expired driver snoozes + fire "you're
+      // back online" FCM push. Layer 1 of the 4-layer snooze-expiry
+      // fix; iOS local Timer (layer 2) handles sub-second feedback,
+      // this cron is the source of truth in case the app was killed
+      // during the snooze window.
+      clearExpiredSnoozes().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[cron/fallback] snooze sweep failed: ${msg}`)
+        return { cleared: 0, notified: 0 }
+      }),
+      // 2026-05-04 — flip is_online=false on driver_locations rows
+      // whose recorded_at is older than 6h. Replaces the per-request
+      // freshness filter the matcher used to apply on Stage 1
+      // fallback (removed same day to unblock force-quit drivers).
+      clearStaleOnlineFlags().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[cron/fallback] stale-online sweep failed: ${msg}`)
+        return { cleared: 0, notified: 0 }
+      }),
     ])
-    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, sync: users=${sync.users} inserted=${sync.inserted}, dunning: scanned=${dunning.scanned} nudged=${dunning.nudged}`)
+    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, sync: users=${sync.users} inserted=${sync.inserted}, dunning: scanned=${dunning.scanned} nudged=${dunning.nudged}, snooze: cleared=${snooze.cleared} notified=${snooze.notified}, staleOnline: cleared=${staleOnline.cleared} notified=${staleOnline.notified}`)
   } catch (err) {
     console.error('[cron/fallback] Failed reminder sweep:', err)
   } finally {

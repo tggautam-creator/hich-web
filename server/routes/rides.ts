@@ -2,7 +2,7 @@ import { Router } from 'express'
 import type { Request, Response, NextFunction } from 'express'
 import rateLimit from 'express-rate-limit'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
-import { sendFcmPush } from '../lib/fcm.ts'
+import { sendFcmPush, sendSilentFcmPush } from '../lib/fcm.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { idempotency } from '../middleware/idempotency.ts'
 import { generateQrToken, validateQrToken } from '../lib/qrToken.ts'
@@ -240,6 +240,135 @@ function isGeoPoint(val: unknown): val is GeoPoint {
 }
 
 /**
+ * Wake-up step (added 2026-05-04 — Option A in the
+ * stale-GPS-but-app-installed audit).
+ *
+ * Sends a SILENT push (`content-available: 1`) to every
+ * `is_online=true` driver, regardless of `recorded_at` freshness, so
+ * iOS wakes their app in the background long enough to grab a fresh
+ * GPS fix and upsert `driver_locations`. Then waits up to
+ * `maxWaitMs` (default 5s) for those upserts to land.
+ *
+ * After this resolves, the existing geo-matcher (`nearby_active_drivers`
+ * RPC + Stage 1 freshness gate) runs against now-fresh data — drivers
+ * who toggled Online and quit the app are no longer ghost rows.
+ *
+ * Returns telemetry: how many drivers we attempted to wake, how many
+ * actually checked in inside the window, and the elapsed ms.
+ *
+ * Notes:
+ *  - Only targets `is_online=true` drivers. Toggling Offline means
+ *    "leave me alone" — wake-up doesn't override that.
+ *  - Skips drivers with `snoozed_until > NOW()` so a freshly-snoozed
+ *    driver isn't woken to no purpose.
+ *  - Apple budgets silent pushes to ~2–3 per device per hour. Don't
+ *    add additional callers without thinking about the budget.
+ *  - Failure is non-fatal — if the silent push send errors, the
+ *    matcher still runs and falls back to Stage 1 / "no drivers
+ *    nearby" naturally. Same for partial wake-ups (some drivers
+ *    respond, others don't).
+ */
+async function wakeUpAndWaitForFreshLocations(
+  riderId: string,
+  maxWaitMs = 5_000,
+): Promise<{
+  attempted: number
+  silentPushed: number
+  freshlyResponded: number
+  elapsedMs: number
+}> {
+  const start = Date.now()
+  const sinceIso = new Date(start).toISOString()
+
+  // Find every online, non-snoozed driver — no freshness filter.
+  const { data: targetRows } = await supabaseAdmin
+    .from('driver_locations')
+    .select('user_id, snoozed_until, recorded_at')
+    .eq('is_online', true)
+
+  const nowMs = start
+  const onlineRows = ((targetRows ?? []) as Array<{
+    user_id: string
+    snoozed_until: string | null
+    recorded_at: string | null
+  }>).filter(
+    (r) =>
+      r.user_id !== riderId &&
+      (r.snoozed_until == null || new Date(r.snoozed_until).getTime() <= nowMs),
+  )
+
+  const targetIds = onlineRows.map((r) => r.user_id)
+  if (targetIds.length === 0) {
+    return { attempted: 0, silentPushed: 0, freshlyResponded: 0, elapsedMs: Date.now() - start }
+  }
+
+  // Pre-count drivers who are already fresh — they need no wake-up,
+  // and they shouldn't be counted as "responding inside the window."
+  const staleCutoffIso = new Date(nowMs - 5 * 60 * 1000).toISOString()
+  const staleTargetIds = onlineRows
+    .filter((r) => !r.recorded_at || r.recorded_at <= staleCutoffIso)
+    .map((r) => r.user_id)
+
+  const { data: tokenRows } = await supabaseAdmin
+    .from('push_tokens')
+    .select('token, user_id')
+    .in('user_id', targetIds)
+
+  const tokens = ((tokenRows ?? []) as Array<{ token: string; user_id: string }>).map(
+    (t) => t.token,
+  )
+
+  let silentPushed = 0
+  if (tokens.length > 0) {
+    try {
+      silentPushed = await sendSilentFcmPush(tokens, {
+        type: 'wake_up',
+      })
+    } catch (err) {
+      console.error('[rides/request:wakeup] silent push send errored:', err)
+    }
+  }
+
+  // If nothing actually needed waking (every targeted driver was
+  // already fresh, or none had push tokens), skip the wait entirely.
+  if (staleTargetIds.length === 0 || silentPushed === 0) {
+    return {
+      attempted: targetIds.length,
+      silentPushed,
+      freshlyResponded: 0,
+      elapsedMs: Date.now() - start,
+    }
+  }
+
+  // Poll for fresh upserts. Bail early once every targeted stale
+  // driver has checked in. 200ms cadence keeps the CPU light without
+  // making p95 latency unnecessarily slow.
+  const deadline = nowMs + maxWaitMs
+  let freshlyResponded = 0
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    const { data: respRows } = await supabaseAdmin
+      .from('driver_locations')
+      .select('user_id, recorded_at')
+      .in('user_id', staleTargetIds)
+      .gte('recorded_at', sinceIso)
+
+    const respondedIds = new Set(
+      ((respRows ?? []) as Array<{ user_id: string }>).map((r) => r.user_id),
+    )
+    freshlyResponded = respondedIds.size
+    if (freshlyResponded >= staleTargetIds.length) break
+  }
+
+  return {
+    attempted: targetIds.length,
+    silentPushed,
+    freshlyResponded,
+    elapsedMs: Date.now() - start,
+  }
+}
+
+/**
  * POST /api/rides/request — Stage 2 (with Stage 1 fallback).
  */
 ridesRouter.post(
@@ -357,6 +486,19 @@ ridesRouter.post(
       return
     }
 
+    // Wake-up step (2026-05-04) — silently push every online driver
+    // so suspended apps grab a fresh GPS fix before the matcher
+    // decides who's "nearby." Without this, drivers who toggled
+    // Online and then quit / locked their phone sit with stale
+    // `recorded_at` and the freshness gate skips them. See
+    // `wakeUpAndWaitForFreshLocations` for the full rationale.
+    const wakeUpStats = await wakeUpAndWaitForFreshLocations(riderId)
+    console.log(
+      `[rides/request:wakeup] rideId=${ride.id} attempted=${wakeUpStats.attempted} ` +
+        `silentPushed=${wakeUpStats.silentPushed} freshlyResponded=${wakeUpStats.freshlyResponded} ` +
+        `elapsedMs=${wakeUpStats.elapsedMs}`,
+    )
+
     const { data: nearbyRows, error: nearbyErr } = await supabaseAdmin.rpc(
       'nearby_active_drivers',
       {
@@ -377,22 +519,56 @@ ridesRouter.post(
       driverIds = nearbyIds
       stage = 2
     } else {
-      // Stage 1 fallback — notify all online drivers (excluding snoozed).
-      // Filter snooze in JS rather than chaining `.or(...)` so the mock-
-      // Supabase client used by rides.endpoints.test (which doesn't stub
-      // `.or`) keeps working — same wire behaviour either way.
+      // Stage 1 fallback — notify all online drivers (excluding
+      // snoozed). NO freshness filter on the GPS `recorded_at` here.
+      //
+      // 2026-05-04 — removed the 5-min `recorded_at` freshness gate
+      // that lived here from 2026-05-02 to 2026-05-04. The gate was
+      // originally added to fix a "Reached 6 nearby drivers" UI bug
+      // where ghost rows (drivers who toggled Online months ago) got
+      // counted in the rider's status card. But it had a worse side
+      // effect: drivers who FORCE-QUIT the app (App Switcher swipe-up)
+      // still have `is_online=true` in the row — iOS, by design,
+      // refuses to deliver `content-available: 1` silent pushes to
+      // force-quit apps, so Option A's wake-up step can't refresh
+      // their `recorded_at`. Combined with this freshness filter,
+      // those drivers were getting NO push at all (not even the
+      // visible alert push, which iOS WOULD deliver to a force-quit
+      // app's lock screen). Tarun reproduced 2026-05-04 — phone
+      // locked + app force-quit + sitting next to the rider's pickup
+      // pin → "No drivers nearby" on the rider's screen.
+      //
+      // The visible alert push is the right reach mechanism for
+      // force-quit drivers — APNs delivers it as a lock-screen banner
+      // even though the app isn't running. The ghost-count UI concern
+      // is handled separately by the `clearStaleOnlineFlags()` cron
+      // in `scheduledReminders.ts` which flips `is_online=false` on
+      // rows whose `recorded_at` is older than 6 hours, keeping the
+      // pool genuinely live without a per-request freshness gate.
+      //
+      // Filter snooze in JS rather than chaining `.or(...)` /
+      // `.gt(...)` because the mock-Supabase client used by
+      // `rides.endpoints.test` doesn't stub the chained variant.
       const { data: onlineRows } = await supabaseAdmin
         .from('driver_locations')
         .select('user_id, snoozed_until')
         .eq('is_online', true)
 
       const nowMs = Date.now()
+      const onlineRowsTyped = (onlineRows ?? []) as {
+        user_id: string
+        snoozed_until: string | null
+      }[]
+      const excludedSnoozed = onlineRowsTyped
+        .filter((r) => r.snoozed_until != null && new Date(r.snoozed_until).getTime() > nowMs)
+        .map((r) => `${r.user_id.slice(0, 8)}…(until ${r.snoozed_until})`)
+      if (excludedSnoozed.length > 0) {
+        console.log(`[rides/request] Filtered ${excludedSnoozed.length} snoozed driver(s) from fan-out: ${excludedSnoozed.join(', ')}`)
+      }
       const onlineIds = new Set(
-        (onlineRows ?? [])
-          .filter((r: { user_id: string; snoozed_until: string | null }) =>
-            r.snoozed_until == null || new Date(r.snoozed_until).getTime() <= nowMs,
-          )
-          .map((r: { user_id: string }) => r.user_id),
+        onlineRowsTyped
+          .filter((r) => r.snoozed_until == null || new Date(r.snoozed_until).getTime() <= nowMs)
+          .map((r) => r.user_id),
       )
 
       const { data: allDrivers, error: allErr } = await supabaseAdmin
@@ -487,13 +663,31 @@ ridesRouter.post(
       rider_rating_count: String(riderProfile.data?.rating_count ?? '0'),
     }
 
+    // Rich title + body so the long-press preview gives the driver
+    // enough context to decide without opening the app:
+    //   Title: "New ride · $14 · 3.2 mi"
+    //   Body:  "John W → Davis BART"
+    // Matches Uber's preview density. Falls back to safe defaults
+    // when fields are missing (zero-fare drafts, no destination).
+    const earningsLabel = driverEarns > 0 ? `$${(driverEarns / 100).toFixed(0)}` : null
+    const distanceLabel = typeof body.distance_km === 'number' && body.distance_km > 0
+      ? `${(body.distance_km * 0.621371).toFixed(1)} mi`
+      : null
+    const titleParts = ['New ride', earningsLabel, distanceLabel].filter(Boolean)
+    const richTitle = titleParts.length > 1 ? titleParts.join(' · ') : 'New ride request nearby'
+    const richBody = body.destination_name
+      ? `${riderName} → ${body.destination_name}`
+      : `${riderName} needs a ride — tap to view`
+
     const notifiedCount = await sendFcmPush(tokens, {
-      title: 'New ride request nearby',
-      body: 'A rider needs a lift — open TAGO to check.',
+      title: richTitle,
+      body: richBody,
       data: fcmDataPayload,
-      // iOS picks up these action buttons (Decline / Snooze 15m / Snooze 1h)
-      // from the `RIDE_REQUEST` UNNotificationCategory the app registers at
-      // launch — driver can act from the lock screen without unlocking.
+      // iOS picks up these action buttons (Accept / Decline / Snooze 15m
+      // / Snooze 1h) from the `RIDE_REQUEST` UNNotificationCategory the
+      // app registers at launch — driver can act from the lock screen
+      // without unlocking. Accept is foreground (opens app to
+      // suggestion screen); the others fire server-side directly.
       category: 'RIDE_REQUEST',
     })
 
@@ -583,18 +777,53 @@ ridesRouter.post(
               .maybeSingle()
             if (!rideRow || rideRow.status !== 'requested') return
 
-            const { data: pendingOffers } = await supabaseAdmin
+            // Bug-fix 2026-05-01 — exclude drivers who already
+            // responded (selected = accepted, released = declined or
+            // expired). The first version of this re-fire blasted
+            // every eligible driver again, including ones who'd
+            // tapped Decline 5 s ago — that's exactly the
+            // bombardment the snooze flow was meant to avoid.
+            const { data: respondedOffers } = await supabaseAdmin
               .from('ride_offers')
-              .select('id')
+              .select('driver_id, status')
               .eq('ride_id', refireRideId)
-              .eq('status', 'selected')
-              .limit(1)
-            if ((pendingOffers ?? []).length > 0) return // someone accepted, no re-fire
+              .in('status', ['selected', 'released'])
+            const respondedRows = (respondedOffers ?? []) as {
+              driver_id: string
+              status: string
+            }[]
+            const respondedDriverIds = new Set(respondedRows.map((o) => o.driver_id))
+            // If anyone already accepted, the matcher's done — no
+            // re-fire at all. Filtering by `selected` rather than
+            // re-checking the ride row because there's a brief
+            // window where ride_offers.selected is set before
+            // rides.status flips to `accepted`.
+            if (respondedRows.some((o) => o.status === 'selected')) return
+
+            // Honour mid-window snoozes too. A driver who tapped
+            // "Snooze 15 min" on the original push shouldn't get a
+            // re-fire 30 s later.
+            const { data: snoozedDrivers } = await supabaseAdmin
+              .from('driver_locations')
+              .select('user_id')
+              .in('user_id', refireDriverIds)
+              .gt('snoozed_until', new Date().toISOString())
+            const snoozedIds = new Set(
+              ((snoozedDrivers ?? []) as { user_id: string }[]).map((s) => s.user_id),
+            )
+
+            const driversToRefire = refireDriverIds.filter((id) =>
+              !respondedDriverIds.has(id) && !snoozedIds.has(id),
+            )
+            if (driversToRefire.length === 0) {
+              console.log(`[rides/request:refire] rideId=${refireRideId} skipped — every eligible driver already responded or snoozed`)
+              return
+            }
 
             const { data: refireTokens } = await supabaseAdmin
               .from('push_tokens')
               .select('token')
-              .in('user_id', refireDriverIds)
+              .in('user_id', driversToRefire)
             const tokensToRefire = ((refireTokens ?? []) as { token: string }[])
               .map((t) => t.token)
             if (tokensToRefire.length > 0) {
@@ -603,10 +832,11 @@ ridesRouter.post(
                 body: refireFcmBody,
                 data: refirePayload,
               })
-              console.log(`[rides/request:refire] rideId=${refireRideId} re-fired to ${refiredCount} driver(s) (no acceptance after 30 s)`)
+              const skipped = refireDriverIds.length - driversToRefire.length
+              console.log(`[rides/request:refire] rideId=${refireRideId} re-fired to ${refiredCount} driver(s)${skipped > 0 ? ` (skipped ${skipped} already-responded/snoozed)` : ''}`)
             }
             await Promise.all(
-              refireDriverIds.map((driverId) =>
+              driversToRefire.map((driverId) =>
                 realtimeBroadcast(`driver:${driverId}`, 'ride_request', refirePayload),
               ),
             )
@@ -649,12 +879,42 @@ async function applyDriverDeclineSideEffects(
 
   if (snoozeMinutes != null) {
     const snoozedUntil = new Date(Date.now() + snoozeMinutes * 60_000).toISOString()
-    const { error: snoozeErr } = await supabaseAdmin
+    // Use `select()` after the update so PostgREST returns the
+    // affected rows. Catches the silent-failure case where the driver
+    // doesn't have a `driver_locations` row yet — the UPDATE matches
+    // 0 rows, returns no error, and the snooze is invisibly dropped.
+    // Reported by Tarun 2026-05-04 ("driver still receives ride
+    // notifications even after he snoozed").
+    const { data: snoozedRows, error: snoozeErr } = await supabaseAdmin
       .from('driver_locations')
       .update({ snoozed_until: snoozedUntil })
       .eq('user_id', driverId)
+      .select('user_id')
     if (snoozeErr) {
       console.warn(`[snooze] Failed to set snoozed_until for driver ${driverId}:`, snoozeErr.message)
+    } else if (!snoozedRows || snoozedRows.length === 0) {
+      // No row matched — usually means the driver has never been
+      // online (no `driver_locations` row exists). Bootstrap one with
+      // is_online=false so the snooze still applies the next time
+      // they go online; the matcher's `is_online=true` filter will
+      // skip them in the meantime, which is the desired behavior
+      // anyway (snoozing while offline is a no-op visibly).
+      console.warn(`[snooze] Driver ${driverId} has no driver_locations row — snooze NOT persisted. Bootstrapping is_online=false row.`)
+      const { error: bootstrapErr } = await supabaseAdmin
+        .from('driver_locations')
+        .insert({
+          user_id: driverId,
+          is_online: false,
+          snoozed_until: snoozedUntil,
+          // PostGIS requires a non-null location. Insert a GeoJSON
+          // (0, 0) placeholder — overwritten the moment the driver
+          // goes online and the 30s broadcast fires their real GPS
+          // fix. Coordinates are [longitude, latitude] per GeoJSON.
+          location: { type: 'Point', coordinates: [0, 0] },
+        })
+      if (bootstrapErr) {
+        console.error(`[snooze] Bootstrap insert failed for driver ${driverId}:`, bootstrapErr.message)
+      }
     } else {
       console.log(`[snooze] Driver ${driverId} snoozed for ${snoozeMinutes}m (until ${snoozedUntil})`)
     }
@@ -1144,17 +1404,25 @@ ridesRouter.post(
       return
     }
 
-    // ── No standby drivers → broadcast to all online drivers (excluding snoozed) ──
+    // ── No standby drivers → broadcast to all online drivers
+    //    (excluding snoozed). NO freshness filter — see `/request`
+    //    Stage 1 fallback for the full rationale. tl;dr: iOS doesn't
+    //    deliver silent pushes to force-quit apps, so wake-up can't
+    //    refresh stale `recorded_at` for those drivers, but the
+    //    visible alert push DOES land on their lock screen, which is
+    //    what we want. Ghost-row hygiene is handled by the
+    //    `clearStaleOnlineFlags` cron, not this per-request gate.
     const { data: allOnlineDrivers } = await supabaseAdmin
       .from('driver_locations')
       .select('user_id, snoozed_until')
       .eq('is_online', true)
     const broadcastNowMs = Date.now()
-    const onlineIds = (allOnlineDrivers ?? [])
-      .filter((d: { user_id: string; snoozed_until: string | null }) =>
-        d.snoozed_until == null || new Date(d.snoozed_until).getTime() <= broadcastNowMs,
-      )
-      .map((d: { user_id: string }) => d.user_id)
+    const onlineIds = ((allOnlineDrivers ?? []) as {
+      user_id: string
+      snoozed_until: string | null
+    }[])
+      .filter((d) => d.snoozed_until == null || new Date(d.snoozed_until).getTime() <= broadcastNowMs)
+      .map((d) => d.user_id)
 
     const { data: allDrivers } = await supabaseAdmin
       .from('users')
@@ -1346,7 +1614,12 @@ ridesRouter.patch(
     // by WaitingRoom polling before the driver tapped Accept), just return success.
     // Still save their destination if provided so DropoffSelection has it.
     if (ride.driver_id === driverId) {
-      const earlyBody = req.body as Record<string, unknown>
+      // Coalesce req.body to {} so an empty / missing body doesn't
+      // throw when iOS sends accept without a destination payload
+      // (the new two-step flow). Express's body-parser leaves
+      // req.body undefined when no Content-Type:application/json
+      // header is on the request, and `undefined['k']` blows up.
+      const earlyBody = (req.body ?? {}) as Record<string, unknown>
       const earlyHasDest = typeof earlyBody['driver_destination_lat'] === 'number' && typeof earlyBody['driver_destination_lng'] === 'number'
       if (earlyHasDest) {
         const destGeo: GeoPoint = {
@@ -1515,8 +1788,11 @@ ridesRouter.patch(
       return
     }
 
-    // If driver included their destination, save it on the offer
-    const body = req.body as Record<string, unknown>
+    // If driver included their destination, save it on the offer.
+    // Coalesce req.body to {} for the same reason as the early-dest
+    // branch above — iOS now sends accept without a body in the
+    // two-step accept flow, leaving req.body undefined.
+    const body = (req.body ?? {}) as Record<string, unknown>
     const hasDriverDest = typeof body['driver_destination_lat'] === 'number' && typeof body['driver_destination_lng'] === 'number'
     if (hasDriverDest) {
       const destGeo: GeoPoint = {
@@ -3971,6 +4247,130 @@ ridesRouter.post(
   },
 )
 
+// ── GET /api/rides/driver-pending-offer ────────────────────────────────────────
+/**
+ * Resume-after-kill helper for drivers (2026-05-04).
+ *
+ * When a driver taps Accept on a ride request and chooses their
+ * destination, the server stores the offer in `ride_offers` (status =
+ * 'pending') with the destination attached. If the driver kills the app
+ * before the rider matches them, the only way back into that flow today
+ * is the inbox — which by this point has already been marked read by
+ * the listener's polling, so there's nothing to surface.
+ *
+ * This endpoint plugs the gap: returns the driver's most recent
+ * actionable pending offer, with all the data the iOS suggestion
+ * page needs to re-present the same screen (and skip directly to
+ * `DropoffSelectionPage` if the driver had already submitted their
+ * destination). Read-only; never mutates state.
+ *
+ * Filters:
+ *   - offer.driver_id = caller (RLS-equivalent enforcement at query
+ *     level — `validateJwt` middleware sets res.locals.userId)
+ *   - offer.status = 'pending' (selected → already routed via /active)
+ *   - offer.created_at > NOW() - 5 min (matches inbox stale window
+ *     + the 150s server-side offer TTL plus a small grace buffer)
+ *   - parent ride.status = 'requested' (cancelled / matched rides
+ *     don't need resume — they have other surfaces)
+ *
+ * Response shape:
+ *   - 200 { offer: null } when nothing to resume
+ *   - 200 { offer: {...} } with rider profile + ride coords + the
+ *     driver's saved destination (lat/lng/name) if any
+ */
+ridesRouter.get(
+  '/driver-pending-offer',
+  validateJwt,
+  async (_req: Request, res: Response, next: NextFunction) => {
+    const driverId = res.locals['userId'] as string
+    const cutoffISO = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+
+    const { data: offers, error: offerErr } = await supabaseAdmin
+      .from('ride_offers')
+      .select(
+        // Geometry columns come back as GeoJSON via PostgREST; we
+        // parse them below to flat lat/lng numbers for the client.
+        'ride_id, status, created_at, driver_destination, driver_destination_name, driver_route_polyline, overlap_pct',
+      )
+      .eq('driver_id', driverId)
+      .eq('status', 'pending')
+      .gte('created_at', cutoffISO)
+      .order('created_at', { ascending: false })
+      .limit(1)
+
+    if (offerErr) {
+      next(offerErr)
+      return
+    }
+    if (!offers || offers.length === 0) {
+      res.status(200).json({ offer: null })
+      return
+    }
+
+    const offer = offers[0] as Record<string, unknown>
+    const rideId = offer['ride_id'] as string
+
+    const { data: ride } = await supabaseAdmin
+      .from('rides')
+      .select('id, status, rider_id, origin_lat, origin_lng, dest_lat, dest_lng, origin_name, dest_address, estimated_fare_cents, distance_km')
+      .eq('id', rideId)
+      .single()
+    const rideRow = ride as Record<string, unknown> | null
+
+    if (!rideRow || rideRow['status'] !== 'requested') {
+      // Ride moved on (cancelled / matched / completed) — don't
+      // resume; whatever surface owns that state will pick it up.
+      res.status(200).json({ offer: null })
+      return
+    }
+
+    const { data: rider } = await supabaseAdmin
+      .from('users')
+      .select('full_name, avatar_url, rating_avg, rating_count')
+      .eq('id', rideRow['rider_id'] as string)
+      .single()
+    const riderRow = rider as Record<string, unknown> | null
+
+    // Extract lat/lng from the driver_destination GeoJSON if set.
+    // PostgREST emits geometry columns as `{ type: 'Point',
+    // coordinates: [lng, lat] }` — note the order.
+    let savedDestLat: number | null = null
+    let savedDestLng: number | null = null
+    const destGeo = offer['driver_destination'] as
+      | { type?: string; coordinates?: [number, number] } | null
+    if (destGeo && Array.isArray(destGeo.coordinates) && destGeo.coordinates.length === 2) {
+      savedDestLng = destGeo.coordinates[0]
+      savedDestLat = destGeo.coordinates[1]
+    }
+
+    res.status(200).json({
+      offer: {
+        ride_id: rideId,
+        offer_created_at: offer['created_at'],
+        rider_name: (riderRow?.['full_name'] as string | null) ?? 'A rider',
+        rider_avatar_url: (riderRow?.['avatar_url'] as string | null) ?? '',
+        rider_rating: riderRow?.['rating_avg'] ?? null,
+        rider_rating_count: riderRow?.['rating_count'] ?? 0,
+        origin_name: (rideRow['origin_name'] as string | null) ?? '',
+        destination: (rideRow['dest_address'] as string | null) ?? '',
+        origin_lat: rideRow['origin_lat'],
+        origin_lng: rideRow['origin_lng'],
+        destination_lat: rideRow['dest_lat'],
+        destination_lng: rideRow['dest_lng'],
+        estimated_earnings_cents: rideRow['estimated_fare_cents'] ?? 0,
+        distance_km: rideRow['distance_km'] ?? null,
+        // The driver's saved destination — when set, iOS jumps the
+        // suggestion page straight to DropoffSelectionPage with this
+        // pre-populated. When null, iOS resumes on the suggestion
+        // form so the driver can finish picking.
+        saved_destination_lat: savedDestLat,
+        saved_destination_lng: savedDestLng,
+        saved_destination_name: offer['driver_destination_name'] ?? null,
+      },
+    })
+  },
+)
+
 // ── GET /api/rides/active ──────────────────────────────────────────────────────
 /**
  * Returns the user's rides with status in (accepted, coordinating, active).
@@ -5025,11 +5425,40 @@ ridesRouter.post(
         return
       }
       const snoozedUntil = new Date(Date.now() + minutes * 60_000).toISOString()
-      const { error } = await supabaseAdmin
+      // `.select()` after UPDATE so PostgREST returns the affected
+      // rows. Catches the silent-failure case where the driver has
+      // no `driver_locations` row yet — the UPDATE matches 0, returns
+      // no error, and the snooze is invisibly dropped. Same root
+      // cause + fix as `applyDriverDeclineSideEffects` (Slice 3,
+      // 2026-05-04). Critical here because this endpoint is now the
+      // PRIMARY snooze path (decoupled from PATCH cancel).
+      const { data: updatedRows, error } = await supabaseAdmin
         .from('driver_locations')
         .update({ snoozed_until: snoozedUntil })
         .eq('user_id', userId)
+        .select('user_id')
       if (error) { next(error); return }
+      if (!updatedRows || updatedRows.length === 0) {
+        // Bootstrap a row so the snooze still applies. PostGIS needs
+        // a non-null location; (0, 0) is overwritten the moment the
+        // driver goes online and the 30s broadcast fires.
+        console.warn(`[snooze:standalone] No driver_locations row for ${userId} — bootstrapping with snoozed_until=${snoozedUntil}`)
+        const { error: bootstrapErr } = await supabaseAdmin
+          .from('driver_locations')
+          .insert({
+            user_id: userId,
+            is_online: false,
+            snoozed_until: snoozedUntil,
+            location: { type: 'Point', coordinates: [0, 0] },
+          })
+        if (bootstrapErr) {
+          console.error(`[snooze:standalone] Bootstrap insert failed for ${userId}:`, bootstrapErr.message)
+          next(bootstrapErr)
+          return
+        }
+      } else {
+        console.log(`[snooze:standalone] Driver ${userId} snoozed for ${minutes}m (until ${snoozedUntil})`)
+      }
       res.status(200).json({ snoozed_until: snoozedUntil })
     } catch (err) {
       next(err)

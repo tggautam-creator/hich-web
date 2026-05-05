@@ -54,6 +54,7 @@ export type Database = {
           stripe_onboarding_complete: boolean
           default_payment_method_id: string | null
           phone_verified: boolean
+          date_of_birth: string | null
           created_at: string
         }
         Insert: {
@@ -72,6 +73,7 @@ export type Database = {
           stripe_account_id?: string | null
           stripe_onboarding_complete?: boolean
           default_payment_method_id?: string | null
+          date_of_birth?: string | null
           created_at?: string
         }
         Update: {
@@ -90,6 +92,7 @@ export type Database = {
           stripe_onboarding_complete?: boolean
           default_payment_method_id?: string | null
           phone_verified?: boolean
+          date_of_birth?: string | null
           created_at?: string
         }
         Relationships: never[]
@@ -106,7 +109,6 @@ export type Database = {
           year: number
           color: string
           plate: string
-          license_plate_photo_url: string | null
           car_photo_url: string | null
           seats_available: number
           fuel_efficiency_mpg: number | null
@@ -123,7 +125,6 @@ export type Database = {
           year: number
           color: string
           plate: string
-          license_plate_photo_url?: string | null
           car_photo_url?: string | null
           seats_available?: number
           fuel_efficiency_mpg?: number | null
@@ -140,7 +141,6 @@ export type Database = {
           year?: number
           color?: string
           plate?: string
-          license_plate_photo_url?: string
           car_photo_url?: string
           seats_available?: number
           fuel_efficiency_mpg?: number | null

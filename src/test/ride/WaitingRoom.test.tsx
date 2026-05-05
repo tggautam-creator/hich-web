@@ -128,13 +128,13 @@ const DEST: PlaceSuggestion = {
 }
 
 const FARE_RANGE: FareRange = {
-  low:  { fare_cents: 300, platform_fee_cents: 45, driver_earns_cents: 255, gas_cost_cents: 87, time_cost_cents: 75, distance_km: 10, distance_miles: 6.2, duration_min: 15, mpg: 25, gas_price_per_gallon: 3.50 },
-  high: { fare_cents: 400, platform_fee_cents: 60, driver_earns_cents: 340, gas_cost_cents: 150, time_cost_cents: 100, distance_km: 15, distance_miles: 9.3, duration_min: 20, mpg: 25, gas_price_per_gallon: 3.50 },
+  low:  { base_fare_cents: 0, fare_cents: 300, platform_fee_cents: 45, driver_earns_cents: 255, gas_cost_cents: 87, time_cost_cents: 75, distance_km: 10, distance_miles: 6.2, duration_min: 15, mpg: 25, gas_price_per_gallon: 3.50 },
+  high: { base_fare_cents: 0, fare_cents: 400, platform_fee_cents: 60, driver_earns_cents: 340, gas_cost_cents: 150, time_cost_cents: 100, distance_km: 15, distance_miles: 9.3, duration_min: 20, mpg: 25, gas_price_per_gallon: 3.50 },
 }
 
 const FARE_SINGLE: FareRange = {
-  low:  { fare_cents: 350, platform_fee_cents: 53, driver_earns_cents: 297, gas_cost_cents: 120, time_cost_cents: 90, distance_km: 12, distance_miles: 7.5, duration_min: 18, mpg: 25, gas_price_per_gallon: 3.50 },
-  high: { fare_cents: 350, platform_fee_cents: 53, driver_earns_cents: 297, gas_cost_cents: 120, time_cost_cents: 90, distance_km: 12, distance_miles: 7.5, duration_min: 18, mpg: 25, gas_price_per_gallon: 3.50 },
+  low:  { base_fare_cents: 0, fare_cents: 350, platform_fee_cents: 53, driver_earns_cents: 297, gas_cost_cents: 120, time_cost_cents: 90, distance_km: 12, distance_miles: 7.5, duration_min: 18, mpg: 25, gas_price_per_gallon: 3.50 },
+  high: { base_fare_cents: 0, fare_cents: 350, platform_fee_cents: 53, driver_earns_cents: 297, gas_cost_cents: 120, time_cost_cents: 90, distance_km: 12, distance_miles: 7.5, duration_min: 18, mpg: 25, gas_price_per_gallon: 3.50 },
 }
 
 const RIDE_ID = 'ride-abc-123'

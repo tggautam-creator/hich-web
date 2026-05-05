@@ -92,6 +92,11 @@ function fillValidForm() {
   fireEvent.change(screen.getByTestId('password-input'), {
     target: { value: 'Password1' },
   })
+  // DOB is required as of 2026-05-04. Pick a date within the
+  // accepted 16+ window so the form doesn't bounce.
+  fireEvent.change(screen.getByTestId('dob-input'), {
+    target: { value: '2000-01-15' },
+  })
 }
 
 function submitForm() {
@@ -255,6 +260,7 @@ describe('phone validation — in component', () => {
     fireEvent.change(screen.getByTestId('full-name-input'), { target: { value: 'Jane' } })
     // leave phone empty
     fireEvent.change(screen.getByTestId('password-input'), { target: { value: 'Password1' } })
+    fireEvent.change(screen.getByTestId('dob-input'), { target: { value: '2000-01-15' } })
     submitForm()
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeDefined()
@@ -266,6 +272,7 @@ describe('phone validation — in component', () => {
     fireEvent.change(screen.getByTestId('full-name-input'), { target: { value: 'Jane' } })
     fireEvent.change(screen.getByTestId('phone-input'), { target: { value: '   ' } })
     fireEvent.change(screen.getByTestId('password-input'), { target: { value: 'Password1' } })
+    fireEvent.change(screen.getByTestId('dob-input'), { target: { value: '2000-01-15' } })
     submitForm()
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeDefined()
@@ -296,6 +303,7 @@ describe('full name validation — in component', () => {
     renderPage()
     fireEvent.change(screen.getByTestId('phone-input'), { target: { value: '5551234567' } })
     fireEvent.change(screen.getByTestId('password-input'), { target: { value: 'Password1' } })
+    fireEvent.change(screen.getByTestId('dob-input'), { target: { value: '2000-01-15' } })
     submitForm()
     await waitFor(() => {
       expect(screen.getByText('Full name is required')).toBeDefined()
@@ -320,6 +328,7 @@ describe('password validation — in component', () => {
     fireEvent.change(screen.getByTestId('full-name-input'), { target: { value: 'Jane' } })
     fireEvent.change(screen.getByTestId('phone-input'), { target: { value: '5551234567' } })
     fireEvent.change(screen.getByTestId('password-input'), { target: { value: 'Pass1' } })
+    fireEvent.change(screen.getByTestId('dob-input'), { target: { value: '2000-01-15' } })
     submitForm()
     await waitFor(() => {
       expect(screen.getByText(/8 characters/)).toBeDefined()
@@ -331,6 +340,7 @@ describe('password validation — in component', () => {
     fireEvent.change(screen.getByTestId('full-name-input'), { target: { value: 'Jane' } })
     fireEvent.change(screen.getByTestId('phone-input'), { target: { value: '5551234567' } })
     fireEvent.change(screen.getByTestId('password-input'), { target: { value: 'NoNumbers' } })
+    fireEvent.change(screen.getByTestId('dob-input'), { target: { value: '2000-01-15' } })
     submitForm()
     await waitFor(() => {
       expect(screen.getByText(/at least one number/)).toBeDefined()
@@ -393,6 +403,7 @@ describe('submit behavior', () => {
     fireEvent.change(screen.getByTestId('full-name-input'),     { target: { value: 'Jane' } })
     fireEvent.change(screen.getByTestId('phone-input'),         { target: { value: '7700900000' } })
     fireEvent.change(screen.getByTestId('password-input'),      { target: { value: 'Password1' } })
+    fireEvent.change(screen.getByTestId('dob-input'),           { target: { value: '2000-01-15' } })
     submitForm()
     await waitFor(() => {
       expect(mockDbUpdate).toHaveBeenCalledWith(

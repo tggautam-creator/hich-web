@@ -25,6 +25,15 @@ export const MIN_FARE_CENTS    = 500
 const PER_MIN_CENTS     = 5
 const PLATFORM_FEE_RATE = 0
 const KM_TO_MILES       = 0.621371
+/**
+ * Base fare in cents. Today $0.00 — TAGO doesn't charge a flat base
+ * fare during MVP. Surfaced explicitly on every breakdown UI so
+ * riders + drivers see the row from day one; if monetization later
+ * flips this to a non-zero value, the line item is already in their
+ * mental model and feels like a price change rather than a new
+ * surprise charge.
+ */
+export const BASE_FARE_CENTS   = 0
 
 /** Average US gas price — updated periodically. Users see this on the breakdown. */
 export const DEFAULT_GAS_PRICE_PER_GALLON = 3.50
@@ -32,6 +41,12 @@ export const DEFAULT_GAS_PRICE_PER_GALLON = 3.50
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface FareBreakdown {
+  /**
+   * Flat base fare in cents (currently $0.00 — see `BASE_FARE_CENTS`
+   * for rationale). Always populated, even when zero, so render
+   * sites can show the line item unconditionally.
+   */
+  base_fare_cents: number
   gas_cost_cents: number
   time_cost_cents: number
   platform_fee_cents: number
@@ -68,13 +83,15 @@ export function calculateFare(
   const gallons_used = mpg > 0 ? distance_miles / mpg : distance_miles / DEFAULT_MPG
   const gas_cost_cents = Math.round(gallons_used * gas_price_per_gallon * 100)
   const time_cost_cents = Math.round(duration_min * PER_MIN_CENTS)
+  const base_fare_cents = BASE_FARE_CENTS
 
-  const raw = gas_cost_cents + time_cost_cents
+  const raw = base_fare_cents + gas_cost_cents + time_cost_cents
   const fare_cents = Math.max(MIN_FARE_CENTS, raw)
   const platform_fee_cents = Math.round(fare_cents * PLATFORM_FEE_RATE)
   const driver_earns_cents = fare_cents - platform_fee_cents
 
   return {
+    base_fare_cents,
     gas_cost_cents,
     time_cost_cents,
     platform_fee_cents,

@@ -18,7 +18,6 @@ const mockVehicle = {
   color: 'Silver',
   plate: 'ABC1234',
   car_photo_url: null,
-  license_plate_photo_url: null,
   seats_available: 2,
   fuel_efficiency_mpg: 30,
   is_active: true,

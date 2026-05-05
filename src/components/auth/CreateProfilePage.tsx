@@ -33,8 +33,13 @@ interface FormErrors {
   fullName?: string
   phone?: string
   password?: string
+  dateOfBirth?: string
   submit?: string
 }
+
+// 2026-05-04 — DOB collected at signup. Same age-floor logic as iOS.
+const MINIMUM_AGE = 16
+const MAXIMUM_AGE = 100
 
 // Shared input class — matches InputField exactly so the select blends in
 const INPUT_CLASS = [
@@ -54,8 +59,19 @@ export default function CreateProfilePage() {
   const [localPhone,  setLocalPhone]  = useState('')
   const [password,    setPassword]    = useState('')
   const [photo,       setPhoto]       = useState<File | null>(null)
+  /** ISO YYYY-MM-DD; empty string = unset. Native `<input type="date">`
+   *  emits ISO already so we don't need a separate parser. */
+  const [dateOfBirth, setDateOfBirth] = useState('')
   const [errors,      setErrors]      = useState<FormErrors>({})
   const [isLoading,   setIsLoading]   = useState(false)
+
+  // Age bounds for the native date picker. Computed once per render
+  // since "today" is stable enough at minute granularity.
+  const today = new Date()
+  const dobMax = new Date(today.getFullYear() - MINIMUM_AGE, today.getMonth(), today.getDate())
+    .toISOString().slice(0, 10)
+  const dobMin = new Date(today.getFullYear() - MAXIMUM_AGE, today.getMonth(), today.getDate())
+    .toISOString().slice(0, 10)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -71,9 +87,10 @@ export default function CreateProfilePage() {
     const nameError     = validateFullName(fullName)
     const phoneError    = validatePhone(fullPhone)
     const passwordError = validatePassword(password)
+    const dobError      = dateOfBirth ? undefined : 'Please pick your date of birth.'
 
-    if (nameError ?? phoneError ?? passwordError) {
-      setErrors({ fullName: nameError, phone: phoneError, password: passwordError })
+    if (nameError ?? phoneError ?? passwordError ?? dobError) {
+      setErrors({ fullName: nameError, phone: phoneError, password: passwordError, dateOfBirth: dobError })
       return
     }
 
@@ -118,9 +135,10 @@ export default function CreateProfilePage() {
       const { data: updated, error: updateErr } = await supabase
         .from('users')
         .update({
-          full_name:  fullName.trim(),
-          phone:      fullPhone,
-          avatar_url: avatarUrl,
+          full_name:     fullName.trim(),
+          phone:         fullPhone,
+          avatar_url:    avatarUrl,
+          date_of_birth: dateOfBirth,
         })
         .eq('id', user.id)
         .select('id')
@@ -129,11 +147,12 @@ export default function CreateProfilePage() {
       if (updated.length === 0) {
         // No row yet for this auth user — first-time profile creation
         const { error: insertErr } = await supabase.from('users').insert({
-          id:         user.id,
-          email:      user.email ?? '',
-          full_name:  fullName.trim(),
-          phone:      fullPhone,
-          avatar_url: avatarUrl,
+          id:            user.id,
+          email:         user.email ?? '',
+          full_name:     fullName.trim(),
+          phone:         fullPhone,
+          avatar_url:    avatarUrl,
+          date_of_birth: dateOfBirth,
         })
         if (insertErr) throw insertErr
       }
@@ -257,6 +276,33 @@ export default function CreateProfilePage() {
           <p className="-mt-3 text-xs text-text-secondary">
             Use 8+ characters and include at least 1 number.
           </p>
+
+          {/* Date of birth — required (2026-05-04). 16+ floor. */}
+          <div className="flex flex-col gap-1">
+            <label
+              htmlFor="dob-input"
+              className="text-sm font-medium text-text-primary"
+            >
+              Date of birth
+            </label>
+            <input
+              id="dob-input"
+              data-testid="dob-input"
+              type="date"
+              min={dobMin}
+              max={dobMax}
+              value={dateOfBirth}
+              onChange={(e) => { setDateOfBirth(e.target.value) }}
+              className={[
+                INPUT_CLASS,
+                errors.dateOfBirth ? 'border-danger focus:ring-danger' : '',
+              ].join(' ')}
+            />
+            {errors.dateOfBirth && (
+              <p className="text-sm text-danger" role="alert">{errors.dateOfBirth}</p>
+            )}
+            <p className="text-xs text-text-secondary">You must be {MINIMUM_AGE} or older to use Tago.</p>
+          </div>
 
           {/* Photo upload — optional */}
           <div className="flex flex-col gap-1">

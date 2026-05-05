@@ -32,6 +32,7 @@ describe('scaffold — @/ alias and database types', () => {
       stripe_onboarding_complete: false,
       default_payment_method_id: null,
       phone_verified: false,
+      date_of_birth: null,
       created_at: new Date().toISOString(),
     }
     expect(user.wallet_balance).toBe(0)
@@ -56,6 +57,7 @@ describe('scaffold — @/ alias and database types', () => {
       stripe_onboarding_complete: false,
       default_payment_method_id: null,
       phone_verified: false,
+      date_of_birth: null,
       created_at: new Date().toISOString(),
     }
     expect(Number.isInteger(user.wallet_balance)).toBe(true)
@@ -84,7 +86,6 @@ describe('scaffold — @/ alias and database types', () => {
       year: 2022,
       color: 'blue',
       plate: 'ABC123',
-      license_plate_photo_url: 'https://example.com/plate.jpg',
       car_photo_url: 'https://example.com/car.jpg',
       seats_available: 3,
       fuel_efficiency_mpg: 28,

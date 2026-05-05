@@ -595,3 +595,181 @@ export async function syncAllRoutines(): Promise<{ users: number; inserted: numb
   console.log(`[sync-cron] Synced routines for ${usersTouched} user(s), inserted ${totalInserted} row(s)`)
   return { users: usersTouched, inserted: totalInserted }
 }
+
+/**
+ * 2026-05-01 — Driver-snooze expiry sweep (4-layer fix, layer 1).
+ *
+ * Scans `driver_locations` for rows whose `snoozed_until` is in the
+ * past, clears the column, and fires a FCM push so the driver knows
+ * they're back online. Without this sweep, the snooze window passes
+ * silently — the matcher correctly INCLUDES the driver in new
+ * dispatches (because the RPC's `snoozed_until <= NOW()` check
+ * returns true), but iOS keeps showing "Snoozed · 0m" because nothing
+ * tells it to clear.
+ *
+ * Idempotent — only acts on rows where `snoozed_until IS NOT NULL`,
+ * sets it to NULL once, and the second pass sees zero rows. iOS's
+ * local Timer (layer 2) provides faster feedback (sub-second) while
+ * this cron is the source of truth in case the app was killed during
+ * the snooze window. FCM payload uses the existing collapse-id system
+ * so a driver who somehow gets two of these (server cron + something
+ * else) only sees one banner.
+ *
+ * Wired into the existing 5-min reminder sweep in
+ * `server/index.ts::runReminderSweep`. 5-min granularity means a
+ * driver can be up to 5 min late seeing the back-online state from
+ * THIS layer alone — that's why iOS layer 2 is essential.
+ */
+export async function clearExpiredSnoozes(): Promise<{ cleared: number; notified: number }> {
+  const { data: expired, error } = await supabaseAdmin
+    .from('driver_locations')
+    .select('user_id, snoozed_until')
+    .not('snoozed_until', 'is', null)
+    .lte('snoozed_until', new Date().toISOString())
+
+  if (error) {
+    console.error('[snooze-cron] Failed to load expired snoozes:', error.message)
+    return { cleared: 0, notified: 0 }
+  }
+
+  const expiredRows = (expired ?? []) as { user_id: string; snoozed_until: string }[]
+  if (expiredRows.length === 0) return { cleared: 0, notified: 0 }
+
+  const expiredUserIds = expiredRows.map((r) => r.user_id)
+
+  const { error: clearErr } = await supabaseAdmin
+    .from('driver_locations')
+    .update({ snoozed_until: null })
+    .in('user_id', expiredUserIds)
+
+  if (clearErr) {
+    console.error('[snooze-cron] Failed to clear expired snoozes:', clearErr.message)
+    return { cleared: 0, notified: 0 }
+  }
+
+  // Fire "you're back online" push to each driver. Best-effort —
+  // failures here don't roll back the column clear; the worst case
+  // is the driver doesn't see the push (they'll learn next foreground
+  // open via loadOnlineState).
+  const { data: tokenRows } = await supabaseAdmin
+    .from('push_tokens')
+    .select('user_id, token')
+    .in('user_id', expiredUserIds)
+
+  const tokensByUser = new Map<string, string[]>()
+  for (const row of (tokenRows ?? []) as { user_id: string; token: string }[]) {
+    const list = tokensByUser.get(row.user_id) ?? []
+    list.push(row.token)
+    tokensByUser.set(row.user_id, list)
+  }
+
+  let notified = 0
+  for (const userId of expiredUserIds) {
+    const tokens = tokensByUser.get(userId) ?? []
+    if (tokens.length === 0) continue
+    const ok = await sendFcmPush(tokens, {
+      title: "You're back online",
+      body: 'Snooze ended — TAGO is sending you ride requests again.',
+      data: { type: 'snooze_ended', user_id: userId },
+    })
+    if (ok > 0) notified++
+  }
+
+  console.log(`[snooze-cron] Cleared ${expiredRows.length} expired snooze(s), notified ${notified} driver(s)`)
+  return { cleared: expiredRows.length, notified }
+}
+
+/**
+ * Data-hygiene cron — flips `is_online=false` for `driver_locations`
+ * rows whose `recorded_at` is older than `STALE_ONLINE_HOURS`. This
+ * replaces the per-request freshness filter the matcher used to
+ * apply on Stage 1 fallback (removed 2026-05-04 because it blocked
+ * force-quit drivers from receiving visible alert pushes).
+ *
+ * Why this exists: a driver toggles Online → row gets is_online=true
+ * + recorded_at=NOW. They close the app without toggling Offline,
+ * never reopen Tago for weeks. Without this cron, that row sits at
+ * is_online=true forever and inflates the rider's "Reached N drivers"
+ * count even though the driver isn't actually using the app.
+ *
+ * The 1-week (168 h) window is chosen as the natural "is this person
+ * still using the app" interval. A student driver who toggles Online
+ * during a class week stays reachable via lock-screen alert pushes the
+ * whole week even with the app force-quit, but accounts that have gone
+ * silent for a full week (left town, deleted the app, semester break)
+ * get swept out so the broadcast pool stays honest. Runs inside the
+ * same 5-min reminder sweep as `clearExpiredSnoozes`.
+ *
+ * On flip we fire a single courtesy push ("You've been signed out of
+ * driving — tap to re-open Tago and go online again"). Same pattern
+ * as `clearExpiredSnoozes` — when the SERVER changes a driver's state
+ * autonomously, we owe them a heads-up. Without it, a driver opens
+ * the app days later, sees "You are offline" with no context, and
+ * either gets confused or assumes the app forgot them. The push
+ * doubles as a re-engagement nudge for drivers who left around exam
+ * week or a long break.
+ *
+ * Failure mode: errors are logged + swallowed; the cron retries on
+ * the next sweep. Push failures don't roll back the column flip —
+ * the worst case is a driver doesn't see the heads-up notification,
+ * which they'd discover on next foreground open anyway.
+ */
+export async function clearStaleOnlineFlags(): Promise<{ cleared: number; notified: number }> {
+  const STALE_ONLINE_HOURS = 24 * 7 // one week
+  const cutoffIso = new Date(Date.now() - STALE_ONLINE_HOURS * 60 * 60 * 1000).toISOString()
+
+  const { data: staleRows, error: selErr } = await supabaseAdmin
+    .from('driver_locations')
+    .select('user_id, recorded_at')
+    .eq('is_online', true)
+    .lt('recorded_at', cutoffIso)
+
+  if (selErr) {
+    console.error('[stale-online-cron] Failed to load stale rows:', selErr.message)
+    return { cleared: 0, notified: 0 }
+  }
+
+  const staleUserIds = ((staleRows ?? []) as { user_id: string }[]).map((r) => r.user_id)
+  if (staleUserIds.length === 0) return { cleared: 0, notified: 0 }
+
+  const { error: updErr } = await supabaseAdmin
+    .from('driver_locations')
+    .update({ is_online: false })
+    .in('user_id', staleUserIds)
+
+  if (updErr) {
+    console.error('[stale-online-cron] Failed to flip is_online=false:', updErr.message)
+    return { cleared: 0, notified: 0 }
+  }
+
+  // Heads-up push, one per driver. Best-effort; non-fatal on any
+  // single failure. `notification_preferences.push_rides` filters
+  // out drivers who've muted ride pushes — that's the right call,
+  // since this is operationally a ride-related notification.
+  const { data: tokenRows } = await supabaseAdmin
+    .from('push_tokens')
+    .select('user_id, token')
+    .in('user_id', staleUserIds)
+
+  const tokensByUser = new Map<string, string[]>()
+  for (const row of (tokenRows ?? []) as { user_id: string; token: string }[]) {
+    const list = tokensByUser.get(row.user_id) ?? []
+    list.push(row.token)
+    tokensByUser.set(row.user_id, list)
+  }
+
+  let notified = 0
+  for (const userId of staleUserIds) {
+    const tokens = tokensByUser.get(userId) ?? []
+    if (tokens.length === 0) continue
+    const ok = await sendFcmPush(tokens, {
+      title: "You've been signed out of driving",
+      body: "Tago hasn't seen you online in a week. Open the app and tap Go Online when you're ready to drive again.",
+      data: { type: 'auto_offline', user_id: userId },
+    })
+    if (ok > 0) notified++
+  }
+
+  console.log(`[stale-online-cron] Flipped is_online=false on ${staleUserIds.length} dormant row(s), notified ${notified} driver(s) (>${STALE_ONLINE_HOURS}h since last broadcast)`)
+  return { cleared: staleUserIds.length, notified }
+}

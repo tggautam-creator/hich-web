@@ -86,6 +86,14 @@ describe('calculateFare', () => {
     expect(f.gas_price_per_gallon).toBe(3.50)
   })
 
+  it('includes base_fare_cents in the breakdown (zero today)', () => {
+    // The base-fare field is always populated even at $0 so render
+    // sites can show the line item unconditionally. If TAGO ever
+    // monetizes a base fare, this test pins the contract.
+    const f = calculateFare(10, 15)
+    expect(f.base_fare_cents).toBe(0)
+  })
+
   it('accepts custom mpg and gas price', () => {
     // 40 MPG, $4.00/gal: gas=round((10*0.621371/40)*400)=62, time=75, raw=137 → 500
     const f = calculateFare(10, 15, 40, 4.00)

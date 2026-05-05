@@ -120,7 +120,6 @@ const vehicle = {
   year: 2022,
   color: 'Blue',
   plate: 'ABC1234',
-  license_plate_photo_url: null,
   car_photo_url: null,
   seats_available: 4,
   fuel_efficiency_mpg: 30,

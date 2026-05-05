@@ -35,7 +35,6 @@ export default function VehicleEditPage({
   const [plate, setPlate] = useState('')
   const [seats, setSeats] = useState(2)
   const [carPhoto, setCarPhoto] = useState<File | null>(null)
-  const [licensePhoto, setLicensePhoto] = useState<File | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
@@ -66,10 +65,6 @@ export default function VehicleEditPage({
     setCarPhoto(e.target.files?.[0] ?? null)
   }
 
-  function handleLicensePhotoChange(e: ChangeEvent<HTMLInputElement>) {
-    setLicensePhoto(e.target.files?.[0] ?? null)
-  }
-
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     if (!vehicle || !profile?.id) return
@@ -80,10 +75,6 @@ export default function VehicleEditPage({
     }
     if (!color) {
       setError('Please select a car color')
-      return
-    }
-    if (plate.trim().toUpperCase() !== vehicle.plate && !licensePhoto) {
-      setError('You changed the license plate number — please upload a new license plate photo to confirm.')
       return
     }
 
@@ -104,16 +95,6 @@ export default function VehicleEditPage({
         carPhotoUrl = carUrlData.publicUrl
       }
 
-      let licPath = vehicle.license_plate_photo_url
-      if (licensePhoto) {
-        const licExt = licensePhoto.name.split('.').pop() ?? 'jpg'
-        licPath = `${profile.id}-${Date.now()}.${licExt}`
-        const { error: licUpErr } = await supabase.storage
-          .from('license-photos')
-          .upload(licPath, licensePhoto, { upsert: true, contentType: licensePhoto.type })
-        if (licUpErr) throw licUpErr
-      }
-
       const { error: updateErr } = await supabase
         .from('vehicles')
         .update({
@@ -121,7 +102,6 @@ export default function VehicleEditPage({
           plate: plate.trim().toUpperCase(),
           seats_available: seats,
           car_photo_url: carPhotoUrl ?? undefined,
-          license_plate_photo_url: licPath ?? undefined,
         })
         .eq('id', vehicle.id)
 
@@ -269,26 +249,6 @@ export default function VehicleEditPage({
               type="file"
               accept="image/*"
               onChange={handleCarPhotoChange}
-              className="text-sm text-text-secondary file:mr-3 file:rounded-lg file:border-0 file:bg-primary-light file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-primary"
-            />
-          </div>
-
-          {/* License photo */}
-          <div className="flex flex-col gap-1">
-            <label htmlFor="edit-license-photo" className="text-sm font-medium text-text-primary">
-              License plate photo{' '}
-              {plate.trim().toUpperCase() !== vehicle.plate
-                ? <span className="font-semibold text-danger">(required — plate changed)</span>
-                : <span className="font-normal text-text-secondary">(optional)</span>
-              }
-            </label>
-            <p className="text-xs text-text-secondary">Stored securely — not visible to riders</p>
-            <input
-              id="edit-license-photo"
-              data-testid="license-photo-input"
-              type="file"
-              accept="image/*"
-              onChange={handleLicensePhotoChange}
               className="text-sm text-text-secondary file:mr-3 file:rounded-lg file:border-0 file:bg-primary-light file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-primary"
             />
           </div>
