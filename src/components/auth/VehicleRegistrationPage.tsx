@@ -255,14 +255,10 @@ export default function VehicleRegistrationPage({
     const modelErr   = !model.trim() ? 'Model is required' : undefined
     const yearErr    = validateYear(year)
     const colorErr   = !color ? 'Please select a car color' : undefined
-    // 2026-05-04 — car photo is now mandatory so riders can identify
-    // the vehicle at pickup. License plate photo was removed entirely.
-    const photoErr   = !carPhoto ? 'A photo of your car is required.' : undefined
-    if (plateErr ?? stateErr ?? vinErr ?? makeErr ?? modelErr ?? yearErr ?? colorErr ?? photoErr) {
+    if (plateErr ?? stateErr ?? vinErr ?? makeErr ?? modelErr ?? yearErr ?? colorErr) {
       setErrors({
         plate: plateErr, state: stateErr, vin: vinErr,
         make: makeErr, model: modelErr, year: yearErr, color: colorErr,
-        carPhoto: photoErr,
       })
       return
     }
@@ -274,22 +270,20 @@ export default function VehicleRegistrationPage({
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('Not authenticated — please sign in again')
 
-      // Upload car photo (mandatory). The validate-step above guards
-      // `carPhoto != null`, but we double-guard here so a future
-      // refactor can't accidentally let a null slip through.
-      if (!carPhoto) {
-        throw new Error('Car photo is required')
+      // Car photo is optional — only upload if the driver picked one.
+      let carPhotoUrl: string | null = null
+      if (carPhoto) {
+        const carExt  = carPhoto.name.split('.').pop() ?? 'jpg'
+        const carPath = `${user.id}-${Date.now()}.${carExt}`
+        const { error: carUpErr } = await supabase.storage
+          .from('car-photos')
+          .upload(carPath, carPhoto, { upsert: true, contentType: carPhoto.type })
+        if (carUpErr) throw carUpErr
+        const { data: carUrlData } = supabase.storage
+          .from('car-photos')
+          .getPublicUrl(carPath)
+        carPhotoUrl = carUrlData.publicUrl
       }
-      const carExt  = carPhoto.name.split('.').pop() ?? 'jpg'
-      const carPath = `${user.id}-${Date.now()}.${carExt}`
-      const { error: carUpErr } = await supabase.storage
-        .from('car-photos')
-        .upload(carPath, carPhoto, { upsert: true, contentType: carPhoto.type })
-      if (carUpErr) throw carUpErr
-      const { data: carUrlData } = supabase.storage
-        .from('car-photos')
-        .getPublicUrl(carPath)
-      const carPhotoUrl: string = carUrlData.publicUrl
 
       // When adding another vehicle, deactivate existing ones first
       if (isFromProfile) {
@@ -515,12 +509,12 @@ export default function VehicleRegistrationPage({
             )}
           </div>
 
-          {/* ── Car photo (mandatory 2026-05-04) ────────────────────── */}
+          {/* ── Car photo (optional) ────────────────────────────────── */}
           <div className="flex flex-col gap-1">
             <label htmlFor="car-photo-input" className="text-sm font-medium text-text-primary">
               Car photo
             </label>
-            <p className="text-xs text-text-secondary">Required — helps riders spot you at pickup.</p>
+            <p className="text-xs text-text-secondary">Optional — helps riders spot you at pickup.</p>
             <input
               id="car-photo-input"
               data-testid="car-photo-input"
