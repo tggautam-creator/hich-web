@@ -50,7 +50,13 @@ vehicleRouter.post('/plate-lookup', validateJwt, async (req: Request, res: Respo
 
   try {
     const stateCode = state.trim().toUpperCase()
-    const url = `https://api.auto.dev/plate/${stateCode}/${cleanPlate}`
+    // 2026-05-05 — auto.dev migrated their plate-lookup endpoint from
+    // `api.auto.dev/plate/...` to `auto.dev/api/plate/...`. The old
+    // subdomain now returns Cloudflare 503 (error code 1102 — origin
+    // unreachable). The new path also returns a NESTED response shape
+    // (`vehicleYearMakeModels[].makes[].models[].trims[]`) instead of
+    // the legacy flat shape.
+    const url = `https://auto.dev/api/plate/${stateCode}/${cleanPlate}`
 
     const response = await fetch(url, {
       headers: {
@@ -74,28 +80,64 @@ vehicleRouter.post('/plate-lookup', validateJwt, async (req: Request, res: Respo
       return
     }
 
-    const data = (await response.json()) as {
-      vin?: string
-      year?: number
-      make?: string
-      model?: string
-      trim?: string
-      drivetrain?: string
-      engine?: string
-      transmission?: string
-      body?: string
+    interface AutoDevOption {
+      isDefault?: boolean
+      displayName?: string
     }
+    interface AutoDevTrim {
+      displayName?: string
+      bodyStyle?: string
+      drivetrains?: AutoDevOption[]
+      engines?: AutoDevOption[]
+      transmissions?: AutoDevOption[]
+    }
+    interface AutoDevModel {
+      displayName?: string
+      trims?: AutoDevTrim[]
+    }
+    interface AutoDevMake {
+      displayName?: string
+      models?: AutoDevModel[]
+    }
+    interface AutoDevYear {
+      displayName?: string
+      makes?: AutoDevMake[]
+    }
+    interface AutoDevResponse {
+      vin?: string
+      vehicleYearMakeModels?: AutoDevYear[]
+    }
+
+    const data = (await response.json()) as AutoDevResponse
+
+    // Walk the nested tree, taking the first item at every level. The
+    // API typically returns one year/make/model for a given plate; if
+    // it ever returns multiple (e.g. ambiguous plate), we surface the
+    // first match — same UX as the legacy flat response.
+    const year = data.vehicleYearMakeModels?.[0]
+    const make = year?.makes?.[0]
+    const model = make?.models?.[0]
+    const trim = model?.trims?.[0]
+
+    // Pick the `isDefault: true` option when present; fall back to the
+    // first option otherwise. Matches what auto.dev's web UI surfaces.
+    const pickDefault = (opts?: AutoDevOption[]): string | null => {
+      if (!opts || opts.length === 0) return null
+      return (opts.find((o) => o.isDefault === true)?.displayName ?? opts[0]?.displayName) ?? null
+    }
+
+    const yearNum = year?.displayName ? Number(year.displayName) : null
 
     res.json({
       vin: data.vin ?? null,
-      year: data.year ?? null,
-      make: data.make ?? null,
-      model: data.model ?? null,
-      trim: data.trim ?? null,
-      body: data.body ?? null,
-      engine: data.engine ?? null,
-      drivetrain: data.drivetrain ?? null,
-      transmission: data.transmission ?? null,
+      year: yearNum != null && !Number.isNaN(yearNum) ? yearNum : null,
+      make: make?.displayName ?? null,
+      model: model?.displayName ?? null,
+      trim: trim?.displayName ?? null,
+      body: trim?.bodyStyle ?? null,
+      engine: pickDefault(trim?.engines),
+      drivetrain: pickDefault(trim?.drivetrains),
+      transmission: pickDefault(trim?.transmissions),
     })
   } catch (err) {
     console.error('[vehicle/plate-lookup] unexpected error:', err)

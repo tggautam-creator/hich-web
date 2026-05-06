@@ -957,47 +957,14 @@ scheduleRouter.post(
       }
     }
 
-    // Slice 9.1 (2026-04-30) — when the dropoff is NOT pre-confirmed
-    // (rider chose a custom destination different from the driver's
-    // posted destination), insert a `dropoff_suggestion` message
-    // attributed to the requester so the chat opens with a real
-    // proposal card the other party can Accept or Counter. Without
-    // this both sides would see "Dropoff pending" in the action bar
-    // with no proposal anywhere — surfaced 2026-04-30 by Tarun.
-    //
-    // Same shape PickupProposalCard / DropoffProposalCard already
-    // render — `proposed_by` matches what `POST /api/rides/:id/propose-pickup`
-    // and the transit-dropoff path already write, so the existing
-    // chat renderers handle it without client work. Driver sees
-    // Accept / Counter on the rider's senderID; rider sees their own
-    // proposal without the buttons.
-    if (!preConfirmDropoff && requesterDestGeo) {
-      const proposerId = userId  // requester — rider on driver-post, driver on rider-post
-      const dropoffName = body.destination_name ?? schedule.dest_address ?? 'the requested destination'
-      const { data: dropoffMsg, error: dErr } = await supabaseAdmin
-        .from('messages')
-        .insert({
-          ride_id: ride.id,
-          sender_id: proposerId,
-          content: `Drop-off at ${dropoffName}`,
-          type: 'dropoff_suggestion',
-          meta: {
-            lat: requesterDestGeo.coordinates[1],
-            lng: requesterDestGeo.coordinates[0],
-            name: dropoffName,
-            proposed_by: proposerId,
-          },
-        })
-        .select('id, ride_id, sender_id, content, type, meta, created_at')
-        .single()
-
-      if (dErr) {
-        console.error('Failed to insert dropoff_suggestion at request time:', dErr.message)
-      } else if (dropoffMsg) {
-        void realtimeBroadcast(`chat:${ride.id}`, 'new_message', dropoffMsg as Record<string, unknown>)
-        void realtimeBroadcast(`chat-badge:${ride.id}`, 'new_message', dropoffMsg as Record<string, unknown>)
-      }
-    }
+    // 2026-05-06 — request-time `dropoff_suggestion` insert removed.
+    // The chat doesn't open until the driver accepts; once they do,
+    // the dropoff proposal card comes from the driver's
+    // DropoffSelectionPage transit pick (accept-board flow). Pre-
+    // inserting at request time produced a stale rider-attributed
+    // proposal that cluttered the chat once the driver added their
+    // own. Single source of truth = driver's pick, surfaced
+    // contextually when chat actually opens.
 
     // Slice 9.1.1 (2026-04-30) — pickup is pre-confirmed at request
     // time (see `preConfirmPickup` block above) instead of getting a
@@ -1037,39 +1004,15 @@ scheduleRouter.post(
       }
     }
 
-    // Slice 9.4 (2026-04-30) — custom-pickup case (rider asked to be
-    // picked up at a different spot than the driver's posted origin).
-    // Insert a `pickup_suggestion` message attributed to the rider so
-    // the driver sees an Accept / Counter card in chat. Symmetric
-    // with the dropoff_suggestion path. Skips when the pickup was
-    // pre-confirmed (same-spot case handled above).
-    if (!preConfirmPickup && originGeo && schedule.mode === 'driver') {
-      const proposerId = userId  // requester (rider)
-      const pickupName = body.origin_name ?? 'the rider\'s requested pickup'
-      const { data: pickupMsg, error: pmErr } = await supabaseAdmin
-        .from('messages')
-        .insert({
-          ride_id: ride.id,
-          sender_id: proposerId,
-          content: `Pickup at ${pickupName}`,
-          type: 'pickup_suggestion',
-          meta: {
-            lat: originGeo.coordinates[1],
-            lng: originGeo.coordinates[0],
-            name: pickupName,
-            proposed_by: proposerId,
-          },
-        })
-        .select('id, ride_id, sender_id, content, type, meta, created_at')
-        .single()
-
-      if (pmErr) {
-        console.error('Failed to insert pickup_suggestion at request time:', pmErr.message)
-      } else if (pickupMsg) {
-        void realtimeBroadcast(`chat:${ride.id}`, 'new_message', pickupMsg as Record<string, unknown>)
-        void realtimeBroadcast(`chat-badge:${ride.id}`, 'new_message', pickupMsg as Record<string, unknown>)
-      }
-    }
+    // 2026-05-06 — request-time `pickup_suggestion` insert removed.
+    // The pickup proposal card now appears in chat at phase
+    // transition: either when the driver accepts a pre-confirmed-
+    // dropoff ride (accept-board) or when the dropoff is confirmed
+    // and Step 2 begins (accept-location). Both paths insert the
+    // same payload below. Pre-inserting at request time produced
+    // an out-of-order chat where the rider's pickup proposal sat
+    // above the driver's later dropoff proposal, forcing the user
+    // to scroll up to act on pickup after dropoff agreement.
 
     // Slice 9.5 (2026-04-30) — rider-posted rides now use the
     // pre-confirm path above (both pickup + dropoff auto-confirmed
@@ -1306,7 +1249,7 @@ scheduleRouter.patch(
 
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, driver_id, status, destination_name, schedule_id, origin, origin_name')
+      .select('id, rider_id, driver_id, status, destination_name, schedule_id, origin, origin_name, dropoff_confirmed, pickup_confirmed')
       .eq('id', rideId)
       .single()
 
@@ -1458,6 +1401,46 @@ scheduleRouter.patch(
       }
     }
 
+    // 2026-05-06 — when the chat is opening with dropoff ALREADY
+    // pre-confirmed (rider chose driver's destination at request
+    // time), insert the rider's pickup_suggestion now so Step 2
+    // has its proposal card. The Option B DropoffSelectionPage
+    // path is skipped in this branch (no dropoff to negotiate),
+    // so without this insert the chat would open at .pickup phase
+    // with no card to act on. Gated on the rider having a custom
+    // pickup (origin coord exists, pickup not pre-confirmed) —
+    // when both pickup and dropoff were pre-confirmed at request
+    // time, no proposal is needed at all and chat opens fully
+    // confirmed.
+    if (ride.dropoff_confirmed && !ride.pickup_confirmed && ride.origin) {
+      const proposerId = ride.rider_id
+      const pickupCoords = (ride.origin as { coordinates: [number, number] }).coordinates
+      const pickupName = ride.origin_name ?? 'the rider\'s requested pickup'
+      const { data: pickupMsg, error: pmErr } = await supabaseAdmin
+        .from('messages')
+        .insert({
+          ride_id: rideId,
+          sender_id: proposerId,
+          content: `Pickup at ${pickupName}`,
+          type: 'pickup_suggestion',
+          meta: {
+            lat: pickupCoords[1],
+            lng: pickupCoords[0],
+            name: pickupName,
+            proposed_by: proposerId,
+          },
+        })
+        .select('id, ride_id, sender_id, content, type, meta, created_at')
+        .single()
+
+      if (pmErr) {
+        console.error('Failed to insert pickup_suggestion at accept-board:', pmErr.message)
+      } else if (pickupMsg) {
+        void realtimeBroadcast(`chat:${rideId}`, 'new_message', pickupMsg as Record<string, unknown>)
+        void realtimeBroadcast(`chat-badge:${rideId}`, 'new_message', pickupMsg as Record<string, unknown>)
+      }
+    }
+
     // Mark the board_request notification as actioned so it doesn't show buttons again
     supabaseAdmin.from('notifications')
       .update({ type: 'board_request_actioned' })
@@ -1536,7 +1519,13 @@ scheduleRouter.patch(
   validateJwt,
   async (req: Request, res: Response, next: NextFunction) => {
     const userId = res.locals['userId'] as string
-    const { ride_id: rideId } = req.body as { ride_id?: string }
+    // 2026-05-05 PR 2 — body extended with optional `reason`. Older
+    // iOS clients still send `{ ride_id }` only; the destructure
+    // below is compatible with both shapes.
+    const { ride_id: rideId, reason } = req.body as {
+      ride_id?: string
+      reason?: string
+    }
 
     if (!rideId) {
       res.status(400).json({
@@ -1625,7 +1614,46 @@ scheduleRouter.patch(
     // Refresh poster's own MyRides page
     void realtimeBroadcast(`myrides:${userId}`, 'ride_status_changed', { ride_id: rideId, status: 'cancelled' })
 
-    console.log(JSON.stringify({ type: 'board_decline', ride_id: rideId, declined_by: userId }))
+    // 2026-05-05 PR 2 — log analytics row when the user picked a
+    // reason on the iOS BoardDeclineReasonSheet. The
+    // `driver_decline_reasons` table predates the board flow (created
+    // in migration 064 for instant-ride snooze + reason capture) but
+    // its column shape — `driver_id` (FK to users.id), ride_id,
+    // reason, snooze_minutes — is generic enough to hold board
+    // declines without a new migration. `driver_id` here means
+    // "user_id of the decliner" regardless of role; future migration
+    // can rename / add a `decline_context` enum if rider-side board
+    // declines need to be split out for analytics.
+    //
+    // Skip-the-sheet path ("Just decline" toolbar action) sends no
+    // reason and we don't insert anything — keeps the table clean
+    // of a forced "unspecified" row that would skew analytics.
+    if (reason) {
+      void supabaseAdmin
+        .from('driver_decline_reasons')
+        .insert({
+          driver_id: userId,
+          ride_id: rideId,
+          reason,
+          snooze_minutes: null,
+        })
+        .then(({ error: reasonErr }) => {
+          if (reasonErr) {
+            console.warn(
+              `[board_decline] Failed to log decline reason for user ${userId}: ${reasonErr.message}`,
+            )
+          }
+        })
+    }
+
+    console.log(
+      JSON.stringify({
+        type: 'board_decline',
+        ride_id: rideId,
+        declined_by: userId,
+        reason: reason ?? null,
+      }),
+    )
     res.status(200).json({ ride_id: rideId, status: 'cancelled' })
   },
 )

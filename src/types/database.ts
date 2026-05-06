@@ -55,6 +55,7 @@ export type Database = {
           default_payment_method_id: string | null
           phone_verified: boolean
           date_of_birth: string | null
+          onboarding_completed: boolean
           created_at: string
         }
         Insert: {
@@ -74,6 +75,7 @@ export type Database = {
           stripe_onboarding_complete?: boolean
           default_payment_method_id?: string | null
           date_of_birth?: string | null
+          onboarding_completed?: boolean
           created_at?: string
         }
         Update: {
@@ -93,6 +95,7 @@ export type Database = {
           default_payment_method_id?: string | null
           phone_verified?: boolean
           date_of_birth?: string | null
+          onboarding_completed?: boolean
           created_at?: string
         }
         Relationships: never[]

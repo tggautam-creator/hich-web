@@ -2870,7 +2870,7 @@ ridesRouter.post(
 
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, driver_id, status, pickup_confirmed, dropoff_confirmed, schedule_id, pickup_point, dropoff_point, destination, destination_name')
+      .select('id, rider_id, driver_id, status, pickup_confirmed, dropoff_confirmed, schedule_id, pickup_point, dropoff_point, destination, destination_name, origin, origin_name')
       .eq('id', rideId)
       .single()
 
@@ -2923,6 +2923,44 @@ ridesRouter.post(
       .eq('id', rideId)
 
     if (updateErr) { next(updateErr); return }
+
+    // 2026-05-06 — when the dropoff is being confirmed AND the
+    // pickup is still un-confirmed (rider has a custom pickup),
+    // insert the pickup_suggestion now so Step 2's proposal card
+    // appears in chat. Replaces the request-time pre-insert that
+    // used to clutter chat history with a stale rider-attributed
+    // proposal sitting above the driver's later dropoff message.
+    // Gated on `ride.origin` existing — when rider chose driver's
+    // start at request time, pickup is already pre-confirmed and
+    // we skip this branch entirely.
+    if (location_type === 'dropoff' && !ride.pickup_confirmed && ride.origin) {
+      const proposerId = ride.rider_id
+      const pickupCoords = (ride.origin as { coordinates: [number, number] }).coordinates
+      const pickupName = ride.origin_name ?? 'the rider\'s requested pickup'
+      const { data: pickupMsg, error: pmErr } = await supabaseAdmin
+        .from('messages')
+        .insert({
+          ride_id: rideId,
+          sender_id: proposerId,
+          content: `Pickup at ${pickupName}`,
+          type: 'pickup_suggestion',
+          meta: {
+            lat: pickupCoords[1],
+            lng: pickupCoords[0],
+            name: pickupName,
+            proposed_by: proposerId,
+          },
+        })
+        .select('id, ride_id, sender_id, content, type, meta, created_at')
+        .single()
+
+      if (pmErr) {
+        console.error('Failed to insert pickup_suggestion at accept-location dropoff:', pmErr.message)
+      } else if (pickupMsg) {
+        void realtimeBroadcast(`chat:${rideId}`, 'new_message', pickupMsg as Record<string, unknown>)
+        void realtimeBroadcast(`chat-badge:${rideId}`, 'new_message', pickupMsg as Record<string, unknown>)
+      }
+    }
 
     // Insert a system message with accepted location details for rich UI card
     const isPickup = location_type === 'pickup'

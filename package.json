@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:server": "tsx watch --env-file=.env server/index.ts",
+    "dev:server": "tsx watch --env-file=.env.dev server/index.ts",
+    "dev:server:prod": "tsx watch --env-file=.env.prod server/index.ts",
     "build": "tsc -b && tsc -p tsconfig.server.json --noEmit && vite build",
     "lint": "eslint . --max-warnings 0",
     "preview": "vite preview",

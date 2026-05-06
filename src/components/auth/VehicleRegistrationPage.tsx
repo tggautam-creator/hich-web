@@ -318,10 +318,13 @@ export default function VehicleRegistrationPage({
       if (vehErr) throw vehErr
 
       if (!isFromProfile) {
-        // First-time onboarding: mark as driver and go to Stripe
+        // First-time onboarding: mark as driver, flip
+        // `onboarding_completed = true` (migration 066) so AuthGuard's
+        // gate releases the user out of `/onboarding/*`, then send
+        // them to Stripe for payouts.
         const { error: userErr } = await supabase
           .from('users')
-          .update({ is_driver: true })
+          .update({ is_driver: true, onboarding_completed: true })
           .eq('id', user.id)
         if (userErr) throw userErr
       }

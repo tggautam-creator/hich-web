@@ -1,9 +1,31 @@
 import { useNavigate } from 'react-router-dom'
 import AppIcon from '@/components/ui/AppIcon'
 import type { AppIconName } from '@/components/ui/AppIcon'
+import { supabase } from '@/lib/supabase'
+import { useAuthStore } from '@/stores/authStore'
 
 interface ModeSelectionPageProps {
   'data-testid'?: string
+}
+
+/**
+ * Flip `users.onboarding_completed = true` for the signed-in user.
+ * Called on rider/driver/both selection so AuthGuard's
+ * onboarding-incomplete redirect (added 2026-05-05 alongside iOS
+ * RootView) releases the user to their home tabs. Driver/both flow
+ * also calls this from VehicleRegistrationPage as a belt+suspenders
+ * — flagging it here means a rider who picks "Get rides" goes
+ * straight to /home/rider with the column already set.
+ */
+async function markOnboardingCompleted(userId: string): Promise<void> {
+  const { error } = await supabase
+    .from('users')
+    .update({ onboarding_completed: true })
+    .eq('id', userId)
+  if (error) {
+    // eslint-disable-next-line no-console
+    console.warn('[ModeSelection] failed to flip onboarding_completed:', error.message)
+  }
 }
 
 interface ModeCardProps {
@@ -35,6 +57,23 @@ export default function ModeSelectionPage({
   'data-testid': testId = 'mode-selection-page',
 }: ModeSelectionPageProps) {
   const navigate = useNavigate()
+  const profile = useAuthStore((s) => s.profile)
+  const refreshProfile = useAuthStore((s) => s.refreshProfile)
+
+  async function handleRiderPick() {
+    if (profile?.id) {
+      await markOnboardingCompleted(profile.id)
+      await refreshProfile()
+    }
+    navigate('/home/rider')
+  }
+
+  function handleDriverPick() {
+    // Driver / Both still need vehicle registration — leave
+    // `onboarding_completed` FALSE here; VehicleRegistrationPage
+    // flips it to TRUE on successful insert.
+    navigate('/onboarding/vehicle')
+  }
 
   return (
     <div
@@ -56,7 +95,7 @@ export default function ModeSelectionPage({
             title="Get rides"
             description="Match with someone going your direction in seconds"
             testId="mode-rider"
-            onClick={() => { navigate('/home/rider') }}
+            onClick={() => { void handleRiderPick() }}
           />
           <ModeCard
             icon="steering-wheel"
@@ -64,7 +103,7 @@ export default function ModeSelectionPage({
             title="Give rides & earn"
             description="Fill your empty seats on drives you're already making"
             testId="mode-driver"
-            onClick={() => { navigate('/onboarding/vehicle') }}
+            onClick={handleDriverPick}
           />
           <ModeCard
             icon="lightning"
@@ -72,7 +111,7 @@ export default function ModeSelectionPage({
             title="Both"
             description="Ride sometimes, drive sometimes — switch anytime"
             testId="mode-both"
-            onClick={() => { navigate('/onboarding/vehicle') }}
+            onClick={handleDriverPick}
           />
         </div>
       </div>

@@ -344,7 +344,10 @@ describe('VehicleRegistrationPage', () => {
         // Car photo IS the publicUrl from storage (mandatory now).
         expect(insertArg.car_photo_url).toBe('https://storage.example.com/car.jpg')
         // Updated user is_driver
-        expect(mockUpdate).toHaveBeenCalledWith({ is_driver: true })
+        // Migration 066 (2026-05-05) — driver/both finishing vehicle
+        // registration also flips `onboarding_completed = true` so
+        // AuthGuard releases them from the /onboarding/* gate.
+        expect(mockUpdate).toHaveBeenCalledWith({ is_driver: true, onboarding_completed: true })
         // Navigated
         expect(mockNavigate).toHaveBeenCalledWith('/stripe/onboarding')
       })

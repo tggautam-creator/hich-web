@@ -71,6 +71,7 @@ describe('database types — row aliases', () => {
       default_payment_method_id: null,
       phone_verified: false,
       date_of_birth: null,
+      onboarding_completed: false,
       created_at: new Date().toISOString(),
     }
     expect(user.wallet_balance).toBe(500)

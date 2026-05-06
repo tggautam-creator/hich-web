@@ -71,6 +71,21 @@ export default function AuthGuard({ 'data-testid': testId }: AuthGuardProps) {
     return <Navigate to="/onboarding/profile" replace />
   }
 
+  // ── 3a. Onboarding not finished (mirrors iOS RootView gate) ─────────────────
+  // 2026-05-05 — `users.onboarding_completed` (migration 066) is the
+  // explicit "user finished every onboarding step" signal. Replaces
+  // the older heuristic that a non-empty full_name meant onboarding
+  // was done — that's wrong because Phone / Location / Mode / Vehicle
+  // all run AFTER full_name lands. Without this gate the user could
+  // type the URL `/home/rider` and bypass mode selection entirely.
+  if (
+    profile?.full_name &&
+    profile.onboarding_completed === false &&
+    !isOnboardingPath
+  ) {
+    return <Navigate to="/onboarding/mode" replace />
+  }
+
   // ── 3b. Phone not verified ──────────────────────────────────────────────────
   // TODO: Re-enable when Twilio toll-free verification is approved.
   // Existing and new users must verify their phone before accessing the app.
