@@ -1,4 +1,4 @@
-import { useState, useRef, type FormEvent, type ChangeEvent } from 'react'
+import { useState, useRef, useEffect, type FormEvent, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
@@ -53,6 +53,7 @@ const INPUT_CLASS = [
 export default function CreateProfilePage() {
   const navigate = useNavigate()
   const refreshProfile = useAuthStore((s) => s.refreshProfile)
+  const profile = useAuthStore((s) => s.profile)
 
   const [fullName,    setFullName]    = useState('')
   const [countryKey,  setCountryKey]  = useState<string>('US')
@@ -64,6 +65,33 @@ export default function CreateProfilePage() {
   const [dateOfBirth, setDateOfBirth] = useState('')
   const [errors,      setErrors]      = useState<FormErrors>({})
   const [isLoading,   setIsLoading]   = useState(false)
+
+  // First-appear prefill — when AuthGuard re-routes a returning user
+  // back into onboarding (`onboarding_completed=false` after migration
+  // 066, or fresh data on a different device), seed the form with what
+  // the profile already has so they don't have to retype name / phone /
+  // DOB and risk overwriting their stored values with blanks.
+  const seededRef = useRef(false)
+  useEffect(() => {
+    if (seededRef.current || !profile) return
+    if (profile.full_name) setFullName(profile.full_name)
+    if (profile.phone) {
+      // Match the longest dial-code prefix first so multi-digit codes
+      // (`+91`, `+971`) win over shorter ones (`+1`).
+      const sortedCountries = [...COUNTRY_CODES].sort(
+        (a, b) => b.dialCode.length - a.dialCode.length,
+      )
+      for (const candidate of sortedCountries) {
+        if (profile.phone.startsWith(candidate.dialCode)) {
+          setCountryKey(candidate.key)
+          setLocalPhone(profile.phone.slice(candidate.dialCode.length))
+          break
+        }
+      }
+    }
+    if (profile.date_of_birth) setDateOfBirth(profile.date_of_birth)
+    seededRef.current = true
+  }, [profile])
 
   // Age bounds for the native date picker. Computed once per render
   // since "today" is stable enough at minute granularity.
@@ -101,8 +129,10 @@ export default function CreateProfilePage() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) throw new Error('Not authenticated — please sign in again')
 
-      // Upload photo if selected
-      let avatarUrl: string | null = null
+      // Upload photo if selected; otherwise preserve the existing
+      // `avatar_url` so a returning user (who didn't re-pick) doesn't
+      // see their photo wiped on resubmit.
+      let avatarUrl: string | null = profile?.avatar_url ?? null
       if (photo) {
         const ext         = photo.name.split('.').pop() ?? 'jpg'
         const storagePath = `${user.id}.${ext}`

@@ -93,9 +93,16 @@ export default function AuthGuard({ 'data-testid': testId }: AuthGuardProps) {
   // onboarding_completed=true but phone_verified=false get bounced to
   // /onboarding/verify-phone on next session. The /verify-phone +
   // /profile paths are exempted so the page itself can render.
+  //
+  // Dev-only escape — `VITE_SKIP_PHONE_VERIFICATION=true` in `.env.dev`
+  // bypasses this bounce so testers without working SMS delivery
+  // (Twilio carrier filtering on US numbers) can still sign in. The
+  // prod env files keep this `false`, so production users are still
+  // required to verify before they reach the app shell.
   const isVerifyPhonePath = location.pathname === '/onboarding/verify-phone'
   const isProfilePath = location.pathname === '/onboarding/profile'
   if (
+    !env.SKIP_PHONE_VERIFICATION &&
     profile?.full_name &&
     profile.phone &&
     profile.phone_verified === false &&

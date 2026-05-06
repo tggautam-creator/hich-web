@@ -144,12 +144,24 @@ function setupMocks(schedule: Record<string, unknown>, requesterId: string) {
   // notifications → .insert() (fire-and-forget)
   const mockNotifInsert = vi.fn().mockResolvedValue({ data: null, error: null })
 
+  // messages → .insert().select().single() — used by the
+  // pre-confirmed pickup hand-off when the rider supplies origin_lat/lng
+  // (route now drops a `location_accepted` ack into the chat). Without
+  // this mock the route 500s before any test assertion runs.
+  const mockMsgSingle = vi.fn().mockResolvedValue({
+    data: { id: 'msg-pickup-1' },
+    error: null,
+  })
+  const mockMsgSelect = vi.fn().mockReturnValue({ single: mockMsgSingle })
+  const mockMsgInsert = vi.fn().mockReturnValue({ select: mockMsgSelect })
+
   mockFrom.mockImplementation((table: string) => {
     if (table === 'ride_schedules') return { select: mockSelectSchedule }
     if (table === 'rides') return { insert: mockInsert, select: mockDupSelect }
     if (table === 'push_tokens') return { select: mockSelectTokens }
     if (table === 'users') return { select: mockSelectUser }
     if (table === 'notifications') return { insert: mockNotifInsert }
+    if (table === 'messages') return { insert: mockMsgInsert }
     return {}
   })
 

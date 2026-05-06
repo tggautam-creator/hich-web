@@ -71,23 +71,23 @@ describe('SettingsPage', () => {
   it('validates password length', async () => {
     render(<SettingsPage />)
     fireEvent.click(screen.getByTestId('change-password-button'))
-    const newPw = screen.getByTestId('new-password-input')
-    const confirmPw = screen.getByTestId('confirm-password-input')
-    fireEvent.change(newPw, { target: { value: 'short' } })
-    fireEvent.change(confirmPw, { target: { value: 'short' } })
+    fireEvent.change(screen.getByTestId('current-password-input'), { target: { value: 'currentPw1' } })
+    fireEvent.change(screen.getByTestId('new-password-input'), { target: { value: 'short' } })
+    fireEvent.change(screen.getByTestId('confirm-password-input'), { target: { value: 'short' } })
     fireEvent.click(screen.getByTestId('save-password-button'))
     expect(await screen.findByTestId('password-error')).toBeDefined()
-    expect(screen.getByTestId('password-error').textContent).toBe('Password must be at least 8 characters')
+    expect(screen.getByTestId('password-error').textContent).toBe('New password must be at least 8 characters')
   })
 
   it('validates password match', async () => {
     render(<SettingsPage />)
     fireEvent.click(screen.getByTestId('change-password-button'))
+    fireEvent.change(screen.getByTestId('current-password-input'), { target: { value: 'currentPw1' } })
     fireEvent.change(screen.getByTestId('new-password-input'), { target: { value: 'longenough1' } })
     fireEvent.change(screen.getByTestId('confirm-password-input'), { target: { value: 'different1' } })
     fireEvent.click(screen.getByTestId('save-password-button'))
     expect(await screen.findByTestId('password-error')).toBeDefined()
-    expect(screen.getByTestId('password-error').textContent).toBe('Passwords do not match')
+    expect(screen.getByTestId('password-error').textContent).toBe('New passwords do not match')
   })
 
   it('shows delete account confirmation', () => {

@@ -401,6 +401,20 @@ describe('POST /api/wallet/withdraw', () => {
         }
       }
       if (table === 'request_idempotency') {
+        // upsert(...).select('user_id') → reservation slot.
+        //   - non-empty data = "we won the slot, run handler"
+        //   - empty data     = "another request already owns this slot,
+        //                       fall through to the maybeSingle lookup
+        //                       which returns `cachedIdem`."
+        const reservationData = cachedIdem ? [] : [{ user_id: 'u-1' }]
+        // update().eq().eq().eq() — fire-and-forget post-handler write.
+        const noopUpdate = () => {
+          const result = Promise.resolve({ error: null })
+          const chain = () => Object.assign(result, {
+            eq: chain,
+          })
+          return chain()
+        }
         return {
           select: () => ({
             eq: () => ({
@@ -411,12 +425,10 @@ describe('POST /api/wallet/withdraw', () => {
               }),
             }),
           }),
-          insert: () => ({
-            then: (cb: (r: { error: null }) => unknown) => {
-              cb({ error: null })
-              return Promise.resolve({ error: null })
-            },
+          upsert: () => ({
+            select: () => Promise.resolve({ data: reservationData, error: null }),
           }),
+          update: noopUpdate,
         }
       }
       if (table === 'transactions') {
