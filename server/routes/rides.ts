@@ -2747,6 +2747,11 @@ ridesRouter.patch(
           title: 'Dropoff location suggested!',
           body: `${dropProposerRole} suggested a dropoff point — open TAGO to review.`,
           data: { type: 'dropoff_set', ride_id: rideId },
+          // Time-sensitive interruption-level so a rider with DND on
+          // still sees the banner — without it, a rider in Focus mode
+          // stays stuck on Waiting Room while the driver waits in
+          // chat. (2026-05-06 — surfaced during the rider-stuck audit.)
+          category: 'RIDE_REQUEST',
         })
       }
     }

@@ -151,15 +151,33 @@ export async function sendFcmPush(
 
   console.log(`[FCM] sendEachForMulticast: ${response.successCount} success, ${response.failureCount} failure`)
 
-  // Auto-cleanup stale tokens (NotRegistered, InvalidRegistration, etc.)
+  // Auto-cleanup tokens that can never succeed:
+  //  - registration-token-not-registered  → app uninstalled / token rotated
+  //  - invalid-registration-token         → token malformed / corrupted
+  //  - mismatched-credential              → token issued by a DIFFERENT
+  //    Firebase project than the server's service account is for. Used
+  //    to leak indefinitely because the cleanup list didn't include it.
+  //    Symptom: drivers with a dev-bundle token (project A) AND a
+  //    prod-bundle token (project B) saw partial-success multicasts;
+  //    drivers with ONLY a wrong-project token saw zero pushes.
+  //    Surfaced 2026-05-06 — see EC2 PM2 logs.
+  //  - third-party-auth-error             → APNs/web-push auth failed,
+  //    typically same root cause (cross-project send) wrapped under a
+  //    different SDK error code.
   const staleTokens: string[] = []
   response.responses.forEach((r, i) => {
     if (r.error) {
-      console.error(`[FCM] Token ${i} error:`, r.error.message)
+      // Always log the code alongside the message so future regressions
+      // are easy to triage from PM2 logs without re-grepping the SDK.
+      console.error(
+        `[FCM] Token ${i} error: code=${r.error.code} message=${r.error.message}`,
+      )
       const code = r.error.code
       if (
         code === 'messaging/registration-token-not-registered' ||
-        code === 'messaging/invalid-registration-token'
+        code === 'messaging/invalid-registration-token' ||
+        code === 'messaging/mismatched-credential' ||
+        code === 'messaging/third-party-auth-error'
       ) {
         staleTokens.push(filteredTokens[i])
       }
@@ -243,10 +261,15 @@ export async function sendSilentFcmPush(
   const staleTokens: string[] = []
   response.responses.forEach((r, i) => {
     if (r.error) {
+      // Mirror the alert-push cleanup list (see `sendFcmPush` above) so
+      // cross-project tokens leaked from dev installs stop wasting the
+      // silent-push budget on every ride request.
       const code = r.error.code
       if (
         code === 'messaging/registration-token-not-registered' ||
-        code === 'messaging/invalid-registration-token'
+        code === 'messaging/invalid-registration-token' ||
+        code === 'messaging/mismatched-credential' ||
+        code === 'messaging/third-party-auth-error'
       ) {
         const stale = tokens[i]
         if (stale) staleTokens.push(stale)
