@@ -474,6 +474,15 @@ ridesRouter.post(
           : null,
         destination: destinationGeo,
         destination_name: body.destination_name ?? null,
+        // Preserve the rider's ORIGINAL endpoint so it survives a
+        // driver's later /suggest-transit-dropoff (which overwrites
+        // `destination` + `destination_name` with the transit station).
+        // /find-new-driver and the cancel-Path-A reset both read this
+        // back to restore the rider's intent — without it, a re-broadcast
+        // after driver-cancel-mid-pickup ships the stale transit-station
+        // name to new drivers (bug repro 2026-05-07).
+        requester_destination: destinationGeo,
+        requester_destination_name: body.destination_name ?? null,
         destination_bearing: body.destination_bearing ?? null,
         route_polyline: typeof body.route_polyline === 'string' ? body.route_polyline : null,
         status: 'requested',
@@ -963,7 +972,7 @@ ridesRouter.patch(
 
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, driver_id, status, schedule_id')
+      .select('id, rider_id, driver_id, status, schedule_id, requester_destination, requester_destination_name')
       .eq('id', rideId)
       .single()
 
@@ -1076,19 +1085,33 @@ ridesRouter.patch(
     // for scheduled rides we fall through to Path B (permanent cancel).
     if (isDriverCancel && !ride.schedule_id && (originalStatus === 'accepted' || originalStatus === 'coordinating' || originalStatus === 'requested')) {
       console.log(`[rides/cancel:DEBUG] Path A: driver ${userId} cancelling ${originalStatus} ride ${rideId}`)
+      // Restore the rider's original destination if a transit-dropoff
+      // suggestion (or any later step) overwrote `destination` /
+      // `destination_name`. `requester_destination*` is the canonical
+      // copy persisted at /request and /schedule/board-request time;
+      // without this, /find-new-driver would re-broadcast the previous
+      // driver's transit station as the new ride's destination
+      // (bug repro 2026-05-07: rider asked for "Sweet Cottage Bakery",
+      // first driver suggested "Davis BART", then cancelled — second
+      // driver received a request to drive to Davis BART).
+      const revertFields: Record<string, unknown> = {
+        status: 'requested',
+        driver_id: null,
+        driver_destination: null,
+        driver_destination_name: null,
+        driver_route_polyline: null,
+        pickup_point: null,
+        pickup_confirmed: false,
+        dropoff_point: null,
+        dropoff_confirmed: false,
+      }
+      const reqDest = (ride as Record<string, unknown>)['requester_destination']
+      const reqDestName = (ride as Record<string, unknown>)['requester_destination_name']
+      if (reqDest != null) revertFields['destination'] = reqDest
+      if (typeof reqDestName === 'string') revertFields['destination_name'] = reqDestName
       const { error: revertErr } = await supabaseAdmin
         .from('rides')
-        .update({
-          status: 'requested',
-          driver_id: null,
-          driver_destination: null,
-          driver_destination_name: null,
-          driver_route_polyline: null,
-          pickup_point: null,
-          pickup_confirmed: false,
-          dropoff_point: null,
-          dropoff_confirmed: false,
-        })
+        .update(revertFields)
         .eq('id', rideId)
 
       if (revertErr) { next(revertErr); return }
@@ -1100,18 +1123,22 @@ ridesRouter.patch(
         .eq('ride_id', rideId)
 
       // Mark the cancelled driver's offer as 'released'
-      await supabaseAdmin
+      const { data: releasedRows } = await supabaseAdmin
         .from('ride_offers')
         .update({ status: 'released' })
         .eq('ride_id', rideId)
         .eq('driver_id', userId)
+        .select('id, status')
+      console.log(`[rides/cancel:DEBUG:PathA] released ${(releasedRows ?? []).length} offer rows for driver=${userId} on ride=${rideId}`)
 
       // Revert standby offers back to 'pending' — these drivers are back in the running
-      await supabaseAdmin
+      const { data: revertedStandby } = await supabaseAdmin
         .from('ride_offers')
         .update({ status: 'pending' })
         .eq('ride_id', rideId)
         .eq('status', 'standby')
+        .select('id')
+      console.log(`[rides/cancel:DEBUG:PathA] reverted ${(revertedStandby ?? []).length} standby offers to pending on ride=${rideId}`)
 
       // Fetch remaining pending offers (standby drivers that were reverted)
       const { data: pendingOffers } = await supabaseAdmin
@@ -1349,33 +1376,93 @@ ridesRouter.post(
       .eq('status', 'pending')
     const pendingDriverIds = (pendingOffers ?? []).map((o: { driver_id: string }) => o.driver_id)
 
+    // Drivers we must NOT re-notify: anyone who already declined this
+    // ride (`released`) or already claimed and was undone (`selected`
+    // that flipped back). The most common case is the driver who just
+    // cancelled — without this filter they're at the top of the
+    // "online drivers" pool and get re-bombarded for the SAME ride.
+    // Bug repro 2026-05-07: cancelled driver's phone re-rang seconds
+    // after they tapped Cancel. Tracked via a Set for O(1) lookup.
+    const { data: declinedOffers } = await supabaseAdmin
+      .from('ride_offers')
+      .select('driver_id, status')
+      .eq('ride_id', rideId)
+      .in('status', ['released', 'selected'])
+    const declinedDriverIds = new Set(
+      (declinedOffers ?? []).map((o: { driver_id: string }) => o.driver_id),
+    )
+    console.log(`[rides/find-new-driver:DEBUG] ride=${rideId} pendingDriverIds=${pendingDriverIds.length} declinedDriverIds=${declinedDriverIds.size} declined_detail=${JSON.stringify((declinedOffers ?? []).map((o: { driver_id: string; status: string }) => `${o.driver_id.slice(0, 8)}=${o.status}`))}`)
+
     // Fetch full ride details for the renewed/re-broadcast payload.
+    // Read `requester_destination*` (the rider's ORIGINAL endpoint
+    // captured at /request time) and prefer it over `destination*`
+    // for the broadcast — that way a transit-dropoff suggestion left
+    // behind by the cancelled driver doesn't leak into the next
+    // driver's request card. Also include `origin_name` so the
+    // suggestion page doesn't fall back to "Pickup nearby".
     const { data: fullRide } = await supabaseAdmin
       .from('rides')
-      .select('id, origin, destination, destination_name, rider_id')
+      .select('id, origin, origin_name, destination, destination_name, requester_destination, requester_destination_name, rider_id')
       .eq('id', rideId)
       .single()
     const { data: riderProfile } = await supabaseAdmin
       .from('users')
-      .select('full_name')
+      .select('full_name, avatar_url, rating_avg, rating_count')
       .eq('id', ride.rider_id)
       .single()
 
-    const buildPayload = (kind: 'ride_request' | 'ride_request_renewed'): Record<string, unknown> => {
+    // Compute distance + driver-earnings the same way /request does.
+    // Best-effort: fall back to '–' / '0' on any failure so the
+    // broadcast still goes out — matches the original behaviour, just
+    // shouldn't be the default any more.
+    let computedDistanceKm: number | null = null
+    let computedDriverEarnsCents: number = 0
+    if (fullRide) {
+      const origin = fullRide.origin as unknown as { coordinates: number[] } | null
+      const reqDest = (fullRide as Record<string, unknown>)['requester_destination'] as { coordinates: number[] } | null
+      const dest = reqDest ?? (fullRide.destination as unknown as { coordinates: number[] } | null)
+      if (origin?.coordinates && dest?.coordinates) {
+        try {
+          const distM = await getRoadDistanceMetres(
+            origin.coordinates[1], origin.coordinates[0],
+            dest.coordinates[1], dest.coordinates[0],
+          )
+          computedDistanceKm = distM / 1000
+          const fareCents = await estimateFareCentsBetween(
+            origin.coordinates[1], origin.coordinates[0],
+            dest.coordinates[1], dest.coordinates[0],
+          )
+          const platformFee = Math.round(fareCents * PLATFORM_FEE_RATE)
+          computedDriverEarnsCents = fareCents - platformFee
+        } catch (err) {
+          console.error('[rides/find-new-driver] distance/fare estimate failed:', err)
+        }
+      }
+    }
+
+    const buildPayload = (kind: 'ride_request' | 'ride_request_renewed'): Record<string, string> => {
       if (!fullRide) return { type: kind, ride_id: rideId }
       const origin = fullRide.origin as unknown as { coordinates: number[] }
-      const dest = fullRide.destination as unknown as { coordinates: number[] } | null
+      const reqDest = (fullRide as Record<string, unknown>)['requester_destination'] as { coordinates: number[] } | null
+      const reqDestName = (fullRide as Record<string, unknown>)['requester_destination_name'] as string | null
+      const dest = reqDest ?? (fullRide.destination as unknown as { coordinates: number[] } | null)
+      const destName = reqDestName ?? (fullRide.destination_name as string | null) ?? 'Nearby destination'
+      const originName = (fullRide.origin_name as string | null)?.trim()
       return {
         type: kind,
         ride_id: rideId,
         rider_name: riderProfile?.full_name ?? 'A rider',
-        destination: fullRide.destination_name ?? 'Nearby destination',
-        distance_km: '–',
-        estimated_earnings_cents: '0',
+        rider_avatar_url: riderProfile?.avatar_url ?? '',
+        origin_name: originName && originName !== '' ? originName : 'Pickup location',
+        destination: destName,
+        distance_km: computedDistanceKm != null ? String(Number(computedDistanceKm.toFixed(2))) : '–',
+        estimated_earnings_cents: String(computedDriverEarnsCents),
         origin_lat: String(origin.coordinates[1]),
         origin_lng: String(origin.coordinates[0]),
         destination_lat: dest ? String(dest.coordinates[1]) : '',
         destination_lng: dest ? String(dest.coordinates[0]) : '',
+        rider_rating: String(riderProfile?.rating_avg ?? ''),
+        rider_rating_count: String(riderProfile?.rating_count ?? '0'),
       }
     }
 
@@ -1405,13 +1492,14 @@ ridesRouter.post(
     }
 
     // ── No standby drivers → broadcast to all online drivers
-    //    (excluding snoozed). NO freshness filter — see `/request`
-    //    Stage 1 fallback for the full rationale. tl;dr: iOS doesn't
-    //    deliver silent pushes to force-quit apps, so wake-up can't
-    //    refresh stale `recorded_at` for those drivers, but the
-    //    visible alert push DOES land on their lock screen, which is
-    //    what we want. Ghost-row hygiene is handled by the
-    //    `clearStaleOnlineFlags` cron, not this per-request gate.
+    //    (excluding snoozed + the driver who just cancelled). NO
+    //    freshness filter — see `/request` Stage 1 fallback for the
+    //    full rationale. tl;dr: iOS doesn't deliver silent pushes to
+    //    force-quit apps, so wake-up can't refresh stale
+    //    `recorded_at` for those drivers, but the visible alert push
+    //    DOES land on their lock screen, which is what we want.
+    //    Ghost-row hygiene is handled by the `clearStaleOnlineFlags`
+    //    cron, not this per-request gate.
     const { data: allOnlineDrivers } = await supabaseAdmin
       .from('driver_locations')
       .select('user_id, snoozed_until')
@@ -1430,28 +1518,57 @@ ridesRouter.post(
       .eq('is_driver', true)
     const eligibleDriverIds = (allDrivers ?? [])
       .map((d: { id: string }) => d.id)
-      .filter((id: string) => id !== ride.rider_id && onlineIds.includes(id))
+      .filter((id: string) => id !== ride.rider_id
+        && onlineIds.includes(id)
+        && !declinedDriverIds.has(id))
 
     if (eligibleDriverIds.length > 0) {
+      const realtimePayload = buildPayload('ride_request')
+
       const { data: tokenRows } = await supabaseAdmin
         .from('push_tokens')
         .select('token')
         .in('user_id', eligibleDriverIds)
       const tokens = (tokenRows ?? []).map((t: { token: string }) => t.token)
       if (tokens.length > 0) {
+        // FCM data payload mirrors `/request`: rich rider/origin/dest
+        // fields so the iOS suggestion card has everything it needs
+        // without an extra fetch.
         await sendFcmPush(tokens, {
           title: 'New ride request nearby',
           body: 'A rider needs a lift — open TAGO to check.',
-          data: { type: 'ride_request', ride_id: rideId },
+          data: realtimePayload,
+          category: 'RIDE_REQUEST',
         })
       }
 
-      const realtimePayload = buildPayload('ride_request')
-      const broadcastDriverIds = (allDrivers ?? [])
-        .map((d: { id: string }) => d.id)
-        .filter((id: string) => id !== ride.rider_id)
+      // Persist notifications rows for the eligible-driver pool
+      // (offline-driver fallback when realtime/FCM didn't land — same
+      // contract as `/request`). Without this, a driver who toggles
+      // Online after the rebroadcast never sees the request via the
+      // polling path.
+      if (eligibleDriverIds.length > 0) {
+        const notificationRows = eligibleDriverIds.map((driverId) => ({
+          user_id: driverId,
+          type: 'ride_request',
+          title: 'New ride request nearby',
+          body: 'A rider needs a lift — open TAGO to check.',
+          data: { ...realtimePayload },
+        }))
+        const { error: notifErr } = await supabaseAdmin
+          .from('notifications')
+          .insert(notificationRows)
+        if (notifErr) {
+          console.error(`[rides/find-new-driver] persist notifications failed: ${notifErr.message}`)
+        }
+      }
+
+      // Tighten realtime broadcast to the SAME pool as FCM. The
+      // previous version broadcast to every driver row regardless of
+      // online/declined state, which guaranteed the cancelled driver
+      // got re-paged via realtime even when FCM correctly skipped them.
       await Promise.all(
-        broadcastDriverIds.map((driverId) => realtimeBroadcast(`driver:${driverId}`, 'ride_request', realtimePayload)),
+        eligibleDriverIds.map((driverId) => realtimeBroadcast(`driver:${driverId}`, 'ride_request', realtimePayload)),
       )
     }
 
@@ -1697,6 +1814,35 @@ ridesRouter.patch(
     let offerStatus: 'pending' | 'standby' = (ride.status === 'accepted' || ride.status === 'coordinating') ? 'standby' : 'pending'
 
     console.log(`[rides/accept:DEBUG] rideId=${rideId} driver=${driverId} ride.status=${ride.status} ride.driver_id=${ride.driver_id} initial offerStatus=${offerStatus}`)
+
+    // R.9 (extended 2026-05-07) — a `released` offer must not be
+    // resurrected by a retry, regardless of which branch we're in.
+    // The original guard only ran inside the `standby` branch, so a
+    // released driver tapping Accept again while ride.status was back
+    // at 'requested' (rider tapped "Find another driver" after this
+    // same driver cancelled) silently re-flipped their offer to
+    // 'pending' via the upsert below. Repro 2026-05-07: rider's
+    // WaitingRoom kept showing the cancelled driver as "DRIVER
+    // ACCEPTED" because polling re-discovered the resurrected
+    // pending offer.
+    {
+      const { data: existingOffer } = await supabaseAdmin
+        .from('ride_offers')
+        .select('status')
+        .eq('ride_id', rideId)
+        .eq('driver_id', driverId)
+        .maybeSingle()
+      if (existingOffer?.status === 'released') {
+        console.log(`[rides/accept] rideId=${rideId} driver=${driverId} offer is released, refusing to resurrect (general guard)`)
+        res.status(409).json({
+          error: {
+            code: 'OFFER_RELEASED',
+            message: 'This offer was released and cannot be reactivated.',
+          },
+        })
+        return
+      }
+    }
 
     if (offerStatus === 'standby') {
       // Fetch this driver's existing offer to resolve race conditions

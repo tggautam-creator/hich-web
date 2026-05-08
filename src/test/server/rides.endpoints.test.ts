@@ -528,11 +528,17 @@ describe('PATCH /api/rides/:id/accept', () => {
       }
       if (table === 'ride_offers') {
         return {
-          // First call: check existing offer status (for race-condition guard)
+          // First call: general OFFER_RELEASED guard uses .maybeSingle()
+          //   (added 2026-05-07 — covers the case where ride.status reverts
+          //    to 'requested' and the standby branch is skipped).
+          // Second call: standby-branch guard uses .single().
+          // Both return `{ data: null }` here since this fixture has no
+          // pre-existing offer for the driver.
           select: () => ({
             eq: () => ({
               eq: () => ({
                 single: () => Promise.resolve({ data: null, error: null }),
+                maybeSingle: () => Promise.resolve({ data: null, error: null }),
               }),
             }),
           }),
