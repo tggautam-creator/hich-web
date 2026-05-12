@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import AppIcon from '@/components/ui/AppIcon'
@@ -42,8 +42,29 @@ export default function NotificationsPage({
   'data-testid': testId = 'notifications-page',
 }: NotificationsPageProps) {
   const navigate = useNavigate()
+  const location = useLocation()
   const queryClient = useQueryClient()
   const [actioningId, setActioningId] = useState<string | null>(null)
+
+  // Back-button handler:
+  //   - When the user navigated in-app (e.g. tapped the bell on the home
+  //     page), React Router has pushed an entry on top of the existing
+  //     stack, so `navigate(-1)` returns them to the previous route.
+  //   - When the user landed here via an FCM browser notification click
+  //     (`firebase-messaging-sw.js` does a full page load via
+  //     `client.navigate(url)` / `clients.openWindow(url)`), there is no
+  //     prior in-app entry — `navigate(-1)` would either no-op or
+  //     bounce the user out of the app entirely. React Router tags the
+  //     first entry of a session with `location.key === 'default'`; in
+  //     that case, replace the route with `/` so back lands on the home
+  //     page like the in-app flow does. Repro 2026-05-12.
+  const goBack = () => {
+    if (location.key === 'default') {
+      navigate('/', { replace: true })
+    } else {
+      navigate(-1)
+    }
+  }
 
   const { data: notifications = [], isLoading: loading } = useQuery({
     queryKey: ['notifications'],
@@ -180,7 +201,7 @@ export default function NotificationsPage({
         <div className="flex items-center gap-3">
           <button
             data-testid="back-button"
-            onClick={() => navigate(-1)}
+            onClick={goBack}
             className="p-1 shrink-0 text-text-primary active:opacity-60"
             aria-label="Go back"
           >
