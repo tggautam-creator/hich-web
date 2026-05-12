@@ -173,11 +173,23 @@ export async function sendFcmPush(
         `[FCM] Token ${i} error: code=${r.error.code} message=${r.error.message}`,
       )
       const code = r.error.code
+      // ONLY delete tokens for receiver-side errors (the token itself
+      // is dead / belongs to a different project). NEVER delete on
+      // `third-party-auth-error` — that's a SENDER-SIDE problem (our
+      // APNs key / web-push key is invalid or missing in Firebase
+      // Console). Treating it as a stale-token signal silently wipes
+      // valid TestFlight tokens whenever the prod APNs `.p8` is
+      // mis-uploaded, which is exactly what happened in the
+      // 2026-05-06 → 2026-05-11 window (logs showed "Removing 1 stale
+      // token(s)" after every push failure even though the device
+      // tokens themselves were fine). The fix for an auth error is to
+      // upload the right key in Firebase Console — not to drop user
+      // tokens. Errors stay loud in pm2 logs above so the misconfig
+      // is visible.
       if (
         code === 'messaging/registration-token-not-registered' ||
         code === 'messaging/invalid-registration-token' ||
-        code === 'messaging/mismatched-credential' ||
-        code === 'messaging/third-party-auth-error'
+        code === 'messaging/mismatched-credential'
       ) {
         staleTokens.push(filteredTokens[i])
       }
@@ -261,15 +273,13 @@ export async function sendSilentFcmPush(
   const staleTokens: string[] = []
   response.responses.forEach((r, i) => {
     if (r.error) {
-      // Mirror the alert-push cleanup list (see `sendFcmPush` above) so
-      // cross-project tokens leaked from dev installs stop wasting the
-      // silent-push budget on every ride request.
+      // See the matching note in `sendFcmPush` — `third-party-auth-error`
+      // is sender-side and must NOT trigger token deletion.
       const code = r.error.code
       if (
         code === 'messaging/registration-token-not-registered' ||
         code === 'messaging/invalid-registration-token' ||
-        code === 'messaging/mismatched-credential' ||
-        code === 'messaging/third-party-auth-error'
+        code === 'messaging/mismatched-credential'
       ) {
         const stale = tokens[i]
         if (stale) staleTokens.push(stale)
