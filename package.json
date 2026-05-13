@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --mode dev",
     "dev:server": "tsx watch --env-file=.env.dev server/index.ts",
     "dev:server:prod": "tsx watch --env-file=.env.prod server/index.ts",
     "build": "tsc -b && tsc -p tsconfig.server.json --noEmit && vite build",

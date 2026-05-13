@@ -4,6 +4,7 @@ import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { trackEvent } from '@/lib/analytics'
+import { calculateFare } from '@/lib/fare'
 import { RoutePolyline, MapBoundsFitter, decodePolyline } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
 import type { TransitDropoffSuggestion } from '@/components/ride/TransitSuggestionCard'
@@ -270,20 +271,25 @@ export default function DropoffSelection({
     setFareLoading(true)
     setFareEstimate(null)
 
-    // Client-side fare estimate from coords we already have
+    // Client-side fare estimate from coords we already have. Uses the
+    // canonical `calculateFare` from `src/lib/fare.ts` so this estimate
+    // tracks the server's actual charge. The previous inline math here
+    // (committed before 2026-05-01) hardcoded the now-removed $2 base
+    // fare, an $8/min time rate (now $0.05/min), and a $40 upper cap —
+    // all stale per the fare formula update in CLAUDE.md. See
+    // WEB_PARITY_REPORT W-T0-7.
     if (state?.pickupLat && state?.pickupLng && state?.riderDestLat && state?.riderDestLng) {
       const R = 6371
       const dLat = ((state.riderDestLat - state.pickupLat) * Math.PI) / 180
       const dLng = ((state.riderDestLng - state.pickupLng) * Math.PI) / 180
-      const a = Math.sin(dLat / 2) ** 2 + Math.cos((state.pickupLat * Math.PI) / 180) * Math.cos((state.riderDestLat * Math.PI) / 180) * Math.sin(dLng / 2) ** 2
-      const distKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 1.3 // road correction
-      const distMiles = distKm * 0.621371
-      const gallons = distMiles / 25
-      const gasCents = Math.round(gallons * 3.5 * 100)
-      const estMin = Math.round(distKm / 40 * 60)
-      const timeCents = Math.round(estMin * 8)
-      const fare = Math.max(500, Math.min(4000, 200 + gasCents + timeCents))
-      setFareEstimate(fare)
+      const a = Math.sin(dLat / 2) ** 2
+        + Math.cos((state.pickupLat * Math.PI) / 180)
+        * Math.cos((state.riderDestLat * Math.PI) / 180)
+        * Math.sin(dLng / 2) ** 2
+      const distKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 1.3 // 1.3 road-correction factor
+      const estMin = Math.round((distKm / 40) * 60) // 40 km/h average
+      const breakdown = calculateFare(distKm, estMin)
+      setFareEstimate(breakdown.fare_cents)
     }
     setFareLoading(false)
   }

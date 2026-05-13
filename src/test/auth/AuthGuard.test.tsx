@@ -30,6 +30,12 @@ vi.mock('@/components/ride/RideRequestNotification', () => ({
   default: () => null,
 }))
 
+// Same for ForegroundPushToast — also imports `@/lib/fcm` which transitively
+// loads Supabase. Bypass so the test renderer doesn't need real env vars.
+vi.mock('@/components/ui/ForegroundPushToast', () => ({
+  default: () => null,
+}))
+
 // Mock onboarding store — pretend intro has been seen so AuthGuard renders Outlet
 vi.mock('@/stores/onboardingStore', () => ({
   useOnboardingStore: (selector: (s: { hasSeenIntro: boolean }) => unknown) =>

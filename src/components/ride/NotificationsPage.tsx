@@ -238,10 +238,13 @@ export default function NotificationsPage({
         {!loading && notifications.length > 0 && (
           <div className="divide-y divide-border">
             {notifications.filter((notif) => {
-              // Hide ride_request notifications older than 1 hour — the ride is
-              // certainly no longer in 'requested' status by then.
+              // Hide ride_request notifications older than 5 minutes — the
+              // server's offer window expires at 150s, so anything beyond
+              // 5 min is definitively dead and tapping it just leads to a
+              // 409 INVALID_STATE from /accept. iOS uses the same 5 min
+              // cutoff (NotificationsPage.swift:186, tightened 2026-05-01).
               if (notif.type !== 'ride_request') return true
-              return Date.now() - new Date(notif.created_at).getTime() < 60 * 60 * 1000
+              return Date.now() - new Date(notif.created_at).getTime() < 5 * 60 * 1000
             }).map((notif) => {
               const isBoardRequest = notif.type === 'board_request'
               const isActioned = notif.type === 'board_request_actioned'

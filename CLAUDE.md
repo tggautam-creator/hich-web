@@ -106,6 +106,52 @@ The matching logic has stages. Build in order, do not skip ahead.
 - **License photos** — stored in a private Supabase Storage bucket. Never a public URL.
 - **JWT** — validate on every API endpoint before any other logic. Return 401 if invalid.
 
+## HARD RULE — Prod environment values on prod
+Added 2026-05-12 by Tarun: every production environment MUST use prod
+infra exclusively. Never mix dev and prod values. This applies to BOTH
+the EC2 Express server AND the Vercel web build.
+
+**On the EC2 server (`/home/ubuntu/hich-web/.env` or whatever PM2
+loads):**
+| Variable | Prod value | What goes wrong with dev value |
+|---|---|---|
+| `STRIPE_SECRET_KEY` | `sk_live_*` (Account B) | Real charges go to test mode; drivers see fake earnings that never deposit |
+| `STRIPE_WEBHOOK_SECRET` | `whsec_*` of the **live** Stripe endpoint | Webhook signature validation fails; payments succeed but the ride row never flips to `paid` |
+| `SUPABASE_URL` | `https://pdxtswlaxqbqkrfwailf.supabase.co` | Rides / wallet / users data scattered into the dev project, invisible to ops |
+| `SUPABASE_SERVICE_ROLE_KEY` | The JWT for the prod project | API requests bounce with auth errors |
+| `FIREBASE_SERVICE_ACCOUNT_PATH` | `./firebase-service-account.json` (prod key) | FCM pushes return `mismatched-credential`; users never get notifications |
+| `VITE_FIREBASE_PROJECT_ID` | `hich-6f501` | Same as above |
+| `NODE_ENV` | `production` | The fail-fast guards in `server/index.ts` only fire when this is set; without it, misconfigs run silently |
+
+**On the Vercel build (production env vars in Vercel dashboard, also
+matches the local `.env` for `npm run build`):**
+- `VITE_SUPABASE_URL` → `https://pdxtswlaxqbqkrfwailf.supabase.co`
+- `VITE_FIREBASE_PROJECT_ID` → `hich-6f501`
+- `VITE_STRIPE_PUBLISHABLE_KEY` → `pk_live_51T9AU79…`
+- All other `VITE_FIREBASE_*` keys → the prod project
+
+**Enforcement (already wired):**
+- `server/index.ts` boot guards `process.exit(1)` if `NODE_ENV=production`
+  AND any of (`sk_test_*` secret, dev Supabase URL, `.dev.json` service
+  account path) is detected. This trips PM2's restart loop, so a
+  misconfigured deploy crashes immediately instead of silently mis-routing
+  data.
+- `vite.config.ts` `assertProdEnv()` aborts the build (`process.exit(1)`)
+  when `mode='production'` AND the resolved env points at the dev
+  project. Vercel's build log shows the failure.
+
+**What this rule blocks:**
+- Running prod EC2 with the dev `.env.dev` file by mistake
+- Pushing a webapp build that's pointed at dev Supabase to www.tagorides.com
+- Symlinking `.env → .env.dev` and then running `npm run build` without
+  thinking
+- Forgetting to update Vercel env vars when rotating prod credentials
+
+**Override path:** if there's a legitimate need (e.g. a staging
+deployment that uses dev infra deliberately), update both the boot
+guard and the Vite assert to recognize the new mode (`mode='staging'`
+or similar). Don't disable the guards.
+
 ## Definition of Done (every task)
 A task is not done until all three pass:
 1. `npm test -- --run` — all tests pass, including tests for the feature just built

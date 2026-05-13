@@ -71,6 +71,21 @@ export default function DriverPayoutsPage({
   const isBank = status?.payout_method_type === 'bank_account'
   const isCard = status?.payout_method_type === 'card'
 
+  // Stripe re-flagged the account post-onboarding (e.g. asked for
+  // additional verification, suspended charges or payouts). When this
+  // is true, the driver still has a "complete" onboarding flag but
+  // Stripe has gated their ability to charge / get paid until they
+  // respond. Without surfacing this, the page just says "Payouts
+  // active" with a green dot and the driver has no idea why their
+  // earnings stopped landing. Matches iOS `ConnectStatus.needsReverification`
+  // (`/Users/tarungautam/Desktop/Hich/ios/Tago/Models/ConnectStatus.swift:52-56`).
+  // See WEB_PARITY_REPORT W-T0-12.
+  const needsReverification = !!(
+    status?.has_account
+    && status.onboarding_complete
+    && (!status.charges_enabled || !status.payouts_enabled)
+  )
+
   return (
     <div
       data-testid={testId}
@@ -147,11 +162,63 @@ export default function DriverPayoutsPage({
         {/* Active — show payout method details */}
         {!loading && status?.onboarding_complete && (
           <div className="space-y-4 max-w-sm mx-auto">
-            {/* Status pill */}
+            {/* Status pill — flips to warning when Stripe re-flagged the
+                account, otherwise the green "active" state. */}
             <div className="flex items-center gap-2 mb-2">
-              <div className="h-2.5 w-2.5 rounded-full bg-success" />
-              <p className="text-sm font-semibold text-success">Payouts active</p>
+              <div className={`h-2.5 w-2.5 rounded-full ${needsReverification ? 'bg-warning' : 'bg-success'}`} />
+              <p className={`text-sm font-semibold ${needsReverification ? 'text-warning' : 'text-success'}`}>
+                {needsReverification ? 'Verification needed' : 'Payouts active'}
+              </p>
             </div>
+
+            {/* Reverification banner — Stripe paused this account after
+                onboarding (typically asks for additional ID / tax docs /
+                business info). Driver opens the Stripe dashboard via the
+                existing CTA below to respond. */}
+            {needsReverification && (
+              <div
+                data-testid="reverification-banner"
+                className="rounded-2xl bg-warning/5 border border-warning/30 p-4 flex items-start gap-3"
+              >
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-warning/15 text-warning">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-4 w-4"
+                    aria-hidden="true"
+                  >
+                    <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="17" x2="12.01" y2="17" />
+                  </svg>
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-text-primary mb-0.5">
+                    Stripe needs more info
+                  </p>
+                  <p className="text-xs text-text-secondary mb-2">
+                    {!status.charges_enabled && !status.payouts_enabled
+                      ? 'Your charges and payouts are paused until you complete additional verification.'
+                      : !status.payouts_enabled
+                        ? 'Your payouts are paused until you complete additional verification.'
+                        : 'Your charges are paused until you complete additional verification.'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={openDashboard}
+                    disabled={dashboardLoading}
+                    className="text-xs font-semibold text-warning"
+                  >
+                    {dashboardLoading ? 'Opening dashboard…' : 'Open Stripe dashboard →'}
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Payout method card */}
             <div

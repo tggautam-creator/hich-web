@@ -1,16 +1,26 @@
 // Firebase Cloud Messaging service worker.
 // Handles background push notifications when the app is not in the foreground.
 // Also forwards messages to the foreground via BroadcastChannel.
+//
+// The Firebase config below uses `__FIREBASE_*__` placeholders that get
+// replaced at dev-serve + build time by the `firebaseMessagingSwEnvPlugin`
+// in `vite.config.ts`. The replacement reads from the same env loaded by
+// the rest of the Vite app, so dev mode (npm run dev → --mode dev →
+// .env.dev) gets the `tago-dev-e3ade` project and prod build (npm run
+// build → .env / .env.production) gets `hich-6f501`. Without this
+// plugin, the SW would hardcode prod and dev web clients would
+// silently register FCM tokens against the wrong project (cross-project
+// token bug). See WEB_PARITY_REPORT W-T0-5.
 
 importScripts('https://www.gstatic.com/firebasejs/10.14.0/firebase-app-compat.js')
 importScripts('https://www.gstatic.com/firebasejs/10.14.0/firebase-messaging-compat.js')
 
 firebase.initializeApp({
-  apiKey: 'AIzaSyB0DaCCCADt_W5M6zTef0QVKJwnFIMvBxM',
-  authDomain: 'hich-6f501.firebaseapp.com',
-  projectId: 'hich-6f501',
-  messagingSenderId: '203477299887',
-  appId: '1:203477299887:web:2939531c772f46f6c7da5a',
+  apiKey: '__FIREBASE_API_KEY__',
+  authDomain: '__FIREBASE_AUTH_DOMAIN__',
+  projectId: '__FIREBASE_PROJECT_ID__',
+  messagingSenderId: '__FIREBASE_MESSAGING_SENDER_ID__',
+  appId: '__FIREBASE_APP_ID__',
 })
 
 const messaging = firebase.messaging()

@@ -108,13 +108,39 @@ async function fetchUnreadCount(): Promise<number> {
   return body.count
 }
 
-async function cancelRide(rideId: string): Promise<void> {
+/**
+ * Cancel an active ride from MyRides. Routes to the correct endpoint:
+ *
+ *   - **Board requests** (`status='requested' && schedule_id != null` — the
+ *     requester opened a request on someone's posted ride) go to
+ *     `PATCH /api/schedule/withdraw-board`. The instant `/cancel` endpoint
+ *     leaves these rows in `requested` indefinitely from the rider's POV
+ *     because Path B's permanent-cancel branch was written for instant
+ *     rides only. iOS already routes this correctly via
+ *     `ActiveRideSheet.cancel(_:)` (see WEB_PARITY_REPORT W-T0-1).
+ *   - **Everything else** (accepted/coordinating/active instant rides, or
+ *     scheduled rides past the requested phase) goes through
+ *     `PATCH /api/rides/:id/cancel`.
+ */
+async function cancelRide(ride: { id: string; status: string; schedule_id: string | null }): Promise<void> {
   const { data: { session } } = await supabase.auth.getSession()
   if (!session) throw new Error('Not authenticated')
-  const resp = await fetch(`/api/rides/${rideId}/cancel`, {
-    method: 'PATCH',
-    headers: { Authorization: `Bearer ${session.access_token}` },
-  })
+
+  const isPendingBoardRequest = ride.status === 'requested' && ride.schedule_id !== null
+  const resp = isPendingBoardRequest
+    ? await fetch('/api/schedule/withdraw-board', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({ ride_id: ride.id }),
+    })
+    : await fetch(`/api/rides/${ride.id}/cancel`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    })
+
   if (!resp.ok) throw new Error('Failed to cancel ride')
 }
 
@@ -508,7 +534,11 @@ export default function MyRidesPage({
                         data-testid="cancel-requested-ride-button"
                         onClick={(e) => {
                           e.stopPropagation()
-                          cancelMutation.mutate(ride.id)
+                          cancelMutation.mutate({
+                            id: ride.id,
+                            status: ride.status,
+                            schedule_id: ride.schedule_id,
+                          })
                         }}
                         className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 text-xs font-semibold text-danger"
                       >

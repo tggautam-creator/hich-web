@@ -84,6 +84,9 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
   const [routines, setRoutines] = useState<DriverRoutine[]>([])
   const [routinesLoading, setRoutinesLoading] = useState(false)
   const [deletingRoutineId, setDeletingRoutineId] = useState<string | null>(null)
+  const [pausingRoutineId, setPausingRoutineId] = useState<string | null>(null)
+  // When non-null, the cascade-warning confirm overlay shows for this routine.
+  const [confirmDeleteRoutineId, setConfirmDeleteRoutineId] = useState<string | null>(null)
   const [editingRoutine, setEditingRoutine] = useState<DriverRoutine | null>(null)
   const [editName, setEditName] = useState('')
   const [editTime, setEditTime] = useState('')
@@ -393,21 +396,58 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
   const fetchRoutines = useCallback(async () => {
     if (!profile?.id) return
     setRoutinesLoading(true)
+    // Include paused routines (is_active=false) so the user can resume
+    // them. Server's `sync-routines` job already filters by is_active
+    // when projecting to the board, so paused rows don't accidentally
+    // surface to other users. Per WEB_PARITY_REPORT W-T0-6 (Pause+Delete).
     const { data, error: err } = await supabase
       .from('driver_routines')
       .select('*')
       .eq('user_id', profile.id)
-      .eq('is_active', true)
+      .order('is_active', { ascending: false })
       .order('created_at', { ascending: false })
     if (!err && data) setRoutines(data as unknown as DriverRoutine[])
     setRoutinesLoading(false)
   }, [profile?.id])
 
+  /**
+   * Pause / Resume a routine. Toggles `is_active` in place. Soft action —
+   * the row stays in the DB and any future projection (next `/sync-routines`
+   * tick) skips paused rows, but existing pending requests on already-
+   * projected ride rows are NOT cancelled. Use Delete for that.
+   */
+  const handlePauseRoutine = useCallback(async (id: string, isCurrentlyActive: boolean) => {
+    setPausingRoutineId(id)
+    const next = !isCurrentlyActive
+    const { error: err } = await supabase
+      .from('driver_routines')
+      .update({ is_active: next })
+      .eq('id', id)
+    if (!err) {
+      setRoutines((prev) => prev.map((r) => (r.id === id ? { ...r, is_active: next } : r)))
+    }
+    setPausingRoutineId(null)
+  }, [])
+
+  /**
+   * Hard-delete a routine. Real DELETE — the row goes away and the
+   * `cascade_routine_deletion` trigger (migration 058) cancels the
+   * next 7 days of projected ride rows + their pending rider requests.
+   * iOS calls this from `RoutinesViewModel.deleteRoutine` with the same
+   * cascade warning copy. The caller is expected to have already shown
+   * the confirm overlay (see `confirmDeleteRoutineId`).
+   */
   const handleDeleteRoutine = useCallback(async (id: string) => {
     setDeletingRoutineId(id)
-    await supabase.from('driver_routines').update({ is_active: false }).eq('id', id)
-    setRoutines((prev) => prev.filter((r) => r.id !== id))
+    const { error: err } = await supabase
+      .from('driver_routines')
+      .delete()
+      .eq('id', id)
+    if (!err) {
+      setRoutines((prev) => prev.filter((r) => r.id !== id))
+    }
     setDeletingRoutineId(null)
+    setConfirmDeleteRoutineId(null)
   }, [])
 
   const handleStartEdit = useCallback((routine: DriverRoutine) => {
@@ -965,17 +1005,27 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
             {routines.map((routine) => {
               const time = routine.departure_time ?? routine.arrival_time ?? ''
               const timeLabel = routine.departure_time ? 'Departs' : 'Arrives'
+              const isPaused = !routine.is_active
+              const isPausing = pausingRoutineId === routine.id
               return (
                 <div
                   key={routine.id}
                   data-testid="routine-card"
-                  className="rounded-2xl border border-border bg-white p-3"
+                  className={`rounded-2xl border bg-white p-3 ${isPaused ? 'border-border opacity-70' : 'border-border'}`}
                 >
-                  <div className="flex items-start justify-between mb-1">
-                    <p className="font-semibold text-sm text-text-primary">{routine.route_name}</p>
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${routine.direction_type === 'roundtrip' ? 'bg-primary/10 text-primary' : 'bg-surface text-text-secondary'}`}>
-                      {routine.direction_type === 'roundtrip' ? 'Roundtrip' : 'One way'}
-                    </span>
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <p className="font-semibold text-sm text-text-primary flex-1 truncate">{routine.route_name}</p>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span
+                        data-testid="routine-status-badge"
+                        className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${isPaused ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success'}`}
+                      >
+                        {isPaused ? 'Paused' : 'Active'}
+                      </span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${routine.direction_type === 'roundtrip' ? 'bg-primary/10 text-primary' : 'bg-surface text-text-secondary'}`}>
+                        {routine.direction_type === 'roundtrip' ? 'Roundtrip' : 'One way'}
+                      </span>
+                    </div>
                   </div>
                   <p className="text-xs text-text-secondary mb-1">
                     {formatDays(routine.day_of_week)} &middot; {timeLabel} {time ? formatTime(time) : '–'}
@@ -989,9 +1039,17 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                       Edit
                     </button>
                     <button
+                      data-testid="pause-routine-button"
+                      disabled={isPausing}
+                      onClick={() => { void handlePauseRoutine(routine.id, !isPaused) }}
+                      className="flex-1 rounded-lg py-1.5 text-xs font-semibold text-text-primary bg-surface border border-border active:bg-border disabled:opacity-50"
+                    >
+                      {isPausing ? '…' : (isPaused ? 'Resume' : 'Pause')}
+                    </button>
+                    <button
                       data-testid="delete-routine-button"
                       disabled={deletingRoutineId === routine.id}
-                      onClick={() => { void handleDeleteRoutine(routine.id) }}
+                      onClick={() => setConfirmDeleteRoutineId(routine.id)}
                       className="flex-1 rounded-lg py-1.5 text-xs font-semibold text-danger bg-danger/10 active:bg-danger/20 disabled:opacity-50"
                     >
                       {deletingRoutineId === routine.id ? 'Deleting…' : 'Delete'}
@@ -1000,6 +1058,42 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                 </div>
               )
             })}
+          </div>
+        )}
+
+        {/* ── Cascade-warning confirm overlay for hard-delete ───────────────── */}
+        {confirmDeleteRoutineId && (
+          <div
+            data-testid="delete-routine-confirm"
+            className="fixed inset-0 z-[70] flex items-end justify-center bg-black/40 px-4 pb-6"
+            onClick={() => setConfirmDeleteRoutineId(null)}
+          >
+            <div
+              className="w-full max-w-md rounded-3xl bg-white p-5 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <p className="text-base font-bold text-text-primary mb-2">Delete this routine?</p>
+              <p className="text-sm text-text-secondary mb-4">
+                This permanently removes the routine AND the next 7 days of projected board posts. Any pending rider requests on those days will be cancelled. Use <span className="font-semibold text-text-primary">Pause</span> if you only want to stop projecting it for a while.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  data-testid="delete-routine-cancel"
+                  onClick={() => setConfirmDeleteRoutineId(null)}
+                  className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-text-primary bg-surface border border-border active:bg-border"
+                >
+                  Cancel
+                </button>
+                <button
+                  data-testid="delete-routine-confirm-button"
+                  disabled={deletingRoutineId === confirmDeleteRoutineId}
+                  onClick={() => { void handleDeleteRoutine(confirmDeleteRoutineId) }}
+                  className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-white bg-danger active:opacity-90 disabled:opacity-50"
+                >
+                  {deletingRoutineId === confirmDeleteRoutineId ? 'Deleting…' : 'Delete'}
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

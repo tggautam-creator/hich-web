@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { useOnboardingStore } from '@/stores/onboardingStore'
 import { env } from '@/lib/env'
 import RideRequestNotification from '@/components/ride/RideRequestNotification'
+import ForegroundPushToast from '@/components/ui/ForegroundPushToast'
 import IntroCarousel from '@/components/onboarding/IntroCarousel'
 
 const SessionDebugPanel = lazy(() => import('@/components/auth/SessionDebugPanel'))
@@ -124,6 +125,7 @@ export default function AuthGuard({ 'data-testid': testId }: AuthGuardProps) {
     <APIProvider apiKey={env.GOOGLE_MAPS_KEY ?? ''}>
       <Outlet />
       <RideRequestNotification />
+      <ForegroundPushToast />
       {showDebug && (
         <Suspense fallback={null}>
           <SessionDebugPanel />

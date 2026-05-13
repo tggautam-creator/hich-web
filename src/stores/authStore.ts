@@ -292,6 +292,32 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     if (error || !data) {
       reportDiag('refreshProfile', `error: ${error?.message ?? 'no data'} code=${error?.code ?? 'none'}`)
+
+      // Distinguish "row genuinely doesn't exist" (PostgREST returns
+      // PGRST116 from `.single()` when row count != 1) from "transient
+      // fetch failure" (network blip, 5xx, throttling, etc.).
+      //
+      // - True absence → clear profile, AuthGuard routes to /onboarding/profile.
+      // - Transient failure with a previously-loaded profile → KEEP the
+      //   last-known profile so an already-onboarded user doesn't get
+      //   bounced back through CreateProfile on a one-second network
+      //   hiccup. iOS adopted the same behaviour 2026-04-30 via the
+      //   Keychain-cached profile fallback (`AuthStore.swift:481-502`).
+      //
+      // The preserve branch only fires when there's a REAL error object
+      // AND its code isn't PGRST116. `error == null && data == null`
+      // (theoretically possible per the Supabase types even though
+      // `.single()` shouldn't produce it) is treated as definitive
+      // absence — we still clear the profile in that case rather than
+      // preserve a stale one. `isLoading: false` always flips so
+      // AuthGuard stops the spinner.
+      const existing = get().profile
+      const hasTransientError = !!error && error.code !== 'PGRST116'
+      if (hasTransientError && existing) {
+        set({ isLoading: false })
+        return
+      }
+
       set({ profile: null, isDriver: false, isLoading: false })
       return
     }

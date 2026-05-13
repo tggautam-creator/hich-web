@@ -306,13 +306,24 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
     setEditError(null)
 
     const newPhone = editPhone.trim() || null
-    // TODO: Re-enable when Twilio toll-free verification is approved.
-    // const phoneChanged = newPhone !== profile.phone
+    const phoneChanged = newPhone !== profile.phone
 
+    // When the phone number changes, mark it unverified. AuthGuard then
+    // gates access on the next session: if `VITE_SKIP_PHONE_VERIFICATION`
+    // is `true` (current dev + prod default while A2P 10DLC isn't
+    // registered yet), the user keeps using the app; once the env var
+    // flips to `false`, AuthGuard routes them to `/onboarding/verify-phone`
+    // and they're forced to verify before they can do anything else.
+    //
+    // We don't navigate to verify-phone directly here on purpose — the
+    // env-gated AuthGuard owns that routing so there's a single source
+    // of truth for whether OTP is required. Matches the iOS pattern
+    // (`EditProfileSheet.swift` defers to `RootView.isProfileIncomplete`).
+    // See WEB_PARITY_REPORT W-T0-8.
     const updateData: Record<string, unknown> = { full_name: trimmedName, phone: newPhone }
-    // if (phoneChanged) {
-    //   updateData.phone_verified = false
-    // }
+    if (phoneChanged) {
+      updateData.phone_verified = false
+    }
 
     const { error } = await supabase
       .from('users')
@@ -328,11 +339,6 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
     await refreshProfile()
     setSaving(false)
     setEditing(false)
-
-    // TODO: Re-enable when Twilio toll-free verification is approved.
-    // if (phoneChanged && newPhone) {
-    //   navigate('/onboarding/verify-phone', { state: { phone: newPhone, returnTo: '/profile' } })
-    // }
   }
 
   // ── Toggle route active/paused ─────────────────────────────────────────

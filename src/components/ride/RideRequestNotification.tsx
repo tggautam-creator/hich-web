@@ -106,6 +106,50 @@ export default function RideRequestNotification({
     }
   }, [])
 
+  /**
+   * Explicit driver decline (tapping the Decline button) or auto-decline
+   * on countdown expiry. For **instant rides** we release the ride_offer
+   * server-side via `PATCH /api/rides/:id/cancel` so the matcher can
+   * re-broadcast to other drivers; otherwise the offer sits in `pending`
+   * until the hourly cleanup cron (~up to 1h of marketplace dead-time).
+   * iOS does this via `submitDecline` (see WEB_PARITY_REPORT W-T0-2).
+   *
+   * For **board requests** we don't POST anything here — board declines
+   * have their own server endpoint (`PATCH /api/schedule/decline-board`)
+   * surfaced through `BoardRequestReview.tsx`. The banner's Decline
+   * button on a board_request just dismisses the toast; the driver can
+   * still open the inbox or the review page later if they want to
+   * formally decline with a reason.
+   *
+   * Reads the current head via `queueRef` (NOT the captured `queue`
+   * state) so the callback identity stays stable as new requests land.
+   * Without this, the auto-decline `useEffect` deps below (which include
+   * `declineNotification`) would tear down + recreate the 1-second
+   * interval every time the queue mutates, **resetting the visible
+   * countdown to 90s** — bug repro: queue 2 requests in quick succession
+   * and the first one never auto-declines.
+   */
+  const declineNotification = useCallback(() => {
+    const head = queueRef.current[0]
+    if (head && !head.isBoardRequest) {
+      const rideId = head.rideId
+      void (async () => {
+        try {
+          const token = (await supabase.auth.getSession()).data.session?.access_token
+          if (token) {
+            await fetch(`/api/rides/${rideId}/cancel`, {
+              method: 'PATCH',
+              headers: { Authorization: `Bearer ${token}` },
+            })
+          }
+        } catch {
+          // best-effort; don't block dismiss
+        }
+      })()
+    }
+    dismiss()
+  }, [dismiss])
+
   // Declined toast — shown when a board request is rejected
   const [declinedToast, setDeclinedToast] = useState<{ rideId: string } | null>(null)
   const declinedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -528,6 +572,61 @@ export default function RideRequestNotification({
 
     let cancelled = false
 
+    /**
+     * Cold-launch resume (added 2026-05-12 per WEB_PARITY_REPORT W-T0-4).
+     *
+     * The regular polling loop below fetches `unread_only=true`, which means
+     * a driver who killed the tab WHILE a ride-request banner was on screen
+     * never re-sees that banner on a fresh load — the row was marked-read
+     * on the previous tick. Server-side the offer is still alive for up to
+     * 150 s.
+     *
+     * iOS solves this with `RideRequestListener.bootstrapResume`: a
+     * one-shot `unread_only=false&limit=5` fetch at startup, filtered to
+     * `ride_request` rows whose `created_at` is less than 150 s old, then
+     * ingested through the same dedup as live broadcasts. Same shape here.
+     *
+     * We do NOT mark the rows read here — the banner's own accept/decline
+     * flow is what ultimately resolves the offer, and the regular poll
+     * below skips ahead (via `seenInboxNotifIdsRef`) so the row isn't
+     * double-processed.
+     */
+    const RESUME_AGE_MS = 165 * 1000 // 150 s server window + ~15 s clock-drift cushion
+    const bootstrapResume = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session || cancelled) return
+
+        const resp = await fetch('/api/notifications?unread_only=false&limit=5', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+        if (!resp.ok || cancelled) return
+
+        const body = (await resp.json()) as { notifications?: InboxNotification[] }
+        const rows = body.notifications ?? []
+
+        for (const notif of rows) {
+          if (cancelled) return
+          if (notif.type !== 'ride_request') continue
+          if (!notif.created_at) continue
+          const ageMs = Date.now() - new Date(notif.created_at).getTime()
+          if (ageMs > RESUME_AGE_MS) continue
+          if (seenInboxNotifIdsRef.current.has(notif.id)) continue
+          seenInboxNotifIdsRef.current.add(notif.id)
+
+          const data = notif.data as unknown as RideRequestData
+          if (data.type === 'ride_request' && data.ride_id) {
+            // Inject via the same handler the realtime / FCM paths use —
+            // it owns the in-flight dedup + queue ordering.
+            handleRideRequest(data)
+          }
+        }
+      } catch {
+        // non-fatal — the regular poll below will still surface fresh
+        // pushes; we just won't re-surface a previously-read banner.
+      }
+    }
+
     const poll = async () => {
       // Don't poll when a notification is already showing
       if (queueRef.current.length > 0) return
@@ -573,6 +672,10 @@ export default function RideRequestNotification({
       }
     }
 
+    // Bootstrap first (covers tab-killed-mid-banner cold-launch case),
+    // THEN start the regular poll loop. Both share `seenInboxNotifIdsRef`
+    // so a row is never double-processed.
+    void bootstrapResume()
     void poll()
     const intervalId = setInterval(() => { void poll() }, 15000)
 
@@ -661,7 +764,10 @@ export default function RideRequestNotification({
     timerRef.current = setInterval(() => {
       setSecondsLeft((prev) => {
         if (prev <= 1) {
-          dismiss()
+          // Auto-expiry on the banner = same as the user tapping Decline:
+          // release the offer server-side. Otherwise the offer stays
+          // `pending` until the hourly cron.
+          declineNotification()
           return DISMISS_SECONDS
         }
         return prev - 1
@@ -674,7 +780,7 @@ export default function RideRequestNotification({
         timerRef.current = null
       }
     }
-  }, [notification, dismiss])
+  }, [notification, dismiss, declineNotification])
 
   const [accepting, setAccepting] = useState(false)
 
@@ -1141,7 +1247,7 @@ export default function RideRequestNotification({
         <div className="px-3 pb-3 flex gap-2">
           <button
             type="button"
-            onClick={dismiss}
+            onClick={declineNotification}
             className="flex-1 rounded-2xl border border-border py-2.5 text-center text-sm font-semibold text-text-secondary active:bg-surface transition-colors"
             data-testid="decline-button"
           >

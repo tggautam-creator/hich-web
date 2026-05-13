@@ -295,11 +295,33 @@ export default function RideSuggestion({
   }, [rideId, standbyMode, navigate])
 
   // ── Decline helper ────────────────────────────────────────────────────────
-  // A decline simply means the driver isn't interested. The ride stays in
-  // 'requested' status for other drivers. No server call needed.
+  // Decline = "this driver isn't interested." We need to release the
+  // ride_offer server-side via PATCH /api/rides/:id/cancel so the matcher
+  // can keep fanning out to other drivers. Without this call the offer
+  // sits in `pending` until the hourly cleanup cron, locking the rider's
+  // queue from this driver's perspective for up to an hour. iOS already
+  // does this (`RideSuggestionPage.swift::submitDecline`). Both the
+  // explicit Decline button and the auto-decline countdown reach this
+  // function. Fire-and-forget — even if the server call fails (e.g. the
+  // ride was already actioned by another driver), we still want to
+  // navigate the driver home so they aren't stranded.
   const handleDecline = useCallback(() => {
+    void (async () => {
+      if (!rideId) return
+      try {
+        const token = (await supabase.auth.getSession()).data.session?.access_token
+        if (token) {
+          await fetch(`/api/rides/${rideId}/cancel`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bearer ${token}` },
+          })
+        }
+      } catch {
+        // best-effort — fall through to nav
+      }
+    })()
     navigate('/home/driver', { replace: true })
-  }, [navigate])
+  }, [navigate, rideId])
 
   // ── Countdown timer (auto-decline on expiry) ─────────────────────────────
   useEffect(() => {
