@@ -449,6 +449,17 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
       }
     }
 
+    // B9 (2026-05-13): reject an end_date already in the past so a
+    // user doesn't accidentally save a routine the matcher / sync
+    // will then silently skip. `endDate` is the bound state for the
+    // date input; the empty string means "no end date" and is fine.
+    if (endDate) {
+      const todayStr = new Date().toISOString().split('T')[0] ?? ''
+      if (endDate < todayStr) {
+        newErrors.endDate = "End date can't be in the past."
+      }
+    }
+
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
   }
@@ -517,61 +528,93 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
         }
       }
 
-      // Insert one driver_routine record per unique time config
+      // Insert one driver_routine record per unique time config and
+      // capture each row's id. The submission-time projection (next
+      // block) tags each ride_schedules row with `origin_place_id =
+      // routine:{id}` — same pattern the server uses — so the
+      // DELETE handler's skip_dates tombstone path works for
+      // client-projected rows too (audit B1, 2026-05-13).
+      const insertedGroups: Array<{
+        days: DayIndex[]
+        tType: TimeType
+        time: string
+        routineId: string
+      }> = []
       for (const group of groups.values()) {
-        const { error } = await supabase.from('driver_routines').insert({
-          user_id:             user.id,
-          route_name:          routeName.trim(),
-          origin:              { type: 'Point' as const, coordinates: [fromCoords.lng, fromCoords.lat] },
-          destination:         { type: 'Point' as const, coordinates: [toCoords.lng, toCoords.lat] },
-          destination_bearing: bearing,
-          direction_type:      'one_way' as const,
-          day_of_week:         group.days,
-          departure_time:      group.tType === 'departure' ? `${group.time}:00` : null,
-          arrival_time:        group.tType === 'arrival'   ? `${group.time}:00` : null,
-          origin_address:      fromLocation.fullAddress,
-          dest_address:        toLocation.fullAddress,
-          route_polyline:      routePolyline,
-          available_seats:     activeMode === 'driver' ? availableSeats : null,
-          end_date:            endDate || null,
-          note:                note.trim() || null,
-        })
+        const { data: insertedRow, error } = await supabase
+          .from('driver_routines')
+          .insert({
+            user_id:             user.id,
+            route_name:          routeName.trim(),
+            origin:              { type: 'Point' as const, coordinates: [fromCoords.lng, fromCoords.lat] },
+            destination:         { type: 'Point' as const, coordinates: [toCoords.lng, toCoords.lat] },
+            destination_bearing: bearing,
+            direction_type:      'one_way' as const,
+            day_of_week:         group.days,
+            departure_time:      group.tType === 'departure' ? `${group.time}:00` : null,
+            arrival_time:        group.tType === 'arrival'   ? `${group.time}:00` : null,
+            origin_address:      fromLocation.fullAddress,
+            dest_address:        toLocation.fullAddress,
+            route_polyline:      routePolyline,
+            available_seats:     activeMode === 'driver' ? availableSeats : null,
+            end_date:            endDate || null,
+            note:                note.trim() || null,
+          })
+          .select('id')
+          .single()
 
         if (error) {
           setSubmitError(error.message)
           return
         }
+        if (insertedRow?.id) {
+          insertedGroups.push({
+            days: group.days,
+            tType: group.tType,
+            time: group.time,
+            routineId: insertedRow.id as string,
+          })
+        }
       }
 
-      // Also post each selected day as a ride_schedule so it appears on the Ride Board.
-      // For each day-of-week, find the next upcoming date for that day.
+      // Project each (routine, day) as a ride_schedule so it appears
+      // on the Ride Board immediately. Use the synthetic
+      // `routine:{id}` place_id (not the real Google place_id) so
+      // server's DELETE handler can tombstone the date on delete.
       const today = new Date()
       const todayDow = today.getDay() // 0=Sun
 
-      for (const { day, tType, time } of dayConfigs) {
-        // Calculate next occurrence of this day-of-week
-        let daysUntil = day - todayDow
-        if (daysUntil <= 0) daysUntil += 7 // always next week if today or past
-        const nextDate = new Date(today)
-        nextDate.setDate(today.getDate() + daysUntil)
-        const dateStr = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}-${String(nextDate.getDate()).padStart(2, '0')}`
+      for (const ig of insertedGroups) {
+        const routineRef = `routine:${ig.routineId}`
+        const destRef = `${routineRef}:dest`
+        for (const day of ig.days) {
+          // Calculate next occurrence of this day-of-week
+          let daysUntil = day - todayDow
+          if (daysUntil <= 0) daysUntil += 7 // always next week if today or past
+          const nextDate = new Date(today)
+          nextDate.setDate(today.getDate() + daysUntil)
+          const dateStr = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}-${String(nextDate.getDate()).padStart(2, '0')}`
 
-        await supabase.from('ride_schedules').insert({
-          user_id:          user.id,
-          mode:             activeMode,
-          route_name:       routeName.trim(),
-          origin_place_id:  fromLocation.placeId,
-          origin_address:   fromLocation.fullAddress,
-          dest_place_id:    toLocation.placeId,
-          dest_address:     toLocation.fullAddress,
-          direction_type:   'one_way',
-          trip_date:        dateStr,
-          time_type:        tType,
-          trip_time:        `${time}:00`,
-          available_seats:  activeMode === 'driver' ? availableSeats : null,
-          note:             note.trim() || null,
-        })
-        // Non-fatal if this fails — the routine is already saved
+          await supabase.from('ride_schedules').insert({
+            user_id:          user.id,
+            mode:             activeMode,
+            route_name:       routeName.trim(),
+            origin_place_id:  routineRef,
+            origin_address:   fromLocation.fullAddress,
+            dest_place_id:    destRef,
+            dest_address:     toLocation.fullAddress,
+            direction_type:   'one_way',
+            trip_date:        dateStr,
+            time_type:        ig.tType,
+            trip_time:        `${ig.time}:00`,
+            available_seats:  activeMode === 'driver' ? availableSeats : null,
+            note:             note.trim() || null,
+          })
+          // Non-fatal if this fails — the routine is already saved
+          // and the next sync-routines / cron pass will refill any
+          // missing dates. Migration 068's partial unique index
+          // absorbs honest dupe races silently.
+        }
       }
 
       trackEvent('schedule_saved', { mode: activeMode, trip_type: 'routine' })
@@ -1056,6 +1099,11 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
                 onChange={(e) => { setEndDate(e.target.value) }}
                 className="w-full rounded-2xl border border-border bg-white px-4 py-3 text-base text-text-primary transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary"
               />
+              {errors.endDate && (
+                <p data-testid="end-date-error" className="text-sm text-danger mt-1" role="alert">
+                  {errors.endDate}
+                </p>
+              )}
               <p className="text-xs text-text-secondary mt-1">
                 Leave blank for an ongoing routine
               </p>

@@ -61,22 +61,26 @@ function setupStage3WithStage2Fallback() {
   // routine bearing 200° → diff ≈ 20° → within 60° → MATCH
   const mockSelectRoutines = vi.fn().mockReturnValue({
     eq: vi.fn().mockReturnValue({
-      eq: vi.fn().mockResolvedValue({
-        data: [
-          {
-            user_id: 'driver-routine-1',
-            destination_bearing: 200,
-            departure_time: '08:15:00',
-            arrival_time: null,
-          },
-          {
-            user_id: 'driver-routine-2',
-            destination_bearing: 200,
-            departure_time: '10:00:00', // 90 min diff → outside 30 min → NO MATCH
-            arrival_time: null,
-          },
-        ],
-        error: null,
+      eq: vi.fn().mockReturnValue({
+        // Server now appends `.or('end_date.is.null,end_date.gte.<today>')`
+        // to filter out expired routines (audit B3, migration 068).
+        or: vi.fn().mockResolvedValue({
+          data: [
+            {
+              user_id: 'driver-routine-1',
+              destination_bearing: 200,
+              departure_time: '08:15:00',
+              arrival_time: null,
+            },
+            {
+              user_id: 'driver-routine-2',
+              destination_bearing: 200,
+              departure_time: '10:00:00', // 90 min diff → outside 30 min → NO MATCH
+              arrival_time: null,
+            },
+          ],
+          error: null,
+        }),
       }),
     }),
   })
@@ -113,16 +117,18 @@ function setupStage3Only() {
 
   const mockSelectRoutines = vi.fn().mockReturnValue({
     eq: vi.fn().mockReturnValue({
-      eq: vi.fn().mockResolvedValue({
-        data: [
-          {
-            user_id: 'driver-routine-1',
-            destination_bearing: 200,
-            departure_time: '08:20:00',
-            arrival_time: null,
-          },
-        ],
-        error: null,
+      eq: vi.fn().mockReturnValue({
+        or: vi.fn().mockResolvedValue({
+          data: [
+            {
+              user_id: 'driver-routine-1',
+              destination_bearing: 200,
+              departure_time: '08:20:00',
+              arrival_time: null,
+            },
+          ],
+          error: null,
+        }),
       }),
     }),
   })
@@ -153,16 +159,18 @@ function setupStage2FallbackOnly() {
   // No routines match (empty or bearing too far off)
   const mockSelectRoutines = vi.fn().mockReturnValue({
     eq: vi.fn().mockReturnValue({
-      eq: vi.fn().mockResolvedValue({
-        data: [
-          {
-            user_id: 'driver-routine-x',
-            destination_bearing: 10, // ~210° diff → outside 60° threshold
-            departure_time: '08:30:00',
-            arrival_time: null,
-          },
-        ],
-        error: null,
+      eq: vi.fn().mockReturnValue({
+        or: vi.fn().mockResolvedValue({
+          data: [
+            {
+              user_id: 'driver-routine-x',
+              destination_bearing: 10, // ~210° diff → outside 60° threshold
+              departure_time: '08:30:00',
+              arrival_time: null,
+            },
+          ],
+          error: null,
+        }),
       }),
     }),
   })
@@ -198,7 +206,9 @@ function setupNoMatches() {
 
   const mockSelectRoutines = vi.fn().mockReturnValue({
     eq: vi.fn().mockReturnValue({
-      eq: vi.fn().mockResolvedValue({ data: [], error: null }),
+      eq: vi.fn().mockReturnValue({
+        or: vi.fn().mockResolvedValue({ data: [], error: null }),
+      }),
     }),
   })
 

@@ -435,11 +435,18 @@ scheduleRouter.post(
     // posterUserId guard).
     const targetIsDriver = body.mode === 'rider' // rider posts → match drivers
 
+    // `end_date` filter (audit B3, 2026-05-13): drop routines whose
+    // user-set end date is already in the past. `is.null OR gte today`
+    // covers open-ended routines + still-current ones; expired routines
+    // are quietly skipped so a "summer carpool" doesn't keep generating
+    // FCM noise in the fall.
+    const todayDateString = new Date().toISOString().split('T')[0] ?? ''
     const { data: routines, error: routineErr } = await supabaseAdmin
       .from('driver_routines')
-      .select('user_id, destination_bearing, departure_time, arrival_time, users!inner(is_driver)')
+      .select('user_id, destination_bearing, departure_time, arrival_time, end_date, users!inner(is_driver)')
       .eq('is_active', true)
       .eq('users.is_driver', targetIsDriver)
+      .or(`end_date.is.null,end_date.gte.${todayDateString}`)
 
     if (routineErr) {
       next(routineErr)
@@ -1119,13 +1126,24 @@ scheduleRouter.delete(
     const userId = res.locals['userId'] as string
     const scheduleId = req.params['id'] as string
 
-    // Fetch the schedule. Pull origin_place_id + trip_date so we can
-    // detect routine-projected rows ('routine:{id}' prefix) and
-    // tombstone the date on the parent routine — without that, the
-    // next sync resurrects the row the user just deleted.
+    // Fetch the schedule. Pull origin_place_id + trip_date + trip_time +
+    // route_name so we can detect routine-projected rows and tombstone
+    // the date on the parent routine — without that, the next sync
+    // resurrects the row the user just deleted.
+    //
+    // Two routine-projection origins exist:
+    //   (a) server projection (cron + per-user) uses
+    //       origin_place_id = `routine:{id}` — direct match below.
+    //   (b) iOS / web submission-time projection (before audit 068
+    //       landed) wrote the REAL Google place_id. For those rows the
+    //       prefix doesn't match, so we fall back to looking up a
+    //       matching routine by (user_id, route_name, day_of_week,
+    //       time) and tombstone via routine.id. Without this fallback,
+    //       deleting a legacy client-projected row let it resurrect
+    //       on the next cron pass.
     const { data: schedule, error: fetchErr } = await supabaseAdmin
       .from('ride_schedules')
-      .select('id, user_id, origin_place_id, trip_date')
+      .select('id, user_id, origin_place_id, trip_date, trip_time, route_name')
       .eq('id', scheduleId)
       .single()
 
@@ -1143,21 +1161,50 @@ scheduleRouter.delete(
       return
     }
 
-    // Routine-projected rows carry origin_place_id = `routine:{id}`.
-    // Append trip_date to that routine's skip_dates so the next
-    // sync-routines run won't re-create this exact date. Migration
-    // 057 added the column. Best-effort — DB error here only affects
-    // the resurrection-prevention; the underlying delete still goes
+    // Resolve the parent routine (if any) so we can append the
+    // deleted date to skip_dates and prevent the next sync from
+    // resurrecting the row. Best-effort — DB errors here only affect
+    // resurrection-prevention; the underlying delete still goes
     // through.
     const originPlaceID = schedule.origin_place_id as string | null
+    const tripDate = schedule.trip_date as string | null
+    const tripTime = schedule.trip_time as string | null
+    const routeName = schedule.route_name as string | null
+
+    let parentRoutineID: string | null = null
     const routineMatch = originPlaceID?.match(/^routine:([0-9a-f-]+)/i)
-    if (routineMatch && schedule.trip_date) {
-      const routineID = routineMatch[1]
-      const tripDate = schedule.trip_date as string
+    if (routineMatch) {
+      parentRoutineID = routineMatch[1] ?? null
+    } else if (tripDate && tripTime && routeName) {
+      // Fallback path (audit B1, 2026-05-13): legacy client-projected
+      // rows used the real Google place_id. Match the parent routine
+      // by (user_id, route_name, day_of_week contains trip_date's DOW,
+      // time matches departure_time OR arrival_time). At most one
+      // routine should match — if multiple do, tombstone the first
+      // one (better than nothing; users would only have duplicates
+      // here by manually creating two identical routines).
+      const tripDoW = new Date(`${tripDate}T00:00:00Z`).getUTCDay()
+      const { data: candidates } = await supabaseAdmin
+        .from('driver_routines')
+        .select('id, day_of_week, departure_time, arrival_time')
+        .eq('user_id', userId)
+        .eq('route_name', routeName)
+        .eq('is_active', true)
+      const match = (candidates ?? []).find((r) => {
+        const dows = (r['day_of_week'] as number[] | null) ?? []
+        if (!dows.includes(tripDoW)) return false
+        const dep = r['departure_time'] as string | null
+        const arr = r['arrival_time'] as string | null
+        return dep === tripTime || arr === tripTime
+      })
+      parentRoutineID = (match?.['id'] as string | undefined) ?? null
+    }
+
+    if (parentRoutineID && tripDate) {
       const { data: routineRow } = await supabaseAdmin
         .from('driver_routines')
         .select('skip_dates')
-        .eq('id', routineID)
+        .eq('id', parentRoutineID)
         .single()
       const existing = ((routineRow?.skip_dates as string[] | null) ?? [])
       if (!existing.includes(tripDate)) {
@@ -1165,7 +1212,7 @@ scheduleRouter.delete(
         const { error: skipErr } = await supabaseAdmin
           .from('driver_routines')
           .update({ skip_dates: updated })
-          .eq('id', routineID)
+          .eq('id', parentRoutineID)
         if (skipErr) {
           console.error('Failed to append routine skip_date:', skipErr.message)
         }
@@ -1859,11 +1906,18 @@ scheduleRouter.post(
     // tombstone array (migration 057) — dates the user has opted out
     // of are excluded from projection so a deleted "Wednesday" doesn't
     // resurrect on the next sync.
+    //
+    // `end_date` filter (audit B3, 2026-05-13): drop routines whose
+    // user-set last date has already passed. NULL end_date = open-ended.
+    const todayForFilter = (
+      body.client_date && /^\d{4}-\d{2}-\d{2}$/.test(body.client_date)
+    ) ? body.client_date : (new Date().toISOString().split('T')[0] ?? '')
     const { data: routines, error: routineErr } = await supabaseAdmin
       .from('driver_routines')
-      .select('id, user_id, route_name, origin, destination, destination_bearing, direction_type, day_of_week, departure_time, arrival_time, origin_address, dest_address, skip_dates')
+      .select('id, user_id, route_name, origin, destination, destination_bearing, direction_type, day_of_week, departure_time, arrival_time, origin_address, dest_address, skip_dates, end_date')
       .eq('user_id', userId)
       .eq('is_active', true)
+      .or(`end_date.is.null,end_date.gte.${todayForFilter}`)
 
     if (routineErr) {
       next(routineErr)

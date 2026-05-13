@@ -466,10 +466,17 @@ export async function syncAllRoutines(): Promise<{ users: number; inserted: numb
   // Pull every active routine in one round-trip. Filter out users
   // with zero routines. Each row carries skip_dates so we tombstone
   // correctly per (routine, date) without a join.
+  //
+  // `end_date` filter (audit B3, 2026-05-13): drop routines whose
+  // user-set last date has already passed. NULL end_date = open-ended.
+  // Without this, a "summer carpool" routine with end_date='2025-09-01'
+  // still cron-projects every 5 minutes long after summer ended.
+  const todayDateStringForFilter = getLocalDateString(new Date())
   const { data: routines, error } = await supabaseAdmin
     .from('driver_routines')
-    .select('id, user_id, route_name, direction_type, day_of_week, departure_time, arrival_time, origin_address, dest_address, skip_dates')
+    .select('id, user_id, route_name, direction_type, day_of_week, departure_time, arrival_time, origin_address, dest_address, skip_dates, end_date')
     .eq('is_active', true)
+    .or(`end_date.is.null,end_date.gte.${todayDateStringForFilter}`)
 
   if (error) {
     console.error('[sync-cron] Failed to load active routines:', error.message)

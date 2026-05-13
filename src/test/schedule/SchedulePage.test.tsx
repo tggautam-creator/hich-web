@@ -53,10 +53,23 @@ vi.mock('@/lib/places', () => ({
 
 // ── Mock Supabase ─────────────────────────────────────────────────────────────
 
-/** Creates a mock return value that works for both `.insert()` (awaitable) and `.insert().select()` chains */
+/** Creates a mock return value that works for `.insert()` (awaitable),
+ *  `.insert().select()` (awaitable), AND `.insert().select(...).single()`
+ *  (awaitable). The last form is what the routine-projection path uses
+ *  after audit B1 — it needs the inserted row's id back so it can tag
+ *  ride_schedules rows with `origin_place_id = "routine:{id}"`. The
+ *  `.single()` resolution unwraps `data: [...]` to `data: {...}` to
+ *  match supabase-js behavior.
+ */
 function mockInsertReturn(result: { data?: unknown; error: unknown }) {
   const p = Promise.resolve(result)
-  return Object.assign(p, { select: () => Promise.resolve(result) })
+  const single = () => {
+    const arr = result.data
+    const first = Array.isArray(arr) ? arr[0] ?? null : arr ?? null
+    return Promise.resolve({ data: first, error: result.error })
+  }
+  const selectFn = () => Object.assign(Promise.resolve(result), { single })
+  return Object.assign(p, { select: selectFn })
 }
 
 const mockInsert = vi.fn().mockReturnValue(mockInsertReturn({ data: [{ id: 'test-id' }], error: null }))
