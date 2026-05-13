@@ -74,34 +74,31 @@ export default function Landing({ 'data-testid': testId }: LandingProps) {
           </SecondaryButton>
 
           {/*
-            Cross-platform iOS app callout — only renders once the
-            App Store Connect listing has issued an Apple Numeric App
-            ID. Until then we hide the link entirely so visitors don't
-            see a broken "App Store / not found" page. Set the ID via
-            VITE_APP_STORE_ID in your Vercel env vars (Production
-            environment only) once you have it — and the same ID drives
-            the iPhone-auto-redirect + Smart App Banner in index.html.
+            "Get the iOS app" callout — always rendered now that TAGO
+            RIDES is live on the US App Store (2026-05-13). The full
+            canonical URL includes the `/us/` locale + slug for SEO
+            and so social-platform unfurls show the app's icon and
+            title; the locale auto-resolves to the user's actual
+            storefront once they tap.
           */}
-          {import.meta.env['VITE_APP_STORE_ID'] && (
-            <a
-              data-testid="cta-app-store"
-              href={`https://apps.apple.com/app/id${import.meta.env['VITE_APP_STORE_ID']}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-2 flex items-center justify-center gap-2 text-sm font-semibold text-text-secondary hover:text-text-primary transition-colors"
+          <a
+            data-testid="cta-app-store"
+            href="https://apps.apple.com/us/app/tago-rides/id6763382426"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-2 flex items-center justify-center gap-2 text-sm font-semibold text-text-secondary hover:text-text-primary transition-colors"
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              aria-hidden="true"
             >
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <path d="M17.5 12.5c0-2.4 2-3.5 2.1-3.6-1.1-1.7-2.9-1.9-3.5-1.9-1.5-.2-2.9.9-3.7.9-.7 0-1.9-.9-3.2-.8-1.6 0-3.2 1-4 2.4-1.7 3-.4 7.4 1.2 9.8.8 1.2 1.8 2.5 3.1 2.4 1.3 0 1.7-.8 3.2-.8 1.5 0 1.9.8 3.2.8 1.3 0 2.2-1.2 3-2.4.9-1.4 1.3-2.7 1.4-2.8-.1 0-2.7-1-2.8-4M14.7 5.5c.7-.8 1.2-2 1-3.2-1.1.1-2.3.7-3 1.6-.7.7-1.3 2-1.1 3.1 1.2.1 2.4-.7 3.1-1.5"/>
-              </svg>
-              Get the iOS app
-            </a>
-          )}
+              <path d="M17.5 12.5c0-2.4 2-3.5 2.1-3.6-1.1-1.7-2.9-1.9-3.5-1.9-1.5-.2-2.9.9-3.7.9-.7 0-1.9-.9-3.2-.8-1.6 0-3.2 1-4 2.4-1.7 3-.4 7.4 1.2 9.8.8 1.2 1.8 2.5 3.1 2.4 1.3 0 1.7-.8 3.2-.8 1.5 0 1.9.8 3.2.8 1.3 0 2.2-1.2 3-2.4.9-1.4 1.3-2.7 1.4-2.8-.1 0-2.7-1-2.8-4M14.7 5.5c.7-.8 1.2-2 1-3.2-1.1.1-2.3.7-3 1.6-.7.7-1.3 2-1.1 3.1 1.2.1 2.4-.7 3.1-1.5"/>
+            </svg>
+            Get the iOS app
+          </a>
         </div>
       </main>
 

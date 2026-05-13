@@ -52,43 +52,45 @@
     -->
     <script>
       (function () {
-        // App Store Connect numeric App ID — appstoreconnect.apple.com URL
-        // pattern is `/apps/{this-id}/distribution`. The listing is
-        // created (id 6763382426) but no build has been uploaded yet,
-        // so the App Store URL 404s. Leaving this `null` short-circuits
-        // both the iPhone auto-redirect AND the Smart App Banner so
-        // visitors don't bounce to a broken App Store page. Flip back
-        // to `'6763382426'` the moment a build ships to TestFlight /
-        // App Store.
-        var APP_STORE_NUMERIC_ID = null
-
-        if (!APP_STORE_NUMERIC_ID) return
+        // App Store Connect numeric App ID for TAGO RIDES. Live on the
+        // US App Store since 2026-05-13.
+        // Full canonical URL: https://apps.apple.com/us/app/tago-rides/id6763382426
+        var APP_STORE_NUMERIC_ID = '6763382426'
 
         // Inject the Smart App Banner meta tag (passive native banner
-        // at top of Safari on iPhone/iPad — dismissable, no friction).
+        // at the top of Safari on iPhone — dismissable, no friction).
+        // Renders even when the auto-redirect below is skipped.
         var meta = document.createElement('meta')
         meta.name = 'apple-itunes-app'
         meta.content = 'app-id=' + APP_STORE_NUMERIC_ID
         document.head.appendChild(meta)
 
-        // Aggressive iPhone redirect on first paint. Skipped when:
-        //  - In a known in-app browser (Instagram / FB / Twitter /
-        //    TikTok webviews) — App Store deep-links don't open in
-        //    those, would just error.
-        //  - User opts out via `?web=1` (TestFlight / power-user
-        //    escape hatch).
-        //  - User isn't on iOS — Android + desktop fall through.
+        // iPhone auto-redirect on first paint. Three exit cases:
+        //  - User opts out via `?web=1` (TestFlight reviewers / power
+        //    users who explicitly want the webapp on their phone).
+        //  - Not on iOS (Android + desktop fall through to the webapp).
+        //  - Anything throws (e.g. URL parsing fails on legacy
+        //    browsers) — silently fall through.
+        //
+        // 2026-05-13 — in-app browser blocker REMOVED. The
+        // `https://apps.apple.com/...` URL is a Universal Link that
+        // iOS resolves directly to the App Store app from every
+        // common in-app webview (Instagram, FB, Twitter/X, TikTok,
+        // LINE, WeChat). Worst case the App Store opens; second-worst
+        // case the user sees apps.apple.com's web page with a big
+        // "View" button that opens the App Store on tap. Either is
+        // far better than dropping the user into the webapp with no
+        // visible install CTA.
         try {
           var ua = navigator.userAgent || ''
           var isIOS = /iPhone|iPod/.test(ua) && !window.MSStream
-          var isInAppBrowser = /(FBAN|FBAV|Instagram|Twitter|Snapchat|TikTok|Line|WeChat)/i.test(ua)
           var url = new URL(window.location.href)
           var optedOutOfRedirect = url.searchParams.get('web') === '1'
-          if (isIOS && !isInAppBrowser && !optedOutOfRedirect) {
-            window.location.replace('https://apps.apple.com/app/id' + APP_STORE_NUMERIC_ID)
+          if (isIOS && !optedOutOfRedirect) {
+            window.location.replace('https://apps.apple.com/us/app/tago-rides/id' + APP_STORE_NUMERIC_ID)
           }
         } catch (_) {
-          // Best-effort. If anything throws, fall through to the web app.
+          // Best-effort. Fall through to the web app on any error.
         }
       })()
     </script>
