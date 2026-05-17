@@ -10,6 +10,7 @@ import {
   useAdminSendPush,
   useAdminGrantCredit,
   useAdminOverrideOnboarding,
+  useAdminStripeBalance,
   type AdminUserOverview,
   type AdminAuditRow,
 } from '@/hooks/useAdminUsers'
@@ -138,6 +139,7 @@ export default function UserDetailPage() {
         <ActionsTab
           userId={id}
           currentOnboardingCompleted={data.user.onboarding_completed}
+          targetEmail={data.user.email}
           active={tab === 'actions'}
         />
       )}
@@ -354,10 +356,12 @@ function Card({
 function ActionsTab({
   userId,
   currentOnboardingCompleted,
+  targetEmail,
   active,
 }: {
   userId: string
   currentOnboardingCompleted: boolean
+  targetEmail: string
   active: boolean
 }) {
   return (
@@ -374,7 +378,7 @@ function ActionsTab({
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <SendPushCard userId={userId} />
-        <GrantCreditCard userId={userId} />
+        <GrantCreditCard userId={userId} targetEmail={targetEmail} active={active} />
         <OverrideOnboardingCard
           userId={userId}
           current={currentOnboardingCompleted}
@@ -447,63 +451,307 @@ function SendPushCard({ userId }: { userId: string }) {
 
 // ── Grant credit card ───────────────────────────────────────────────────────
 
-function GrantCreditCard({ userId }: { userId: string }) {
+/** Above this threshold the confirm dialog requires re-typing the dollar amount. */
+const LARGE_GRANT_CENTS = 50_00
+
+function GrantCreditCard({
+  userId,
+  targetEmail,
+  active,
+}: {
+  userId: string
+  targetEmail: string
+  active: boolean
+}) {
   const [dollars, setDollars] = useState('')
   const [reason, setReason] = useState('')
+  const [showConfirm, setShowConfirm] = useState(false)
   const m = useAdminGrantCredit(userId)
+  const stripeBalance = useAdminStripeBalance(active)
   const cents = Math.round(parseFloat(dollars) * 100)
   const validAmount = Number.isFinite(cents) && cents !== 0
-  const ok = validAmount && reason.trim().length > 0
+  const hasReason = reason.trim().length > 0
+  const isCredit = cents > 0
+  const isDebit = cents < 0
+
+  // Client-side mirror of the server's hard-block. Disables the
+  // submit button when the requested credit exceeds Stripe's available
+  // balance. Doesn't apply to debits (negative amounts don't pull
+  // from Stripe). Server still enforces — this is the UI early-warning.
+  const exceedsBalance =
+    isCredit &&
+    stripeBalance.data !== undefined &&
+    cents > stripeBalance.data.available_cents
+  const ok = validAmount && hasReason && !exceedsBalance
+
+  function handleSubmit() {
+    setShowConfirm(true)
+  }
+
+  function handleConfirm() {
+    m.mutate(
+      { amount_cents: cents, reason: reason.trim() },
+      {
+        onSuccess: () => {
+          setDollars('')
+          setReason('')
+          setShowConfirm(false)
+        },
+      },
+    )
+  }
 
   return (
-    <ActionCard
-      testid="action-credit"
-      title="Grant wallet credit"
-      info="Adjusts the user's wallet balance via wallet_apply_delta (the same atomic primitive every other wallet write uses). Positive credits the user; negative debits. Cap is $10,000 per action. Reason is required and shown to ops in the audit log."
-    >
-      <Field
-        label="Amount in dollars (negative to debit)"
-        value={dollars}
-        onChange={setDollars}
-        placeholder="5.00"
-        inputMode="decimal"
-      />
-      {dollars && !validAmount && (
-        <p className="text-xs text-danger">Enter a nonzero dollar amount.</p>
+    <>
+      <ActionCard
+        testid="action-credit"
+        title="Grant wallet credit"
+        info="Adjusts the user's wallet balance via wallet_apply_delta (the same atomic primitive every other wallet write uses). Positive credits the user; negative debits. Cap is $10,000 per action. Reason is required and shown to ops in the audit log. Positive credits are HARD-BLOCKED if they exceed Tago's Stripe platform balance — otherwise a phantom liability could fail at withdrawal time."
+      >
+        <Field
+          label="Amount in dollars (negative to debit)"
+          value={dollars}
+          onChange={setDollars}
+          placeholder="5.00"
+          inputMode="decimal"
+        />
+        {dollars && !validAmount && (
+          <p className="text-xs text-danger">Enter a nonzero dollar amount.</p>
+        )}
+
+        <StripeBalanceLine
+          balance={stripeBalance.data}
+          loading={stripeBalance.isLoading}
+          error={stripeBalance.error}
+          attemptedCents={isCredit ? cents : 0}
+          exceedsBalance={exceedsBalance}
+        />
+
+        <Field
+          label="Reason"
+          value={reason}
+          onChange={setReason}
+          placeholder="e.g. goodwill gesture for cancelled ride"
+          maxLength={200}
+        />
+        <ActionButton
+          testid="action-credit-submit"
+          label={isCredit ? 'Credit wallet…' : isDebit ? 'Debit wallet…' : 'Apply'}
+          loading={m.isPending}
+          disabled={!ok}
+          onClick={handleSubmit}
+        />
+        <ActionResult
+          mutation={m}
+          successText={(d) =>
+            d.balance_after_cents !== null
+              ? `Applied ${fmtCents(d.amount_cents)} → balance now ${fmtCents(d.balance_after_cents)}`
+              : `Applied ${fmtCents(d.amount_cents)}`
+          }
+        />
+      </ActionCard>
+
+      {showConfirm && (
+        <ConfirmCreditDialog
+          targetEmail={targetEmail}
+          amountCents={cents}
+          reason={reason.trim()}
+          requireRetype={Math.abs(cents) >= LARGE_GRANT_CENTS}
+          submitting={m.isPending}
+          onCancel={() => setShowConfirm(false)}
+          onConfirm={handleConfirm}
+        />
       )}
-      <Field
-        label="Reason"
-        value={reason}
-        onChange={setReason}
-        placeholder="e.g. goodwill gesture for cancelled ride"
-        maxLength={200}
-      />
-      <ActionButton
-        testid="action-credit-submit"
-        label={cents > 0 ? 'Credit wallet' : cents < 0 ? 'Debit wallet' : 'Apply'}
-        loading={m.isPending}
-        disabled={!ok}
-        onClick={() => {
-          m.mutate(
-            { amount_cents: cents, reason: reason.trim() },
-            {
-              onSuccess: () => {
-                setDollars('')
-                setReason('')
-              },
-            },
-          )
-        }}
-      />
-      <ActionResult
-        mutation={m}
-        successText={(d) =>
-          d.balance_after_cents !== null
-            ? `Applied ${fmtCents(d.amount_cents)} → balance now ${fmtCents(d.balance_after_cents)}`
-            : `Applied ${fmtCents(d.amount_cents)}`
-        }
-      />
-    </ActionCard>
+    </>
+  )
+}
+
+// ── Stripe balance status line ──────────────────────────────────────────────
+
+function StripeBalanceLine({
+  balance,
+  loading,
+  error,
+  attemptedCents,
+  exceedsBalance,
+}: {
+  balance: { available_cents: number; pending_cents: number } | undefined
+  loading: boolean
+  error: unknown
+  attemptedCents: number
+  exceedsBalance: boolean
+}) {
+  if (loading && !balance) {
+    return (
+      <p data-testid="stripe-balance-loading" className="text-[11px] text-text-secondary">
+        Checking Stripe platform balance…
+      </p>
+    )
+  }
+  if (error) {
+    return (
+      <p data-testid="stripe-balance-error" className="text-[11px] text-danger">
+        Couldn't load Stripe balance — credit will be hard-blocked server-side.
+      </p>
+    )
+  }
+  if (!balance) return null
+  return (
+    <div data-testid="stripe-balance" className="text-[11px]">
+      <span className="text-text-secondary">Available Stripe balance: </span>
+      <span className="font-semibold text-text-primary">
+        {fmtCents(balance.available_cents)}
+      </span>
+      {balance.pending_cents > 0 && (
+        <span className="text-text-secondary">
+          {' '}
+          (+ {fmtCents(balance.pending_cents)} pending)
+        </span>
+      )}
+      {exceedsBalance && (
+        <div className="mt-1 rounded-md border border-danger bg-danger/5 px-2 py-1 text-danger">
+          ⚠ This grant ({fmtCents(attemptedCents)}) exceeds the available Stripe
+          balance. The server will refuse it — top up Stripe first, or grant a
+          smaller amount.
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Confirm dialog ──────────────────────────────────────────────────────────
+
+function ConfirmCreditDialog({
+  targetEmail,
+  amountCents,
+  reason,
+  requireRetype,
+  submitting,
+  onCancel,
+  onConfirm,
+}: {
+  targetEmail: string
+  amountCents: number
+  reason: string
+  requireRetype: boolean
+  submitting: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const [retype, setRetype] = useState('')
+  const expectedDollarString = (Math.abs(amountCents) / 100).toFixed(2)
+  // Allow ±-prefixed and missing-zero variants ("5", "5.0", "5.00").
+  // Compare against the canonical 2-decimal form for safety.
+  const retypeMatch = parseFloat(retype.replace(/[^\d.]/g, '')).toFixed(2) === expectedDollarString
+  const okToConfirm = !requireRetype || retypeMatch
+  const isCredit = amountCents > 0
+
+  return (
+    <div
+      data-testid="confirm-credit-dialog"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+    >
+      <div
+        role="dialog"
+        aria-label="Confirm wallet adjustment"
+        className="w-full max-w-md rounded-2xl border border-border bg-white p-6 shadow-xl"
+      >
+        <div className="text-sm font-semibold uppercase tracking-wide text-text-secondary">
+          {isCredit ? 'Confirm credit' : 'Confirm debit'}
+        </div>
+
+        <div className="mt-3 text-center">
+          <div
+            className={[
+              'text-4xl font-bold',
+              isCredit ? 'text-success' : 'text-danger',
+            ].join(' ')}
+          >
+            {isCredit ? '+' : '−'}
+            {fmtCents(Math.abs(amountCents))}
+          </div>
+          <div className="mt-1 text-xs text-text-secondary">to</div>
+          <div className="text-sm font-medium text-text-primary truncate">
+            {targetEmail}
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-md border border-border bg-surface p-3 text-xs text-text-primary">
+          <div className="font-semibold uppercase tracking-wide text-[10px] text-text-secondary">
+            Reason
+          </div>
+          <div className="mt-1">{reason}</div>
+        </div>
+
+        <p className="mt-4 text-xs text-text-secondary">
+          This is irreversible from here — to reverse it, post a{' '}
+          {isCredit ? 'negative' : 'positive'} credit with a reason explaining
+          the reversal.
+        </p>
+
+        {requireRetype && (
+          <div className="mt-4">
+            <label className="block">
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+                Re-type the dollar amount to confirm
+              </div>
+              <input
+                data-testid="confirm-credit-retype"
+                type="text"
+                inputMode="decimal"
+                autoFocus
+                value={retype}
+                onChange={(e) => setRetype(e.target.value)}
+                placeholder={expectedDollarString}
+                className={[
+                  'w-full rounded-md border bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2',
+                  retypeMatch
+                    ? 'border-success focus:ring-success/20'
+                    : 'border-border focus:ring-primary/20',
+                ].join(' ')}
+              />
+            </label>
+            {retype && !retypeMatch && (
+              <p className="mt-1 text-[11px] text-danger">
+                Doesn't match — expected {expectedDollarString}
+              </p>
+            )}
+          </div>
+        )}
+
+        <div className="mt-6 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            data-testid="confirm-credit-cancel"
+            onClick={onCancel}
+            disabled={submitting}
+            className="rounded-md border border-border bg-white px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            data-testid="confirm-credit-confirm"
+            onClick={onConfirm}
+            disabled={!okToConfirm || submitting}
+            className={[
+              'rounded-md px-4 py-2 text-sm font-semibold text-white transition-colors',
+              !okToConfirm || submitting
+                ? 'bg-border cursor-not-allowed text-text-secondary'
+                : isCredit
+                  ? 'bg-success hover:opacity-90'
+                  : 'bg-danger hover:opacity-90',
+            ].join(' ')}
+          >
+            {submitting
+              ? 'Applying…'
+              : isCredit
+                ? 'Confirm credit'
+                : 'Confirm debit'}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 

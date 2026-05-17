@@ -13,8 +13,9 @@
  */
 import { vi, describe, it, expect, beforeEach } from 'vitest'
 import request from 'supertest'
+import express from 'express'
 
-const { mockAuth, mockFrom, mockRpc, mockSendFcm } = vi.hoisted(() => ({
+const { mockAuth, mockFrom, mockRpc, mockSendFcm, mockStripeBalance } = vi.hoisted(() => ({
   mockAuth: {
     getUser: vi.fn(),
     admin: { listUsers: vi.fn(), getUserById: vi.fn() },
@@ -22,6 +23,7 @@ const { mockAuth, mockFrom, mockRpc, mockSendFcm } = vi.hoisted(() => ({
   mockFrom: vi.fn(),
   mockRpc: vi.fn(),
   mockSendFcm: vi.fn(),
+  mockStripeBalance: vi.fn(),
 }))
 
 vi.mock('../../../server/lib/supabaseAdmin.ts', () => ({
@@ -29,6 +31,10 @@ vi.mock('../../../server/lib/supabaseAdmin.ts', () => ({
 }))
 vi.mock('../../../server/lib/fcm.ts', () => ({
   sendFcmPush: mockSendFcm,
+}))
+vi.mock('../../../server/routes/admin/stripe.ts', () => ({
+  adminStripeRouter: express.Router(),
+  getAvailableStripeBalanceCents: mockStripeBalance,
 }))
 
 import { app } from '../../../server/app.ts'
@@ -53,6 +59,10 @@ interface SetupOpts {
   auditRows?: Array<Record<string, unknown>>
   auditCount?: number
   adminEmailsById?: Record<string, string>
+  /** Defaults to a generous balance so positive credits sail through unless a test wants to block. */
+  stripeAvailableCents?: number
+  /** Set true to make the Stripe balance call throw (simulates Stripe outage). */
+  stripeBalanceFails?: boolean
 }
 
 function setup(opts: SetupOpts = {}): void {
@@ -65,6 +75,16 @@ function setup(opts: SetupOpts = {}): void {
   })
 
   mockSendFcm.mockResolvedValue(opts.fcmSentCount ?? 1)
+
+  if (opts.stripeBalanceFails) {
+    mockStripeBalance.mockRejectedValue(new Error('stripe is down'))
+  } else {
+    mockStripeBalance.mockResolvedValue({
+      available_cents: opts.stripeAvailableCents ?? 100_000_00, // $100k default
+      pending_cents: 0,
+      currency: 'usd',
+    })
+  }
 
   if (opts.rpcResult !== undefined) {
     mockRpc.mockResolvedValue({ data: opts.rpcResult, error: null })
@@ -291,6 +311,44 @@ describe('POST /api/admin/users/:id/actions/credit', () => {
       'wallet_apply_delta',
       expect.objectContaining({ p_delta_cents: -200, p_type: 'admin_debit' }),
     )
+  })
+
+  it('skips the Stripe balance check on debits (negative amounts)', async () => {
+    setup({
+      stripeAvailableCents: 0, // would block any positive credit
+      rpcResult: { applied: true, balance: -100 },
+    })
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/credit`)
+      .set('Authorization', VALID_JWT)
+      .send({ amount_cents: -50, reason: 'debit test' })
+    expect(res.status).toBe(200)
+    expect(mockStripeBalance).not.toHaveBeenCalled()
+  })
+
+  it('409s INSUFFICIENT_STRIPE_BALANCE when grant exceeds Stripe available', async () => {
+    setup({ stripeAvailableCents: 100 }) // $1 available
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/credit`)
+      .set('Authorization', VALID_JWT)
+      .send({ amount_cents: 500, reason: 'tries to grant more than balance' })
+    expect(res.status).toBe(409)
+    expect(res.body.error.code).toBe('INSUFFICIENT_STRIPE_BALANCE')
+    expect(res.body.available_cents).toBe(100)
+    expect(res.body.requested_cents).toBe(500)
+    expect(mockRpc).not.toHaveBeenCalled()
+    expect(auditInserts.length).toBe(0)
+  })
+
+  it('503s STRIPE_BALANCE_UNAVAILABLE when the Stripe call fails (errs on the safe side)', async () => {
+    setup({ stripeBalanceFails: true })
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/credit`)
+      .set('Authorization', VALID_JWT)
+      .send({ amount_cents: 500, reason: 'stripe outage path' })
+    expect(res.status).toBe(503)
+    expect(res.body.error.code).toBe('STRIPE_BALANCE_UNAVAILABLE')
+    expect(mockRpc).not.toHaveBeenCalled()
   })
 })
 

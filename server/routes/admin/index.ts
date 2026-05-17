@@ -5,6 +5,7 @@ import { adminMetricsRouter } from './metrics.ts'
 import { adminFunnelRouter } from './funnel.ts'
 import { adminUsersRouter } from './users.ts'
 import { adminActionsRouter } from './actions.ts'
+import { adminStripeRouter } from './stripe.ts'
 
 /**
  * `/api/admin/*` — Tago internal admin API.
@@ -70,3 +71,4 @@ adminRouter.use('/users', adminUsersRouter)
 // adminUsersRouter (`POST /api/admin/users/:id/actions/push`,
 // `GET /api/admin/users/:id/audit`, etc.).
 adminRouter.use('/users', adminActionsRouter)
+adminRouter.use('/stripe', adminStripeRouter)

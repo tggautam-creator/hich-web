@@ -29,6 +29,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
 import { writeAuditLog } from '../../lib/adminAudit.ts'
 import { sendFcmPush } from '../../lib/fcm.ts'
+import { getAvailableStripeBalanceCents } from './stripe.ts'
 
 export const adminActionsRouter = Router()
 
@@ -205,6 +206,44 @@ adminActionsRouter.post(
       }
 
       if (!(await assertTargetExists(id, res))) return
+
+      // Hard-block: a positive credit (money owed to the user) must
+      // fit within Tago's current Stripe platform available balance.
+      // If a rider spends granted credit on a ride, the driver's
+      // wallet gets credited; when that driver withdraws, Tago has
+      // to push money from Stripe to their bank — granting more
+      // credits than the platform balance can cover leaves us with
+      // phantom liabilities that fail at withdrawal time. Debits
+      // (negative amounts) don't pull from Stripe, so they bypass
+      // this check.
+      if (amount > 0) {
+        try {
+          const balance = await getAvailableStripeBalanceCents()
+          if (amount > balance.available_cents) {
+            res.status(409).json({
+              error: {
+                code: 'INSUFFICIENT_STRIPE_BALANCE',
+                message: `Grant exceeds Stripe platform balance. Requested: ${amount}¢, available: ${balance.available_cents}¢.`,
+              },
+              available_cents: balance.available_cents,
+              requested_cents: amount,
+            })
+            return
+          }
+        } catch (stripeErr) {
+          // If Stripe is unreachable we err on the side of safety
+          // and refuse the credit — better to surface the outage
+          // than silently over-grant.
+          console.error('[adminAction:credit] Stripe balance check failed:', stripeErr)
+          res.status(503).json({
+            error: {
+              code: 'STRIPE_BALANCE_UNAVAILABLE',
+              message: 'Could not verify Stripe balance — grant blocked. Retry later.',
+            },
+          })
+          return
+        }
+      }
 
       const { data, error } = await supabaseAdmin.rpc('wallet_apply_delta', {
         p_user_id: id,

@@ -314,6 +314,31 @@ export function useAdminGrantCredit(userId: string) {
 interface OverrideOnbArgs { onboarding_completed: boolean; reason: string }
 interface OverrideOnbResult { ok: true; changed: boolean; onboarding_completed: boolean }
 
+export interface AdminStripeBalance {
+  ok: true
+  available_cents: number
+  pending_cents: number
+  currency: string
+}
+
+/**
+ * Tago's Stripe platform available balance. Used by the Grant Credit
+ * form to (a) display the available balance to the admin, and (b)
+ * client-side disable Credit when the requested grant exceeds it
+ * (server enforces the same gate; this is the early-warning UI).
+ *
+ * Stale time 30s — balance changes whenever a top-up or withdrawal
+ * processes, but we don't need real-time freshness on this surface.
+ */
+export function useAdminStripeBalance(enabled: boolean) {
+  return useQuery<AdminStripeBalance>({
+    queryKey: ['admin', 'stripe', 'balance'],
+    queryFn: () => adminGet<AdminStripeBalance>('/stripe/balance'),
+    enabled,
+    staleTime: 30 * 1000,
+  })
+}
+
 export function useAdminOverrideOnboarding(userId: string) {
   const qc = useQueryClient()
   return useMutation<OverrideOnbResult, Error, OverrideOnbArgs>({
