@@ -144,6 +144,16 @@ export async function sendFcmPush(
             : payload.data['type']
               ? { 'thread-id': payload.data['type'] }
               : {}),
+          // Slice 1.4c — Notification Service Extension support.
+          // When the push payload carries a `data.image` URL (admin
+          // broadcast posters), set `mutable-content: 1` so iOS hands
+          // the push off to the TagoNotificationService extension
+          // BEFORE displaying it. The extension downloads the image,
+          // attaches it via UNNotificationAttachment, and re-emits the
+          // notification — which then shows the image in the banner /
+          // notification center. Without this flag iOS skips the NSE
+          // and the image only renders in the in-app inbox.
+          ...(payload.data['image'] ? { 'mutable-content': 1 } : {}),
         },
       },
     },
