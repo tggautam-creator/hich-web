@@ -20,14 +20,30 @@ import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
 
 export const adminLiveRouter = Router()
 
-const ACTIVE_STATUSES = ['accepted', 'coordinating', 'active'] as const
+// Slice 1.7b: include 'requested' rides so ops can see + act on rides
+// stuck without a driver (the most common ops question is "why hasn't
+// this been picked up?"). Previously the snapshot filtered them out.
+const ACTIVE_STATUSES = ['requested', 'accepted', 'coordinating', 'active'] as const
 const EVENT_WINDOW_MIN = 60
 const MAX_ACTIVE_RIDES = 200
 const MAX_EVENTS = 100
 
+// Stuck thresholds — adjust based on ops feedback. Each constant exists
+// once so the UI can format "stuck for 3m 24s" against the same number.
+export const STUCK_AWAITING_DRIVER_MS = 5 * 60 * 1000
+export const STUCK_COORDINATING_MS = 5 * 60 * 1000
+export const STUCK_DRIVER_GPS_STALE_MS = 2 * 60 * 1000
+export const STUCK_RIDE_LONG_MS = 30 * 60 * 1000
+
+export type StuckReason =
+  | 'awaiting_driver'      // requested + no driver_id + created >5m ago
+  | 'coordinating_long'    // coordinating >5m
+  | 'driver_gps_stale'     // active + last_driver_ping older than 2m
+  | 'ride_long'            // active + started_at >30m ago
+
 interface ActiveRide {
   id: string
-  status: 'accepted' | 'coordinating' | 'active'
+  status: 'requested' | 'accepted' | 'coordinating' | 'active'
   rider_id: string
   driver_id: string | null
   origin: { lat: number; lng: number } | null
@@ -44,6 +60,10 @@ interface ActiveRide {
   started_at: string | null
   rider_name: string | null
   driver_name: string | null
+  /** Server-computed reason this ride needs ops attention, null if healthy. */
+  stuck_reason: StuckReason | null
+  /** Milliseconds the ride has been in the stuck state (for "stuck for Xm"). */
+  stuck_for_ms: number | null
 }
 
 interface LiveEvent {
@@ -83,6 +103,57 @@ function gpsCoord(lat: number | null, lng: number | null): { lat: number; lng: n
   if (typeof lat !== 'number' || typeof lng !== 'number') return null
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
   return { lat, lng }
+}
+
+interface StuckEvalInput {
+  driver_id: string | null
+  created_at: string
+  started_at: string | null
+  last_driver_ping_at: string | null
+}
+
+/**
+ * Returns the most-severe stuck reason for the ride, or null if healthy.
+ * Order of checks favours the reason ops cares about most for that
+ * status. A ride can only have one reason at a time — surfaced in the
+ * map + table chip + drawer header.
+ */
+function computeStuck(
+  status: ActiveRide['status'],
+  r: StuckEvalInput,
+  nowMs: number,
+): { reason: StuckReason; forMs: number } | null {
+  if (status === 'requested') {
+    if (r.driver_id) return null // unusual but harmless
+    const age = nowMs - new Date(r.created_at).getTime()
+    if (age > STUCK_AWAITING_DRIVER_MS) {
+      return { reason: 'awaiting_driver', forMs: age }
+    }
+    return null
+  }
+  if (status === 'coordinating') {
+    const age = nowMs - new Date(r.created_at).getTime()
+    if (age > STUCK_COORDINATING_MS) {
+      return { reason: 'coordinating_long', forMs: age }
+    }
+    return null
+  }
+  if (status === 'active') {
+    // Prefer the most actionable signal: GPS gone stale beats just-long.
+    if (r.last_driver_ping_at) {
+      const sinceLastPing = nowMs - new Date(r.last_driver_ping_at).getTime()
+      if (sinceLastPing > STUCK_DRIVER_GPS_STALE_MS) {
+        return { reason: 'driver_gps_stale', forMs: sinceLastPing }
+      }
+    }
+    if (r.started_at) {
+      const sinceStart = nowMs - new Date(r.started_at).getTime()
+      if (sinceStart > STUCK_RIDE_LONG_MS) {
+        return { reason: 'ride_long', forMs: sinceStart }
+      }
+    }
+  }
+  return null
 }
 
 /**
@@ -228,26 +299,33 @@ adminLiveRouter.get('/snapshot', async (_req: Request, res: Response, next: Next
       id ? (nameById.get(id) ?? null) : null
 
     // ── Shape active rides ───────────────────────────────────────────────
-    const activeRides: ActiveRide[] = activeRows.map((r) => ({
-      id: r.id,
-      status: r.status,
-      rider_id: r.rider_id,
-      driver_id: r.driver_id,
-      origin: asLatLng(r.origin),
-      destination: asLatLng(r.destination),
-      pickup_point: asLatLng(r.pickup_point),
-      origin_name: r.origin_name,
-      destination_name: r.destination_name,
-      last_driver_gps: gpsCoord(r.last_driver_gps_lat, r.last_driver_gps_lng),
-      last_rider_gps: gpsCoord(r.last_rider_gps_lat, r.last_rider_gps_lng),
-      last_driver_ping_at: r.last_driver_ping_at,
-      last_rider_ping_at: r.last_rider_ping_at,
-      fare_cents: r.fare_cents,
-      created_at: r.created_at,
-      started_at: r.started_at,
-      rider_name: nameOrNull(r.rider_id),
-      driver_name: nameOrNull(r.driver_id),
-    }))
+    const nowMs = now.getTime()
+    const activeRides: ActiveRide[] = activeRows.map((r) => {
+      const status = r.status as ActiveRide['status']
+      const stuck = computeStuck(status, r, nowMs)
+      return {
+        id: r.id,
+        status,
+        rider_id: r.rider_id,
+        driver_id: r.driver_id,
+        origin: asLatLng(r.origin),
+        destination: asLatLng(r.destination),
+        pickup_point: asLatLng(r.pickup_point),
+        origin_name: r.origin_name,
+        destination_name: r.destination_name,
+        last_driver_gps: gpsCoord(r.last_driver_gps_lat, r.last_driver_gps_lng),
+        last_rider_gps: gpsCoord(r.last_rider_gps_lat, r.last_rider_gps_lng),
+        last_driver_ping_at: r.last_driver_ping_at,
+        last_rider_ping_at: r.last_rider_ping_at,
+        fare_cents: r.fare_cents,
+        created_at: r.created_at,
+        started_at: r.started_at,
+        rider_name: nameOrNull(r.rider_id),
+        driver_name: nameOrNull(r.driver_id),
+        stuck_reason: stuck?.reason ?? null,
+        stuck_for_ms: stuck?.forMs ?? null,
+      }
+    })
 
     // ── Shape events ─────────────────────────────────────────────────────
     const events: LiveEvent[] = []

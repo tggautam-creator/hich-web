@@ -1,25 +1,49 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { APIProvider, Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { env } from '@/lib/env'
-import { useAdminLive, type LiveActiveRide, type LiveEvent, type LatLng } from '@/hooks/useAdminLive'
+import {
+  useAdminLive,
+  useAdminForceCancelRide,
+  type LiveActiveRide,
+  type LiveEvent,
+  type LatLng,
+  type StuckReason,
+  type ActiveRideStatus,
+} from '@/hooks/useAdminLive'
+import { useAdminSendPush } from '@/hooks/useAdminUsers'
 import InfoTooltip from './InfoTooltip'
 
 /**
- * Slice 1.7 — live ops console.
+ * Slice 1.7 / 1.7b — live ops console.
  *
- * Map (left, 2/3 width): plots every in-progress ride. Each ride
- * contributes up to two pins — the driver's most recent GPS (blue dot)
- * and the rider's pickup (orange square). Empty when no rides are
- * active.
+ * Left (2/3): Google Map plotting every in-progress ride.
+ * Right (1/3): event feed of the last 60 minutes.
+ * Bottom: active-rides table (status / rider / driver / route / last
+ * ping / fare / stuck-flag).
  *
- * Event feed (right, 1/3 width): rolling list of ride lifecycle events
- * from the last 60 minutes, newest first.
- *
- * Polls /api/admin/live/snapshot every 10s while the tab is focused.
+ * 1.7b adds micro-management:
+ *   - Filter pills: All / Stuck only / per-status
+ *   - Click a row or marker → right drawer with ride detail + actions:
+ *     force-cancel, push rider, push driver, deep-link to user profiles
+ *   - Stuck-ride flags (server-computed) tinted red on the map + table
+ *   - Includes `requested` status rides so ops can see + act on rides
+ *     stuck without a driver
  */
 
 const DEFAULT_CENTER: LatLng = { lat: 38.5449, lng: -121.7405 } // Davis, CA
 const DEFAULT_ZOOM = 12
+
+type FilterMode = 'all' | 'stuck' | ActiveRideStatus
+
+const FILTER_TABS: ReadonlyArray<{ id: FilterMode; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'stuck', label: 'Stuck only' },
+  { id: 'requested', label: 'Awaiting driver' },
+  { id: 'accepted', label: 'Accepted' },
+  { id: 'coordinating', label: 'Coordinating' },
+  { id: 'active', label: 'Active' },
+]
 
 export default function LiveOpsPage() {
   const live = useAdminLive()
@@ -27,18 +51,37 @@ export default function LiveOpsPage() {
   const mapId = env.GOOGLE_MAP_ID ?? undefined
 
   const snapshot = live.data
-  const activeRides = useMemo(() => snapshot?.active_rides ?? [], [snapshot])
+  const allActive = useMemo(() => snapshot?.active_rides ?? [], [snapshot])
   const events = useMemo(() => snapshot?.events ?? [], [snapshot])
 
+  const [filter, setFilter] = useState<FilterMode>('all')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  const filteredActive = useMemo(() => {
+    if (filter === 'all') return allActive
+    if (filter === 'stuck') return allActive.filter((r) => r.stuck_reason !== null)
+    return allActive.filter((r) => r.status === filter)
+  }, [allActive, filter])
+
+  const selectedRide = useMemo(
+    () => (selectedId ? allActive.find((r) => r.id === selectedId) ?? null : null),
+    [allActive, selectedId],
+  )
+
+  const stuckCount = useMemo(
+    () => allActive.filter((r) => r.stuck_reason !== null).length,
+    [allActive],
+  )
+
   const center = useMemo<LatLng>(() => {
-    const first = activeRides.find((r) => r.last_driver_gps ?? r.pickup_point ?? r.origin)
+    const first = filteredActive.find((r) => r.last_driver_gps ?? r.pickup_point ?? r.origin)
     return (
       first?.last_driver_gps ??
       first?.pickup_point ??
       first?.origin ??
       DEFAULT_CENTER
     )
-  }, [activeRides])
+  }, [filteredActive])
 
   return (
     <div data-testid="admin-live-page" className="space-y-4">
@@ -47,20 +90,66 @@ export default function LiveOpsPage() {
           <h1 className="text-2xl font-bold text-text-primary">Live ops</h1>
           <InfoTooltip
             testid="live-page-info"
-            text="Every ride that's currently in progress (accepted / coordinating / active) plus the last 60 minutes of lifecycle events. Refreshes every 10s while this tab is open."
+            text="Every ride that's currently in progress (requested / accepted / coordinating / active) plus the last 60 minutes of lifecycle events. Stuck rides are flagged in red — click any ride to act on it. Refreshes every 10s while this tab is open."
             align="left"
           />
         </div>
         <p className="mt-1 text-sm text-text-secondary">
-          {snapshot
-            ? `${activeRides.length} active ride${activeRides.length === 1 ? '' : 's'} · ${events.length} event${events.length === 1 ? '' : 's'} in the last hour`
-            : 'Loading…'}
+          {snapshot ? (
+            <>
+              {allActive.length} active ride{allActive.length === 1 ? '' : 's'}
+              {stuckCount > 0 && (
+                <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-danger/10 px-2 py-0.5 text-xs font-semibold text-danger">
+                  {stuckCount} stuck
+                </span>
+              )}
+              <span className="mx-2 text-text-tertiary">·</span>
+              {events.length} event{events.length === 1 ? '' : 's'} in the last hour
+            </>
+          ) : 'Loading…'}
           {snapshot?.generated_at && (
             <span className="ml-2 text-xs text-text-tertiary">
               · last fetched {timeAgo(snapshot.generated_at)} ago
             </span>
           )}
         </p>
+      </div>
+
+      {/* Filter pills */}
+      <div
+        data-testid="live-filter-pills"
+        className="inline-flex flex-wrap gap-1 rounded-lg border border-border bg-white p-0.5"
+      >
+        {FILTER_TABS.map((tab) => {
+          const active = filter === tab.id
+          const count =
+            tab.id === 'all'
+              ? allActive.length
+              : tab.id === 'stuck'
+                ? stuckCount
+                : allActive.filter((r) => r.status === tab.id).length
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              data-testid={`live-filter-${tab.id}`}
+              onClick={() => setFilter(tab.id)}
+              className={[
+                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                active
+                  ? tab.id === 'stuck'
+                    ? 'bg-danger/10 text-danger'
+                    : 'bg-primary-light text-primary'
+                  : 'text-text-secondary hover:bg-surface',
+              ].join(' ')}
+            >
+              {tab.label}
+              <span className="ml-1.5 rounded-full bg-surface px-1.5 py-0.5 text-xs">
+                {count}
+              </span>
+            </button>
+          )
+        })}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -80,8 +169,13 @@ export default function LiveOpsPage() {
                 disableDefaultUI={false}
                 className="h-full w-full"
               >
-                {activeRides.map((ride) => (
-                  <RideMarkers key={ride.id} ride={ride} />
+                {filteredActive.map((ride) => (
+                  <RideMarkers
+                    key={ride.id}
+                    ride={ride}
+                    selected={selectedId === ride.id}
+                    onClick={() => setSelectedId(ride.id)}
+                  />
                 ))}
               </Map>
             </APIProvider>
@@ -100,6 +194,10 @@ export default function LiveOpsPage() {
             <div className="flex items-center gap-2 mt-1">
               <span className="h-2.5 w-2.5 rounded-sm bg-warning" />
               <span>Rider pickup</span>
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="h-2.5 w-2.5 rounded-full bg-danger" />
+              <span>Stuck ride</span>
             </div>
           </div>
         </section>
@@ -123,7 +221,13 @@ export default function LiveOpsPage() {
                 Nothing in the last hour.
               </div>
             ) : (
-              events.map((ev, i) => <EventRow key={`${ev.ride_id}-${ev.kind}-${i}`} event={ev} />)
+              events.map((ev, i) => (
+                <EventRow
+                  key={`${ev.ride_id}-${ev.kind}-${i}`}
+                  event={ev}
+                  onClick={() => setSelectedId(ev.ride_id)}
+                />
+              ))
             )}
           </div>
           {snapshot?.events_truncated && (
@@ -134,15 +238,18 @@ export default function LiveOpsPage() {
         </section>
       </div>
 
-      {/* Active rides table — keeps the map's context queryable without
-          having to mouse over every marker. */}
+      {/* Active rides table */}
       <section
         data-testid="live-active-table"
         className="rounded-2xl border border-border bg-white overflow-hidden"
       >
         <header className="px-4 py-3 border-b border-border flex items-center justify-between">
           <h2 className="text-sm font-semibold text-text-primary">
-            Active rides ({activeRides.length})
+            Active rides ({filteredActive.length}
+            {filter !== 'all' && allActive.length !== filteredActive.length && (
+              <span className="text-text-tertiary"> / {allActive.length}</span>
+            )}
+            )
           </h2>
           {snapshot?.active_truncated && (
             <span className="text-xs text-warning">
@@ -150,9 +257,9 @@ export default function LiveOpsPage() {
             </span>
           )}
         </header>
-        {activeRides.length === 0 ? (
+        {filteredActive.length === 0 ? (
           <div className="p-4 text-sm text-text-secondary">
-            No active rides right now.
+            No rides match the current filter.
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -165,13 +272,27 @@ export default function LiveOpsPage() {
                   <th className="px-4 py-2 font-medium">Route</th>
                   <th className="px-4 py-2 font-medium">Last driver ping</th>
                   <th className="px-4 py-2 font-medium">Fare</th>
+                  <th className="px-4 py-2 font-medium">Action</th>
                 </tr>
               </thead>
               <tbody>
-                {activeRides.map((ride) => (
-                  <tr key={ride.id} className="border-t border-border">
+                {filteredActive.map((ride) => (
+                  <tr
+                    key={ride.id}
+                    className={[
+                      'border-t border-border cursor-pointer hover:bg-surface/60 transition-colors',
+                      selectedId === ride.id ? 'bg-primary-light/40' : '',
+                      ride.stuck_reason ? 'bg-danger/5' : '',
+                    ].join(' ')}
+                    onClick={() => setSelectedId(ride.id)}
+                  >
                     <td className="px-4 py-2">
-                      <StatusChip status={ride.status} />
+                      <div className="flex items-center gap-2">
+                        <StatusChip status={ride.status} />
+                        {ride.stuck_reason && (
+                          <StuckChip reason={ride.stuck_reason} forMs={ride.stuck_for_ms} />
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-2 text-text-primary">
                       {ride.rider_name ?? <span className="text-text-tertiary">—</span>}
@@ -193,6 +314,18 @@ export default function LiveOpsPage() {
                     <td className="px-4 py-2 text-text-primary">
                       {ride.fare_cents != null ? formatCents(ride.fare_cents) : '—'}
                     </td>
+                    <td className="px-4 py-2 text-right">
+                      <button
+                        type="button"
+                        className="text-xs font-medium text-primary hover:underline"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setSelectedId(ride.id)
+                        }}
+                      >
+                        Manage →
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -200,39 +333,72 @@ export default function LiveOpsPage() {
           </div>
         )}
       </section>
+
+      {selectedRide && (
+        <LiveRideDrawer
+          ride={selectedRide}
+          onClose={() => setSelectedId(null)}
+        />
+      )}
     </div>
   )
 }
 
-function RideMarkers({ ride }: { ride: LiveActiveRide }) {
+// ── Map markers ──────────────────────────────────────────────────────────────
+
+function RideMarkers({
+  ride,
+  selected,
+  onClick,
+}: {
+  ride: LiveActiveRide
+  selected: boolean
+  onClick: () => void
+}) {
   const driver = ride.last_driver_gps
   const pickup = ride.pickup_point ?? ride.origin
+  const dotColor = ride.stuck_reason ? 'bg-danger' : 'bg-primary'
+  const dotRing = ride.stuck_reason ? 'bg-danger/30' : 'bg-primary/30'
   return (
     <>
       {driver && (
-        <AdvancedMarker position={driver} title={`Driver: ${ride.driver_name ?? 'unassigned'}`}>
+        <AdvancedMarker
+          position={driver}
+          title={`Driver: ${ride.driver_name ?? 'unassigned'}`}
+          onClick={onClick}
+        >
           <div className="relative flex items-center justify-center">
-            <span className="absolute h-5 w-5 rounded-full bg-primary/30 animate-ping" />
-            <span className="relative h-3 w-3 rounded-full bg-primary border-2 border-white shadow-md" />
+            <span className={`absolute h-5 w-5 rounded-full ${dotRing} animate-ping`} />
+            <span className={`relative h-3 w-3 rounded-full ${dotColor} border-2 ${selected ? 'border-primary' : 'border-white'} shadow-md`} />
           </div>
         </AdvancedMarker>
       )}
       {pickup && (
-        <AdvancedMarker position={pickup} title={`Pickup for ${ride.rider_name ?? 'rider'}`}>
-          <div className="h-3 w-3 rounded-sm bg-warning border border-white shadow-sm" />
+        <AdvancedMarker
+          position={pickup}
+          title={`Pickup for ${ride.rider_name ?? 'rider'}`}
+          onClick={onClick}
+        >
+          <div className={`h-3 w-3 rounded-sm bg-warning border ${selected ? 'border-primary' : 'border-white'} shadow-sm`} />
         </AdvancedMarker>
       )}
     </>
   )
 }
 
-function EventRow({ event }: { event: LiveEvent }) {
+// ── Event row ────────────────────────────────────────────────────────────────
+
+function EventRow({ event, onClick }: { event: LiveEvent; onClick: () => void }) {
   const meta = EVENT_META[event.kind]
   const who = event.driver_name && event.kind !== 'created'
     ? `${event.rider_name ?? 'rider'} · ${event.driver_name}`
     : (event.rider_name ?? 'rider')
   return (
-    <div className="px-4 py-2.5 flex items-start gap-3">
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full text-left px-4 py-2.5 flex items-start gap-3 hover:bg-surface/60 transition-colors"
+    >
       <span
         className={`mt-1 h-2 w-2 rounded-full flex-shrink-0 ${meta.dot}`}
         aria-hidden
@@ -247,12 +413,15 @@ function EventRow({ event }: { event: LiveEvent }) {
           <p className="text-xs text-text-secondary">{formatCents(event.fare_cents)}</p>
         )}
       </div>
-    </div>
+    </button>
   )
 }
 
-function StatusChip({ status }: { status: LiveActiveRide['status'] }) {
-  const map: Record<LiveActiveRide['status'], string> = {
+// ── Chips ────────────────────────────────────────────────────────────────────
+
+function StatusChip({ status }: { status: ActiveRideStatus }) {
+  const map: Record<ActiveRideStatus, string> = {
+    requested: 'bg-surface text-text-secondary',
     accepted: 'bg-primary-light text-primary',
     coordinating: 'bg-warning/15 text-warning',
     active: 'bg-success/15 text-success',
@@ -264,6 +433,37 @@ function StatusChip({ status }: { status: LiveActiveRide['status'] }) {
   )
 }
 
+function StuckChip({ reason, forMs }: { reason: StuckReason; forMs: number | null }) {
+  return (
+    <span
+      title={STUCK_LABELS[reason].long}
+      className="inline-flex items-center gap-1 rounded-full bg-danger/10 px-2 py-0.5 text-xs font-medium text-danger"
+    >
+      {STUCK_LABELS[reason].short}
+      {forMs != null && <span className="opacity-70">· {humanMs(forMs)}</span>}
+    </span>
+  )
+}
+
+const STUCK_LABELS: Record<StuckReason, { short: string; long: string }> = {
+  awaiting_driver: {
+    short: 'No driver yet',
+    long: 'Ride requested >5 min ago and no driver has accepted yet.',
+  },
+  coordinating_long: {
+    short: 'Slow coordination',
+    long: 'Ride has been in coordination for >5 minutes — driver and rider may not be meeting.',
+  },
+  driver_gps_stale: {
+    short: 'Driver GPS stale',
+    long: 'No driver GPS ping in the last 2 minutes — they may have lost signal or stopped the app.',
+  },
+  ride_long: {
+    short: 'Ride running long',
+    long: 'Ride has been active for >30 minutes — typical Tago rides are under 15.',
+  },
+}
+
 const EVENT_META: Record<LiveEvent['kind'], { label: string; dot: string; text: string }> = {
   created: { label: 'CREATED', dot: 'bg-primary', text: 'text-primary' },
   accepted: { label: 'ACCEPTED', dot: 'bg-primary', text: 'text-primary' },
@@ -272,6 +472,253 @@ const EVENT_META: Record<LiveEvent['kind'], { label: string; dot: string; text: 
   cancelled: { label: 'CANCELLED', dot: 'bg-danger', text: 'text-danger' },
 }
 
+// ── Drawer ──────────────────────────────────────────────────────────────────
+
+function LiveRideDrawer({
+  ride,
+  onClose,
+}: {
+  ride: LiveActiveRide
+  onClose: () => void
+}) {
+  return (
+    <div
+      data-testid="live-ride-drawer"
+      className="fixed inset-y-0 right-0 z-50 w-full max-w-md border-l border-border bg-white shadow-2xl overflow-y-auto"
+    >
+      <header className="sticky top-0 bg-white border-b border-border px-5 py-4 flex items-center justify-between">
+        <div className="min-w-0">
+          <p className="text-xs text-text-tertiary truncate">Ride {ride.id.slice(0, 8)}…</p>
+          <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+            <StatusChip status={ride.status} />
+            {ride.stuck_reason && (
+              <StuckChip reason={ride.stuck_reason} forMs={ride.stuck_for_ms} />
+            )}
+          </h2>
+        </div>
+        <button
+          type="button"
+          aria-label="Close"
+          className="rounded-md border border-border px-2 py-1 text-sm hover:bg-surface"
+          onClick={onClose}
+        >
+          ✕
+        </button>
+      </header>
+
+      <div className="px-5 py-4 space-y-4">
+        <section className="space-y-1">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Route</h3>
+          <p className="text-sm text-text-primary">
+            {ride.origin_name ?? '—'}{' '}
+            <span className="text-text-tertiary">→</span>{' '}
+            {ride.destination_name ?? '—'}
+          </p>
+        </section>
+
+        <section className="grid grid-cols-2 gap-3 text-sm">
+          <Field label="Rider" value={ride.rider_name ?? '—'} />
+          <Field label="Driver" value={ride.driver_name ?? 'unassigned'} />
+          <Field label="Fare" value={ride.fare_cents != null ? formatCents(ride.fare_cents) : '—'} />
+          <Field label="Created" value={timeAgo(ride.created_at) + ' ago'} />
+          <Field
+            label="Driver ping"
+            value={ride.last_driver_ping_at ? timeAgo(ride.last_driver_ping_at) + ' ago' : '—'}
+          />
+          <Field
+            label="Rider ping"
+            value={ride.last_rider_ping_at ? timeAgo(ride.last_rider_ping_at) + ' ago' : '—'}
+          />
+        </section>
+
+        {/* ── Profile shortcuts ─────────────────────────────────────── */}
+        <section className="space-y-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+            Profiles
+          </h3>
+          <div className="flex flex-col gap-2">
+            <Link
+              to={`/admin/users/${ride.rider_id}`}
+              className="rounded-md border border-border px-3 py-2 text-sm hover:bg-surface"
+            >
+              Open rider profile →
+            </Link>
+            {ride.driver_id ? (
+              <Link
+                to={`/admin/users/${ride.driver_id}`}
+                className="rounded-md border border-border px-3 py-2 text-sm hover:bg-surface"
+              >
+                Open driver profile →
+              </Link>
+            ) : (
+              <span className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-text-tertiary">
+                No driver assigned yet
+              </span>
+            )}
+          </div>
+        </section>
+
+        {/* ── Push to rider ─────────────────────────────────────────── */}
+        <QuickPushCard
+          targetUserId={ride.rider_id}
+          targetLabel={ride.rider_name ?? 'rider'}
+          ride={ride}
+        />
+        {ride.driver_id && (
+          <QuickPushCard
+            targetUserId={ride.driver_id}
+            targetLabel={ride.driver_name ?? 'driver'}
+            ride={ride}
+          />
+        )}
+
+        <ForceCancelCard ride={ride} onCancelled={onClose} />
+      </div>
+    </div>
+  )
+}
+
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-xs text-text-tertiary uppercase tracking-wide">{label}</div>
+      <div className="text-text-primary mt-0.5">{value}</div>
+    </div>
+  )
+}
+
+// ── Quick-push card (per party) ─────────────────────────────────────────────
+
+function QuickPushCard({
+  targetUserId,
+  targetLabel,
+  ride,
+}: {
+  targetUserId: string
+  targetLabel: string
+  ride: LiveActiveRide
+}) {
+  const send = useAdminSendPush(targetUserId)
+  const [title, setTitle] = useState('Tago support')
+  const [body, setBody] = useState(
+    `Hi, this is Tago ops checking in on your ride to ${ride.destination_name ?? 'your destination'}. Is everything OK?`,
+  )
+
+  return (
+    <section className="rounded-lg border border-border p-3 space-y-2">
+      <h3 className="text-sm font-semibold text-text-primary">
+        Push {targetLabel}
+      </h3>
+      <input
+        data-testid={`quick-push-title-${targetUserId}`}
+        type="text"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        maxLength={120}
+        className="w-full rounded-md border border-border px-2 py-1.5 text-sm"
+      />
+      <textarea
+        data-testid={`quick-push-body-${targetUserId}`}
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        maxLength={500}
+        rows={3}
+        className="w-full rounded-md border border-border px-2 py-1.5 text-sm"
+      />
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          disabled={send.isPending || !title.trim() || !body.trim()}
+          onClick={() => send.mutate({ title: title.trim(), body: body.trim(), reason: `live-ops ride ${ride.id.slice(0, 8)}` })}
+          className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+        >
+          {send.isPending ? 'Sending…' : 'Send push'}
+        </button>
+        {send.isSuccess && (
+          <span className="text-xs text-success">
+            Sent to {send.data.sent}/{send.data.total_tokens} devices
+          </span>
+        )}
+        {send.isError && (
+          <span className="text-xs text-danger truncate">{send.error.message}</span>
+        )}
+      </div>
+    </section>
+  )
+}
+
+// ── Force-cancel card ──────────────────────────────────────────────────────
+
+function ForceCancelCard({
+  ride,
+  onCancelled,
+}: {
+  ride: LiveActiveRide
+  onCancelled: () => void
+}) {
+  const cancel = useAdminForceCancelRide(ride.id)
+  const [reason, setReason] = useState('')
+  const [confirming, setConfirming] = useState(false)
+
+  return (
+    <section className="rounded-lg border border-danger/40 bg-danger/5 p-3 space-y-2">
+      <h3 className="text-sm font-semibold text-danger">Force-cancel ride</h3>
+      <p className="text-xs text-text-secondary">
+        Ends the ride immediately and notifies both parties. Does not refund
+        payment — handle that separately on the rider's profile.
+      </p>
+      {!confirming ? (
+        <button
+          type="button"
+          onClick={() => setConfirming(true)}
+          className="rounded-md border border-danger px-3 py-1.5 text-sm font-medium text-danger hover:bg-danger/10"
+        >
+          Force-cancel…
+        </button>
+      ) : (
+        <>
+          <textarea
+            data-testid="force-cancel-reason"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Why are you cancelling? (required)"
+            rows={2}
+            maxLength={500}
+            className="w-full rounded-md border border-border px-2 py-1.5 text-sm"
+          />
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => { setConfirming(false); setReason('') }}
+              className="rounded-md px-3 py-1.5 text-sm text-text-secondary hover:bg-surface"
+            >
+              Never mind
+            </button>
+            <button
+              type="button"
+              disabled={cancel.isPending || !reason.trim()}
+              onClick={() =>
+                cancel.mutate(
+                  { reason: reason.trim() },
+                  { onSuccess: () => onCancelled() },
+                )
+              }
+              className="rounded-md bg-danger px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {cancel.isPending ? 'Cancelling…' : 'Confirm cancel'}
+            </button>
+          </div>
+          {cancel.isError && (
+            <p className="text-xs text-danger">{cancel.error.message}</p>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
 function formatCents(c: number): string {
   return `$${(c / 100).toFixed(2)}`
 }
@@ -279,6 +726,10 @@ function formatCents(c: number): string {
 function timeAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime()
   if (ms < 0) return 'just now'
+  return humanMs(ms)
+}
+
+function humanMs(ms: number): string {
   const sec = Math.floor(ms / 1000)
   if (sec < 60) return `${sec}s`
   const min = Math.floor(sec / 60)

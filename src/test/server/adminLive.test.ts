@@ -293,6 +293,104 @@ describe('GET /api/admin/live/snapshot — shape', () => {
     expect(res.body.events.find((e: { kind: string }) => e.kind === 'completed')).toBeUndefined()
   })
 
+  it('computes stuck_reason=awaiting_driver for requested rides older than 5 min', async () => {
+    const ride: RideRow = {
+      id: 'r-await',
+      status: 'requested',
+      rider_id: 'rider-1',
+      driver_id: null,
+      origin: null, destination: null, pickup_point: null,
+      origin_name: null, destination_name: null,
+      last_driver_gps_lat: null, last_driver_gps_lng: null,
+      last_rider_gps_lat: null, last_rider_gps_lng: null,
+      last_driver_ping_at: null, last_rider_ping_at: null,
+      fare_cents: null,
+      created_at: isoMinusMinutes(7),
+      started_at: null,
+      ended_at: null,
+    }
+    setupFixture({
+      activeRides: [ride],
+      eventsRides: [],
+      users: [{ id: 'rider-1', full_name: 'Alex', email: null }],
+    })
+
+    const res = await request(app)
+      .get('/api/admin/live/snapshot')
+      .set('Authorization', VALID_JWT)
+
+    expect(res.status).toBe(200)
+    expect(res.body.active_rides[0].stuck_reason).toBe('awaiting_driver')
+    expect(res.body.active_rides[0].stuck_for_ms).toBeGreaterThan(5 * 60 * 1000)
+  })
+
+  it('computes stuck_reason=driver_gps_stale for active rides with old driver ping', async () => {
+    const ride: RideRow = {
+      id: 'r-stale',
+      status: 'active',
+      rider_id: 'rider-1',
+      driver_id: 'driver-1',
+      origin: null, destination: null, pickup_point: null,
+      origin_name: null, destination_name: null,
+      last_driver_gps_lat: 38.5, last_driver_gps_lng: -121.7,
+      last_rider_gps_lat: null, last_rider_gps_lng: null,
+      last_driver_ping_at: isoMinusMinutes(3),
+      last_rider_ping_at: null,
+      fare_cents: 600,
+      created_at: isoMinusMinutes(10),
+      started_at: isoMinusMinutes(5),
+      ended_at: null,
+    }
+    setupFixture({
+      activeRides: [ride],
+      eventsRides: [],
+      users: [
+        { id: 'rider-1', full_name: 'Alex', email: null },
+        { id: 'driver-1', full_name: 'Dani', email: null },
+      ],
+    })
+
+    const res = await request(app)
+      .get('/api/admin/live/snapshot')
+      .set('Authorization', VALID_JWT)
+
+    expect(res.body.active_rides[0].stuck_reason).toBe('driver_gps_stale')
+  })
+
+  it('healthy active ride with recent ping has stuck_reason=null', async () => {
+    const ride: RideRow = {
+      id: 'r-ok',
+      status: 'active',
+      rider_id: 'rider-1',
+      driver_id: 'driver-1',
+      origin: null, destination: null, pickup_point: null,
+      origin_name: null, destination_name: null,
+      last_driver_gps_lat: 38.5, last_driver_gps_lng: -121.7,
+      last_rider_gps_lat: null, last_rider_gps_lng: null,
+      last_driver_ping_at: isoMinusMinutes(0),
+      last_rider_ping_at: null,
+      fare_cents: 600,
+      created_at: isoMinusMinutes(2),
+      started_at: isoMinusMinutes(1),
+      ended_at: null,
+    }
+    setupFixture({
+      activeRides: [ride],
+      eventsRides: [],
+      users: [
+        { id: 'rider-1', full_name: 'Alex', email: null },
+        { id: 'driver-1', full_name: 'Dani', email: null },
+      ],
+    })
+
+    const res = await request(app)
+      .get('/api/admin/live/snapshot')
+      .set('Authorization', VALID_JWT)
+
+    expect(res.body.active_rides[0].stuck_reason).toBeNull()
+    expect(res.body.active_rides[0].stuck_for_ms).toBeNull()
+  })
+
   it('flags active_truncated when more than MAX_ACTIVE_RIDES (200) rows returned', async () => {
     // Server requests limit(MAX+1); when we return that count it should flag truncated.
     const many: RideRow[] = []

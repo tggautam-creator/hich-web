@@ -32,6 +32,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express'
 import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
 import { writeAuditLog } from '../../lib/adminAudit.ts'
+import { sendFcmPush } from '../../lib/fcm.ts'
 
 export const adminRefundsRouter = Router()
 
@@ -269,6 +270,174 @@ adminRefundsRouter.post(
         fare_cents: fareCents,
         rider_balance_after_cents: riderApplied.balance ?? null,
         driver_balance_after_cents: driverApplied.balance ?? null,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// ── POST /:rideId/cancel (Slice 1.7b) ─────────────────────────────────────
+//
+// Force-cancel a ride from the Live ops drawer. Use case: a ride is
+// genuinely stuck (driver vanished mid-ride, rider unreachable,
+// requested ride sitting unmatched for 30+ min) and ops decides to
+// kill it rather than wait.
+//
+// Behaviour:
+//   - Refuses if ride is already terminal (completed / cancelled / expired)
+//   - Sets status='cancelled' + ended_at=now(). Does NOT touch payment_status
+//     — that's refund's job. An active ride that's been cancelled mid-trip
+//     with payment already taken is a follow-up refund decision; the cancel
+//     just stops the clock.
+//   - Writes one notifications row per party + best-effort push so both
+//     sides see "Tago ended your ride" in the inbox.
+//   - Audit logs once per party (rider + driver), same pattern as refund.
+interface ForceCancelBody { reason?: unknown }
+
+adminRefundsRouter.post(
+  '/:rideId/cancel',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const rideIdRaw = req.params['rideId']
+      const rideId = typeof rideIdRaw === 'string' ? rideIdRaw : ''
+      if (!rideId || !UUID_RE.test(rideId)) {
+        res.status(400).json({
+          error: { code: 'INVALID_RIDE_ID', message: 'ride id must be a UUID' },
+        })
+        return
+      }
+
+      const adminId = res.locals['userId'] as string
+      const b = req.body as ForceCancelBody
+      const reason = typeof b.reason === 'string' ? b.reason.trim() : ''
+      if (!reason) {
+        res.status(400).json({
+          error: { code: 'INVALID_BODY', message: 'reason is required' },
+        })
+        return
+      }
+      if (reason.length > 500) {
+        res.status(400).json({
+          error: { code: 'REASON_TOO_LONG', message: 'reason must be ≤ 500 chars' },
+        })
+        return
+      }
+
+      // Load ride
+      const { data: ride, error: rideErr } = await supabaseAdmin
+        .from('rides')
+        .select('id, status, rider_id, driver_id')
+        .eq('id', rideId)
+        .maybeSingle()
+      if (rideErr) throw rideErr
+      if (!ride) {
+        res.status(404).json({
+          error: { code: 'RIDE_NOT_FOUND', message: 'no ride with that id' },
+        })
+        return
+      }
+      const TERMINAL = new Set(['completed', 'cancelled', 'expired'])
+      if (TERMINAL.has(ride.status)) {
+        res.status(409).json({
+          error: {
+            code: 'RIDE_NOT_CANCELLABLE',
+            message: `ride is already ${ride.status}`,
+          },
+        })
+        return
+      }
+
+      const nowIso = new Date().toISOString()
+      const { error: updErr } = await supabaseAdmin
+        .from('rides')
+        .update({ status: 'cancelled', ended_at: nowIso })
+        .eq('id', rideId)
+      if (updErr) throw updErr
+
+      // Notify both parties via inbox + best-effort push.
+      const riderId = ride.rider_id as string
+      const driverId = ride.driver_id as string | null
+      const notifTitle = 'Your ride was ended by Tago'
+      const notifBody =
+        'Tago ops cancelled this ride. Reach out to support if you need help.'
+
+      const recipients: string[] = [riderId]
+      if (driverId) recipients.push(driverId)
+
+      const notifInserts = recipients.map((uid) => ({
+        user_id: uid,
+        type: 'admin_cancel',
+        title: notifTitle,
+        body: notifBody,
+        data: {
+          source: 'admin_panel',
+          type: 'admin_cancel',
+          ride_id: rideId,
+          reason,
+        },
+      }))
+      const { error: notifErr } = await supabaseAdmin
+        .from('notifications')
+        .insert(notifInserts)
+      if (notifErr) {
+        console.warn('[adminForceCancel] notifications insert failed:', notifErr.message)
+      }
+
+      // Best-effort push fan-out per recipient.
+      let pushSent = 0
+      for (const uid of recipients) {
+        try {
+          const { data: tokenRows } = await supabaseAdmin
+            .from('push_tokens')
+            .select('token')
+            .eq('user_id', uid)
+          const tokens = (tokenRows ?? []).map((r) => r.token as string)
+          if (tokens.length > 0) {
+            pushSent += await sendFcmPush(tokens, {
+              title: notifTitle,
+              body: notifBody,
+              data: {
+                source: 'admin_panel',
+                type: 'admin_cancel',
+                ride_id: rideId,
+              },
+            })
+          }
+        } catch (pushErr) {
+          console.warn('[adminForceCancel] push failed for', uid, pushErr)
+        }
+      }
+
+      // Audit — one row per party so it shows on both Admin Actions
+      // history surfaces. Mirrors the refund pattern.
+      const auditPayload = {
+        ride_id: rideId,
+        previous_status: ride.status,
+        reason,
+        recipients,
+      }
+      await writeAuditLog({
+        adminId,
+        targetUserId: riderId,
+        action: 'force_cancel_ride',
+        payload: { ...auditPayload, role: 'rider' },
+      })
+      if (driverId) {
+        await writeAuditLog({
+          adminId,
+          targetUserId: driverId,
+          action: 'force_cancel_ride',
+          payload: { ...auditPayload, role: 'driver' },
+        })
+      }
+
+      res.status(200).json({
+        ok: true,
+        ride_id: rideId,
+        previous_status: ride.status,
+        notifications_written: notifInserts.length,
+        push_sent: pushSent,
       })
     } catch (err) {
       next(err)

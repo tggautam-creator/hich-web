@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
-import { adminGet } from '@/lib/admin/api'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { adminGet, adminPost } from '@/lib/admin/api'
 
 /**
  * Slice 1.7 — live ops snapshot hook.
@@ -14,7 +14,13 @@ import { adminGet } from '@/lib/admin/api'
 
 export interface LatLng { lat: number; lng: number }
 
-export type ActiveRideStatus = 'accepted' | 'coordinating' | 'active'
+export type ActiveRideStatus = 'requested' | 'accepted' | 'coordinating' | 'active'
+
+export type StuckReason =
+  | 'awaiting_driver'
+  | 'coordinating_long'
+  | 'driver_gps_stale'
+  | 'ride_long'
 
 export interface LiveActiveRide {
   id: string
@@ -35,6 +41,8 @@ export interface LiveActiveRide {
   started_at: string | null
   rider_name: string | null
   driver_name: string | null
+  stuck_reason: StuckReason | null
+  stuck_for_ms: number | null
 }
 
 export type LiveEventKind = 'created' | 'accepted' | 'started' | 'completed' | 'cancelled'
@@ -67,5 +75,31 @@ export function useAdminLive() {
     refetchInterval: POLL_MS,
     refetchIntervalInBackground: false,
     staleTime: POLL_MS - 1, // align with poll
+  })
+}
+
+// ── Slice 1.7b — force-cancel from the Live drawer ──────────────────────────
+
+interface ForceCancelArgs { reason: string }
+interface ForceCancelResult {
+  ok: true
+  ride_id: string
+  previous_status: string
+  notifications_written: number
+  push_sent: number
+}
+
+export function useAdminForceCancelRide(rideId: string) {
+  const qc = useQueryClient()
+  return useMutation<ForceCancelResult, Error, ForceCancelArgs>({
+    mutationFn: (args) =>
+      adminPost<ForceCancelResult>(`/rides/${rideId}/cancel`, args),
+    onSuccess: () => {
+      // Refresh the snapshot immediately so the cancelled ride drops
+      // off the active list / moves to the event feed.
+      void qc.invalidateQueries({ queryKey: ['admin', 'live', 'snapshot'] })
+      // Audit lists for rider + driver may also be open in another tab.
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'audit'] })
+    },
   })
 }
