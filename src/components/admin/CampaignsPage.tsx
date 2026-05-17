@@ -543,7 +543,7 @@ function PosterUploadField({
       <div className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
         Marketing poster (optional)
         <InfoTooltip
-          text="Optional image shown in the push banner (Android + web — iOS needs a Notification Service Extension which ships in Slice 1.4c) AND inline on the /c/<slug> detail page that the push deep-links to. ≤ 2 MB, JPEG / PNG / WebP. Uploads to the campaign-posters Supabase Storage bucket (public read)."
+          text="Optional image shown in the push banner (Android + web — iOS needs a Notification Service Extension which ships in Slice 1.4c) AND inline on the /c/<slug> detail page that the push deep-links to. Recommended size: 1200×600 px (2:1 landscape, best for push banners) OR 1080×1080 px (square, best for the in-app inbox + detail page). The image will render at native aspect ratio, max-width on every surface. ≤ 2 MB, JPEG / PNG / WebP."
           align="left"
         />
       </div>
@@ -592,6 +592,7 @@ function PosterUploadField({
             <>
               <span className="font-medium text-text-primary">Add a poster</span>
               <span>Click to pick a file (≤ 2 MB, JPEG/PNG/WebP)</span>
+              <span className="text-text-secondary">Recommended: 1200×600 px (banner) or 1080×1080 (square)</span>
             </>
           )}
         </label>
