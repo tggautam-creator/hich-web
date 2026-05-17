@@ -177,4 +177,81 @@ describe('AddFundsPage', () => {
     fireEvent.click(screen.getByTestId('pill-1000'))
     expect(input.value).toBe('')
   })
+
+  // ── Sprint 3 W-T1-P2 — saved-card top-up ────────────────────────────
+
+  it('renders the saved-card option when /api/payment/methods returns one', async () => {
+    const { waitFor } = await import('@testing-library/react')
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (url === '/api/payment/methods') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            methods: [{ id: 'pm_test', brand: 'visa', last4: '4242', is_default: true }],
+            default_method_id: 'pm_test',
+          }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    }))
+
+    renderAddFunds()
+    await waitFor(() => {
+      expect(screen.getByTestId('payment-method-section')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('saved-card-option').textContent).toContain('Visa •••• 4242')
+    // Default to saved-card mode — CardElement should be hidden.
+    expect(screen.queryByTestId('mock-card-element')).not.toBeInTheDocument()
+
+    // Tapping "Use a different card" reveals the CardElement.
+    fireEvent.click(screen.getByTestId('new-card-option'))
+    expect(screen.getByTestId('mock-card-element')).toBeInTheDocument()
+  })
+
+  it('saved-card mode charges via { payment_method: pmId } instead of CardElement', async () => {
+    const { waitFor } = await import('@testing-library/react')
+    // Clear the global beforeEach fetch so our URL-router replaces it
+    // rather than racing with the default clientSecret response.
+    vi.unstubAllGlobals()
+    const topupFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ clientSecret: 'pi_secret', paymentIntentId: 'pi_abc' }),
+    })
+    const methodsFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        methods: [{ id: 'pm_test', brand: 'visa', last4: '4242', is_default: true }],
+        default_method_id: 'pm_test',
+      }),
+    })
+    const confirmFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (url === '/api/payment/methods') return methodsFetch()
+      if (url === '/api/wallet/topup') return topupFetch()
+      if (url === '/api/wallet/confirm-topup') return confirmFetch()
+      return Promise.resolve({ ok: true, json: async () => ({}) })
+    }))
+
+    mockStripe.confirmCardPayment.mockResolvedValueOnce({ error: undefined })
+    // The previous test left the call history populated — reset so we
+    // can assert on this test's payload in isolation.
+    mockStripe.confirmCardPayment.mockClear()
+    mockElements.getElement.mockClear()
+
+    renderAddFunds()
+    await waitFor(() => screen.getByTestId('saved-card-option'))
+    // Pick an amount + saved card is already the default.
+    fireEvent.click(screen.getByTestId('pill-2000'))
+    fireEvent.click(screen.getByTestId('pay-button'))
+
+    await waitFor(() => {
+      expect(mockStripe.confirmCardPayment).toHaveBeenCalled()
+    })
+    const [clientSecret, opts] = mockStripe.confirmCardPayment.mock.calls[0] as [string, { payment_method: unknown }]
+    expect(clientSecret).toBe('pi_secret')
+    expect(opts.payment_method).toBe('pm_test')
+    // CardElement was never queried for the saved-card path.
+    expect(mockElements.getElement).not.toHaveBeenCalled()
+  })
 })

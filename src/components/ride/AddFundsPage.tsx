@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { loadStripe } from '@stripe/stripe-js'
-import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js'
+import type { PaymentRequest, PaymentRequestPaymentMethodEvent } from '@stripe/stripe-js'
+import { Elements, CardElement, PaymentRequestButtonElement, useStripe, useElements } from '@stripe/react-stripe-js'
 import { supabase } from '@/lib/supabase'
 import { trackEvent } from '@/lib/analytics'
 import { env } from '@/lib/env'
@@ -10,6 +11,12 @@ import { useAuthStore } from '@/stores/authStore'
 import { formatCents } from '@/lib/fare'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import BottomNav from '@/components/ui/BottomNav'
+
+interface SavedCardOption {
+  id: string
+  brand: string
+  last4: string
+}
 
 const stripePromise = env.STRIPE_PUBLISHABLE_KEY
   ? loadStripe(env.STRIPE_PUBLISHABLE_KEY)
@@ -31,10 +38,163 @@ function AddFundsForm() {
   const [processing, setProcessing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
+  // W-T1-P2 — saved-card top-up. Lets the rider charge an existing
+  // payment method without retyping the card. Loaded lazily; null
+  // until the fetch resolves OR when no saved cards exist.
+  const [savedCard, setSavedCard] = useState<SavedCardOption | null>(null)
+  const [paymentMethodMode, setPaymentMethodMode] = useState<'saved' | 'new'>('saved')
+  // W-T1-P1 — Stripe Payment Request Button (Apple Pay on Safari iOS,
+  // Google Pay on Chrome Android). Only set when the device + browser
+  // actually support it (`canMakePayment()` returns truthy).
+  const [paymentRequest, setPaymentRequest] = useState<PaymentRequest | null>(null)
 
   const customCents = customInput ? Math.round(parseFloat(customInput) * 100) : 0
   const amountCents = isCustom ? customCents : (selectedAmount ?? 0)
   const isValidAmount = amountCents >= MIN_CENTS && amountCents <= MAX_CENTS
+
+  // Resolve which Stripe payment method id (if any) we'll use for
+  // the top-up confirm. Memoised so the value stays stable across
+  // unrelated re-renders.
+  const savedCardPmId = useMemo(
+    () => (paymentMethodMode === 'saved' && savedCard ? savedCard.id : null),
+    [paymentMethodMode, savedCard],
+  )
+
+  // Default to "new card" when no saved card is on file; otherwise
+  // prefer the saved-card path (one-tap charge).
+  useEffect(() => {
+    if (!savedCard) setPaymentMethodMode('new')
+  }, [savedCard])
+
+  // Load the rider's default saved card so we can render a one-tap
+  // "Use saved card · Visa •••• 4242" button above the CardElement.
+  // Silent on failure — falls back to the new-card flow.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) return
+        const resp = await fetch('/api/payment/methods', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+        if (!resp.ok) return
+        const body = (await resp.json()) as {
+          methods: Array<{ id: string; brand: string; last4: string; is_default: boolean }>
+          default_method_id: string | null
+        }
+        if (cancelled) return
+        const match = body.methods.find((m) => m.id === body.default_method_id)
+          ?? body.methods.find((m) => m.is_default)
+          ?? body.methods[0]
+        if (match) {
+          setSavedCard({ id: match.id, brand: match.brand, last4: match.last4 })
+          setPaymentMethodMode('saved')
+        }
+      } catch {
+        // silent — fallback to new-card form
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  // Initialise the Stripe Payment Request (Apple Pay / Google Pay).
+  // Re-runs whenever `amountCents` changes since the wallet sheet
+  // shows the exact total. `canMakePayment()` returns null on
+  // unsupported browsers (Firefox, Safari without Apple Pay set up,
+  // any non-HTTPS context) — in that case we leave the button hidden.
+  useEffect(() => {
+    if (!stripe || amountCents < MIN_CENTS || amountCents > MAX_CENTS) {
+      setPaymentRequest(null)
+      return
+    }
+    // Defensive — old / mocked Stripe builds may lack
+    // `paymentRequest`. Skip silently (the new-card form still works).
+    if (typeof stripe.paymentRequest !== 'function') {
+      setPaymentRequest(null)
+      return
+    }
+    const pr = stripe.paymentRequest({
+      country: 'US',
+      currency: 'usd',
+      total: { label: 'Tago wallet top-up', amount: amountCents },
+      requestPayerName: false,
+      requestPayerEmail: false,
+    })
+    let cancelled = false
+    void pr.canMakePayment().then((result) => {
+      if (cancelled) return
+      setPaymentRequest(result ? pr : null)
+    }).catch(() => setPaymentRequest(null))
+
+    // When the user confirms inside the Apple/Google Pay sheet, Stripe
+    // hands us a PaymentMethod id; we create a topup PaymentIntent
+    // server-side, confirm it off-session with that PM, then signal
+    // success back to the sheet so it dismisses with a checkmark.
+    const handler = async (ev: PaymentRequestPaymentMethodEvent) => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) {
+          ev.complete('fail')
+          setError('Not authenticated')
+          return
+        }
+        const createResp = await fetch('/api/wallet/topup', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ amount_cents: amountCents }),
+        })
+        if (!createResp.ok) {
+          ev.complete('fail')
+          const body = await createResp.json() as { error?: { message?: string } }
+          setError(body.error?.message ?? 'Failed to create payment')
+          return
+        }
+        const { clientSecret, paymentIntentId } = await createResp.json() as { clientSecret: string; paymentIntentId: string }
+        const { error: confirmErr } = await stripe.confirmCardPayment(
+          clientSecret,
+          { payment_method: ev.paymentMethod.id },
+          { handleActions: false },
+        )
+        if (confirmErr) {
+          ev.complete('fail')
+          setError(confirmErr.message ?? 'Payment failed')
+          return
+        }
+        ev.complete('success')
+        await fetch('/api/wallet/confirm-topup', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ payment_intent_id: paymentIntentId }),
+        })
+        setSuccess(true)
+        trackEvent('payment_completed', { amount_cents: amountCents, method: 'payment_request' })
+        await refreshProfile()
+        setTimeout(() => navigate('/wallet'), 2000)
+      } catch (err) {
+        ev.complete('fail')
+        setError(err instanceof Error ? err.message : 'Payment failed')
+      }
+    }
+    pr.on('paymentmethod', handler)
+
+    return () => {
+      cancelled = true
+      // PaymentRequest objects don't have a documented `off` symmetric
+      // to `on('paymentmethod')`; abandoning the closure is enough
+      // because the new effect creates a fresh `pr` instance.
+    }
+    // intentionally re-create the PR object on amount changes so the
+    // wallet sheet shows the correct total; navigate + refreshProfile
+    // are stable refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stripe, amountCents])
 
   function handlePillClick(cents: number) {
     setSelectedAmount(cents)
@@ -57,7 +217,10 @@ function AddFundsForm() {
   }
 
   async function handleSubmit() {
-    if (!stripe || !elements || !isValidAmount) return
+    if (!stripe || !isValidAmount) return
+    // New-card mode needs the CardElement; saved-card mode uses the
+    // stored PM id and doesn't.
+    if (paymentMethodMode === 'new' && !elements) return
 
     setProcessing(true)
     setError(null)
@@ -86,19 +249,30 @@ function AddFundsForm() {
 
       const { clientSecret, paymentIntentId } = await res.json() as { clientSecret: string; paymentIntentId: string }
 
-      // Confirm payment
-      const cardElement = elements.getElement(CardElement)
-      if (!cardElement) {
-        setError('Card element not loaded')
-        return
+      // Confirm payment — branch on payment-method source.
+      let confirmErr: Error | { message?: string } | undefined
+      if (savedCardPmId) {
+        // W-T1-P2 — charge the saved PM. Off-session-style confirm
+        // hits Stripe with the existing card and clears immediately
+        // for the vast majority of riders who tipped/paid before.
+        const { error: stripeError } = await stripe.confirmCardPayment(clientSecret, {
+          payment_method: savedCardPmId,
+        })
+        confirmErr = stripeError
+      } else {
+        const cardElement = elements?.getElement(CardElement)
+        if (!cardElement) {
+          setError('Card element not loaded')
+          return
+        }
+        const { error: stripeError } = await stripe.confirmCardPayment(clientSecret, {
+          payment_method: { card: cardElement },
+        })
+        confirmErr = stripeError
       }
 
-      const { error: stripeError } = await stripe.confirmCardPayment(clientSecret, {
-        payment_method: { card: cardElement },
-      })
-
-      if (stripeError) {
-        setError(stripeError.message ?? 'Payment failed')
+      if (confirmErr) {
+        setError(confirmErr.message ?? 'Payment failed')
         return
       }
 
@@ -113,7 +287,10 @@ function AddFundsForm() {
       })
 
       setSuccess(true)
-      trackEvent('payment_completed', { amount_cents: amountCents })
+      trackEvent('payment_completed', {
+        amount_cents: amountCents,
+        method: savedCardPmId ? 'saved_card' : 'new_card',
+      })
       await refreshProfile()
 
       // Navigate back to wallet after brief delay
@@ -226,23 +403,108 @@ function AddFundsForm() {
         )}
       </div>
 
-      {/* Card element */}
-      <div>
-        <p className="mb-2 text-sm font-medium text-text-secondary">Card details</p>
-        <div className="rounded-2xl border border-border bg-white p-4" data-testid="card-element">
-          <CardElement
-            options={{
-              style: {
-                base: {
-                  fontSize: '16px',
-                  color: tokenColors.textPrimary,
-                  '::placeholder': { color: tokenColors.textSecondary },
-                },
-              },
-            }}
+      {/* W-T1-P1 — Apple Pay / Google Pay button. Only renders when
+          the browser supports it AND a valid amount is picked (Stripe
+          requires a non-zero total). Tapping it opens the platform
+          wallet sheet; on confirm we POST /topup + confirm-topup
+          inline (see paymentmethod handler). */}
+      {paymentRequest && isValidAmount && (
+        <div data-testid="payment-request-button">
+          <PaymentRequestButtonElement
+            options={{ paymentRequest, style: { paymentRequestButton: { height: '48px' } } }}
           />
+          <div className="my-3 flex items-center gap-3 text-[10px] uppercase tracking-wider text-text-secondary">
+            <div className="h-px flex-1 bg-border" />
+            <span>or pay with a card</span>
+            <div className="h-px flex-1 bg-border" />
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* W-T1-P2 — saved-card one-tap row + new-card toggle. Only
+          rendered when the rider actually has a card on file; otherwise
+          we fall straight through to the CardElement. */}
+      {savedCard && (
+        <div data-testid="payment-method-section">
+          <p className="mb-2 text-sm font-medium text-text-secondary">Pay with</p>
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => setPaymentMethodMode('saved')}
+              aria-pressed={paymentMethodMode === 'saved'}
+              data-testid="saved-card-option"
+              className={[
+                'flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-left transition-colors',
+                paymentMethodMode === 'saved'
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border bg-white',
+              ].join(' ')}
+            >
+              <span className="flex items-center gap-3">
+                <span className="flex h-8 w-12 items-center justify-center rounded-md bg-primary/10 text-xs font-bold uppercase text-primary">
+                  {savedCard.brand.slice(0, 4)}
+                </span>
+                <span>
+                  <span className="block text-sm font-semibold text-text-primary">
+                    {savedCard.brand.charAt(0).toUpperCase() + savedCard.brand.slice(1)} •••• {savedCard.last4}
+                  </span>
+                  <span className="block text-xs text-text-secondary">Saved card · one-tap charge</span>
+                </span>
+              </span>
+              {paymentMethodMode === 'saved' && (
+                <svg className="h-5 w-5 text-primary" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" />
+                </svg>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => setPaymentMethodMode('new')}
+              aria-pressed={paymentMethodMode === 'new'}
+              data-testid="new-card-option"
+              className={[
+                'flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-left transition-colors',
+                paymentMethodMode === 'new'
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border bg-white',
+              ].join(' ')}
+            >
+              <span className="flex items-center gap-3">
+                <span className="flex h-8 w-12 items-center justify-center rounded-md bg-surface text-xs font-bold uppercase text-text-secondary">
+                  New
+                </span>
+                <span className="text-sm font-semibold text-text-primary">Use a different card</span>
+              </span>
+              {paymentMethodMode === 'new' && (
+                <svg className="h-5 w-5 text-primary" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" />
+                </svg>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Card element — hidden when paying with the saved card so
+          the form keeps its single-decision focus. */}
+      {paymentMethodMode === 'new' && (
+        <div>
+          <p className="mb-2 text-sm font-medium text-text-secondary">Card details</p>
+          <div className="rounded-2xl border border-border bg-white p-4" data-testid="card-element">
+            <CardElement
+              options={{
+                style: {
+                  base: {
+                    fontSize: '16px',
+                    color: tokenColors.textPrimary,
+                    '::placeholder': { color: tokenColors.textSecondary },
+                  },
+                },
+              }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Error */}
       {error && (
