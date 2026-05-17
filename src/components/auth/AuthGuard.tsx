@@ -4,6 +4,7 @@ import { APIProvider } from '@vis.gl/react-google-maps'
 import { useAuthStore } from '@/stores/authStore'
 import { useOnboardingStore } from '@/stores/onboardingStore'
 import { env } from '@/lib/env'
+import { isAdminEmail } from '@/lib/validation'
 import RideRequestNotification from '@/components/ride/RideRequestNotification'
 import ForegroundPushToast from '@/components/ui/ForegroundPushToast'
 import IntroCarousel from '@/components/onboarding/IntroCarousel'
@@ -67,8 +68,25 @@ export default function AuthGuard({ 'data-testid': testId }: AuthGuardProps) {
   //  • The user can complete profile creation at /onboarding/profile.
   //  • CreateProfilePage can navigate to /onboarding/location before the store
   //    refreshes (avoiding a redirect loop and a premature bounce back).
+  //
+  // Admin bypass — two-layer (Slice 0.2, hardened 2026-05-17):
+  //  1. `@tagorides.com` email domain → bypass immediately, even when
+  //     `profile` is nil. Right after a fresh admin signup the auth.users
+  //     row exists but `public.users` row doesn't until CreateProfile
+  //     is filled. Without this email-level check the admin gets
+  //     trapped at /onboarding/profile despite never needing to use
+  //     the consumer app.
+  //  2. `users.is_admin = true` → belt-and-suspenders for admins
+  //     granted on non-`tagorides.com` emails (rare; rolled by SQL).
+  //
+  // Server-side admin authorization for `/api/admin/*` (Slice 0.3) still
+  // requires `is_admin = true` in public.users — this is purely the
+  // client-side UX shortcut to skip the prerequisite onboarding UI.
+  const authEmail = session.user?.email ?? null
+  const isAdminByEmail = authEmail !== null && isAdminEmail(authEmail)
+  const isAdmin = isAdminByEmail || profile?.is_admin === true
   const isOnboardingPath = location.pathname.startsWith('/onboarding/')
-  if (!profile?.full_name && !isOnboardingPath) {
+  if (!isAdmin && !profile?.full_name && !isOnboardingPath) {
     return <Navigate to="/onboarding/profile" replace />
   }
 
@@ -80,6 +98,7 @@ export default function AuthGuard({ 'data-testid': testId }: AuthGuardProps) {
   // all run AFTER full_name lands. Without this gate the user could
   // type the URL `/home/rider` and bypass mode selection entirely.
   if (
+    !isAdmin &&
     profile?.full_name &&
     profile.onboarding_completed === false &&
     !isOnboardingPath
@@ -103,6 +122,7 @@ export default function AuthGuard({ 'data-testid': testId }: AuthGuardProps) {
   const isVerifyPhonePath = location.pathname === '/onboarding/verify-phone'
   const isProfilePath = location.pathname === '/onboarding/profile'
   if (
+    !isAdmin &&
     !env.SKIP_PHONE_VERIFICATION &&
     profile?.full_name &&
     profile.phone &&

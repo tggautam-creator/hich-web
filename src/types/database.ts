@@ -56,6 +56,7 @@ export type Database = {
           phone_verified: boolean
           date_of_birth: string | null
           onboarding_completed: boolean
+          is_admin: boolean
           created_at: string
         }
         Insert: {
@@ -76,6 +77,7 @@ export type Database = {
           default_payment_method_id?: string | null
           date_of_birth?: string | null
           onboarding_completed?: boolean
+          is_admin?: boolean
           created_at?: string
         }
         Update: {
@@ -96,6 +98,7 @@ export type Database = {
           phone_verified?: boolean
           date_of_birth?: string | null
           onboarding_completed?: boolean
+          is_admin?: boolean
           created_at?: string
         }
         Relationships: never[]

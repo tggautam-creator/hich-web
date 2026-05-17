@@ -3,9 +3,34 @@
  * Pure functions with no side effects — safe to import anywhere.
  */
 
-/** Returns true only for properly formed `.edu` email addresses */
+/**
+ * Returns true for `.edu` student emails OR Tago internal `@tagorides.com`
+ * admin emails. Despite the legacy `isValidEduEmail` name (kept to avoid
+ * touching every caller), this is the canonical signup-allowed gate —
+ * any address that passes here can register with Supabase Auth.
+ *
+ * The trust-badge logic ("`.edu verified`" chip) checks the raw suffix
+ * separately and is unaffected by the admin-email path.
+ */
 export function isValidEduEmail(email: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.edu$/i.test(email.trim())
+  const trimmed = email.trim()
+  if (/^[^\s@]+@[^\s@]+\.edu$/i.test(trimmed)) return true
+  if (isAdminEmail(trimmed)) return true
+  return false
+}
+
+/**
+ * Returns true only for Tago internal admin/team `@tagorides.com`
+ * addresses. Used by AuthGuard / RootView to bypass the onboarding
+ * flow for admins, who shouldn't be forced through CreateProfile
+ * just to reach the admin panel.
+ *
+ * Source-of-truth for admin authorization is still `users.is_admin`
+ * in the DB (set manually by an existing admin) — this client-side
+ * email check is a UX shortcut only.
+ */
+export function isAdminEmail(email: string): boolean {
+  return /^[^\s@]+@tagorides\.com$/i.test(email.trim())
 }
 
 /** Returns an error string if full name is empty/whitespace, else undefined */
