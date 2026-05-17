@@ -54,10 +54,28 @@ interface UserRow {
   email: string | null
 }
 
+interface DriverLocationRow {
+  user_id: string
+  location: { type: 'Point'; coordinates: [number, number] } | null
+  recorded_at: string
+  is_online: boolean
+  snoozed_until: string | null
+}
+
+interface DriverUserRow {
+  id: string
+  is_driver: boolean
+  suspended_at: string | null
+  full_name: string | null
+  email: string | null
+}
+
 interface Fixture {
   activeRides: RideRow[]
   eventsRides: RideRow[]
   users: UserRow[]
+  driverLocations?: DriverLocationRow[]
+  driverUsers?: DriverUserRow[]
   isAdmin?: boolean
 }
 
@@ -86,14 +104,30 @@ function setupFixture(f: Fixture) {
               }),
             }
           }
-          // name lookup: .select('id, full_name, email').in('id', [...])
+          // Disambiguate the two .in('id', ...) lookups by the cols string.
+          // Slice 1.7d added a driver-info lookup that asks for is_driver +
+          // suspended_at; the original name lookup only asks for full_name.
+          if (cols.includes('is_driver')) {
+            return {
+              in: () => Promise.resolve({ data: f.driverUsers ?? [], error: null }),
+            }
+          }
           return {
             in: () => Promise.resolve({ data: f.users, error: null }),
           }
         },
-        // validateJwt last_active_at bump path
         update: () => ({ eq: () => Promise.resolve({ data: null, error: null }) }),
       }
+    }
+    if (table === 'driver_locations') {
+      const thenable: Record<string, unknown> = {
+        eq: () => thenable,
+        gte: () => thenable,
+        order: () => thenable,
+        limit: () =>
+          Promise.resolve({ data: f.driverLocations ?? [], error: null }),
+      }
+      return { select: () => thenable }
     }
     if (table === 'rides') {
       // Active rides query uses .in().order().limit()
@@ -426,5 +460,85 @@ describe('GET /api/admin/live/snapshot — shape', () => {
 
     expect(res.body.active_truncated).toBe(true)
     expect(res.body.active_rides).toHaveLength(200)
+  })
+})
+
+describe('GET /api/admin/live/snapshot — Slice 1.7d online drivers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    authAsUser()
+  })
+
+  it('includes online drivers, excludes snoozed + suspended + non-drivers', async () => {
+    const recent = isoMinusMinutes(1) // within 5-min window
+    setupFixture({
+      activeRides: [],
+      eventsRides: [],
+      users: [],
+      driverLocations: [
+        // valid online driver
+        { user_id: 'd-online', location: { type: 'Point', coordinates: [-121.7, 38.5] }, recorded_at: recent, is_online: true, snoozed_until: null },
+        // snoozed driver
+        { user_id: 'd-snoozed', location: { type: 'Point', coordinates: [-121.7, 38.5] }, recorded_at: recent, is_online: true, snoozed_until: new Date(Date.now() + 60 * 60 * 1000).toISOString() },
+        // user with location but is_driver=false should be filtered
+        { user_id: 'u-not-driver', location: { type: 'Point', coordinates: [-121.7, 38.5] }, recorded_at: recent, is_online: true, snoozed_until: null },
+        // suspended driver
+        { user_id: 'd-suspended', location: { type: 'Point', coordinates: [-121.7, 38.5] }, recorded_at: recent, is_online: true, snoozed_until: null },
+      ],
+      driverUsers: [
+        { id: 'd-online', is_driver: true, suspended_at: null, full_name: 'Online Olivia', email: 'olivia@davis.edu' },
+        { id: 'u-not-driver', is_driver: false, suspended_at: null, full_name: 'Rider', email: 'rider@davis.edu' },
+        { id: 'd-suspended', is_driver: true, suspended_at: isoMinusMinutes(60), full_name: 'Banned Bob', email: 'bob@davis.edu' },
+      ],
+    })
+
+    const res = await request(app)
+      .get('/api/admin/live/snapshot')
+      .set('Authorization', VALID_JWT)
+
+    expect(res.status).toBe(200)
+    expect(res.body.online_drivers).toHaveLength(1)
+    expect(res.body.online_drivers[0].user_id).toBe('d-online')
+    expect(res.body.online_drivers[0].name).toBe('Online Olivia')
+    expect(res.body.online_drivers[0].on_active_ride).toBe(false)
+    expect(res.body.available_driver_count).toBe(1)
+    expect(res.body.snoozed_driver_count).toBe(1)
+  })
+
+  it('marks on_active_ride=true when the online driver is also driving a ride', async () => {
+    const recent = isoMinusMinutes(1)
+    setupFixture({
+      activeRides: [
+        {
+          id: 'r-busy', status: 'active', rider_id: 'rider-1', driver_id: 'd-busy',
+          origin: null, destination: null, pickup_point: null,
+          origin_name: null, destination_name: null,
+          last_driver_gps_lat: null, last_driver_gps_lng: null,
+          last_rider_gps_lat: null, last_rider_gps_lng: null,
+          last_driver_ping_at: null, last_rider_ping_at: null,
+          fare_cents: 500, created_at: recent, started_at: recent, ended_at: null,
+        },
+      ],
+      eventsRides: [],
+      users: [
+        { id: 'rider-1', full_name: 'Alex', email: null },
+        { id: 'd-busy', full_name: 'Busy Brett', email: null },
+      ],
+      driverLocations: [
+        { user_id: 'd-busy', location: { type: 'Point', coordinates: [-121.7, 38.5] }, recorded_at: recent, is_online: true, snoozed_until: null },
+      ],
+      driverUsers: [
+        { id: 'd-busy', is_driver: true, suspended_at: null, full_name: 'Busy Brett', email: 'brett@davis.edu' },
+      ],
+    })
+
+    const res = await request(app)
+      .get('/api/admin/live/snapshot')
+      .set('Authorization', VALID_JWT)
+
+    expect(res.body.online_drivers).toHaveLength(1)
+    expect(res.body.online_drivers[0].on_active_ride).toBe(true)
+    // available count excludes drivers on rides
+    expect(res.body.available_driver_count).toBe(0)
   })
 })

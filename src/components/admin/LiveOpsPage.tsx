@@ -10,6 +10,7 @@ import {
   type LatLng,
   type StuckReason,
   type ActiveRideStatus,
+  type OnlineDriver,
 } from '@/hooks/useAdminLive'
 import { useAdminSendPush } from '@/hooks/useAdminUsers'
 import InfoTooltip from './InfoTooltip'
@@ -53,9 +54,13 @@ export default function LiveOpsPage() {
   const snapshot = live.data
   const allActive = useMemo(() => snapshot?.active_rides ?? [], [snapshot])
   const events = useMemo(() => snapshot?.events ?? [], [snapshot])
+  const onlineDrivers = useMemo(() => snapshot?.online_drivers ?? [], [snapshot])
+  const availableCount = snapshot?.available_driver_count ?? 0
+  const snoozedCount = snapshot?.snoozed_driver_count ?? 0
 
   const [filter, setFilter] = useState<FilterMode>('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [showOnlineDrivers, setShowOnlineDrivers] = useState(true)
 
   const filteredActive = useMemo(() => {
     if (filter === 'all') return allActive
@@ -113,6 +118,38 @@ export default function LiveOpsPage() {
             </span>
           )}
         </p>
+      </div>
+
+      {/* KPI strip — at-a-glance supply / demand / signal counts */}
+      <div data-testid="live-kpi-strip" className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <KpiCard
+          testid="kpi-active-rides"
+          label="Active rides"
+          value={allActive.length}
+          tooltip="Rides currently in requested / accepted / coordinating / active. Same filter as the table below."
+        />
+        <KpiCard
+          testid="kpi-stuck-rides"
+          label="Stuck rides"
+          value={stuckCount}
+          tone={stuckCount > 0 ? 'danger' : 'neutral'}
+          tooltip="Rides currently flagged by the stuck detector (no driver, slow coordination, GPS gone stale, ride running long)."
+        />
+        <KpiCard
+          testid="kpi-online-drivers"
+          label="Online drivers"
+          value={availableCount}
+          subValue={onlineDrivers.length > availableCount ? `${onlineDrivers.length} total · ${onlineDrivers.length - availableCount} on ride` : undefined}
+          tone={availableCount > 0 ? 'success' : 'neutral'}
+          tooltip="Drivers whose app pinged GPS in the last 5 min, is_online=true, and not snoozed. The big number is drivers AVAILABLE (no active ride); sub-line breaks out the busy ones."
+        />
+        <KpiCard
+          testid="kpi-snoozed-drivers"
+          label="Snoozed drivers"
+          value={snoozedCount}
+          tone="warning"
+          tooltip="Drivers who tapped 'snooze' after declining a request — temporarily unreachable until snoozed_until expires."
+        />
       </div>
 
       {/* Filter pills */}
@@ -177,6 +214,13 @@ export default function LiveOpsPage() {
                     onClick={() => setSelectedId(ride.id)}
                   />
                 ))}
+                {showOnlineDrivers && onlineDrivers
+                  // Skip drivers already drawn as the active-ride driver
+                  // dot to avoid two markers on the same coords.
+                  .filter((d) => !d.on_active_ride)
+                  .map((d) => (
+                    <OnlineDriverMarker key={`online-${d.user_id}`} driver={d} />
+                  ))}
               </Map>
             </APIProvider>
           ) : (
@@ -185,11 +229,26 @@ export default function LiveOpsPage() {
             </div>
           )}
 
+          {/* Show/hide online drivers — small toggle in top-right of map */}
+          <div className="absolute top-3 right-3 rounded-lg border border-border bg-white/95 px-3 py-1.5 text-xs shadow-sm flex items-center gap-2">
+            <input
+              data-testid="toggle-online-drivers"
+              type="checkbox"
+              id="toggle-online-drivers"
+              checked={showOnlineDrivers}
+              onChange={(e) => setShowOnlineDrivers(e.target.checked)}
+              className="cursor-pointer"
+            />
+            <label htmlFor="toggle-online-drivers" className="cursor-pointer text-text-secondary">
+              Show online drivers ({availableCount})
+            </label>
+          </div>
+
           {/* Legend */}
           <div className="absolute bottom-3 left-3 rounded-lg border border-border bg-white/95 px-3 py-2 text-xs text-text-secondary shadow-sm">
             <div className="flex items-center gap-2">
               <span className="h-2.5 w-2.5 rounded-full bg-primary" />
-              <span>Driver GPS</span>
+              <span>Driver on ride</span>
             </div>
             <div className="flex items-center gap-2 mt-1">
               <span className="h-2.5 w-2.5 rounded-sm bg-warning" />
@@ -198,6 +257,10 @@ export default function LiveOpsPage() {
             <div className="flex items-center gap-2 mt-1">
               <span className="h-2.5 w-2.5 rounded-full bg-danger" />
               <span>Stuck ride</span>
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="h-2.5 w-2.5 rounded-full bg-success" />
+              <span>Online driver (idle)</span>
             </div>
           </div>
         </section>
@@ -383,6 +446,63 @@ function RideMarkers({
         </AdvancedMarker>
       )}
     </>
+  )
+}
+
+function OnlineDriverMarker({ driver }: { driver: OnlineDriver }) {
+  // Small idle-green pulse — distinct from the active-ride driver's
+  // primary-color marker. Tooltip surfaces who they are + when they
+  // last pinged.
+  const stale = Date.now() - new Date(driver.last_ping_at).getTime() > 60_000
+  return (
+    <AdvancedMarker
+      position={{ lat: driver.lat, lng: driver.lng }}
+      title={`${driver.name ?? driver.email ?? driver.user_id.slice(0, 8)} · pinged ${timeAgo(driver.last_ping_at)} ago`}
+    >
+      <div className="relative flex items-center justify-center">
+        {!stale && (
+          <span className="absolute h-4 w-4 rounded-full bg-success/30 animate-ping" />
+        )}
+        <span className={`relative h-2.5 w-2.5 rounded-full ${stale ? 'bg-success/50' : 'bg-success'} border border-white shadow-sm`} />
+      </div>
+    </AdvancedMarker>
+  )
+}
+
+// ── KPI strip card ───────────────────────────────────────────────────────────
+
+function KpiCard({
+  testid,
+  label,
+  value,
+  subValue,
+  tone = 'neutral',
+  tooltip,
+}: {
+  testid: string
+  label: string
+  value: number
+  subValue?: string
+  tone?: 'neutral' | 'success' | 'danger' | 'warning'
+  tooltip: string
+}) {
+  const toneClass =
+    tone === 'success' ? 'text-success'
+      : tone === 'danger' ? 'text-danger'
+        : tone === 'warning' ? 'text-warning'
+          : 'text-text-primary'
+  return (
+    <div
+      data-testid={testid}
+      className="rounded-2xl border border-border bg-white p-4 flex flex-col gap-1"
+    >
+      <div className="flex items-center gap-1 text-xs text-text-secondary uppercase tracking-wide">
+        {label}
+        <InfoTooltip testid={`${testid}-info`} text={tooltip} />
+      </div>
+      <div className={`text-3xl font-bold ${toneClass}`}>{value}</div>
+      {subValue && <div className="text-xs text-text-tertiary">{subValue}</div>}
+    </div>
   )
 }
 

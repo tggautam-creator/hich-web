@@ -56,14 +56,28 @@ export interface LiveEvent {
   fare_cents: number | null
 }
 
+export interface OnlineDriver {
+  user_id: string
+  name: string | null
+  email: string | null
+  last_ping_at: string
+  lat: number
+  lng: number
+  on_active_ride: boolean
+}
+
 export interface LiveSnapshotResponse {
   ok: true
   active_rides: LiveActiveRide[]
   events: LiveEvent[]
+  online_drivers: OnlineDriver[]
+  available_driver_count: number
+  snoozed_driver_count: number
   events_since: string
   generated_at: string
   active_truncated: boolean
   events_truncated: boolean
+  online_drivers_truncated: boolean
 }
 
 const POLL_MS = 10_000

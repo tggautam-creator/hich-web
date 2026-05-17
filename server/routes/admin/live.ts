@@ -28,6 +28,12 @@ const EVENT_WINDOW_MIN = 60
 const MAX_ACTIVE_RIDES = 200
 const MAX_EVENTS = 100
 
+// Slice 1.7d — "online driver" = will receive a ride notification right now.
+// Mirrors the matcher RPC's gate in supabase/migrations/064 + 025:
+// driver_locations.is_online=true, recent ping, not snoozed.
+const ONLINE_PING_WINDOW_MIN = 5
+const MAX_ONLINE_DRIVERS = 500
+
 // Stuck thresholds — adjust based on ops feedback. Each constant exists
 // once so the UI can format "stuck for 3m 24s" against the same number.
 export const STUCK_AWAITING_DRIVER_MS = 5 * 60 * 1000
@@ -75,15 +81,36 @@ interface LiveEvent {
   fare_cents: number | null
 }
 
+interface OnlineDriver {
+  user_id: string
+  name: string | null
+  email: string | null
+  /** Most recent driver_locations.recorded_at — proves the app is open. */
+  last_ping_at: string
+  /** Last GPS coords; map renders these as green dots. */
+  lat: number
+  lng: number
+  /** True when this driver is also a `driver_id` on a currently-active
+   * ride. Lets the UI render them as "busy" rather than "available"
+   * even though they're technically online. */
+  on_active_ride: boolean
+}
+
 interface LiveSnapshotResponse {
   ok: true
   active_rides: ActiveRide[]
   events: LiveEvent[]
+  online_drivers: OnlineDriver[]
+  /** Online drivers who currently have NO active ride — supply count. */
+  available_driver_count: number
+  /** Drivers willing-but-snoozed; surfaced as a counter for ops awareness. */
+  snoozed_driver_count: number
   /** Inclusive ISO timestamp the events window started at. */
   events_since: string
   generated_at: string
   active_truncated: boolean
   events_truncated: boolean
+  online_drivers_truncated: boolean
 }
 
 interface GeoPointMaybe {
@@ -367,14 +394,129 @@ adminLiveRouter.get('/snapshot', async (_req: Request, res: Response, next: Next
     const eventsTruncated = events.length > MAX_EVENTS
     const trimmedEvents = eventsTruncated ? events.slice(0, MAX_EVENTS) : events
 
+    // ── Online drivers (Slice 1.7d) ─────────────────────────────────────
+    // Same gate the matcher RPC (migrations 025 + 064) applies:
+    // driver_locations.is_online + recent ping + not snoozed + user is
+    // a non-suspended driver. The matcher also requires a push token,
+    // but we surface every "willing" driver here — the on-map dot tells
+    // ops the driver's app is open; whether the push token registered
+    // is a separate concern + would double the round trips.
+    const onlinePingCutoff = new Date(
+      nowMs - ONLINE_PING_WINDOW_MIN * 60 * 1000,
+    ).toISOString()
+
+    const driverLocQ = await supabaseAdmin
+      .from('driver_locations')
+      .select('user_id, location, recorded_at, is_online, snoozed_until')
+      .eq('is_online', true)
+      .gte('recorded_at', onlinePingCutoff)
+      .order('recorded_at', { ascending: false })
+      .limit(MAX_ONLINE_DRIVERS + 1)
+    if (driverLocQ.error) throw driverLocQ.error
+
+    type DriverLocRow = {
+      user_id: string
+      location: GeoPointMaybe | null
+      recorded_at: string
+      is_online: boolean
+      snoozed_until: string | null
+    }
+    const driverLocRows = (driverLocQ.data ?? []) as unknown as DriverLocRow[]
+
+    // De-dupe per user (most recent ping wins thanks to the order above),
+    // drop snoozed users, drop those without parseable coords.
+    const seenDriverIds = new Set<string>()
+    const onlineCandidates: Array<{
+      user_id: string
+      lat: number
+      lng: number
+      recorded_at: string
+      snoozed: boolean
+    }> = []
+    let snoozedCount = 0
+    for (const r of driverLocRows) {
+      if (seenDriverIds.has(r.user_id)) continue
+      seenDriverIds.add(r.user_id)
+      const snoozed = r.snoozed_until !== null && new Date(r.snoozed_until).getTime() > nowMs
+      if (snoozed) {
+        snoozedCount += 1
+        continue
+      }
+      const coord = asLatLng(r.location)
+      if (!coord) continue
+      onlineCandidates.push({
+        user_id: r.user_id,
+        lat: coord.lat,
+        lng: coord.lng,
+        recorded_at: r.recorded_at,
+        snoozed: false,
+      })
+    }
+    const onlineDriversTruncated = onlineCandidates.length > MAX_ONLINE_DRIVERS
+    const trimmedOnlineCandidates = onlineDriversTruncated
+      ? onlineCandidates.slice(0, MAX_ONLINE_DRIVERS)
+      : onlineCandidates
+
+    // Filter by is_driver + suspension. We already have suspended users
+    // loaded via the cohort lookup? No — that's a Slice 1.2 concept.
+    // Look them up directly here.
+    const onlineIds = trimmedOnlineCandidates.map((d) => d.user_id)
+    type DriverUserRow = {
+      id: string
+      is_driver: boolean
+      suspended_at: string | null
+      full_name: string | null
+      email: string | null
+    }
+    let driverInfo: DriverUserRow[] = []
+    if (onlineIds.length > 0) {
+      const driverInfoQ = await supabaseAdmin
+        .from('users')
+        .select('id, is_driver, suspended_at, full_name, email')
+        .in('id', onlineIds)
+      if (driverInfoQ.error) throw driverInfoQ.error
+      driverInfo = (driverInfoQ.data ?? []) as unknown as DriverUserRow[]
+    }
+    const driverInfoById = new Map(driverInfo.map((u) => [u.id, u]))
+
+    // Drivers who are also on an in-flight ride are still online but
+    // unavailable. Cross-reference active rides we already pulled above.
+    const busyDriverIds = new Set<string>()
+    for (const r of activeRides) {
+      if (r.driver_id) busyDriverIds.add(r.driver_id)
+    }
+
+    const onlineDrivers: OnlineDriver[] = []
+    for (const c of trimmedOnlineCandidates) {
+      const info = driverInfoById.get(c.user_id)
+      if (!info) continue
+      if (!info.is_driver) continue
+      if (info.suspended_at) continue
+      onlineDrivers.push({
+        user_id: c.user_id,
+        name: info.full_name,
+        email: info.email,
+        last_ping_at: c.recorded_at,
+        lat: c.lat,
+        lng: c.lng,
+        on_active_ride: busyDriverIds.has(c.user_id),
+      })
+    }
+
+    const availableDriverCount = onlineDrivers.filter((d) => !d.on_active_ride).length
+
     const body: LiveSnapshotResponse = {
       ok: true,
       active_rides: activeRides,
       events: trimmedEvents,
+      online_drivers: onlineDrivers,
+      available_driver_count: availableDriverCount,
+      snoozed_driver_count: snoozedCount,
       events_since: sinceIso,
       generated_at: now.toISOString(),
       active_truncated: activeTruncated,
       events_truncated: eventsTruncated,
+      online_drivers_truncated: onlineDriversTruncated,
     }
 
     res.status(200).json(body)
