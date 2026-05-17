@@ -18,9 +18,9 @@ const STEP_INFO: Record<FunnelStep, string> = {
   completed_profile:
     'Users whose public.users.onboarding_completed=true (full name, phone, DOB, etc. all filled in — the whole onboarding flow finished). Stuck here = verified email but never finished onboarding.',
   payment_or_vehicle:
-    'Role-aware step. A rider satisfies it by saving a default payment method (users.default_payment_method_id is set). A driver satisfies it by registering at least one non-deleted vehicle. For mode=Both, each user is evaluated against whichever applies based on their is_driver flag.',
+    'How many users are actually ready to use Tago. A rider needs a card on file to be charged — without it they can\'t request a ride. A driver needs at least one registered vehicle — without it they can\'t accept rides. This step asks: "did the user clear the one bar they need before Tago is usable for them?" For mode=Both, the user is judged by what their role (is_driver) requires.',
   completed_first_ride:
-    'Users with at least one ride whose status="completed" in their applicable role: riders count completions where they were the rider, drivers count completions where they were the driver. For mode=Both, each user is evaluated against their is_driver role.',
+    'How many users have actually finished a ride end-to-end (request → match → pickup → second QR scan → payment processed). For riders, that\'s a ride where they were the rider; for drivers, where they were the driver. Computed by: COUNT(DISTINCT user) such that there exists a row in `rides` with status="completed" and rider_id=user (riders) or driver_id=user (drivers). This is the bottom of the funnel — the closer it is to "Signed up", the better Tago converts signups into real value.',
 }
 
 /**
@@ -139,6 +139,7 @@ export default function FunnelPage() {
                   <InfoTooltip
                     testid={`funnel-step-${step.key}-info`}
                     text={STEP_INFO[step.key]}
+                    align="left"
                   />
                 </div>
                 <div className="flex items-baseline gap-3">

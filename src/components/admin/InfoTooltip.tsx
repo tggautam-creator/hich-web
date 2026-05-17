@@ -22,9 +22,26 @@ interface InfoTooltipProps {
   testid?: string
   /** Optional label override for the aria-label on the trigger. */
   ariaLabel?: string
+  /**
+   * Which edge of the trigger the popup anchors to.
+   * - 'right' (default): popup's right edge aligns with the trigger; it
+   *    extends LEFT. Use when the trigger sits near the right edge of
+   *    the page (e.g. dashboard KPI cards where the "i" is in the
+   *    top-right corner of the card).
+   * - 'left': popup's left edge aligns with the trigger; it extends
+   *    RIGHT. Use when the trigger sits near the left edge of the
+   *    page (e.g. funnel step titles where the "i" is right after a
+   *    short title with empty card space to the right).
+   */
+  align?: 'left' | 'right'
 }
 
-export default function InfoTooltip({ text, testid, ariaLabel }: InfoTooltipProps) {
+export default function InfoTooltip({
+  text,
+  testid,
+  ariaLabel,
+  align = 'right',
+}: InfoTooltipProps) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLSpanElement>(null)
 
@@ -70,7 +87,8 @@ export default function InfoTooltip({ text, testid, ariaLabel }: InfoTooltipProp
           data-testid={testid ? `${testid}-popup` : undefined}
           role="tooltip"
           className={[
-            'absolute right-0 top-full z-30 mt-1 w-64',
+            'absolute top-full z-30 mt-1 w-64',
+            align === 'right' ? 'right-0' : 'left-0',
             'rounded-lg border border-border bg-white p-3',
             'text-xs leading-relaxed text-text-primary shadow-lg',
             'normal-case font-normal tracking-normal',
