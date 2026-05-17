@@ -14,6 +14,7 @@ import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
 import JourneyDrawer from '@/components/ride/JourneyDrawer'
 import PickupEta from '@/components/ride/PickupEta'
+import DriverCancelledOverlay from '@/components/ride/DriverCancelledOverlay'
 import type { Ride, User, Vehicle, GeoPoint } from '@/types/database'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -43,6 +44,11 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   const [signalled, setSignalled] = useState(false)
   const [unreadChat, setUnreadChat] = useState(0)
   const [cancelledMsg, setCancelledMsg] = useState<string | null>(null)
+  // Sprint 2 W-T1-R3 — driver_cancelled now opens the choice overlay
+  // instead of a 3s auto-dismiss banner. Standby count comes from the
+  // broadcast payload so the subtitle reads "X drivers available".
+  const [driverCancelled, setDriverCancelled] = useState(false)
+  const [driverCancelledStandby, setDriverCancelledStandby] = useState(0)
   const [fitToken, setFitToken] = useState(0)
 
   // QR scanning / manual code entry state
@@ -193,10 +199,15 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
       .on('broadcast', { event: 'ride_started' }, () => {
         navigate(`/ride/active-rider/${rideId}`, { replace: true })
       })
-      .on('broadcast', { event: 'driver_cancelled' }, () => {
-        // Driver cancelled — show notice then navigate back to matching queue
-        setCancelledMsg('Your driver cancelled the ride. Looking for another driver…')
-        setTimeout(() => navigate('/rides', { replace: true }), 3000)
+      .on('broadcast', { event: 'driver_cancelled' }, (msg) => {
+        // Sprint 2 W-T1-R3 — show the full-screen choice overlay so the
+        // rider stays in control instead of being silently bounced back
+        // to /rides after 3s. Capture standby_count off the payload so
+        // the subtitle can read "X drivers ready to take this ride".
+        const data = (msg.payload ?? {}) as Record<string, unknown>
+        const sc = typeof data['standby_count'] === 'number' ? data['standby_count'] : 0
+        setDriverCancelledStandby(sc)
+        setDriverCancelled(true)
       })
       .on('broadcast', { event: 'ride_cancelled' }, () => {
         // Ride fully cancelled
@@ -497,6 +508,24 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
 
   return (
     <div data-testid={testId ?? 'rider-pickup-page'} className="flex h-dvh flex-col bg-white font-sans overflow-hidden">
+
+      {/* ── Driver cancelled choice overlay (Sprint 2 W-T1-R3) ──────────── */}
+      {driverCancelled && rideId && (
+        <DriverCancelledOverlay
+          rideId={rideId}
+          standbyCount={driverCancelledStandby}
+          onFindNewDriverSucceeded={() => {
+            setDriverCancelled(false)
+            // Back to the matching surface so the rider sees the standby
+            // / re-broadcast states (WaitingRoom owns those transitions).
+            navigate('/rides', { replace: true })
+          }}
+          onCancelled={() => {
+            setDriverCancelled(false)
+            navigate('/home/rider', { replace: true })
+          }}
+        />
+      )}
 
       {/* ── Cancellation overlay ──────────────────────────────────────────── */}
       {cancelledMsg && (

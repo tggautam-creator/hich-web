@@ -9,6 +9,7 @@ import type { PlaceSuggestion } from '@/lib/places'
 import { useAuthStore } from '@/stores/authStore'
 import TransitInfo from '@/components/ride/TransitInfo'
 import DriverDestinationCard from '@/components/ride/DriverDestinationCard'
+import DriverCancelledOverlay from '@/components/ride/DriverCancelledOverlay'
 import TransitSuggestionCard, { TransitSuggestionPicker } from '@/components/ride/TransitSuggestionCard'
 import type { TransitDropoffSuggestion } from '@/components/ride/TransitSuggestionCard'
 import { MAP_ID } from '@/lib/mapConstants'
@@ -366,6 +367,10 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const [cancelModal, setCancelModal] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [driverCancelledModal, setDriverCancelledModal] = useState(false)
+  // Standby driver count captured from the `driver_cancelled` broadcast
+  // payload — drives the overlay subtitle ("3 other drivers are ready…"
+  // vs the bare fallback when zero). Sprint 2 W-T1-R3.
+  const [driverCancelledStandby, setDriverCancelledStandby] = useState(0)
 
   // Auto-open pickup pin dropper for board rides after acceptance
   const [pickupRequired, setPickupRequired] = useState(false)
@@ -558,9 +563,15 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
       .on('broadcast', { event: 'ride_cancelled' }, () => {
         setRideCancelled(true)
       })
-      .on('broadcast', { event: 'driver_cancelled' }, () => {
-        // Driver cancelled but ride is re-queued — show modal with options
+      .on('broadcast', { event: 'driver_cancelled' }, (msg) => {
+        // Driver cancelled but ride is re-queued — show the full-screen
+        // takeover (Sprint 2 W-T1-R3). Capture standby_count off the
+        // broadcast payload so the subtitle can read "3 other drivers
+        // are ready…" instead of the generic fallback.
         if (isRider && rideId) {
+          const data = (msg.payload ?? {}) as Record<string, unknown>
+          const sc = typeof data['standby_count'] === 'number' ? data['standby_count'] : 0
+          setDriverCancelledStandby(sc)
           setDriverCancelledModal(true)
         }
       })
@@ -2173,59 +2184,33 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         </div>
       )}
 
-      {/* ── Driver cancelled modal — rider chooses to find another or cancel ── */}
-      {driverCancelledModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="mx-6 w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl space-y-4">
-            <div className="flex justify-center">
-              <div className="h-14 w-14 rounded-full bg-warning/10 flex items-center justify-center">
-                <span className="text-2xl">&#x26A0;&#xFE0F;</span>
-              </div>
-            </div>
-            <h3 className="text-lg font-bold text-text-primary text-center">Driver Cancelled</h3>
-            <p className="text-sm text-text-secondary text-center">
-              Your driver has cancelled. Other drivers may still be available.
-            </p>
-            <button
-              data-testid="back-to-waiting"
-              onClick={() => {
-                const origin = rideRef.current?.origin as { coordinates: number[] } | null | undefined
-                navigate('/ride/waiting', {
-                  replace: true,
-                  state: {
-                    rideId,
-                    destination: state?.destination,
-                    destinationLat: state?.destinationLat,
-                    destinationLng: state?.destinationLng,
-                    originLat: origin?.coordinates?.[1],
-                    originLng: origin?.coordinates?.[0],
-                  },
-                })
-              }}
-              className="w-full rounded-2xl py-3 text-sm font-semibold text-white bg-primary active:bg-primary/90 transition-colors"
-            >
-              Find Another Driver
-            </button>
-            <button
-              data-testid="cancel-ride-from-modal"
-              onClick={() => {
-                void (async () => {
-                  const { data: { session } } = await supabase.auth.getSession()
-                  if (session) {
-                    await fetch(`/api/rides/${rideId}/cancel`, {
-                      method: 'PATCH',
-                      headers: { Authorization: `Bearer ${session.access_token}` },
-                    })
-                  }
-                  navigate('/home/rider', { replace: true })
-                })()
-              }}
-              className="w-full rounded-2xl py-3 text-sm font-semibold text-danger border-2 border-danger/30 active:bg-danger/5 transition-colors"
-            >
-              Cancel Ride
-            </button>
-          </div>
-        </div>
+      {/* ── Driver cancelled overlay — Sprint 2 W-T1-R3 ─────────────── */}
+      {driverCancelledModal && rideId && (
+        <DriverCancelledOverlay
+          rideId={rideId}
+          standbyCount={driverCancelledStandby}
+          onFindNewDriverSucceeded={() => {
+            // Rider asked us to fan out — back to WaitingRoom so they
+            // see the matching states (selecting / multi-driver) again.
+            const origin = rideRef.current?.origin as { coordinates: number[] } | null | undefined
+            setDriverCancelledModal(false)
+            navigate('/ride/waiting', {
+              replace: true,
+              state: {
+                rideId,
+                destination: state?.destination,
+                destinationLat: state?.destinationLat,
+                destinationLng: state?.destinationLng,
+                originLat: origin?.coordinates?.[1],
+                originLng: origin?.coordinates?.[0],
+              },
+            })
+          }}
+          onCancelled={() => {
+            setDriverCancelledModal(false)
+            navigate('/home/rider', { replace: true })
+          }}
+        />
       )}
 
       {/* ── Input bar ──────────────────────────────────────────────────────── */}

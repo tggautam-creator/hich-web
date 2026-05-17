@@ -27,13 +27,13 @@ iOS items stay in the deferred queue below.
 - [x] Server's `/api/rides/:id/rate` + `/api/rides/:id/tip` endpoints unchanged — single Submit fires both in sequence; ALREADY_RATED/ALREADY_TIPPED treated as success.
 - [x] `/ride/rate/:id` now redirects to `/ride/summary/:id` (legacy FCM / email deep-links keep working).
 
-#### Slice 2 — DriverCancelledChoiceOverlay on web (W-T1-R3)
-- [ ] Replace bare modal in `MessagingWindow.tsx:2176-2229` with a full-screen overlay matching iOS `DriverCancelledChoiceOverlay`.
-- [ ] Warning haptic on appearance (web fallback: `navigator.vibrate(...)` on Android).
-- [ ] Standby driver count visible in subtitle.
-- [ ] 2-minute idle countdown pill (red <30s). Auto-fires Cancel at zero.
-- [ ] "Find Another Driver" calls `POST /api/rides/:id/find-new-driver` (not just nav back).
-- [ ] Reuse on `RiderPickupPage.tsx:196-200` to fix the auto-dismiss-3s anti-pattern.
+#### Slice 2 — DriverCancelledChoiceOverlay on web (W-T1-R3) ✅ shipped 2026-05-16 (awaiting prod QA)
+- [x] New `DriverCancelledOverlay.tsx` — full-screen takeover matching iOS `DriverCancelledChoiceOverlay`.
+- [x] Warning vibration on appearance via `navigator.vibrate([60, 40, 60])` (Android-supported; Safari ignores — no-op fallback).
+- [x] Standby driver count plumbed off the `driver_cancelled` broadcast payload, drives "N other drivers are ready…" copy with singular / plural / no-standby variants.
+- [x] 2-minute idle countdown pill via single `setInterval`, turns danger-styled under 30s, auto-fires Cancel at zero.
+- [x] "Find another driver" calls `POST /api/rides/:id/find-new-driver`. "Cancel ride" calls `PATCH /api/rides/:id/cancel`.
+- [x] Wired into `MessagingWindow.tsx` (replaces the bare modal) and `RiderPickupPage.tsx` (replaces the 3-second auto-dismiss anti-pattern). WaitingRoom keeps the toast-style handler because the rider is still in the matching loop there.
 
 #### Slice 3 — Decline reason sheet + snooze + Driver Home pill (W-T1-D1 + W-T1-D2)
 - [ ] New `DeclineReasonSheet.tsx` component: 7 reason pills + 6 snooze duration pills. Submits both reason + snooze in parallel calls (`POST /api/rides/snooze` + `PATCH /api/rides/:id/cancel`).
@@ -52,16 +52,16 @@ iOS items stay in the deferred queue below.
 
 | Status | Count |
 |---|---|
-| Not started | 4 |
+| Not started | 3 |
 | In progress | 0 |
-| Done (awaiting QA) | 2 |
+| Done (awaiting QA) | 3 |
 | Done (verified + pushed) | 0 |
 
 ### Current focus
-Slice 2 (DriverCancelledChoiceOverlay).
+Slice 3 (Decline reason sheet + snooze + Driver Home pill).
 
 ### Next action
-Wait for user QA of Slice 1 on prod; then start Slice 2.
+Wait for user QA of Slices 1+2 on prod; then start Slice 3.
 
 ---
 
