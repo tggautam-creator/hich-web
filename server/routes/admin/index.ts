@@ -10,6 +10,7 @@ import { adminRefundsRouter } from './refunds.ts'
 import { adminCampaignsRouter } from './campaigns.ts'
 import { adminLiveRouter } from './live.ts'
 import { adminAuditRouter } from './audit.ts'
+import { adminAlertsRouter } from './alerts.ts'
 
 /**
  * `/api/admin/*` — Tago internal admin API.
@@ -84,3 +85,5 @@ adminRouter.use('/campaigns', adminCampaignsRouter)
 adminRouter.use('/live', adminLiveRouter)
 // Slice 1.8 — global audit log feed.
 adminRouter.use('/audit-log', adminAuditRouter)
+// Slice 1.9 — operational alerts panel.
+adminRouter.use('/alerts', adminAlertsRouter)

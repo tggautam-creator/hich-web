@@ -36,6 +36,7 @@ const AdminUserDetailPage = lazy(() => import('@/components/admin/UserDetailPage
 const AdminCampaignsPage = lazy(() => import('@/components/admin/CampaignsPage'))
 const AdminLiveOpsPage = lazy(() => import('@/components/admin/LiveOpsPage'))
 const AdminAuditLogPage = lazy(() => import('@/components/admin/AuditLogPage'))
+const AdminAlertsPage = lazy(() => import('@/components/admin/AlertsPage'))
 const CampaignDetailPage = lazy(() => import('@/components/campaign/CampaignDetailPage'))
 
 // ── Onboarding ───────────────────────────────────────────────────────────────
@@ -209,6 +210,7 @@ createRoot(rootEl).render(
                   <Route path="/admin/campaigns"  element={<Suspense fallback={<FormPageSkeleton />}><AdminCampaignsPage /></Suspense>} />
                   <Route path="/admin/live"       element={<Suspense fallback={<MapPageSkeleton />}><AdminLiveOpsPage /></Suspense>} />
                   <Route path="/admin/audit-log"  element={<Suspense fallback={<ListPageSkeleton />}><AdminAuditLogPage /></Suspense>} />
+                  <Route path="/admin/alerts"     element={<Suspense fallback={<ListPageSkeleton />}><AdminAlertsPage /></Suspense>} />
                   <Route path="/admin/settings"   element={<Placeholder name="Admin settings — future" />} />
                 </Route>
               </Route>

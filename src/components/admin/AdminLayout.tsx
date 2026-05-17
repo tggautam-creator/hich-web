@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { env } from '@/lib/env'
+import { useAdminAlerts } from '@/hooks/useAdminAlerts'
 
 /**
  * Two-pane chrome around every admin page: sidebar (nav) + main outlet.
@@ -31,6 +32,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { to: '/admin/users',       label: 'Users',      testId: 'admin-nav-users' },
   { to: '/admin/campaigns',   label: 'Campaigns',  testId: 'admin-nav-campaigns' },
   { to: '/admin/live',        label: 'Live',       testId: 'admin-nav-live' },
+  { to: '/admin/alerts',      label: 'Alerts',     testId: 'admin-nav-alerts' },
   { to: '/admin/audit-log',   label: 'Audit Log',  testId: 'admin-nav-audit' },
   { to: '/admin/settings',    label: 'Settings',   testId: 'admin-nav-settings' },
 ] as const
@@ -39,6 +41,19 @@ export default function AdminLayout() {
   const session = useAuthStore((s) => s.session)
   const signOut = useAuthStore((s) => s.signOut)
   const navigate = useNavigate()
+
+  // Slice 1.9 — surface the live alert count as a sidebar badge so an
+  // admin sees urgency at a glance without having to click into Alerts.
+  // The hook itself polls every 30s while the tab is focused (defined
+  // in src/hooks/useAdminAlerts.ts); calling it here also drives the
+  // refetch when /admin/alerts isn't the current route.
+  const alertsQuery = useAdminAlerts()
+  const alertCount = alertsQuery.data?.total_count ?? 0
+  const navItems = NAV_ITEMS.map((item) =>
+    item.to === '/admin/alerts'
+      ? { ...item, badge: alertCount > 0 ? alertCount : undefined }
+      : item,
+  )
 
   const adminEmail = session?.user?.email ?? 'admin@tagorides.com'
 
@@ -70,7 +85,7 @@ export default function AdminLayout() {
           </div>
         </div>
         <nav className="flex-1 px-3 py-4 space-y-1">
-          {NAV_ITEMS.map((item) => (
+          {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
