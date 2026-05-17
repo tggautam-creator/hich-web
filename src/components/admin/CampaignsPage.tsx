@@ -951,7 +951,54 @@ function RecallCampaignDialog({
 }) {
   const [reason, setReason] = useState('')
   const m = useAdminRecallCampaign(row.id)
+  // Slice 1.5b — email correction follow-up. When the row is an
+  // email campaign, the admin can opt into firing a follow-up
+  // "Correction:" email to the same audience right after recall.
+  // SMTP has no unsend protocol; this is the closest thing to a
+  // takedown for already-delivered email.
+  const isEmail = row.channel === 'email'
+  const [sendCorrection, setSendCorrection] = useState(isEmail) // default-on for email rows
+  const [correctionSubject, setCorrectionSubject] = useState(
+    isEmail ? `Correction: please disregard "${row.title}"` : '',
+  )
+  const [correctionBody, setCorrectionBody] = useState(
+    isEmail
+      ? `<p>Hi,</p><p>The email we sent earlier with the subject "${row.title}" was sent in error or contained incorrect information. Please disregard it.</p><p>Sorry for the confusion — we'll follow up with the corrected details shortly.</p><p>— The Tago team</p>`
+      : '',
+  )
+  const sendEmail = useAdminSendCampaignEmail()
+
   const ok = reason.trim().length > 0
+  const submitting = m.isPending || sendEmail.isPending
+
+  function handleConfirm() {
+    m.mutate(
+      { reason: reason.trim() },
+      {
+        onSuccess: () => {
+          // Recall succeeded. If this was an email + admin opted into
+          // a correction follow-up, fire that send before closing.
+          if (isEmail && sendCorrection && row.email_from) {
+            sendEmail.mutate(
+              {
+                audience: row.audience as unknown as Audience,
+                subject: correctionSubject.trim(),
+                body_html: correctionBody,
+                from: row.email_from,
+                reason: `Correction follow-up for recalled campaign ${row.slug}: ${reason.trim()}`,
+              },
+              {
+                onSuccess: () => onSuccess(),
+                onError: () => { /* keep dialog open so admin sees the send error */ },
+              },
+            )
+          } else {
+            onSuccess()
+          }
+        },
+      },
+    )
+  }
 
   return (
     <div
@@ -961,7 +1008,7 @@ function RecallCampaignDialog({
       <div
         role="dialog"
         aria-label="Confirm recall"
-        className="w-full max-w-md rounded-2xl border border-border bg-white p-6 shadow-xl"
+        className="w-full max-w-lg rounded-2xl border border-border bg-white p-6 shadow-xl max-h-[90vh] overflow-y-auto"
       >
         <div className="text-sm font-semibold uppercase tracking-wide text-text-secondary">
           Confirm recall
@@ -971,13 +1018,25 @@ function RecallCampaignDialog({
           “{row.title}”
         </div>
 
-        <p className="mt-4 text-xs text-text-secondary">
-          Tago will delete the in-app inbox row for every recipient
-          ({row.recipient_count} users) AND make the public /c/{row.slug} page
-          return 404. Audit-logged. Reversible only by clearing
-          <span className="font-mono"> recalled_at </span>
-          in SQL.
-        </p>
+        {isEmail ? (
+          <div className="mt-4 rounded-md border border-warning bg-warning/5 p-3 text-xs text-text-primary">
+            <div className="font-semibold text-warning">⚠ Email recall has limits</div>
+            <p className="mt-1 text-text-secondary">
+              Recall will mark this campaign as withdrawn in your history + 404 the
+              public marketing page. <strong>It cannot delete the email from recipients'
+              inboxes</strong> — SMTP doesn't have an unsend protocol. The closest fix is a
+              follow-up correction email (toggle below).
+            </p>
+          </div>
+        ) : (
+          <p className="mt-4 text-xs text-text-secondary">
+            Tago will delete the in-app inbox row for every recipient
+            ({row.recipient_count} users) AND make the public /c/{row.slug} page
+            return 404. Audit-logged. Reversible only by clearing
+            <span className="font-mono"> recalled_at </span>
+            in SQL.
+          </p>
+        )}
 
         <div className="mt-4">
           <label className="block">
@@ -997,11 +1056,68 @@ function RecallCampaignDialog({
           </label>
         </div>
 
+        {isEmail && (
+          <div className="mt-4 rounded-md border border-border bg-surface p-3">
+            <label className="flex items-center gap-2 text-xs text-text-primary">
+              <input
+                type="checkbox"
+                data-testid="campaign-recall-correction-toggle"
+                checked={sendCorrection}
+                onChange={(e) => setSendCorrection(e.target.checked)}
+                className="rounded border-border"
+              />
+              <span className="font-semibold">
+                Also send a correction email to the same audience
+              </span>
+            </label>
+            {sendCorrection && (
+              <div className="mt-3 space-y-2">
+                <label className="block">
+                  <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-text-secondary">
+                    Correction subject
+                  </div>
+                  <input
+                    data-testid="campaign-recall-correction-subject"
+                    type="text"
+                    value={correctionSubject}
+                    onChange={(e) => setCorrectionSubject(e.target.value)}
+                    maxLength={200}
+                    className="w-full rounded-md border border-border bg-white px-3 py-2 text-xs text-text-primary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                  />
+                </label>
+                <label className="block">
+                  <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-text-secondary">
+                    Correction body (HTML)
+                  </div>
+                  <textarea
+                    data-testid="campaign-recall-correction-body"
+                    rows={5}
+                    value={correctionBody}
+                    onChange={(e) => setCorrectionBody(e.target.value)}
+                    className="w-full rounded-md border border-border bg-white px-3 py-2 font-mono text-[11px] text-text-primary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                  />
+                </label>
+                <p className="text-[10px] text-text-secondary">
+                  Sent from <span className="font-mono">{row.email_from ?? '(unknown)'}</span> to the same audience.
+                  Lands as a normal campaign in history (channel=email) so it's auditable.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
         {m.error && (
           <p className="mt-2 text-xs text-danger">
-            ✗ {m.error instanceof AdminApiException
+            ✗ Recall: {m.error instanceof AdminApiException
               ? `${m.error.code}: ${m.error.message}`
               : m.error.message}
+          </p>
+        )}
+        {sendEmail.error && (
+          <p className="mt-2 text-xs text-danger">
+            ✗ Correction send: {sendEmail.error instanceof AdminApiException
+              ? `${sendEmail.error.code}: ${sendEmail.error.message}`
+              : sendEmail.error.message}
           </p>
         )}
 
@@ -1010,7 +1126,7 @@ function RecallCampaignDialog({
             type="button"
             data-testid="campaign-recall-cancel"
             onClick={onCancel}
-            disabled={m.isPending}
+            disabled={submitting}
             className="rounded-md border border-border bg-white px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface disabled:opacity-40"
           >
             Cancel
@@ -1018,21 +1134,22 @@ function RecallCampaignDialog({
           <button
             type="button"
             data-testid="campaign-recall-confirm"
-            disabled={!ok || m.isPending}
-            onClick={() => {
-              m.mutate(
-                { reason: reason.trim() },
-                { onSuccess: () => onSuccess() },
-              )
-            }}
+            disabled={!ok || submitting}
+            onClick={handleConfirm}
             className={[
               'rounded-md px-4 py-2 text-sm font-semibold text-white transition-colors',
-              !ok || m.isPending
+              !ok || submitting
                 ? 'bg-border cursor-not-allowed text-text-secondary'
                 : 'bg-danger hover:opacity-90',
             ].join(' ')}
           >
-            {m.isPending ? 'Recalling…' : 'Confirm recall'}
+            {m.isPending
+              ? 'Recalling…'
+              : sendEmail.isPending
+                ? 'Sending correction…'
+                : isEmail && sendCorrection
+                  ? 'Recall + send correction'
+                  : 'Confirm recall'}
           </button>
         </div>
       </div>
