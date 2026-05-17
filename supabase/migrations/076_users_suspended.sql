@@ -42,7 +42,7 @@ ALTER TABLE public.users
   ADD COLUMN IF NOT EXISTS suspended_reason TEXT;
 
 COMMENT ON COLUMN public.users.suspended_at IS
-  'When the user was suspended by an admin. NULL = active. Enforced server-side in validateJwt (403 SUSPENDED on every authenticated call). See migration 075 + ADMIN_PLAN.md.';
+  'When the user was suspended by an admin. NULL = active. Enforced server-side in validateJwt (403 SUSPENDED on every authenticated call). See migration 076 + ADMIN_PLAN.md.';
 
 COMMENT ON COLUMN public.users.suspended_reason IS
   'Admin-supplied reason for the suspension, surfaced in the 403 response so support has context.';
