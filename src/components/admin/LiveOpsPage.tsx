@@ -5,6 +5,7 @@ import { env } from '@/lib/env'
 import {
   useAdminLive,
   useAdminForceCancelRide,
+  useAdminReassignRide,
   type LiveActiveRide,
   type LiveEvent,
   type LatLng,
@@ -439,6 +440,7 @@ export default function LiveOpsPage() {
       {selectedRide && (
         <LiveRideDrawer
           ride={selectedRide}
+          availableDrivers={onlineDrivers.filter((d) => !d.on_active_ride)}
           onClose={() => setSelectedId(null)}
         />
       )}
@@ -635,9 +637,11 @@ const EVENT_META: Record<LiveEvent['kind'], { label: string; dot: string; text: 
 
 function LiveRideDrawer({
   ride,
+  availableDrivers,
   onClose,
 }: {
   ride: LiveActiveRide
+  availableDrivers: OnlineDriver[]
   onClose: () => void
 }) {
   return (
@@ -731,6 +735,12 @@ function LiveRideDrawer({
           />
         )}
 
+        <ReassignCard
+          ride={ride}
+          availableDrivers={availableDrivers}
+          onReassigned={onClose}
+        />
+
         <ForceCancelCard ride={ride} onCancelled={onClose} />
       </div>
     </div>
@@ -807,6 +817,118 @@ function QuickPushCard({
 }
 
 // ── Force-cancel card ──────────────────────────────────────────────────────
+
+// ── Reassign card (Slice 1.7f) ────────────────────────────────────────────
+
+function ReassignCard({
+  ride,
+  availableDrivers,
+  onReassigned,
+}: {
+  ride: LiveActiveRide
+  availableDrivers: OnlineDriver[]
+  onReassigned: () => void
+}) {
+  const reassign = useAdminReassignRide(ride.id)
+  const [selectedDriverId, setSelectedDriverId] = useState('')
+  const [reason, setReason] = useState('')
+  const [expanded, setExpanded] = useState(false)
+
+  // Only requested / accepted are eligible (mid-flight reassign would
+  // need re-routing — same gate the server enforces).
+  const eligible = ride.status === 'requested' || ride.status === 'accepted'
+  // Don't list the current driver as a target — that'd just trigger
+  // ALREADY_ASSIGNED from the server.
+  const picks = availableDrivers.filter((d) => d.user_id !== ride.driver_id)
+
+  if (!eligible) {
+    return (
+      <section className="rounded-lg border border-border p-3 space-y-1">
+        <h3 className="text-sm font-semibold text-text-primary">Reassign ride</h3>
+        <p className="text-xs text-text-secondary">
+          Only available while ride is requested or accepted (currently {ride.status}).
+        </p>
+      </section>
+    )
+  }
+
+  return (
+    <section className="rounded-lg border border-primary/40 bg-primary-light/40 p-3 space-y-2">
+      <h3 className="text-sm font-semibold text-primary">Reassign to a different driver</h3>
+      <p className="text-xs text-text-secondary">
+        Hand this ride to a specific online driver. Both parties (and the previous
+        driver, if any) get a push.
+      </p>
+      {!expanded ? (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="rounded-md border border-primary px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/10"
+        >
+          Reassign…
+        </button>
+      ) : (
+        <>
+          <label className="block text-xs font-medium text-text-secondary">
+            Pick a driver (online + idle)
+          </label>
+          <select
+            data-testid="reassign-driver-picker"
+            value={selectedDriverId}
+            onChange={(e) => setSelectedDriverId(e.target.value)}
+            className="w-full rounded-md border border-border px-2 py-1.5 text-sm"
+          >
+            <option value="">— select —</option>
+            {picks.map((d) => (
+              <option key={d.user_id} value={d.user_id}>
+                {d.name ?? d.email ?? d.user_id.slice(0, 8)}
+              </option>
+            ))}
+          </select>
+          {picks.length === 0 && (
+            <p className="text-xs text-warning">
+              No idle online drivers available right now.
+            </p>
+          )}
+          <textarea
+            data-testid="reassign-reason"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Why are you reassigning? (required)"
+            rows={2}
+            maxLength={500}
+            className="w-full rounded-md border border-border px-2 py-1.5 text-sm"
+          />
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => { setExpanded(false); setSelectedDriverId(''); setReason('') }}
+              className="rounded-md px-3 py-1.5 text-sm text-text-secondary hover:bg-surface"
+            >
+              Never mind
+            </button>
+            <button
+              type="button"
+              disabled={reassign.isPending || !selectedDriverId || !reason.trim()}
+              onClick={() =>
+                reassign.mutate(
+                  { new_driver_id: selectedDriverId, reason: reason.trim() },
+                  { onSuccess: () => onReassigned() },
+                )
+              }
+              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {reassign.isPending ? 'Reassigning…' : 'Confirm reassign'}
+            </button>
+          </div>
+          {reassign.isError && (
+            <p className="text-xs text-danger">{reassign.error.message}</p>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
 
 function ForceCancelCard({
   ride,

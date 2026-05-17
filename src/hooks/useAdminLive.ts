@@ -117,3 +117,29 @@ export function useAdminForceCancelRide(rideId: string) {
     },
   })
 }
+
+// ── Slice 1.7f — admin force-reassign ride to a specific driver ────────────
+
+interface ReassignArgs { new_driver_id: string; reason: string }
+interface ReassignResult {
+  ok: true
+  ride_id: string
+  previous_status: string
+  next_status: string
+  previous_driver_id: string | null
+  new_driver_id: string
+  notifications_written: number
+  push_sent: number
+}
+
+export function useAdminReassignRide(rideId: string) {
+  const qc = useQueryClient()
+  return useMutation<ReassignResult, Error, ReassignArgs>({
+    mutationFn: (args) =>
+      adminPost<ReassignResult>(`/rides/${rideId}/reassign`, args),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'live', 'snapshot'] })
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'audit'] })
+    },
+  })
+}

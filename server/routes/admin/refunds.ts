@@ -444,3 +444,265 @@ adminRefundsRouter.post(
     }
   },
 )
+
+// ── POST /:rideId/reassign (Slice 1.7f) ───────────────────────────────────
+//
+// Manually assign a ride to a specific driver — ops escape hatch when the
+// matcher hasn't found a driver fast enough OR when ops knows a specific
+// driver should take this ride.
+//
+// Important boundary: this does NOT touch the matcher RPC or any of the
+// staged matching logic in CLAUDE.md. It only:
+//   - writes ride.driver_id (+ flips status='requested' → 'accepted')
+//   - sends a notification to the new driver and the rider
+//   - sends an "unassigned" notification to the previous driver if there was one
+//   - audit-logs once per affected party (1–3 rows total)
+//
+// Constraints enforced before the write:
+//   - Ride must be in 'requested' or 'accepted' (mid-flight reassign would
+//     require re-routing logic; out of scope for v1)
+//   - New driver must exist, be is_driver=true, and not suspended
+//   - New driver must NOT already be on another in-flight ride (would
+//     create a double-booking — they can't be in two pickups at once)
+interface ReassignBody {
+  new_driver_id?: unknown
+  reason?: unknown
+}
+
+const REASSIGNABLE_STATUSES = new Set(['requested', 'accepted'])
+const BUSY_STATUSES = ['accepted', 'coordinating', 'active'] as const
+
+adminRefundsRouter.post(
+  '/:rideId/reassign',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const rideIdRaw = req.params['rideId']
+      const rideId = typeof rideIdRaw === 'string' ? rideIdRaw : ''
+      if (!rideId || !UUID_RE.test(rideId)) {
+        res.status(400).json({
+          error: { code: 'INVALID_RIDE_ID', message: 'ride id must be a UUID' },
+        })
+        return
+      }
+
+      const adminId = res.locals['userId'] as string
+      const b = req.body as ReassignBody
+      const newDriverId = typeof b.new_driver_id === 'string' ? b.new_driver_id.trim() : ''
+      const reason = typeof b.reason === 'string' ? b.reason.trim() : ''
+      if (!newDriverId || !UUID_RE.test(newDriverId)) {
+        res.status(400).json({
+          error: { code: 'INVALID_NEW_DRIVER_ID', message: 'new_driver_id must be a UUID' },
+        })
+        return
+      }
+      if (!reason) {
+        res.status(400).json({
+          error: { code: 'INVALID_BODY', message: 'reason is required' },
+        })
+        return
+      }
+      if (reason.length > 500) {
+        res.status(400).json({
+          error: { code: 'REASON_TOO_LONG', message: 'reason must be ≤ 500 chars' },
+        })
+        return
+      }
+
+      // 1. Load ride
+      const { data: ride, error: rideErr } = await supabaseAdmin
+        .from('rides')
+        .select('id, status, rider_id, driver_id')
+        .eq('id', rideId)
+        .maybeSingle()
+      if (rideErr) throw rideErr
+      if (!ride) {
+        res.status(404).json({
+          error: { code: 'RIDE_NOT_FOUND', message: 'no ride with that id' },
+        })
+        return
+      }
+      if (!REASSIGNABLE_STATUSES.has(ride.status)) {
+        res.status(409).json({
+          error: {
+            code: 'RIDE_NOT_REASSIGNABLE',
+            message: `ride is ${ride.status}; reassign only works on requested or accepted rides`,
+          },
+        })
+        return
+      }
+      if (ride.driver_id === newDriverId) {
+        res.status(409).json({
+          error: {
+            code: 'ALREADY_ASSIGNED',
+            message: 'ride is already assigned to this driver',
+          },
+        })
+        return
+      }
+
+      // 2. Load new driver + sanity-check
+      const { data: driver, error: driverErr } = await supabaseAdmin
+        .from('users')
+        .select('id, is_driver, suspended_at, full_name, email')
+        .eq('id', newDriverId)
+        .maybeSingle()
+      if (driverErr) throw driverErr
+      if (!driver) {
+        res.status(404).json({
+          error: { code: 'DRIVER_NOT_FOUND', message: 'new_driver_id does not exist' },
+        })
+        return
+      }
+      if (!driver.is_driver) {
+        res.status(409).json({
+          error: { code: 'NOT_A_DRIVER', message: 'target user is not a driver' },
+        })
+        return
+      }
+      if (driver.suspended_at) {
+        res.status(409).json({
+          error: { code: 'DRIVER_SUSPENDED', message: 'target driver is suspended' },
+        })
+        return
+      }
+
+      // 3. Don't double-book. New driver must have no other in-flight ride.
+      const { data: busyRides, error: busyErr } = await supabaseAdmin
+        .from('rides')
+        .select('id, status')
+        .eq('driver_id', newDriverId)
+        .in('status', BUSY_STATUSES as unknown as readonly never[])
+        .limit(1)
+      if (busyErr) throw busyErr
+      if ((busyRides ?? []).length > 0) {
+        res.status(409).json({
+          error: {
+            code: 'DRIVER_BUSY',
+            message: 'driver is already on another in-flight ride',
+          },
+        })
+        return
+      }
+
+      // 4. Flip the row.
+      const previousDriverId = ride.driver_id as string | null
+      const nextStatus = ride.status === 'requested' ? 'accepted' : ride.status
+      const { error: updErr } = await supabaseAdmin
+        .from('rides')
+        .update({ driver_id: newDriverId, status: nextStatus })
+        .eq('id', rideId)
+      if (updErr) throw updErr
+
+      // 5. Notify all affected parties via inbox + best-effort FCM.
+      const newDriverTitle = 'Tago assigned you a ride'
+      const newDriverBody = `Ops assigned you a ride. Open the app to see pickup details.`
+      const riderTitle = 'Your driver has changed'
+      const riderBody = `Tago assigned a new driver to your ride.`
+      const oldDriverTitle = 'Ride reassigned'
+      const oldDriverBody = `Tago reassigned this ride to another driver.`
+
+      const notifInserts = [
+        {
+          user_id: newDriverId,
+          type: 'admin_assigned',
+          title: newDriverTitle,
+          body: newDriverBody,
+          data: { source: 'admin_panel', type: 'admin_assigned', ride_id: rideId, reason },
+        },
+        {
+          user_id: ride.rider_id as string,
+          type: 'admin_assigned',
+          title: riderTitle,
+          body: riderBody,
+          data: { source: 'admin_panel', type: 'admin_assigned', ride_id: rideId },
+        },
+      ]
+      if (previousDriverId) {
+        notifInserts.push({
+          user_id: previousDriverId,
+          type: 'admin_unassigned',
+          title: oldDriverTitle,
+          body: oldDriverBody,
+          data: { source: 'admin_panel', type: 'admin_unassigned', ride_id: rideId, reason },
+        })
+      }
+      const { error: notifErr } = await supabaseAdmin
+        .from('notifications')
+        .insert(notifInserts)
+      if (notifErr) {
+        console.warn('[adminReassign] notifications insert failed:', notifErr.message)
+      }
+
+      // 6. Best-effort push fan-out.
+      let pushSent = 0
+      const pushRecipients = [
+        { uid: newDriverId, title: newDriverTitle, body: newDriverBody },
+        { uid: ride.rider_id as string, title: riderTitle, body: riderBody },
+        ...(previousDriverId
+          ? [{ uid: previousDriverId, title: oldDriverTitle, body: oldDriverBody }]
+          : []),
+      ]
+      for (const r of pushRecipients) {
+        try {
+          const { data: tokenRows } = await supabaseAdmin
+            .from('push_tokens')
+            .select('token')
+            .eq('user_id', r.uid)
+          const tokens = (tokenRows ?? []).map((row) => row.token as string)
+          if (tokens.length > 0) {
+            pushSent += await sendFcmPush(tokens, {
+              title: r.title,
+              body: r.body,
+              data: { source: 'admin_panel', type: 'admin_reassigned', ride_id: rideId },
+            })
+          }
+        } catch (pushErr) {
+          console.warn('[adminReassign] push failed for', r.uid, pushErr)
+        }
+      }
+
+      // 7. Audit — one row per affected party (mirrors refund/force-cancel).
+      const auditBase = {
+        ride_id: rideId,
+        previous_status: ride.status,
+        next_status: nextStatus,
+        previous_driver_id: previousDriverId,
+        new_driver_id: newDriverId,
+        reason,
+      }
+      await writeAuditLog({
+        adminId,
+        targetUserId: ride.rider_id as string,
+        action: 'reassign_ride',
+        payload: { ...auditBase, role: 'rider' },
+      })
+      await writeAuditLog({
+        adminId,
+        targetUserId: newDriverId,
+        action: 'reassign_ride',
+        payload: { ...auditBase, role: 'new_driver' },
+      })
+      if (previousDriverId) {
+        await writeAuditLog({
+          adminId,
+          targetUserId: previousDriverId,
+          action: 'reassign_ride',
+          payload: { ...auditBase, role: 'previous_driver' },
+        })
+      }
+
+      res.status(200).json({
+        ok: true,
+        ride_id: rideId,
+        previous_status: ride.status,
+        next_status: nextStatus,
+        previous_driver_id: previousDriverId,
+        new_driver_id: newDriverId,
+        notifications_written: notifInserts.length,
+        push_sent: pushSent,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
