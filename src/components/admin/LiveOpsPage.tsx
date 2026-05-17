@@ -61,6 +61,7 @@ export default function LiveOpsPage() {
 
   const [filter, setFilter] = useState<FilterMode>('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedDriverId, setSelectedDriverId] = useState<string | null>(null)
   const [showOnlineDrivers, setShowOnlineDrivers] = useState(true)
   const [search, setSearch] = useState('')
 
@@ -89,6 +90,11 @@ export default function LiveOpsPage() {
   const selectedRide = useMemo(
     () => (selectedId ? allActive.find((r) => r.id === selectedId) ?? null : null),
     [allActive, selectedId],
+  )
+
+  const selectedDriver = useMemo(
+    () => (selectedDriverId ? onlineDrivers.find((d) => d.user_id === selectedDriverId) ?? null : null),
+    [onlineDrivers, selectedDriverId],
   )
 
   const stuckCount = useMemo(
@@ -267,7 +273,11 @@ export default function LiveOpsPage() {
                   // dot to avoid two markers on the same coords.
                   .filter((d) => !d.on_active_ride)
                   .map((d) => (
-                    <OnlineDriverMarker key={`online-${d.user_id}`} driver={d} />
+                    <OnlineDriverMarker
+                      key={`online-${d.user_id}`}
+                      driver={d}
+                      onClick={() => setSelectedDriverId(d.user_id)}
+                    />
                   ))}
               </Map>
             </APIProvider>
@@ -456,6 +466,13 @@ export default function LiveOpsPage() {
           onClose={() => setSelectedId(null)}
         />
       )}
+
+      {selectedDriver && (
+        <OnlineDriverDrawer
+          driver={selectedDriver}
+          onClose={() => setSelectedDriverId(null)}
+        />
+      )}
     </div>
   )
 }
@@ -502,7 +519,13 @@ function RideMarkers({
   )
 }
 
-function OnlineDriverMarker({ driver }: { driver: OnlineDriver }) {
+function OnlineDriverMarker({
+  driver,
+  onClick,
+}: {
+  driver: OnlineDriver
+  onClick: () => void
+}) {
   // Small idle-green pulse — distinct from the active-ride driver's
   // primary-color marker. Stale-ping drivers (>5 min old) render
   // dimmer + no pulse, so admin can tell at a glance which dots
@@ -519,8 +542,9 @@ function OnlineDriverMarker({ driver }: { driver: OnlineDriver }) {
     <AdvancedMarker
       position={{ lat: driver.lat, lng: driver.lng }}
       title={tooltip}
+      onClick={onClick}
     >
-      <div className="relative flex items-center justify-center">
+      <div className="relative flex items-center justify-center cursor-pointer">
         {!stale && (
           <span className="absolute h-4 w-4 rounded-full bg-success/30 animate-ping" />
         )}
@@ -529,6 +553,137 @@ function OnlineDriverMarker({ driver }: { driver: OnlineDriver }) {
         />
       </div>
     </AdvancedMarker>
+  )
+}
+
+// ── Online driver drawer (click an online-driver dot on the map) ────────────
+
+function OnlineDriverDrawer({
+  driver,
+  onClose,
+}: {
+  driver: OnlineDriver
+  onClose: () => void
+}) {
+  const send = useAdminSendPush(driver.user_id)
+  const [pushTitle, setPushTitle] = useState('Tago support')
+  const [pushBody, setPushBody] = useState('Hi, this is Tago ops checking in. Is everything OK?')
+
+  return (
+    <div
+      data-testid="online-driver-drawer"
+      className="fixed inset-y-0 right-0 z-50 w-full max-w-md border-l border-border bg-white shadow-2xl overflow-y-auto"
+    >
+      <header className="sticky top-0 bg-white border-b border-border px-5 py-4 flex items-center justify-between">
+        <div className="min-w-0">
+          <p className="text-xs text-text-tertiary uppercase tracking-wide">Online driver</p>
+          <h2 className="text-lg font-semibold text-text-primary truncate">
+            {driver.name ?? driver.email ?? driver.user_id.slice(0, 8) + '…'}
+          </h2>
+          <div className="flex items-center gap-2 mt-1">
+            {driver.on_active_ride ? (
+              <span className="inline-block rounded-full bg-primary-light px-2 py-0.5 text-xs font-medium text-primary">
+                on active ride
+              </span>
+            ) : (
+              <span className="inline-block rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success">
+                idle · available
+              </span>
+            )}
+            {driver.ping_stale && (
+              <span className="inline-block rounded-full bg-warning/15 px-2 py-0.5 text-xs font-medium text-warning">
+                stale ping
+              </span>
+            )}
+          </div>
+        </div>
+        <button
+          type="button"
+          aria-label="Close"
+          className="rounded-md border border-border px-2 py-1 text-sm hover:bg-surface"
+          onClick={onClose}
+        >
+          ✕
+        </button>
+      </header>
+
+      <div className="px-5 py-4 space-y-4">
+        <section className="grid grid-cols-2 gap-3 text-sm">
+          <Field label="Email" value={driver.email ?? '—'} />
+          <Field label="Last ping" value={timeAgo(driver.last_ping_at) + ' ago'} />
+          <Field label="Latitude" value={driver.lat.toFixed(5)} />
+          <Field label="Longitude" value={driver.lng.toFixed(5)} />
+        </section>
+
+        {driver.ping_stale && (
+          <div className="rounded-lg border border-warning/40 bg-warning/5 px-3 py-2 text-xs text-text-secondary">
+            GPS hasn't refreshed in {humanMs(driver.ping_age_ms)} — the matcher
+            will still notify them via the visible push, but the on-map dot is
+            their last-known position, not where they are now.
+          </div>
+        )}
+
+        {/* ── Profile shortcut ────────────────────────────────────── */}
+        <section className="space-y-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+            Profile
+          </h3>
+          <Link
+            to={`/admin/users/${driver.user_id}`}
+            className="block rounded-md border border-border px-3 py-2 text-sm hover:bg-surface"
+          >
+            Open driver profile →
+          </Link>
+        </section>
+
+        {/* ── Quick push ──────────────────────────────────────────── */}
+        <section className="rounded-lg border border-border p-3 space-y-2">
+          <h3 className="text-sm font-semibold text-text-primary">
+            Push this driver
+          </h3>
+          <input
+            data-testid="online-driver-push-title"
+            type="text"
+            value={pushTitle}
+            onChange={(e) => setPushTitle(e.target.value)}
+            maxLength={120}
+            className="w-full rounded-md border border-border px-2 py-1.5 text-sm"
+          />
+          <textarea
+            data-testid="online-driver-push-body"
+            value={pushBody}
+            onChange={(e) => setPushBody(e.target.value)}
+            maxLength={500}
+            rows={3}
+            className="w-full rounded-md border border-border px-2 py-1.5 text-sm"
+          />
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              disabled={send.isPending || !pushTitle.trim() || !pushBody.trim()}
+              onClick={() =>
+                send.mutate({
+                  title: pushTitle.trim(),
+                  body: pushBody.trim(),
+                  reason: 'live-ops driver pin',
+                })
+              }
+              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {send.isPending ? 'Sending…' : 'Send push'}
+            </button>
+            {send.isSuccess && (
+              <span className="text-xs text-success">
+                Sent to {send.data.sent}/{send.data.total_tokens} devices
+              </span>
+            )}
+            {send.isError && (
+              <span className="text-xs text-danger truncate">{send.error.message}</span>
+            )}
+          </div>
+        </section>
+      </div>
+    </div>
   )
 }
 
