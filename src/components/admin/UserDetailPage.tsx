@@ -10,6 +10,8 @@ import {
   useAdminSendPush,
   useAdminGrantCredit,
   useAdminOverrideOnboarding,
+  useAdminSuspend,
+  useAdminResetPassword,
   useAdminStripeBalance,
   type AdminUserOverview,
   type AdminAuditRow,
@@ -139,6 +141,8 @@ export default function UserDetailPage() {
         <ActionsTab
           userId={id}
           currentOnboardingCompleted={data.user.onboarding_completed}
+          currentSuspendedAt={data.user.suspended_at}
+          targetIsAdmin={data.user.is_admin}
           targetEmail={data.user.email}
           active={tab === 'actions'}
         />
@@ -169,6 +173,7 @@ function Header({ data }: { data: AdminUserOverview }) {
             </h1>
             <Badge label={u.is_driver ? 'driver' : 'rider'} />
             {u.is_admin && <Badge label="admin" tone="primary" />}
+            {u.suspended_at && <Badge label="suspended" tone="danger" />}
           </div>
           <div className="mt-0.5 truncate text-sm text-text-secondary">
             {u.email}
@@ -240,7 +245,7 @@ function OverviewTab({ data }: { data: AdminUserOverview }) {
       <Card
         testid="overview-profile"
         title="Profile"
-        info="Core columns from public.users. Phone-verified means the user completed the SMS OTP. Onboarding-completed means they finished the full sign-up flow (name, phone, DOB, photo)."
+        info="Core columns from public.users. Phone-verified means the user completed the SMS OTP. Onboarding-completed means they finished the full sign-up flow (name, phone, DOB, photo). Suspension state surfaces here so you can see at a glance whether this user is currently blocked from the API."
         rows={[
           { label: 'Email verified', value: data.email_verified ? 'Yes' : 'No', tone: data.email_verified ? 'success' : 'danger' },
           { label: 'Phone', value: u.phone ?? '—' },
@@ -248,6 +253,12 @@ function OverviewTab({ data }: { data: AdminUserOverview }) {
           { label: 'Onboarding complete', value: u.onboarding_completed ? 'Yes' : 'No', tone: u.onboarding_completed ? 'success' : 'danger' },
           { label: 'Is admin', value: u.is_admin ? 'Yes' : 'No' },
           { label: 'University', value: data.university },
+          ...(u.suspended_at
+            ? ([
+                { label: 'Suspended at', value: u.suspended_at, tone: 'danger' as const },
+                { label: 'Suspension reason', value: u.suspended_reason ?? '(no reason given)', tone: 'danger' as const },
+              ])
+            : []),
           { label: 'User ID', value: u.id, mono: true },
         ]}
       />
@@ -356,11 +367,15 @@ function Card({
 function ActionsTab({
   userId,
   currentOnboardingCompleted,
+  currentSuspendedAt,
+  targetIsAdmin,
   targetEmail,
   active,
 }: {
   userId: string
   currentOnboardingCompleted: boolean
+  currentSuspendedAt: string | null
+  targetIsAdmin: boolean
   targetEmail: string
   active: boolean
 }) {
@@ -369,10 +384,9 @@ function ActionsTab({
       <div className="rounded-2xl border border-warning bg-warning/5 p-4 text-xs text-text-primary">
         <div className="font-semibold">⚠ Every action below writes an audit row.</div>
         <div className="mt-1 text-text-secondary">
-          Suspend account, refund a ride, and force-reset password are
-          deferred to Slice 1.3d. The three actions here are reversible
-          (push is one-shot; credit can be negated; onboarding can be
-          flipped back) — but please use them deliberately.
+          Refunding a ride is deferred to Slice 1.3e (it needs a UI on
+          the Rides tab + driver-overdraft handling). All other actions
+          here are reversible — but please use them deliberately.
         </div>
       </div>
 
@@ -383,6 +397,13 @@ function ActionsTab({
           userId={userId}
           current={currentOnboardingCompleted}
         />
+        <SuspendAccountCard
+          userId={userId}
+          currentSuspendedAt={currentSuspendedAt}
+          targetIsAdmin={targetIsAdmin}
+          targetEmail={targetEmail}
+        />
+        <ResetPasswordCard userId={userId} targetEmail={targetEmail} />
       </div>
 
       <AuditList userId={userId} active={active} />
@@ -817,6 +838,246 @@ function OverrideOnboardingCard({
   )
 }
 
+// ── Suspend account card ────────────────────────────────────────────────────
+
+function SuspendAccountCard({
+  userId,
+  currentSuspendedAt,
+  targetIsAdmin,
+  targetEmail,
+}: {
+  userId: string
+  currentSuspendedAt: string | null
+  targetIsAdmin: boolean
+  targetEmail: string
+}) {
+  const [reason, setReason] = useState('')
+  const [showConfirm, setShowConfirm] = useState(false)
+  const m = useAdminSuspend(userId)
+  const isCurrentlySuspended = currentSuspendedAt !== null
+  const desired = !isCurrentlySuspended
+
+  // Block client-side when target is admin and we'd be suspending —
+  // server refuses too but the UX should call it out immediately.
+  const blockedAdmin = desired && targetIsAdmin
+  const reasonRequired = desired && reason.trim().length === 0
+  const ok = !blockedAdmin && !reasonRequired
+
+  function handleConfirm() {
+    m.mutate(
+      desired
+        ? { suspended: true, reason: reason.trim() }
+        : { suspended: false, reason: reason.trim() || undefined },
+      {
+        onSuccess: () => {
+          setReason('')
+          setShowConfirm(false)
+        },
+      },
+    )
+  }
+
+  return (
+    <>
+      <ActionCard
+        testid="action-suspend"
+        title={isCurrentlySuspended ? 'Unsuspend account' : 'Suspend account'}
+        info="A suspended account is blocked from EVERY authenticated API call (validateJwt middleware returns 403 SUSPENDED with the reason). The user is effectively logged out on next refresh. Cached for up to 60s server-side per request, so a flip takes effect on the very next request after that. Admin accounts cannot be suspended."
+      >
+        <p className="text-xs text-text-secondary">
+          Currently:{' '}
+          <span className={isCurrentlySuspended ? 'text-danger font-medium' : 'text-success font-medium'}>
+            {isCurrentlySuspended ? 'suspended' : 'active'}
+          </span>
+        </p>
+        {blockedAdmin && (
+          <p className="rounded-md border border-danger bg-danger/5 px-2 py-1 text-[11px] text-danger">
+            ⚠ This account is an admin. Admin accounts cannot be suspended.
+          </p>
+        )}
+        <Field
+          label={desired ? 'Reason (required to suspend)' : 'Reason (optional)'}
+          value={reason}
+          onChange={setReason}
+          placeholder={
+            desired
+              ? 'e.g. fraud investigation pending, awaiting Stripe dispute review'
+              : 'e.g. dispute resolved, account restored'
+          }
+          maxLength={300}
+        />
+        <ActionButton
+          testid="action-suspend-submit"
+          label={desired ? 'Suspend…' : 'Unsuspend…'}
+          loading={m.isPending}
+          disabled={!ok}
+          onClick={() => setShowConfirm(true)}
+        />
+        <ActionResult
+          mutation={m}
+          successText={(d) =>
+            d.changed
+              ? d.suspended
+                ? 'Account suspended.'
+                : 'Account un-suspended.'
+              : `No change — was already ${d.suspended ? 'suspended' : 'active'}.`
+          }
+        />
+      </ActionCard>
+
+      {showConfirm && (
+        <ConfirmSuspendDialog
+          targetEmail={targetEmail}
+          suspending={desired}
+          reason={reason.trim()}
+          submitting={m.isPending}
+          onCancel={() => setShowConfirm(false)}
+          onConfirm={handleConfirm}
+        />
+      )}
+    </>
+  )
+}
+
+function ConfirmSuspendDialog({
+  targetEmail,
+  suspending,
+  reason,
+  submitting,
+  onCancel,
+  onConfirm,
+}: {
+  targetEmail: string
+  suspending: boolean
+  reason: string
+  submitting: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div
+      data-testid="confirm-suspend-dialog"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+    >
+      <div
+        role="dialog"
+        aria-label="Confirm suspension"
+        className="w-full max-w-md rounded-2xl border border-border bg-white p-6 shadow-xl"
+      >
+        <div className="text-sm font-semibold uppercase tracking-wide text-text-secondary">
+          {suspending ? 'Confirm suspension' : 'Confirm un-suspension'}
+        </div>
+        <div className="mt-3 text-center">
+          <div
+            className={[
+              'text-3xl font-bold',
+              suspending ? 'text-danger' : 'text-success',
+            ].join(' ')}
+          >
+            {suspending ? 'SUSPEND' : 'RESTORE'}
+          </div>
+          <div className="mt-1 text-xs text-text-secondary">
+            {targetEmail}
+          </div>
+        </div>
+        {reason && (
+          <div className="mt-4 rounded-md border border-border bg-surface p-3 text-xs text-text-primary">
+            <div className="font-semibold uppercase tracking-wide text-[10px] text-text-secondary">
+              Reason
+            </div>
+            <div className="mt-1">{reason}</div>
+          </div>
+        )}
+        <p className="mt-4 text-xs text-text-secondary">
+          {suspending
+            ? 'The user will see every API call fail with 403 within 60 seconds. They can be un-suspended at any time from this same card.'
+            : 'The user will regain full access within 60 seconds of this change.'}
+        </p>
+        <div className="mt-6 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            data-testid="confirm-suspend-cancel"
+            onClick={onCancel}
+            disabled={submitting}
+            className="rounded-md border border-border bg-white px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            data-testid="confirm-suspend-confirm"
+            onClick={onConfirm}
+            disabled={submitting}
+            className={[
+              'rounded-md px-4 py-2 text-sm font-semibold text-white transition-colors',
+              submitting
+                ? 'bg-border cursor-not-allowed text-text-secondary'
+                : suspending
+                  ? 'bg-danger hover:opacity-90'
+                  : 'bg-success hover:opacity-90',
+            ].join(' ')}
+          >
+            {submitting
+              ? 'Applying…'
+              : suspending
+                ? 'Confirm suspension'
+                : 'Confirm un-suspension'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Force-reset password card ───────────────────────────────────────────────
+
+function ResetPasswordCard({
+  userId,
+  targetEmail,
+}: {
+  userId: string
+  targetEmail: string
+}) {
+  const [reason, setReason] = useState('')
+  const m = useAdminResetPassword(userId)
+
+  return (
+    <ActionCard
+      testid="action-reset-password"
+      title="Force-reset password"
+      info="Triggers Supabase Auth to send a password-recovery email to the user (same email they'd get from clicking 'Forgot password?' on /auth/login). The user must check their inbox and follow the link to set a new password — admins do not see or set the new password. Reason is optional but recorded in the audit log."
+    >
+      <p className="text-xs text-text-secondary">
+        Will email:{' '}
+        <span className="font-mono text-[11px] text-text-primary">{targetEmail}</span>
+      </p>
+      <Field
+        label="Reason (optional)"
+        value={reason}
+        onChange={setReason}
+        placeholder="e.g. user reports they can't reset themselves"
+        maxLength={200}
+      />
+      <ActionButton
+        testid="action-reset-password-submit"
+        label="Send recovery email"
+        loading={m.isPending}
+        disabled={false}
+        onClick={() => {
+          m.mutate(
+            { reason: reason.trim() || undefined },
+            { onSuccess: () => setReason('') },
+          )
+        }}
+      />
+      <ActionResult
+        mutation={m}
+        successText={(d) => `Recovery email queued to ${d.email}.`}
+      />
+    </ActionCard>
+  )
+}
+
 // ── Audit list ──────────────────────────────────────────────────────────────
 
 function AuditList({ userId, active }: { userId: string; active: boolean }) {
@@ -887,6 +1148,15 @@ function summarisePayload(action: string, p: Record<string, unknown>): string {
   if (action === 'override_onboarding') {
     return `${String(p['from'])} → ${String(p['to'])}` +
       (typeof p['reason'] === 'string' ? ` · ${p['reason']}` : '')
+  }
+  if (action === 'suspend_user' || action === 'unsuspend_user') {
+    const reason = typeof p['reason'] === 'string' ? p['reason'] : null
+    return reason ?? (action === 'suspend_user' ? 'no reason given' : 'restored')
+  }
+  if (action === 'force_reset_password') {
+    const email = typeof p['email'] === 'string' ? p['email'] : ''
+    const reason = typeof p['reason'] === 'string' ? p['reason'] : ''
+    return email + (reason ? ` · ${reason}` : '')
   }
   return JSON.stringify(p)
 }

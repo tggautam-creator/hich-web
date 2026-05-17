@@ -50,6 +50,8 @@ const fakeProfile = {
   date_of_birth:      null,
   onboarding_completed: false,
   is_admin:           false,
+  suspended_at:       null,
+  suspended_reason:   null,
   created_at:         '2024-01-01T00:00:00Z',
 }
 

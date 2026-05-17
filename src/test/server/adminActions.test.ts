@@ -18,7 +18,7 @@ import express from 'express'
 const { mockAuth, mockFrom, mockRpc, mockSendFcm, mockStripeBalance } = vi.hoisted(() => ({
   mockAuth: {
     getUser: vi.fn(),
-    admin: { listUsers: vi.fn(), getUserById: vi.fn() },
+    admin: { listUsers: vi.fn(), getUserById: vi.fn(), generateLink: vi.fn() },
   },
   mockFrom: vi.fn(),
   mockRpc: vi.fn(),
@@ -41,7 +41,10 @@ import { app } from '../../../server/app.ts'
 
 const VALID_JWT = 'Bearer valid.jwt.token'
 const TARGET = '550e8400-e29b-41d4-a716-446655440000'
-const ADMIN_UID = 'admin-uid'
+// Must be a valid UUID so the self-suspend check (which goes through
+// targetUserId's UUID validator) can actually reach the self-check
+// branch when this string is passed as :id.
+const ADMIN_UID = '00000000-0000-4000-8000-000000000aaa'
 
 /**
  * Records every audit_log insert so a test can assert "one row was
@@ -63,6 +66,12 @@ interface SetupOpts {
   stripeAvailableCents?: number
   /** Set true to make the Stripe balance call throw (simulates Stripe outage). */
   stripeBalanceFails?: boolean
+  /** Suspend endpoint: shape of the target's existing row when looked up. */
+  suspendTarget?: { is_admin: boolean; suspended_at: string | null }
+  /** Reset-password endpoint: target user's email (null = NOT_FOUND). */
+  resetTargetEmail?: string | null
+  /** Reset-password endpoint: set true to make generateLink fail. */
+  generateLinkFails?: boolean
 }
 
 function setup(opts: SetupOpts = {}): void {
@@ -88,6 +97,12 @@ function setup(opts: SetupOpts = {}): void {
 
   if (opts.rpcResult !== undefined) {
     mockRpc.mockResolvedValue({ data: opts.rpcResult, error: null })
+  }
+
+  if (opts.generateLinkFails) {
+    mockAuth.admin.generateLink.mockResolvedValue({ data: null, error: { message: 'auth API down' } })
+  } else {
+    mockAuth.admin.generateLink.mockResolvedValue({ data: { properties: {} }, error: null })
   }
 
   mockFrom.mockImplementation((table: string) => {
@@ -121,6 +136,47 @@ function setup(opts: SetupOpts = {}): void {
                     data: opts.targetExists === false
                       ? null
                       : { onboarding_completed: opts.onboardingBefore ?? false },
+                    error: null,
+                  }),
+              }),
+            }
+          }
+          if (cols === 'is_admin, suspended_at') {
+            return {
+              eq: () => ({
+                maybeSingle: () =>
+                  Promise.resolve({
+                    data: opts.suspendTarget ?? null,
+                    error: null,
+                  }),
+              }),
+            }
+          }
+          if (cols === 'email') {
+            return {
+              eq: () => ({
+                maybeSingle: () =>
+                  Promise.resolve({
+                    data:
+                      opts.resetTargetEmail === null
+                        ? null
+                        : opts.resetTargetEmail !== undefined
+                          ? { email: opts.resetTargetEmail }
+                          : null,
+                    error: null,
+                  }),
+              }),
+            }
+          }
+          if (cols === 'suspended_at, suspended_reason, is_admin') {
+            // validateJwt status cache lookup — return active + admin
+            // so the request sails through (existing tests don't care
+            // about this cache; suspension is tested directly).
+            return {
+              eq: () => ({
+                maybeSingle: () =>
+                  Promise.resolve({
+                    data: { suspended_at: null, suspended_reason: null, is_admin: isAdmin },
                     error: null,
                   }),
               }),
@@ -403,6 +459,144 @@ describe('POST /api/admin/users/:id/actions/override-onboarding', () => {
     })
     const payload = auditInserts[0]?.['payload'] as Record<string, unknown>
     expect(payload).toMatchObject({ from: false, to: true, reason: 'user stuck at CreateProfile' })
+  })
+})
+
+// ── /actions/suspend ────────────────────────────────────────────────────────
+
+describe('POST /api/admin/users/:id/actions/suspend', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('400s CANNOT_SUSPEND_SELF when admin tries to suspend their own uid', async () => {
+    setup({ suspendTarget: { is_admin: true, suspended_at: null } })
+    const res = await request(app)
+      .post(`/api/admin/users/${ADMIN_UID}/actions/suspend`)
+      .set('Authorization', VALID_JWT)
+      .send({ suspended: true, reason: 'oops' })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('CANNOT_SUSPEND_SELF')
+  })
+
+  it('400s INVALID_BODY when `suspended` is not a boolean', async () => {
+    setup({ suspendTarget: { is_admin: false, suspended_at: null } })
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/suspend`)
+      .set('Authorization', VALID_JWT)
+      .send({ suspended: 'yes', reason: 'x' })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('INVALID_BODY')
+  })
+
+  it('400s REASON_REQUIRED when suspending without a reason', async () => {
+    setup({ suspendTarget: { is_admin: false, suspended_at: null } })
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/suspend`)
+      .set('Authorization', VALID_JWT)
+      .send({ suspended: true })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('REASON_REQUIRED')
+  })
+
+  it('400s CANNOT_SUSPEND_ADMIN when target is_admin=true', async () => {
+    setup({ suspendTarget: { is_admin: true, suspended_at: null } })
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/suspend`)
+      .set('Authorization', VALID_JWT)
+      .send({ suspended: true, reason: 'tried to suspend an admin' })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('CANNOT_SUSPEND_ADMIN')
+  })
+
+  it('404s when target user does not exist', async () => {
+    setup({ suspendTarget: undefined }) // no row
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/suspend`)
+      .set('Authorization', VALID_JWT)
+      .send({ suspended: true, reason: 'ghost' })
+    expect(res.status).toBe(404)
+    expect(res.body.error.code).toBe('TARGET_NOT_FOUND')
+  })
+
+  it('returns changed=false when state already matches desired', async () => {
+    setup({ suspendTarget: { is_admin: false, suspended_at: '2026-05-17T10:00:00Z' } })
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/suspend`)
+      .set('Authorization', VALID_JWT)
+      .send({ suspended: true, reason: 'idempotent' })
+    expect(res.status).toBe(200)
+    expect(res.body.changed).toBe(false)
+    expect(auditInserts.length).toBe(0)
+  })
+
+  it('suspends + audit-logs when flipping NULL → set', async () => {
+    setup({ suspendTarget: { is_admin: false, suspended_at: null } })
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/suspend`)
+      .set('Authorization', VALID_JWT)
+      .send({ suspended: true, reason: 'fraud investigation pending' })
+    expect(res.status).toBe(200)
+    expect(res.body.changed).toBe(true)
+    expect(res.body.suspended).toBe(true)
+    expect(auditInserts.length).toBe(1)
+    expect(auditInserts[0]).toMatchObject({ action: 'suspend_user', target_user_id: TARGET })
+    const payload = auditInserts[0]?.['payload'] as Record<string, unknown>
+    expect(payload).toMatchObject({ reason: 'fraud investigation pending' })
+  })
+
+  it('unsuspends + audit-logs (reason optional) when flipping set → NULL', async () => {
+    setup({ suspendTarget: { is_admin: false, suspended_at: '2026-05-17T10:00:00Z' } })
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/suspend`)
+      .set('Authorization', VALID_JWT)
+      .send({ suspended: false })
+    expect(res.status).toBe(200)
+    expect(res.body.changed).toBe(true)
+    expect(res.body.suspended).toBe(false)
+    expect(auditInserts.length).toBe(1)
+    expect(auditInserts[0]).toMatchObject({ action: 'unsuspend_user' })
+  })
+})
+
+// ── /actions/reset-password ─────────────────────────────────────────────────
+
+describe('POST /api/admin/users/:id/actions/reset-password', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('404s when target user does not exist', async () => {
+    setup({ resetTargetEmail: null })
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/reset-password`)
+      .set('Authorization', VALID_JWT)
+      .send({})
+    expect(res.status).toBe(404)
+    expect(res.body.error.code).toBe('TARGET_NOT_FOUND')
+  })
+
+  it('502s AUTH_LINK_FAILED when Supabase generateLink errors', async () => {
+    setup({ resetTargetEmail: 'rider@x.edu', generateLinkFails: true })
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/reset-password`)
+      .set('Authorization', VALID_JWT)
+      .send({})
+    expect(res.status).toBe(502)
+    expect(res.body.error.code).toBe('AUTH_LINK_FAILED')
+    expect(auditInserts.length).toBe(0)
+  })
+
+  it('triggers Supabase recovery + audit-logs on success', async () => {
+    setup({ resetTargetEmail: 'rider@x.edu' })
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/reset-password`)
+      .set('Authorization', VALID_JWT)
+      .send({ reason: 'user reports they cannot reset themselves' })
+    expect(res.status).toBe(200)
+    expect(res.body.email).toBe('rider@x.edu')
+    expect(mockAuth.admin.generateLink).toHaveBeenCalledWith({
+      type: 'recovery',
+      email: 'rider@x.edu',
+    })
+    expect(auditInserts.length).toBe(1)
+    expect(auditInserts[0]).toMatchObject({ action: 'force_reset_password', target_user_id: TARGET })
   })
 })
 

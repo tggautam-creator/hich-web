@@ -68,6 +68,8 @@ interface UserOverviewResponse {
     rating_count: number
     date_of_birth: string | null
     last_active_at: string | null
+    suspended_at: string | null
+    suspended_reason: string | null
     created_at: string
   }
   email_verified: boolean

@@ -30,6 +30,7 @@ import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
 import { writeAuditLog } from '../../lib/adminAudit.ts'
 import { sendFcmPush } from '../../lib/fcm.ts'
 import { getAvailableStripeBalanceCents } from './stripe.ts'
+import { invalidateUserStatusCache } from '../../middleware/auth.ts'
 
 export const adminActionsRouter = Router()
 
@@ -367,6 +368,180 @@ adminActionsRouter.post(
         ok: true,
         changed: true,
         onboarding_completed: desired,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// ── POST /:id/actions/suspend ───────────────────────────────────────────────
+
+interface SuspendBody {
+  suspended?: unknown
+  reason?: unknown
+}
+
+adminActionsRouter.post(
+  '/:id/actions/suspend',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = targetUserId(req, res)
+      if (!id) return
+
+      const callerId = adminId(res)
+      if (id === callerId) {
+        res.status(400).json({
+          error: { code: 'CANNOT_SUSPEND_SELF', message: 'You cannot suspend your own account.' },
+        })
+        return
+      }
+
+      const b = req.body as SuspendBody
+      if (typeof b.suspended !== 'boolean') {
+        res.status(400).json({
+          error: { code: 'INVALID_BODY', message: '`suspended` must be a boolean' },
+        })
+        return
+      }
+      const reason = typeof b.reason === 'string' ? b.reason.trim() : ''
+      // Reason required when suspending; optional (but recorded) when un-suspending.
+      if (b.suspended && !reason) {
+        res.status(400).json({
+          error: { code: 'REASON_REQUIRED', message: 'A reason is required when suspending an account.' },
+        })
+        return
+      }
+
+      // Refuse to suspend admins — defense-in-depth on top of
+      // validateJwt's admin-bypass.
+      const { data: target, error: lookupErr } = await supabaseAdmin
+        .from('users')
+        .select('is_admin, suspended_at')
+        .eq('id', id)
+        .maybeSingle()
+      if (lookupErr) throw lookupErr
+      if (!target) {
+        res.status(404).json({
+          error: { code: 'TARGET_NOT_FOUND', message: 'target user does not exist' },
+        })
+        return
+      }
+      if (b.suspended && target.is_admin) {
+        res.status(400).json({
+          error: { code: 'CANNOT_SUSPEND_ADMIN', message: 'Admin accounts cannot be suspended.' },
+        })
+        return
+      }
+
+      const desired = b.suspended
+      const wasSuspended = target.suspended_at !== null
+      if (wasSuspended === desired) {
+        res.status(200).json({
+          ok: true,
+          changed: false,
+          suspended: desired,
+        })
+        return
+      }
+
+      const update = desired
+        ? { suspended_at: new Date().toISOString(), suspended_reason: reason }
+        : { suspended_at: null, suspended_reason: null }
+      const { error: updateErr } = await supabaseAdmin
+        .from('users')
+        .update(update)
+        .eq('id', id)
+      if (updateErr) throw updateErr
+
+      // Drop the validateJwt status cache so the change takes effect
+      // on the user's NEXT request instead of waiting up to STATUS_TTL_MS.
+      invalidateUserStatusCache(id)
+
+      await writeAuditLog({
+        adminId: callerId,
+        targetUserId: id,
+        action: desired ? 'suspend_user' : 'unsuspend_user',
+        payload: { reason: reason || null },
+      })
+
+      res.status(200).json({
+        ok: true,
+        changed: true,
+        suspended: desired,
+        reason: reason || null,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// ── POST /:id/actions/reset-password ────────────────────────────────────────
+
+interface ResetPasswordBody {
+  reason?: unknown
+}
+
+adminActionsRouter.post(
+  '/:id/actions/reset-password',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = targetUserId(req, res)
+      if (!id) return
+
+      const b = req.body as ResetPasswordBody
+      const reason = typeof b.reason === 'string' ? b.reason.trim() : ''
+      // No reason required — force-resets are commonly run on a "user
+      // reports they can't reset themselves" call and the reason is
+      // captured in the audit row's free-text optional field.
+
+      // Look up the user's email so Supabase can send the recovery
+      // mail to the right address. Fail with 404 if no row.
+      const { data: target, error: lookupErr } = await supabaseAdmin
+        .from('users')
+        .select('email')
+        .eq('id', id)
+        .maybeSingle()
+      if (lookupErr) throw lookupErr
+      if (!target) {
+        res.status(404).json({
+          error: { code: 'TARGET_NOT_FOUND', message: 'target user does not exist' },
+        })
+        return
+      }
+
+      // generateLink is the admin-side primitive that produces a
+      // password recovery URL. Sending the email is delegated to
+      // Supabase's built-in template (admins have already verified
+      // the template renders correctly per Slice 0.2 dev verification).
+      // We use { type: 'recovery' } which mirrors the "Forgot password?"
+      // flow on /auth/login.
+      const { error: linkErr } =
+        await supabaseAdmin.auth.admin.generateLink({
+          type: 'recovery',
+          email: target.email,
+        })
+      if (linkErr) {
+        res.status(502).json({
+          error: {
+            code: 'AUTH_LINK_FAILED',
+            message: linkErr.message ?? 'Supabase Auth refused the recovery-link request.',
+          },
+        })
+        return
+      }
+
+      await writeAuditLog({
+        adminId: adminId(res),
+        targetUserId: id,
+        action: 'force_reset_password',
+        payload: { email: target.email, reason: reason || null },
+      })
+
+      res.status(200).json({
+        ok: true,
+        email: target.email,
       })
     } catch (err) {
       next(err)

@@ -36,6 +36,8 @@ describe('scaffold — @/ alias and database types', () => {
       onboarding_completed: false,
       is_admin: false,
       last_active_at: null,
+      suspended_at: null,
+      suspended_reason: null,
       created_at: new Date().toISOString(),
     }
     expect(user.wallet_balance).toBe(0)
@@ -64,6 +66,8 @@ describe('scaffold — @/ alias and database types', () => {
       onboarding_completed: false,
       is_admin: false,
       last_active_at: null,
+      suspended_at: null,
+      suspended_reason: null,
       created_at: new Date().toISOString(),
     }
     expect(Number.isInteger(user.wallet_balance)).toBe(true)

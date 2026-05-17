@@ -58,6 +58,8 @@ export type Database = {
           onboarding_completed: boolean
           is_admin: boolean
           last_active_at: string | null
+          suspended_at: string | null
+          suspended_reason: string | null
           created_at: string
         }
         Insert: {
@@ -80,6 +82,8 @@ export type Database = {
           onboarding_completed?: boolean
           is_admin?: boolean
           last_active_at?: string | null
+          suspended_at?: string | null
+          suspended_reason?: string | null
           created_at?: string
         }
         Update: {
@@ -102,6 +106,8 @@ export type Database = {
           onboarding_completed?: boolean
           is_admin?: boolean
           last_active_at?: string | null
+          suspended_at?: string | null
+          suspended_reason?: string | null
           created_at?: string
         }
         Relationships: never[]

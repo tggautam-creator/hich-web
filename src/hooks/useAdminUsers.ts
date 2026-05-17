@@ -45,6 +45,8 @@ export interface AdminUserOverview {
     rating_count: number
     date_of_birth: string | null
     last_active_at: string | null
+    suspended_at: string | null
+    suspended_reason: string | null
     created_at: string
   }
   email_verified: boolean
@@ -347,6 +349,40 @@ export function useAdminOverrideOnboarding(userId: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'users', 'audit', userId] })
       void qc.invalidateQueries({ queryKey: ['admin', 'users', 'detail', userId] })
+    },
+  })
+}
+
+interface SuspendArgs { suspended: boolean; reason?: string }
+interface SuspendResult {
+  ok: true
+  changed: boolean
+  suspended: boolean
+  reason?: string | null
+}
+
+export function useAdminSuspend(userId: string) {
+  const qc = useQueryClient()
+  return useMutation<SuspendResult, Error, SuspendArgs>({
+    mutationFn: (args) =>
+      adminPost<SuspendResult>(`/users/${userId}/actions/suspend`, args),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'audit', userId] })
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'detail', userId] })
+    },
+  })
+}
+
+interface ResetPasswordArgs { reason?: string }
+interface ResetPasswordResult { ok: true; email: string }
+
+export function useAdminResetPassword(userId: string) {
+  const qc = useQueryClient()
+  return useMutation<ResetPasswordResult, Error, ResetPasswordArgs>({
+    mutationFn: (args) =>
+      adminPost<ResetPasswordResult>(`/users/${userId}/actions/reset-password`, args),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'audit', userId] })
     },
   })
 }
