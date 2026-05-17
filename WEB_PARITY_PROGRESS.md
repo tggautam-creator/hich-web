@@ -42,27 +42,27 @@ iOS items stay in the deferred queue below.
 - [x] Submit flow: POST `/api/rides/snooze` first (durable, ride-independent), then PATCH `/api/rides/:id/cancel` with reason only. Matches iOS `submitDecline` pattern.
 - [x] `DriverHomePage.tsx`: reads `snoozed_until` alongside `is_online` from `driver_locations`, treats past values as not-snoozed, renders orange "Snoozed · Xm left" pill in the top bar (replaces the Online/Offline pill while paused), swaps the online toggle for a Resume button → DELETE `/api/rides/snooze`. Live countdown via single `setInterval` that auto-clears at zero. Optimistic resume with rollback on failure.
 
-#### Slice 4 — Two-step accept flow (W-T1-D3)
-- [ ] Split `RideSuggestion.tsx::handleAccept` into stage 1 (commit-accept with empty body, no destination needed) and stage 2 (destination entry).
-- [ ] Stage 1: single big "Accept ride" CTA. POSTs `/api/rides/:id/accept` with empty body → ride_offer status=pending → rider sees `ride_accepted` broadcast immediately.
-- [ ] Stage 2: full-screen destination input page or sheet. Cancel pill in header with confirm dialog ("Rider has already been notified you accepted").
-- [ ] Submits destination to `PATCH /api/rides/:id/driver-destination` (or equivalent — verify endpoint name).
-- [ ] Disable back-button on stage 2 to prevent half-accepted state.
+#### Slice 4 — Two-step accept flow (W-T1-D3) ✅ shipped 2026-05-16 (awaiting prod QA)
+- [x] Split `RideSuggestion.tsx::handleAccept` into stage 1 (`handleAcceptStage1` — POST `/accept` with empty body) and stage 2 (`handleSubmitDestination` — PATCH `/driver-destination`).
+- [x] Stage 1 now shows a single Accept CTA + an "only accept if you're heading this direction" disclaimer instead of the destination input. Standby branch still early-returns.
+- [x] Stage 2 renders a success hero ("Ride accepted — Rider has been notified."), the destination search affordance, a Continue button (disabled until a destination is picked), and a "Cancel ride" pill in the header.
+- [x] Cancel pill opens a confirm dialog with the iOS copy verbatim ("The rider has already been notified you accepted. Cancelling now will release the ride back to other drivers."); confirm PATCHes `/cancel` with reason `Cancelled after accept` then navigates home.
+- [x] Browser Back blocked on stage 2 via `pushState` + `popstate` intercept that re-pins history and opens the confirm dialog. Auto-decline countdown is killed the moment stage 1 commits so it can't ambush the driver mid-destination-entry.
 
 ### Sprint 2 summary
 
 | Status | Count |
 |---|---|
-| Not started | 1 |
+| Not started | 0 |
 | In progress | 0 |
-| Done (awaiting QA) | 5 |
+| Done (awaiting QA) | 6 |
 | Done (verified + pushed) | 0 |
 
 ### Current focus
-Slice 4 (Two-step accept flow).
+All Tier-1 web items shipped. Awaiting prod QA across Slices 1–4.
 
 ### Next action
-Wait for user QA of Slices 1+2+3 on prod; then start Slice 4.
+User QA on prod, then mark items as verified + close Sprint 2.
 
 ---
 

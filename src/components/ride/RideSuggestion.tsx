@@ -60,6 +60,13 @@ export default function RideSuggestion({
   const [error, setError] = useState<string | null>(null)
   const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS)
   const [submitting, setSubmitting] = useState(false)
+  // Sprint 2 W-T1-D3 — two-step accept flow. Stage 1 is the existing
+  // suggestion screen with a single big Accept CTA (no destination
+  // input). On accept we POST `/accept` with an empty body, lock the
+  // ride server-side, then advance to stage 2 (destination entry +
+  // explicit Cancel pill). Matches iOS DriverDestinationEntryPage.
+  const [acceptStage, setAcceptStage] = useState<'suggestion' | 'destination'>('suggestion')
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false)
   // Polyline from rider pickup → destination
   const [ridePolyline, setRidePolyline] = useState<string | null>(null)
   // Polyline from driver → rider pickup
@@ -381,8 +388,11 @@ export default function RideSuggestion({
   }, [])
 
   // ── Countdown timer (auto-decline on expiry) ─────────────────────────────
+  // Only runs while the driver hasn't committed yet (stage 1). After
+  // accept, the timer is killed — see `handleAcceptStage1`.
   useEffect(() => {
     if (loading || error) return
+    if (acceptStage !== 'suggestion') return
 
     timerRef.current = setInterval(() => {
       setSecondsLeft((prev) => {
@@ -397,28 +407,47 @@ export default function RideSuggestion({
     return () => {
       if (timerRef.current) clearInterval(timerRef.current)
     }
-  }, [loading, error, handleDecline])
+  }, [loading, error, handleDecline, acceptStage])
 
-  // ── Accept ────────────────────────────────────────────────────────────────
-  async function handleAccept() {
+  // ── Block browser back on stage 2 ────────────────────────────────────────
+  // Driver is past the point of return; the only way out is the
+  // explicit Cancel pill (with confirm). Mirrors iOS
+  // `.interactiveDismissDisabled(true)` on DriverDestinationEntryPage.
+  // Pushes a sentinel history entry on entry so the first Back press
+  // pops to it (a no-op), then re-pushes another sentinel and opens
+  // the confirm dialog — preserves the "Cancel ride?" gate without
+  // letting the rider end up on a half-accepted state.
+  useEffect(() => {
+    if (acceptStage !== 'destination') return
+    window.history.pushState({ tagoAcceptStage: 'destination' }, '')
+    const onPop = () => {
+      // Re-pin history so subsequent backs hit us again.
+      window.history.pushState({ tagoAcceptStage: 'destination' }, '')
+      setShowCancelConfirm(true)
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [acceptStage])
+
+  // ── Accept — stage 1 (commit) ─────────────────────────────────────────────
+  // POSTs `/api/rides/:id/accept` with an EMPTY body so the rider
+  // sees the `ride_accepted` broadcast immediately. Destination entry
+  // happens on stage 2 via `/driver-destination` (separate endpoint).
+  // Matches iOS RideSuggestionPage → DriverDestinationEntryPage flow.
+  async function handleAcceptStage1() {
     if (!rideId || !data) return
     setSubmitting(true)
+    setError(null)
 
     try {
       const token = (await supabase.auth.getSession()).data.session?.access_token
-      const acceptBody: Record<string, unknown> = {}
-      if (driverDestCoords) {
-        acceptBody['driver_destination_lat'] = driverDestCoords.lat
-        acceptBody['driver_destination_lng'] = driverDestCoords.lng
-        acceptBody['driver_destination_name'] = selectedDriverDest?.fullAddress ?? driverDestQuery
-      }
       const res = await fetch(`/api/rides/${rideId}/accept`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token ?? ''}`,
         },
-        body: JSON.stringify(acceptBody),
+        body: JSON.stringify({}),
       })
 
       if (!res.ok) {
@@ -429,12 +458,60 @@ export default function RideSuggestion({
       }
 
       const resBody = (await res.json()) as { offer_status?: string }
-
       trackEvent('driver_accepted', { ride_id: rideId })
 
-      // If the ride already has a selected driver, this driver joins as standby
+      // Standby branch: ride already has a selected driver. Stay on
+      // the suggestion screen as standby; never advance to stage 2.
       if (resBody.offer_status === 'standby') {
         setStandbyMode(true)
+        setSubmitting(false)
+        return
+      }
+
+      // Kill the 150s "Responds in" countdown — we're past that gate
+      // now. Otherwise it ticks down behind the destination screen and
+      // auto-declines a ride the driver already committed to.
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+      setSubmitting(false)
+      setAcceptStage('destination')
+    } catch {
+      setError('Network error — could not accept ride')
+      setSubmitting(false)
+    }
+  }
+
+  // ── Accept — stage 2 (destination) ────────────────────────────────────────
+  // PATCHes `/api/rides/:id/driver-destination` with the driver's
+  // destination so the server can compute transit dropoff suggestions,
+  // then navigates to the dropoff-selection screen carrying the
+  // payload it needs.
+  async function handleSubmitDestination() {
+    if (!rideId || !data || !driverDestCoords) return
+    setSubmitting(true)
+    setError(null)
+
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token
+      const destName = selectedDriverDest?.fullAddress ?? driverDestQuery
+      const res = await fetch(`/api/rides/${rideId}/driver-destination`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token ?? ''}`,
+        },
+        body: JSON.stringify({
+          destination_lat: driverDestCoords.lat,
+          destination_lng: driverDestCoords.lng,
+          destination_name: destName,
+        }),
+      })
+
+      if (!res.ok) {
+        const body = (await res.json()) as { error?: { message?: string } }
+        setError(body.error?.message ?? 'Failed to save destination')
         setSubmitting(false)
         return
       }
@@ -446,33 +523,52 @@ export default function RideSuggestion({
       const dLat = ride.destination?.coordinates?.[1] ?? parseFloat(ns?.destinationLat ?? '')
       const dLng = ride.destination?.coordinates?.[0] ?? parseFloat(ns?.destinationLng ?? '')
 
-      if (driverDestCoords) {
-        // Navigate to drop-off selection page
-        navigate(`/ride/dropoff/${rideId}`, {
-          replace: true,
-          state: {
-            driverDestLat: driverDestCoords.lat,
-            driverDestLng: driverDestCoords.lng,
-            driverDestName: selectedDriverDest?.fullAddress ?? driverDestQuery,
-            riderName: rider.full_name,
-            riderDestName: ride.destination_name ?? ns?.destination ?? null,
-            riderDestLat: isNaN(dLat) ? null : dLat,
-            riderDestLng: isNaN(dLng) ? null : dLng,
-            pickupLat: isNaN(oLat) ? null : oLat,
-            pickupLng: isNaN(oLng) ? null : oLng,
+      navigate(`/ride/dropoff/${rideId}`, {
+        replace: true,
+        state: {
+          driverDestLat: driverDestCoords.lat,
+          driverDestLng: driverDestCoords.lng,
+          driverDestName: destName,
+          riderName: rider.full_name,
+          riderDestName: ride.destination_name ?? ns?.destination ?? null,
+          riderDestLat: isNaN(dLat) ? null : dLat,
+          riderDestLng: isNaN(dLng) ? null : dLng,
+          pickupLat: isNaN(oLat) ? null : oLat,
+          pickupLng: isNaN(oLng) ? null : oLng,
+        },
+      })
+    } catch {
+      setError('Network error — could not save destination')
+      setSubmitting(false)
+    }
+  }
+
+  // ── Cancel after stage 1 commit ──────────────────────────────────────────
+  // Driver is past the point of return — explicit confirm before we
+  // release the ride. PATCH /cancel with a reason of "Cancelled after
+  // accept" so analytics distinguishes this from a pre-accept decline.
+  async function handlePostAcceptCancel() {
+    setShowCancelConfirm(false)
+    if (!rideId) {
+      navigate('/home/driver', { replace: true })
+      return
+    }
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token
+      if (token) {
+        await fetch(`/api/rides/${rideId}/cancel`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
           },
-        })
-      } else {
-        // No destination entered — go straight to messaging
-        navigate(`/ride/messaging/${rideId}`, {
-          replace: true,
-          state: { driverDestinationSet: false },
+          body: JSON.stringify({ reason: 'Cancelled after accept' }),
         })
       }
     } catch {
-      setError('Network error — could not accept ride')
-      setSubmitting(false)
+      // best-effort
     }
+    navigate('/home/driver', { replace: true })
   }
 
   // ── Places autocomplete handler ───────────────────────────────────────────
@@ -640,6 +736,148 @@ export default function RideSuggestion({
   if (hasOrigin) mapPoints.push({ lat: oLat, lng: oLng })
   if (hasDest) mapPoints.push({ lat: dLat, lng: dLng })
   if (driverLoc) mapPoints.push(driverLoc)
+
+  // ── Stage 2 render — destination entry after the ride is committed ──
+  if (acceptStage === 'destination') {
+    return (
+      <div
+        data-testid={testId}
+        className="flex h-dvh flex-col bg-surface overflow-y-auto"
+      >
+        {/* Cancel pill in the header — only escape hatch on this screen */}
+        <div
+          className="flex items-center justify-start px-4 shrink-0"
+          style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
+        >
+          <button
+            type="button"
+            onClick={() => setShowCancelConfirm(true)}
+            data-testid="destination-cancel-button"
+            className="inline-flex items-center gap-1 rounded-full bg-danger/10 border border-danger/25 px-3.5 py-1.5 text-xs font-bold text-danger active:bg-danger/15"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3 w-3" aria-hidden="true">
+              <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+            </svg>
+            Cancel ride
+          </button>
+        </div>
+
+        {/* Success hero */}
+        <div className="mx-4 mt-2 rounded-2xl bg-success/10 border border-success/25 p-5 text-center" data-testid="destination-success-hero">
+          <div className="mx-auto mb-2 flex h-14 w-14 items-center justify-center rounded-full bg-success/20">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} className="h-8 w-8 text-success" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <h2 className="text-lg font-bold text-text-primary">Ride accepted</h2>
+          <p className="mt-1 text-sm text-text-secondary">
+            {data?.rider.full_name ?? 'The rider'} has been notified.
+          </p>
+        </div>
+
+        {/* Instruction */}
+        <div className="mx-4 mt-3">
+          <p className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-1">
+            Where are you headed?
+          </p>
+          <p className="text-xs text-text-secondary">
+            We&apos;ll find transit stations along your route so you can drop off the rider without a detour.
+          </p>
+        </div>
+
+        {/* Destination search */}
+        <div className="mx-4 mt-3" data-testid="driver-destination-card">
+          <div className="relative">
+            <input
+              data-testid="driver-dest-input"
+              type="text"
+              value={driverDestQuery}
+              onChange={(e) => handleDestQueryChange(e.target.value)}
+              placeholder="Search your destination..."
+              className="w-full rounded-xl border border-border bg-white px-3 py-3 text-base text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:ring-2 focus:ring-primary"
+            />
+            {driverDestCoords && (
+              <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 text-success" aria-hidden="true">
+                  <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clipRule="evenodd" />
+                </svg>
+              </div>
+            )}
+          </div>
+
+          {driverDestResults.length > 0 && (
+            <div className="mt-1 rounded-xl border border-border bg-white shadow-lg max-h-60 overflow-y-auto">
+              {driverDestResults.map((place) => (
+                <button
+                  key={place.placeId}
+                  type="button"
+                  onClick={() => void handleDestSelect(place)}
+                  className="w-full text-left px-3 py-2.5 border-b border-border last:border-0 active:bg-surface transition-colors"
+                >
+                  <p className="text-sm font-medium text-text-primary truncate">{place.mainText}</p>
+                  <p className="text-xs text-text-secondary truncate">{place.secondaryText}</p>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {error && (
+          <p className="mx-4 mt-3 text-xs text-danger" data-testid="destination-error">
+            {error}
+          </p>
+        )}
+
+        {/* Continue */}
+        <div className="mt-auto px-4 pb-8 pt-4 shrink-0">
+          <button
+            type="button"
+            onClick={() => void handleSubmitDestination()}
+            disabled={submitting || !driverDestCoords}
+            data-testid="destination-continue-button"
+            className="w-full rounded-2xl bg-primary py-3.5 text-center font-semibold text-white shadow-sm active:opacity-90 disabled:opacity-50"
+          >
+            {submitting ? 'Submitting…' : 'Continue'}
+          </button>
+        </div>
+
+        {/* Cancel confirm dialog */}
+        {showCancelConfirm && (
+          <div
+            className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 px-6"
+            data-testid="cancel-confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl">
+              <h3 className="text-base font-bold text-text-primary">Cancel this ride?</h3>
+              <p className="mt-2 text-sm text-text-secondary">
+                The rider has already been notified you accepted. Cancelling now will release the ride back to other drivers.
+              </p>
+              <div className="mt-5 space-y-2">
+                <button
+                  type="button"
+                  onClick={() => void handlePostAcceptCancel()}
+                  data-testid="cancel-confirm-yes"
+                  className="w-full rounded-2xl bg-danger py-3 text-sm font-bold text-white active:opacity-90"
+                >
+                  Yes, cancel ride
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCancelConfirm(false)}
+                  data-testid="cancel-confirm-keep"
+                  className="w-full rounded-2xl border border-border py-3 text-sm font-bold text-text-primary active:bg-surface"
+                >
+                  Keep ride
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div
@@ -830,46 +1068,18 @@ export default function RideSuggestion({
         )
       })()}
 
-      {/* ── Driver destination input ──────────────────────────────────────────── */}
-      <div className="mx-4 mt-3 rounded-2xl bg-primary/5 border border-primary/20 p-4 shadow-sm" data-testid="driver-destination-card">
-        <p className="text-xs font-semibold text-primary mb-1">Where are you headed?</p>
-        <p className="text-[10px] text-text-secondary mb-2.5">
-          We&apos;ll find transit stations along your route so you can drop off the rider without a detour.
+      {/* ── Single-decision disclaimer (Sprint 2 W-T1-D3) ─────────────────
+          Replaces the driver-destination card on Screen 1. The
+          destination prompt now lives on stage 2 — the only decision
+          here is Accept vs Decline. Matches iOS RideSuggestionPage
+          (`disclaimerCard`, 2026-05-04). */}
+      <div className="mx-4 mt-3 rounded-2xl bg-primary/5 border border-primary/20 p-3.5 shadow-sm flex items-start gap-2" data-testid="accept-disclaimer">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5 text-primary shrink-0 mt-0.5" aria-hidden="true">
+          <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2h-1v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+        </svg>
+        <p className="text-xs text-text-primary leading-snug">
+          Only accept if you&apos;re heading this direction now or already on your way and can pick up in a few minutes.
         </p>
-        <div className="relative">
-          <input
-            data-testid="driver-dest-input"
-            type="text"
-            value={driverDestQuery}
-            onChange={(e) => handleDestQueryChange(e.target.value)}
-            placeholder="Search your destination..."
-            className="w-full rounded-xl border border-border bg-white px-3 py-2.5 text-base text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:ring-2 focus:ring-primary"
-          />
-          {driverDestCoords && (
-            <div className="absolute right-3 top-1/2 -translate-y-1/2">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 text-success" aria-hidden="true">
-                <path fillRule="evenodd" d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clipRule="evenodd" />
-              </svg>
-            </div>
-          )}
-        </div>
-
-        {/* Autocomplete results dropdown */}
-        {driverDestResults.length > 0 && (
-          <div className="mt-1 rounded-xl border border-border bg-white shadow-lg max-h-40 overflow-y-auto">
-            {driverDestResults.map((place) => (
-              <button
-                key={place.placeId}
-                type="button"
-                onClick={() => void handleDestSelect(place)}
-                className="w-full text-left px-3 py-2.5 border-b border-border last:border-0 active:bg-surface transition-colors"
-              >
-                <p className="text-sm font-medium text-text-primary truncate">{place.mainText}</p>
-                <p className="text-xs text-text-secondary truncate">{place.secondaryText}</p>
-              </button>
-            ))}
-          </div>
-        )}
       </div>
 
       {/* ── Actions (side-by-side) ────────────────────────────────────────────── */}
@@ -885,12 +1095,12 @@ export default function RideSuggestion({
         </button>
         <button
           type="button"
-          onClick={() => void handleAccept()}
-          disabled={submitting || !driverDestCoords}
+          onClick={() => void handleAcceptStage1()}
+          disabled={submitting}
           className="flex-[2] rounded-2xl bg-success py-3.5 text-center font-semibold text-white shadow-sm active:opacity-90 disabled:opacity-50"
           data-testid="accept-button"
         >
-          {submitting ? 'Accepting\u2026' : !driverDestCoords ? 'Enter destination first' : 'Accept Ride'}
+          {submitting ? 'Accepting\u2026' : 'Accept Ride'}
         </button>
       </div>
 

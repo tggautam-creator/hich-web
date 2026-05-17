@@ -214,17 +214,26 @@ describe('RideSuggestion', () => {
     })
   })
 
-  it('shows destination input with explanation', async () => {
+  // Sprint 2 W-T1-D3 — two-step accept flow. Stage 1 (the suggestion
+  // screen) no longer shows the driver-destination input — that moved
+  // to stage 2, after the driver commits via POST /accept. So the
+  // legacy "shows destination input" + "Accept disabled until
+  // destination" tests below are replaced with the stage-1 shape
+  // (disclaimer instead of input + enabled Accept button) and a
+  // dedicated stage-2 transition test further down.
+  it('Stage 1 shows the disclaimer card instead of the destination input', async () => {
     setupSuccess()
     renderWithRoute()
 
     await waitFor(() => {
-      expect(screen.getByTestId('driver-destination-card')).toBeInTheDocument()
-      expect(screen.getByTestId('driver-dest-input')).toBeInTheDocument()
+      expect(screen.getByTestId('accept-disclaimer')).toBeInTheDocument()
     })
+    // Destination input lives on stage 2 only
+    expect(screen.queryByTestId('driver-destination-card')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('driver-dest-input')).not.toBeInTheDocument()
   })
 
-  it('Accept button is disabled until destination is selected', async () => {
+  it('Stage 1 Accept button is enabled by default (no destination gate)', async () => {
     setupSuccess()
     renderWithRoute()
 
@@ -232,9 +241,103 @@ describe('RideSuggestion', () => {
       expect(screen.getByTestId('accept-button')).toBeInTheDocument()
     })
 
-    // Without a destination, button should be disabled
-    expect(screen.getByTestId('accept-button')).toBeDisabled()
-    expect(screen.getByTestId('accept-button')).toHaveTextContent('Enter destination first')
+    expect(screen.getByTestId('accept-button')).not.toBeDisabled()
+    expect(screen.getByTestId('accept-button')).toHaveTextContent('Accept Ride')
+  })
+
+  it('Accept POSTs /accept with empty body and advances to stage 2 (destination)', async () => {
+    setupSuccess()
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ ride_id: 'ride-123', offer_status: 'pending' }),
+    })
+    renderWithRoute()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('accept-button')).toBeInTheDocument()
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('accept-button'))
+    })
+
+    // /accept call shape
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/rides/ride-123/accept',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({}) }),
+    )
+
+    // Stage 2 chrome should now be visible
+    await waitFor(() => {
+      expect(screen.getByTestId('destination-success-hero')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('destination-cancel-button')).toBeInTheDocument()
+    expect(screen.getByTestId('driver-dest-input')).toBeInTheDocument()
+    // Continue button starts disabled (no destination yet)
+    expect(screen.getByTestId('destination-continue-button')).toBeDisabled()
+  })
+
+  it('Stage 2 Cancel pill opens confirm dialog; Keep ride closes it without leaving', async () => {
+    setupSuccess()
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ ride_id: 'ride-123', offer_status: 'pending' }),
+    })
+    renderWithRoute()
+    await waitFor(() => screen.getByTestId('accept-button'))
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('accept-button'))
+    })
+    await waitFor(() => screen.getByTestId('destination-cancel-button'))
+
+    // Open confirm dialog
+    fireEvent.click(screen.getByTestId('destination-cancel-button'))
+    expect(screen.getByTestId('cancel-confirm-dialog')).toBeInTheDocument()
+
+    // Keep ride dismisses without nav
+    fireEvent.click(screen.getByTestId('cancel-confirm-keep'))
+    expect(screen.queryByTestId('cancel-confirm-dialog')).not.toBeInTheDocument()
+    expect(mockNavigate).not.toHaveBeenCalledWith('/home/driver', expect.anything())
+  })
+
+  it('Stage 2 Cancel confirm PATCHes /cancel with reason and navigates home', async () => {
+    setupSuccess()
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ ride_id: 'ride-123', offer_status: 'pending' }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+      })
+
+    renderWithRoute()
+    await waitFor(() => screen.getByTestId('accept-button'))
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('accept-button'))
+    })
+    await waitFor(() => screen.getByTestId('destination-cancel-button'))
+
+    fireEvent.click(screen.getByTestId('destination-cancel-button'))
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('cancel-confirm-yes'))
+    })
+
+    // The second fetch is the /cancel call with the post-accept reason
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      '/api/rides/ride-123/cancel',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ reason: 'Cancelled after accept' }),
+      }),
+    )
+    expect(mockNavigate).toHaveBeenCalledWith('/home/driver', { replace: true })
   })
 
   it('Decline button opens the reason sheet; submitting from "Just decline" navigates home', async () => {
