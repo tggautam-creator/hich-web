@@ -9,6 +9,7 @@ import { MAP_ID, DEFAULT_CENTER, DEFAULT_ZOOM } from '@/lib/mapConstants'
 import BottomNav from '@/components/ui/BottomNav'
 import PwaInstallBanner from '@/components/ui/PwaInstallBanner'
 import BankOnboardPrompt from '@/components/ride/BankOnboardPrompt'
+import { onSnoozeChange, dispatchSnoozeChange } from '@/lib/snoozeEvents'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -151,6 +152,23 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
     return () => window.clearInterval(id)
   }, [snoozedUntil])
 
+  // ── Listen for cross-screen snooze changes ──────────────────────────
+  // The decline-reason sheet on RideRequestNotification +
+  // RideSuggestion fires `tago:driver-snoozed` after a successful
+  // POST /api/rides/snooze. Picking up that event here means the
+  // home top-bar pill updates instantly without waiting for a
+  // navigation or remount. Mirrors iOS
+  // `NotificationCenter.default.post(name: .driverSnoozeChanged...)`.
+  useEffect(() => {
+    return onSnoozeChange(({ snoozedUntil: until }) => {
+      if (until && until.getTime() > Date.now()) {
+        setSnoozedUntil(until)
+      } else {
+        setSnoozedUntil(null)
+      }
+    })
+  }, [])
+
   // ── Post GPS to driver_locations ──────────────────────────────────────────
   const postLocation = useCallback(async () => {
     if (!profile?.id) return
@@ -262,9 +280,14 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
       })
       if (!resp.ok) {
         setSnoozedUntil(previous)
+        // Republish the previous state so any other open screen
+        // (e.g. a stale banner) also reverts its local view.
+        dispatchSnoozeChange(previous)
         showToast("Couldn't resume — try again.")
         return
       }
+      // Tell every other mounted screen the snooze is cleared.
+      dispatchSnoozeChange(null)
       showToast('Resumed — ride requests will appear here')
     } catch {
       setSnoozedUntil(previous)

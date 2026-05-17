@@ -8,7 +8,7 @@
  *   time_cost   = duration_min × $0.05/min (5 cents/min)
  *   subtotal    = gas_cost + time_cost
  *   fare_cents  = max(500, round(subtotal))     // $5 minimum, no upper cap
- *   platform_fee = round(fare × 0) — driver keeps 100% during MVP
+ *   platform_fee = round(fare × 0) — current policy is driver keeps 100%
  *   driver_earns = fare
  *
  * The $2 flat base fare was removed 2026-05-01 to make the price
@@ -26,10 +26,10 @@ const PER_MIN_CENTS     = 5
 const PLATFORM_FEE_RATE = 0
 const KM_TO_MILES       = 0.621371
 /**
- * Base fare in cents. Today $0.00 — TAGO doesn't charge a flat base
- * fare during MVP. Surfaced explicitly on every breakdown UI so
- * riders + drivers see the row from day one; if monetization later
- * flips this to a non-zero value, the line item is already in their
+ * Base fare in cents. Today $0.00 under the current pricing policy —
+ * Tago doesn't charge a flat base fare. Surfaced explicitly on every
+ * breakdown UI so riders + drivers always see the row; if we later
+ * flip this to a non-zero value, the line item is already in their
  * mental model and feels like a price change rather than a new
  * surprise charge.
  */

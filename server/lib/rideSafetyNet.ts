@@ -193,8 +193,8 @@ async function autoEndRide(
         paymentIntentId = chargeResult.paymentIntentId
         stripeFeeCents = chargeResult.stripeFeeCents ?? 0
 
-        // MVP: platform_fee=0, driver_earns = fare. If that ever changes,
-        // mirror computeRideFare here.
+        // Current policy: platform_fee=0, driver_earns = fare. If that
+        // ever changes, mirror computeRideFare here.
         await creditDriverEarning({
           driverId,
           fareCents,

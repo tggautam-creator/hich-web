@@ -9,6 +9,7 @@ import { searchPlaces, getPlaceCoordinates } from '@/lib/places'
 import type { PlaceSuggestion } from '@/lib/places'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
 import DeclineReasonSheet from '@/components/ride/DeclineReasonSheet'
+import { dispatchSnoozeChange } from '@/lib/snoozeEvents'
 import CarMarker from '@/components/map/CarMarker'
 import { MAP_ID } from '@/lib/mapConstants'
 import AppIcon from '@/components/ui/AppIcon'
@@ -60,13 +61,37 @@ export default function RideSuggestion({
   const [error, setError] = useState<string | null>(null)
   const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS)
   const [submitting, setSubmitting] = useState(false)
-  // Sprint 2 W-T1-D3 — two-step accept flow. Stage 1 is the existing
-  // suggestion screen with a single big Accept CTA (no destination
-  // input). On accept we POST `/accept` with an empty body, lock the
-  // ride server-side, then advance to stage 2 (destination entry +
-  // explicit Cancel pill). Matches iOS DriverDestinationEntryPage.
-  const [acceptStage, setAcceptStage] = useState<'suggestion' | 'destination'>('suggestion')
+  // Sprint 2 W-T1-D3 — two-step accept flow. Stage 1 is the suggestion
+  // screen with a single big Accept CTA (no destination input). On
+  // accept we POST `/accept` with an empty body, lock the ride
+  // server-side, then advance to stage 2 (destination entry + explicit
+  // Cancel pill). Matches iOS DriverDestinationEntryPage.
+  //
+  // Initial value hydrates from sessionStorage so a tab reload mid-
+  // flow restores the destination stage instead of dropping back to
+  // the suggestion view (where re-tapping Accept would 409 because
+  // the offer is already pending). Mirrors iOS
+  // `DriverAcceptFlowState.persist(rideID:)`.
+  const acceptStageStorageKey = rideId ? `tago:acceptStage:${rideId}` : null
+  const [acceptStage, setAcceptStage] = useState<'suggestion' | 'destination'>(() => {
+    if (typeof window === 'undefined' || !acceptStageStorageKey) return 'suggestion'
+    return window.sessionStorage.getItem(acceptStageStorageKey) === 'destination'
+      ? 'destination'
+      : 'suggestion'
+  })
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
+
+  // Persist the stage whenever it flips so a reload picks it up. Clear
+  // it when we leave (success nav, cancel, decline) so the next ride
+  // suggestion starts fresh.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !acceptStageStorageKey) return
+    if (acceptStage === 'destination') {
+      window.sessionStorage.setItem(acceptStageStorageKey, 'destination')
+    } else {
+      window.sessionStorage.removeItem(acceptStageStorageKey)
+    }
+  }, [acceptStage, acceptStageStorageKey])
   // Polyline from rider pickup → destination
   const [ridePolyline, setRidePolyline] = useState<string | null>(null)
   // Polyline from driver → rider pickup
@@ -329,6 +354,11 @@ export default function RideSuggestion({
           // specific ride (matches iOS submitDecline). Either call
           // failing doesn't roll back the other.
           if (snoozeMinutes != null) {
+            // Optimistic cross-screen update so DriverHomePage's
+            // top-bar pill flips to "Snoozed" instantly (matches iOS
+            // NotificationCenter.driverSnoozeChanged pattern).
+            const optimisticUntil = new Date(Date.now() + snoozeMinutes * 60_000)
+            dispatchSnoozeChange(optimisticUntil)
             void fetch('/api/rides/snooze', {
               method: 'POST',
               headers: {
@@ -336,7 +366,9 @@ export default function RideSuggestion({
                 Authorization: `Bearer ${token}`,
               },
               body: JSON.stringify({ snooze_minutes: snoozeMinutes }),
-            })
+            }).then((resp) => {
+              if (!resp.ok) dispatchSnoozeChange(null)
+            }).catch(() => dispatchSnoozeChange(null))
           }
           void fetch(`/api/rides/${rideId}/cancel`, {
             method: 'PATCH',
@@ -356,8 +388,11 @@ export default function RideSuggestion({
 
   const handleDecline = useCallback(() => {
     sendDeclineNetwork(null, null)
+    if (acceptStageStorageKey && typeof window !== 'undefined') {
+      window.sessionStorage.removeItem(acceptStageStorageKey)
+    }
     navigate('/home/driver', { replace: true })
-  }, [navigate, sendDeclineNetwork])
+  }, [navigate, sendDeclineNetwork, acceptStageStorageKey])
 
   const [showDeclineSheet, setShowDeclineSheet] = useState(false)
 
@@ -382,9 +417,12 @@ export default function RideSuggestion({
     (reason: string | null, snoozeMinutes: number | null) => {
       setShowDeclineSheet(false)
       sendDeclineNetwork(reason, snoozeMinutes)
+      if (acceptStageStorageKey && typeof window !== 'undefined') {
+        window.sessionStorage.removeItem(acceptStageStorageKey)
+      }
       navigate('/home/driver', { replace: true })
     },
-    [navigate, sendDeclineNetwork],
+    [navigate, sendDeclineNetwork, acceptStageStorageKey],
   )
 
   const closeDeclineSheet = useCallback(() => {
@@ -535,6 +573,13 @@ export default function RideSuggestion({
       const dLat = ride.destination?.coordinates?.[1] ?? parseFloat(ns?.destinationLat ?? '')
       const dLng = ride.destination?.coordinates?.[0] ?? parseFloat(ns?.destinationLng ?? '')
 
+      // Clear the persisted stage — we're leaving the suggestion
+      // screen for good, so a subsequent reload landing back here
+      // (rare, e.g. browser back) should start fresh on stage 1.
+      if (acceptStageStorageKey && typeof window !== 'undefined') {
+        window.sessionStorage.removeItem(acceptStageStorageKey)
+      }
+
       navigate(`/ride/dropoff/${rideId}`, {
         replace: true,
         state: {
@@ -560,7 +605,19 @@ export default function RideSuggestion({
   // release the ride. PATCH /cancel with a reason of "Cancelled after
   // accept" so analytics distinguishes this from a pre-accept decline.
   async function handlePostAcceptCancel() {
+    // Block while /driver-destination is in flight — otherwise the
+    // /cancel PATCH races the in-flight destination POST, and the
+    // server may persist a destination on a ride that's about to be
+    // cancelled. Keep the confirm dialog open so the user understands
+    // their tap was received but the cancel is pending until the
+    // destination request settles.
+    if (submitting) return
     setShowCancelConfirm(false)
+    // Clear the persisted stage so a reload after cancel doesn't
+    // dump the driver back onto stage 2 of a cancelled ride.
+    if (acceptStageStorageKey && typeof window !== 'undefined') {
+      window.sessionStorage.removeItem(acceptStageStorageKey)
+    }
     if (!rideId) {
       navigate('/home/driver', { replace: true })
       return

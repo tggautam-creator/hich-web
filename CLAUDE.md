@@ -4,7 +4,7 @@
 Carpooling PWA for university students. `.edu` email is the trust layer. Riders request rides, drivers get push notifications and accept. A QR code scan starts the ride and a second QR scan ends it and triggers payment. No driver needs to manually post anything.
 
 ## Current State
-Week 8 — MVP feature-complete. Analytics, CI, code splitting done.
+Live production. Web (Vercel) + iOS (TestFlight) + Express API (EC2) all serving real users. No "MVP" framing — every shipped feature is held to production polish. Drifts vs the iOS reference (which is the source of truth for UX) get closed in the same sprint, not deferred.
 
 ---
 
@@ -14,7 +14,7 @@ Week 8 — MVP feature-complete. Analytics, CI, code splitting done.
 - **State:** React Query for server state, Zustand for client UI state
 - **Database:** Supabase (PostgreSQL + PostGIS + Realtime + Auth + Storage)
 - **Backend:** Node.js + Express in `/server`
-- **Payments:** Stripe (test mode for entire MVP)
+- **Payments:** Stripe Connect — live mode in production (EC2 + Vercel build), test mode in `dev` (see "HARD RULE — Prod environment values on prod" below)
 - **Push notifications:** Firebase Cloud Messaging (FCM)
 - **Maps:** @vis.gl/react-google-maps (Google Maps JS API)
 - **Testing:** Vitest
@@ -84,7 +84,7 @@ gas_cost_cents  = round((distance_km * 0.621371 / mpg) * gas_price_per_gallon * 
 time_cost_cents = round(duration_min * 5)           // 5 cents/min (was 8 before 2026-05-01)
 raw             = gas_cost_cents + time_cost_cents  // base fare removed 2026-05-01
 fare_cents      = max(500, raw)                     // $5 minimum, no upper cap (removed 2026-04-24)
-platform_fee_cents = 0                              // driver keeps 100% during MVP
+platform_fee_cents = 0                              // current policy — driver keeps 100%
 driver_earns_cents = fare_cents
 ```
 Default: mpg=25. `gas_price_per_gallon` comes from EIA via `GET /api/gas-price?state=CA`
@@ -96,7 +96,7 @@ The matching logic has stages. Build in order, do not skip ahead.
 - **Stage 1:** notify all drivers — build this first, ship it, confirm a push arrives on a real phone
 - **Stage 2:** PostGIS 15km radius filter — add this same week once Stage 1 works
 - **Stage 3:** bearing filter — only applies when a driver has a saved route in `driver_routines`. If no saved route → Stage 2. Only add Stage 3 in Week 4 when scheduling is built.
-- **Stage 4:** ML model — Phase 2, not MVP. Do not build.
+- **Stage 4:** ML model — future roadmap item. Do not build until explicitly scoped.
 
 ## Critical Constraints
 - **Emergency button** — always in a React portal at the top of the DOM tree. Never inside conditional renders. Never inside a menu.

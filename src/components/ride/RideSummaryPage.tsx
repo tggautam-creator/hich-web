@@ -103,11 +103,43 @@ function MiniStar({ filled }: { filled: boolean }) {
 }
 
 /**
- * Round cents to nearest 50 (e.g. 285 → 300, 264 → 250). Used for the
- * fare-scaled tip-percentage chips so users see "round" tip amounts.
+ * Round cents UP to the nearest $0.50 (e.g. 285 → 300, 264 → 300,
+ * 250 → 250). Mirrors iOS `RideSummaryPage.swift::tipPresets` so the
+ * percentage chips line up across platforms — riders on iOS + web
+ * see the same dollar value for the same fare.
  */
-function roundToHalfDollar(cents: number): number {
-  return Math.round(cents / 50) * 50
+function roundUpToHalfDollar(cents: number): number {
+  return Math.ceil(cents / 50) * 50
+}
+
+/**
+ * Map server tip-error codes to UX-friendly copy. Mirrors iOS
+ * `friendlyTipError`. The `chargeTip` server lib returns these codes:
+ *   - `ALREADY_TIPPED` (409) — tip already exists for this ride
+ *   - `NO_PAYMENT_OPTION` (400) — no card AND wallet too low
+ *   - `CHARGE_FAILED` (402) — card declined
+ *   - `INVALID_TIP` (400) — out-of-range cents
+ */
+function friendlyTipError(code: string | undefined, fallback: string): string {
+  switch (code) {
+    case 'ALREADY_TIPPED':
+      return 'You already tipped for this ride.'
+    case 'NO_PAYMENT_OPTION':
+      return "No saved card and your Tago credit can't cover this tip. Add a card or top up to send."
+    case 'CHARGE_FAILED':
+      return 'Card declined. Try a different card from Payment Methods.'
+    case 'INVALID_TIP':
+      return 'Tips must be between $1 and $20.'
+    default:
+      return fallback
+  }
+}
+
+interface SavedCard {
+  id: string
+  brand: string
+  last4: string
+  isDefault: boolean
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -240,11 +272,54 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
     cents: number
     feeCents?: number
   } | null>(null)
+  // Rider's default saved card — loaded lazily on appear (matches iOS
+  // `loadDefaultTipCard`). Drives the "Tip charged to Visa •••• 4242"
+  // copy above the picker AND the post-submit confirmation. Driver-side
+  // never sees the tip picker so the load is rider-only.
+  const [defaultTipCard, setDefaultTipCard] = useState<SavedCard | null>(null)
 
   const isDriver = profile?.id === ride?.driver_id
 
   // Refresh profile to get latest wallet_balance after fare transfer
   useEffect(() => { void refreshProfile() }, [refreshProfile])
+
+  // Load the rider's default saved card so the tip row shows
+  // "Tip charged to Visa •••• 4242" instead of generic copy. Rider-
+  // side only; driver-side never sees the picker. Silent on failure —
+  // row falls back to the wallet copy when defaultTipCard is null.
+  useEffect(() => {
+    if (!profile?.id || isDriver) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) return
+        const resp = await fetch('/api/payment/methods', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+        if (!resp.ok) return
+        const body = (await resp.json()) as {
+          methods: Array<{ id: string; brand: string; last4: string; is_default: boolean }>
+          default_method_id: string | null
+        }
+        if (cancelled) return
+        const defaultMatch = body.methods.find((m) => m.id === body.default_method_id)
+          ?? body.methods.find((m) => m.is_default)
+          ?? body.methods[0]
+        if (defaultMatch) {
+          setDefaultTipCard({
+            id: defaultMatch.id,
+            brand: defaultMatch.brand,
+            last4: defaultMatch.last4,
+            isDefault: !!defaultMatch.is_default,
+          })
+        }
+      } catch {
+        // silent — row uses wallet fallback copy
+      }
+    })()
+    return () => { cancelled = true }
+  }, [profile?.id, isDriver])
 
   // ── Fetch ride + related data ───────────────────────────────────────────
   useEffect(() => {
@@ -472,14 +547,15 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
     setStars(i)
   }
 
-  // Fare-scaled tip chips (15% / 20% / 25%) rounded to nearest $0.50.
+  // Fare-scaled tip chips (15% / 20% / 25%) rounded UP to nearest $0.50.
   // Falls back to flat $1 / $2 / $5 when fare isn't loaded yet, so the
-  // chips never render at $0.00. iOS uses the same pattern
-  // (`RideSummaryPage.swift:778-798`).
+  // chips never render at $0.00. Round direction matches iOS
+  // (`RideSummaryPage.swift::tipPresets`) so the same fare produces
+  // the same chip values across platforms.
   const tipChips = useMemo<Array<{ label: string; subtitle: string; cents: number }>>(() => {
     if (fareCents > 0) {
       return [15, 20, 25].map((pct) => {
-        const cents = Math.max(100, roundToHalfDollar(Math.round(fareCents * (pct / 100))))
+        const cents = Math.max(100, roundUpToHalfDollar(Math.ceil((fareCents * pct) / 100)))
         return {
           label: `${pct}%`,
           subtitle: `$${(cents / 100).toFixed(2)}`,
@@ -514,7 +590,6 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
   const willTipUseCard = hasCard
   const walletCoversTip = tipCents != null && walletBalanceCents >= tipCents
   const tipFeeCents = willTipUseCard && tipCents && tipCents > 0 ? estimateStripeFee(tipCents) : 0
-  const tipChargeTotal = (tipCents ?? 0) + (willTipUseCard ? tipFeeCents : 0)
 
   const toggleTag = (tag: string) => {
     setSelectedTags((prev) =>
@@ -522,12 +597,16 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
     )
   }
 
-  // Single Submit handler: posts /rate, then (rider only, when a tip was
-  // picked) posts /tip. Both happen before the "thank you" state appears
-  // so the user doesn't see two distinct loading spinners. Matches iOS
+  // Single Submit handler: posts /rate (if stars picked), then (rider
+  // only, when a tip was picked) posts /tip. Either piece is optional
+  // — riders can tip without rating (rare but allowed, matches iOS).
+  // Both happen before the "thank you" state appears so the user
+  // only ever sees one loading spinner. Mirrors iOS
   // `RideSummaryPage.swift::handleSubmit`.
   const handleSubmitRatingAndTip = async () => {
-    if (stars === 0 || submitting) return
+    if (submitting) return
+    // Need at least one piece (stars OR tip) to have anything to submit.
+    if (stars === 0 && (tipCents == null || tipCents <= 0)) return
     setSubmitting(true)
     setRateError(null)
     setTipError(null)
@@ -540,33 +619,36 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
         return
       }
 
-      // 1. Rating
-      const rateResp = await fetch(`/api/rides/${rideId}/rate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          stars,
-          tags: selectedTags,
-          comment: comment.trim() || undefined,
-        }),
-      })
-      const rateBody = (await rateResp.json()) as {
+      // 1. Rating — only when the user actually picked stars.
+      let rateBody: {
         revealed?: boolean
         other_rating?: { stars: number; tags: string[] } | null
         error?: { code?: string; message?: string }
-      }
+      } = {}
+      if (stars > 0) {
+        const rateResp = await fetch(`/api/rides/${rideId}/rate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            stars,
+            tags: selectedTags,
+            comment: comment.trim() || undefined,
+          }),
+        })
+        rateBody = (await rateResp.json()) as typeof rateBody
 
-      // 'ALREADY_RATED' is treated as success — the user re-tapped Submit
-      // after the row already landed (network double-fire, back/forward,
-      // tab reopen). iOS does the same (`RideSummaryPage.swift:1188`).
-      const alreadyRated = rateBody.error?.code === 'ALREADY_RATED'
-      if (!rateResp.ok && !alreadyRated) {
-        setRateError(rateBody.error?.message ?? 'Failed to submit rating')
-        setSubmitting(false)
-        return
+        // 'ALREADY_RATED' is treated as success — re-tap after the row
+        // already landed (network double-fire, back/forward, tab
+        // reopen). Matches iOS.
+        const alreadyRated = rateBody.error?.code === 'ALREADY_RATED'
+        if (!rateResp.ok && !alreadyRated) {
+          setRateError(rateBody.error?.message ?? 'Failed to submit rating')
+          setSubmitting(false)
+          return
+        }
       }
 
       // 2. Tip (rider only, only when picked). Wrapped in its own
@@ -575,9 +657,11 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
       let resolvedTipResult: { method: 'card' | 'wallet'; cents: number; feeCents?: number } | null = null
       if (!isDriver && tipCents != null && tipCents > 0) {
         if (tipCents < 100 || tipCents > 2000) {
-          setTipError('Tip must be between $1 and $20')
+          setTipError('Tips must be between $1 and $20.')
         } else if (!willTipUseCard && !walletCoversTip) {
-          setTipError(`Add a card or top up your wallet ($${(walletBalanceCents / 100).toFixed(2)} available) to tip $${(tipCents / 100).toFixed(2)}`)
+          setTipError(
+            "No saved card and your Tago credit can't cover this tip. Add a card or top up to send.",
+          )
         } else {
           try {
             const tipResp = await fetch(`/api/rides/${rideId}/tip`, {
@@ -594,7 +678,9 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
               error?: { code?: string; message?: string }
             }
             if (!tipResp.ok && tipBody.error?.code !== 'ALREADY_TIPPED') {
-              setTipError(tipBody.error?.message ?? 'Tip failed')
+              setTipError(
+                friendlyTipError(tipBody.error?.code, tipBody.error?.message ?? 'Tip failed.'),
+              )
             } else {
               resolvedTipResult = {
                 method: tipBody.method ?? (willTipUseCard ? 'card' : 'wallet'),
@@ -620,7 +706,7 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
       if (resolvedTipResult) setTipResult(resolvedTipResult)
       setSubmitted(true)
     } catch {
-      setRateError('Network error — try again')
+      setRateError('Network error — try again.')
     } finally {
       setSubmitting(false)
     }
@@ -779,10 +865,11 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
             <div className="space-y-2 border-t border-border pt-3 text-sm">
               {fareBreakdown && (
                 <>
-                  {/* Base fare row — currently $0.00 in MVP. Surfaced
-                      explicitly so riders + drivers see it from day
-                      one; if monetization later flips it non-zero,
-                      the line item is already in place. */}
+                  {/* Base fare row — currently $0.00 under the
+                      current pricing policy. Surfaced explicitly so
+                      riders + drivers always see the line item; if
+                      we later flip it non-zero only the value
+                      changes, not the layout. */}
                   <div className="flex justify-between">
                     <span className="text-text-secondary">Base fare</span>
                     <span className="text-text-primary">{formatCents(fareBreakdown.base_fare_cents)}</span>
@@ -920,15 +1007,20 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
               />
             )}
 
-            {/* Tip — riders only, only when positive rating */}
-            {!isDriver && stars >= 4 && (
+            {/* Tip — riders only, always rendered (so the rider sees
+                the affordance regardless of star count, matching iOS).
+                For a low rating the rider can simply leave "No tip"
+                selected and the picker stays inert. */}
+            {!isDriver && (
               <div className="mt-5 border-t border-border pt-4 space-y-3" data-testid="tip-picker">
                 <p className="text-sm font-semibold text-text-primary">
                   Add a tip for {otherUser?.full_name?.split(' ')[0] ?? 'your driver'}?
                 </p>
 
                 {/* Payment-method row — always visible above the chips so
-                    rider knows whether their card or wallet will be hit. */}
+                    rider knows whether their card or wallet will be hit.
+                    When the saved-card fetch resolved, displays brand
+                    + last4 ("Visa •••• 4242") instead of generic copy. */}
                 <button
                   type="button"
                   onClick={() => navigate('/payment/methods')}
@@ -936,7 +1028,14 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
                   className="flex w-full items-center justify-between rounded-xl bg-surface px-3 py-2 text-left text-xs"
                 >
                   <span className="text-text-secondary">
-                    {willTipUseCard ? (
+                    {defaultTipCard ? (
+                      <>
+                        Tip charged to{' '}
+                        <span className="font-semibold text-text-primary">
+                          {defaultTipCard.brand.charAt(0).toUpperCase() + defaultTipCard.brand.slice(1)} •••• {defaultTipCard.last4}
+                        </span>
+                      </>
+                    ) : willTipUseCard ? (
                       <>Tip charged to <span className="font-semibold text-text-primary">your card</span></>
                     ) : walletBalanceCents > 0 ? (
                       <>Tip taken from your <span className="font-semibold text-text-primary">Tago credit</span></>
@@ -945,12 +1044,23 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
                     )}
                   </span>
                   <span className="text-primary font-medium">
-                    {willTipUseCard ? 'Change' : 'Add card'}
+                    {defaultTipCard || willTipUseCard ? 'Change' : 'Add card'}
                   </span>
                 </button>
 
-                {/* Chips */}
-                <div className="grid grid-cols-4 gap-2">
+                {/* Chips — "No tip" + 3 fare-scaled + Custom */}
+                <div className="grid grid-cols-5 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedTipCents(null); setCustomTip(''); setTipError(null) }}
+                    data-testid="tip-none"
+                    aria-pressed={selectedTipCents == null}
+                    className={`rounded-xl py-2 text-xs font-semibold transition-colors ${
+                      selectedTipCents == null ? 'bg-primary text-white' : 'bg-surface text-text-primary'
+                    }`}
+                  >
+                    No tip
+                  </button>
                   {tipChips.map((chip) => {
                     const active = selectedTipCents === chip.cents
                     return (
@@ -978,7 +1088,7 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
                     onClick={() => { setSelectedTipCents(-1); setTipError(null) }}
                     data-testid="tip-custom"
                     aria-pressed={selectedTipCents === -1}
-                    className={`rounded-xl py-2 text-sm font-semibold transition-colors ${
+                    className={`rounded-xl py-2 text-xs font-semibold transition-colors ${
                       selectedTipCents === -1 ? 'bg-primary text-white' : 'bg-surface text-text-primary'
                     }`}
                   >
@@ -986,41 +1096,82 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
                   </button>
                 </div>
 
-                {/* Custom amount input */}
+                {/* Custom amount input — live currency-formatted so the
+                    rider sees "$5.00" as they type "5". Matches iOS
+                    `customTipField` formatter. */}
                 {selectedTipCents === -1 && (
                   <div className="flex items-center gap-2">
-                    <span className="text-text-secondary">$</span>
+                    <span className="text-text-secondary text-lg font-bold">$</span>
                     <input
-                      type="number"
-                      min="1"
-                      max="20"
-                      step="0.01"
+                      type="text"
                       inputMode="decimal"
                       enterKeyHint="done"
                       value={customTip}
-                      onChange={(e) => setCustomTip(e.target.value)}
+                      onChange={(e) => {
+                        // Allow only digits and an optional decimal with up
+                        // to 2 dp. Strip anything else live so the value
+                        // always parses cleanly into a dollar amount.
+                        const raw = e.target.value
+                        const cleaned = raw.replace(/[^0-9.]/g, '')
+                        const parts = cleaned.split('.')
+                        const normalized = parts.length > 1
+                          ? `${parts[0]}.${parts.slice(1).join('').slice(0, 2)}`
+                          : cleaned
+                        setCustomTip(normalized)
+                        setTipError(null)
+                      }}
+                      onBlur={() => {
+                        // On blur, snap to canonical "5.00" / "12.50" so
+                        // the displayed value matches the total preview.
+                        const n = parseFloat(customTip)
+                        if (Number.isFinite(n) && n > 0) setCustomTip(n.toFixed(2))
+                      }}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault();
                           (e.target as HTMLInputElement).blur()
                         }
                       }}
-                      placeholder="1 – 20"
+                      placeholder="0.00"
                       data-testid="tip-custom-input"
-                      className="flex-1 rounded-xl border border-border bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none"
+                      className="flex-1 rounded-xl border border-border bg-white px-3 py-2 text-base font-semibold focus:border-primary focus:outline-none"
                     />
                   </div>
                 )}
 
-                {/* Total line — shown when a tip amount is picked */}
+                {/* Total preview — sums fare + tip so the rider sees
+                    the whole bill, not just the tip charge. Matches
+                    iOS `totalWithTipText`. */}
                 {tipCents != null && tipCents >= 100 && tipCents <= 2000 && (
-                  <p className="text-xs text-text-secondary" data-testid="tip-total">
-                    {willTipUseCard ? (
-                      <>Total · <span className="font-semibold text-text-primary">${(tipChargeTotal / 100).toFixed(2)}</span> charged (${(tipCents / 100).toFixed(2)} tip + ${(tipFeeCents / 100).toFixed(2)} fee)</>
-                    ) : walletCoversTip ? (
-                      <>Total · <span className="font-semibold text-text-primary">${(tipCents / 100).toFixed(2)}</span> from wallet (no fee)</>
-                    ) : null}
-                  </p>
+                  <div className="rounded-xl bg-surface px-3 py-2 text-xs" data-testid="tip-total">
+                    <div className="flex items-center justify-between text-text-secondary">
+                      <span>Ride fare</span>
+                      <span className="text-text-primary">{formatCents(fareCents)}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-text-secondary">
+                      <span>Tip</span>
+                      <span className="text-text-primary">${(tipCents / 100).toFixed(2)}</span>
+                    </div>
+                    {willTipUseCard && tipFeeCents > 0 && (
+                      <div className="flex items-center justify-between text-text-secondary">
+                        <span>Processing fee</span>
+                        <span className="text-text-primary">${(tipFeeCents / 100).toFixed(2)}</span>
+                      </div>
+                    )}
+                    <div className="mt-1 flex items-center justify-between border-t border-border pt-1 font-semibold">
+                      <span className="text-text-primary">Total</span>
+                      <span className="text-text-primary">
+                        ${((fareCents + tipCents + (willTipUseCard ? tipFeeCents : 0)) / 100).toFixed(2)}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[10px] text-text-secondary">
+                      {willTipUseCard
+                        ? `Tip + fee charged to your card on file.`
+                        : walletCoversTip
+                          ? `Tip taken from your Tago credit (no fee).`
+                          : `Add a card or top up your wallet to send this tip.`}
+                    </p>
+                  </div>
                 )}
 
                 {tipError && (
@@ -1061,8 +1212,10 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
                 data-testid="tip-method-confirm"
               >
                 {tipResult.method === 'card'
-                  ? `Tip sent — $${((tipResult.cents + (tipResult.feeCents ?? 0)) / 100).toFixed(2)} charged${tipResult.feeCents ? ` (incl. $${(tipResult.feeCents / 100).toFixed(2)} fee)` : ''}.`
-                  : `Tip sent — $${(tipResult.cents / 100).toFixed(2)} taken from your wallet.`}
+                  ? (defaultTipCard
+                      ? `Tip sent — $${((tipResult.cents + (tipResult.feeCents ?? 0)) / 100).toFixed(2)} charged to ${defaultTipCard.brand.charAt(0).toUpperCase() + defaultTipCard.brand.slice(1)} •••• ${defaultTipCard.last4}${tipResult.feeCents ? ` (incl. $${(tipResult.feeCents / 100).toFixed(2)} fee)` : ''}.`
+                      : `Tip sent — $${((tipResult.cents + (tipResult.feeCents ?? 0)) / 100).toFixed(2)} charged to your saved card${tipResult.feeCents ? ` (incl. $${(tipResult.feeCents / 100).toFixed(2)} fee)` : ''}.`)
+                  : `Tip sent — $${(tipResult.cents / 100).toFixed(2)} taken from your Tago credit.`}
               </p>
             )}
             {tipError && !tipResult && (
@@ -1082,23 +1235,38 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
 
       {/* ── Actions ───────────────────────────────────────────────────────── */}
       <div className="mt-auto space-y-3 px-6 pb-8 pt-6">
-        {!submitted && (
-          <PrimaryButton
-            onClick={() => { void handleSubmitRatingAndTip() }}
-            className="w-full"
-            disabled={stars === 0 || submitting}
-            data-testid="submit-rating"
-          >
-            {submitting ? 'Submitting…' : (tipCents && tipCents > 0 ? 'Submit & send tip' : 'Submit rating')}
-          </PrimaryButton>
-        )}
+        {!submitted && (() => {
+          const hasTip = tipCents != null && tipCents > 0
+          const submitLabel = submitting
+            ? 'Submitting…'
+            : stars > 0 && hasTip
+              ? 'Submit rating + tip'
+              : stars > 0
+                ? 'Submit rating'
+                : hasTip
+                  ? 'Send tip'
+                  : 'Submit'
+          return (
+            <PrimaryButton
+              onClick={() => { void handleSubmitRatingAndTip() }}
+              className="w-full"
+              disabled={submitting || (stars === 0 && !hasTip)}
+              data-testid="submit-rating"
+            >
+              {submitLabel}
+            </PrimaryButton>
+          )
+        })()}
 
         <button
           onClick={goHome}
           className="w-full rounded-2xl border border-border py-3 text-sm font-medium text-text-secondary"
           data-testid="done-button"
         >
-          Done
+          {/* Copy swap matches iOS — pre-submit "Maybe later" softens
+              the dismiss when the rating still has value to capture;
+              post-submit "Done" closes out the completed flow. */}
+          {submitted ? 'Done' : 'Maybe later'}
         </button>
 
         <button

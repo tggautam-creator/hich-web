@@ -5470,8 +5470,9 @@ ridesRouter.post(
  * "Payment needed" FCM push for a ride whose `payment_status` is still
  * `pending` or `failed`. 60 s per-ride cooldown stops a driver tapping the
  * Nudge button in WalletPage into spamming the rider. The cooldown lives in
- * an in-process Map — good enough for single-instance MVP; if we ever scale
- * to multiple API nodes this needs to move to Redis or a column on rides.
+ * an in-process Map — works for the single PM2 instance on EC2. If we
+ * scale to multiple API nodes this needs to move to Redis or a column
+ * on rides.
  */
 const nudgeCooldownByRide = new Map<string, number>()
 const NUDGE_COOLDOWN_MS = 60_000

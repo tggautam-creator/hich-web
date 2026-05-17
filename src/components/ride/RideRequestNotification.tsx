@@ -9,6 +9,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { reverseGeocode } from '@/lib/geocode'
 import AppIcon from '@/components/ui/AppIcon'
 import DeclineReasonSheet from '@/components/ride/DeclineReasonSheet'
+import { dispatchSnoozeChange } from '@/lib/snoozeEvents'
 
 // ── Dismiss callback ref (stable across renders) ──────────────────────────────
 
@@ -193,7 +194,12 @@ export default function RideRequestNotification({
           // Snooze first — durable user intent decoupled from the
           // specific ride (matches iOS submitDecline pattern). Cancel
           // is independent; either failing doesn't roll back the other.
+          // We fire the cross-screen event optimistically BEFORE the
+          // network call returns so DriverHomePage's top-bar pill
+          // updates instantly (matches iOS NotificationCenter pattern).
           if (snoozeMinutes != null) {
+            const optimisticUntil = new Date(Date.now() + snoozeMinutes * 60_000)
+            dispatchSnoozeChange(optimisticUntil)
             void fetch('/api/rides/snooze', {
               method: 'POST',
               headers: {
@@ -201,7 +207,12 @@ export default function RideRequestNotification({
                 Authorization: `Bearer ${token}`,
               },
               body: JSON.stringify({ snooze_minutes: snoozeMinutes }),
-            })
+            }).then((resp) => {
+              // Roll the pill back if the POST failed — keeps the home
+              // screen honest about whether the snooze is actually live
+              // server-side.
+              if (!resp.ok) dispatchSnoozeChange(null)
+            }).catch(() => dispatchSnoozeChange(null))
           }
           void fetch(`/api/rides/${rideId}/cancel`, {
             method: 'PATCH',

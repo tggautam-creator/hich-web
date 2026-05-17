@@ -325,10 +325,10 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
 
         {showBreakdown && (
           <div data-testid="fare-breakdown" className="bg-surface rounded-2xl p-5 space-y-3 text-sm">
-            {/* Base fare row — currently $0.00 in MVP. Surfaced
-                explicitly so riders + drivers see it from day one;
-                if monetization later flips it non-zero, the line
-                item is already part of the breakdown. */}
+            {/* Base fare row — currently $0.00 under the current
+                pricing policy. Surfaced explicitly so riders +
+                drivers always see the line item; if we later flip
+                it non-zero only the value changes, not the layout. */}
             <div className="flex justify-between text-text-primary">
               <div>
                 <span>Base fare</span>

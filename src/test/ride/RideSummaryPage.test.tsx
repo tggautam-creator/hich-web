@@ -329,10 +329,23 @@ describe('RideSummaryPage', () => {
     })
 
     it('submit POSTs /rate and transitions to thank-you state', async () => {
-      const fetchMock = vi.fn().mockResolvedValueOnce({
-        ok: true,
-        status: 201,
-        json: async () => ({ revealed: false, other_rating: null }),
+      // URL-routed fetch mock — the rider tip-card load on mount also
+      // hits fetch (`GET /api/payment/methods`), so a strict
+      // mockResolvedValueOnce sequence would mis-route the rate
+      // response into the card fetch. Route by URL instead.
+      const fetchMock = vi.fn((url: string) => {
+        if (url === '/api/payment/methods') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ methods: [], default_method_id: null }),
+          })
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => ({ revealed: false, other_rating: null }),
+        })
       })
       vi.stubGlobal('fetch', fetchMock)
 
@@ -349,12 +362,14 @@ describe('RideSummaryPage', () => {
         expect(screen.getByText('Thanks for your feedback!')).toBeInTheDocument()
         expect(screen.getByTestId('waiting-reveal')).toBeInTheDocument()
 
-        // Verify the /rate call was made with the right payload
-        expect(fetchMock).toHaveBeenCalledTimes(1)
-        const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit]
-        expect(url).toBe('/api/rides/ride-001/rate')
-        expect(opts.method).toBe('POST')
-        const body = JSON.parse(opts.body as string) as { stars: number; tags: string[] }
+        // Find the /rate call by URL (might not be index 0 because the
+        // card-load mount fetch fires first).
+        const rateCall = fetchMock.mock.calls.find(
+          ([url]) => (url as string) === '/api/rides/ride-001/rate',
+        ) as [string, RequestInit] | undefined
+        expect(rateCall).toBeDefined()
+        expect(rateCall![1].method).toBe('POST')
+        const body = JSON.parse(rateCall![1].body as string) as { stars: number; tags: string[] }
         expect(body.stars).toBe(5)
         expect(body.tags).toEqual([])
       } finally {
@@ -371,18 +386,33 @@ describe('RideSummaryPage', () => {
         wallet_balance: 0,
       }
 
-      const fetchMock = vi
-        .fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 201,
-          json: async () => ({ revealed: false, other_rating: null }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 201,
-          json: async () => ({ tipped: true, method: 'card', stripe_fee_cents: 33 }),
-        })
+      const fetchMock = vi.fn((url: string) => {
+        if (url === '/api/payment/methods') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              methods: [{ id: 'pm_test', brand: 'visa', last4: '4242', is_default: true }],
+              default_method_id: 'pm_test',
+            }),
+          })
+        }
+        if (url.endsWith('/rate')) {
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            json: async () => ({ revealed: false, other_rating: null }),
+          })
+        }
+        if (url.endsWith('/tip')) {
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            json: async () => ({ tipped: true, method: 'card', stripe_fee_cents: 33 }),
+          })
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) })
+      })
       vi.stubGlobal('fetch', fetchMock)
 
       try {
@@ -390,7 +420,7 @@ describe('RideSummaryPage', () => {
         await waitFor(() => screen.getByTestId('star-row'))
 
         fireEvent.click(screen.getByTestId('star-5'))
-        // Pick the 20% chip
+        // Tip picker is always shown for rider — pick the 20% chip.
         await waitFor(() => screen.getByTestId('tip-picker'))
         fireEvent.click(screen.getByTestId('tip-20%'))
 
@@ -402,10 +432,134 @@ describe('RideSummaryPage', () => {
         })
         expect(screen.getByTestId('tip-method-confirm')).toBeInTheDocument()
 
-        // Both endpoints called in order
-        expect(fetchMock).toHaveBeenCalledTimes(2)
-        expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/rides/ride-001/rate')
-        expect((fetchMock.mock.calls[1] as [string])[0]).toBe('/api/rides/ride-001/tip')
+        // Both /rate and /tip were called (URL-based, since /payment/methods
+        // also gets called on mount and shifts the indices).
+        const urls = fetchMock.mock.calls.map(([url]) => url as string)
+        expect(urls).toContain('/api/rides/ride-001/rate')
+        expect(urls).toContain('/api/rides/ride-001/tip')
+        // Order between /rate and /tip — /rate must fire first.
+        expect(urls.indexOf('/api/rides/ride-001/rate')).toBeLessThan(
+          urls.indexOf('/api/rides/ride-001/tip'),
+        )
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('tip picker is always rendered for riders regardless of star count', async () => {
+      renderWithRouter()
+      await waitFor(() => screen.getByTestId('star-row'))
+      // Tip picker shown before any stars picked (matches iOS).
+      expect(screen.getByTestId('tip-picker')).toBeInTheDocument()
+      expect(screen.getByTestId('tip-none')).toBeInTheDocument()
+    })
+
+    it('allows tip-only submit (rider sends a tip without rating)', async () => {
+      profileRef.current = {
+        id: 'rider-001',
+        stripe_customer_id: 'cus_test',
+        default_payment_method_id: 'pm_test',
+        wallet_balance: 0,
+      }
+      const fetchMock = vi.fn((url: string) => {
+        if (url === '/api/payment/methods') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              methods: [{ id: 'pm_test', brand: 'visa', last4: '4242', is_default: true }],
+              default_method_id: 'pm_test',
+            }),
+          })
+        }
+        if (url.endsWith('/tip')) {
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            json: async () => ({ tipped: true, method: 'card', stripe_fee_cents: 33 }),
+          })
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      try {
+        renderWithRouter()
+        await waitFor(() => screen.getByTestId('tip-picker'))
+        fireEvent.click(screen.getByTestId('tip-20%'))
+
+        const submit = screen.getByTestId('submit-rating')
+        expect(submit).not.toBeDisabled()
+        expect(submit).toHaveTextContent('Send tip')
+
+        fireEvent.click(submit)
+        await waitFor(() => screen.getByTestId('rate-submitted'))
+
+        // /tip called; /rate not called (stars were 0)
+        const urls = fetchMock.mock.calls.map(([url]) => url as string)
+        expect(urls).toContain('/api/rides/ride-001/tip')
+        expect(urls.filter((u) => u.endsWith('/rate'))).toEqual([])
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('shows the saved-card brand + last4 in the tip-method row when a card is on file', async () => {
+      profileRef.current = {
+        id: 'rider-001',
+        stripe_customer_id: 'cus_test',
+        default_payment_method_id: 'pm_test',
+        wallet_balance: 0,
+      }
+      const fetchMock = vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            methods: [{ id: 'pm_test', brand: 'visa', last4: '4242', is_default: true }],
+            default_method_id: 'pm_test',
+          }),
+        }),
+      )
+      vi.stubGlobal('fetch', fetchMock)
+
+      try {
+        renderWithRouter()
+        await waitFor(() => {
+          expect(screen.getByTestId('tip-method-row')).toHaveTextContent('Visa •••• 4242')
+        })
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('Done button copy is "Maybe later" pre-submit and "Done" post-submit', async () => {
+      const fetchMock = vi.fn((url: string) => {
+        if (url === '/api/payment/methods') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ methods: [], default_method_id: null }),
+          })
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => ({ revealed: false, other_rating: null }),
+        })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      try {
+        renderWithRouter()
+        await waitFor(() => screen.getByTestId('done-button'))
+        expect(screen.getByTestId('done-button')).toHaveTextContent('Maybe later')
+
+        fireEvent.click(screen.getByTestId('star-5'))
+        fireEvent.click(screen.getByTestId('submit-rating'))
+
+        await waitFor(() => screen.getByTestId('rate-submitted'))
+        expect(screen.getByTestId('done-button')).toHaveTextContent('Done')
       } finally {
         vi.unstubAllGlobals()
       }
@@ -448,10 +602,19 @@ describe('RideSummaryPage', () => {
     })
 
     it('rate API failure surfaces an error and keeps form open', async () => {
-      const fetchMock = vi.fn().mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        json: async () => ({ error: { code: 'INTERNAL', message: 'Server exploded' } }),
+      const fetchMock = vi.fn((url: string) => {
+        if (url === '/api/payment/methods') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ methods: [], default_method_id: null }),
+          })
+        }
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          json: async () => ({ error: { code: 'INTERNAL', message: 'Server exploded' } }),
+        })
       })
       vi.stubGlobal('fetch', fetchMock)
 

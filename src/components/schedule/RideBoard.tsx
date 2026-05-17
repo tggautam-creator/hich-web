@@ -21,8 +21,8 @@ import { useGasPriceSeed } from '@/lib/gasPriceCache'
 
 // Same-metro radius for "Near me". Cities routinely span 20-30 km across, so
 // a tighter corridor would exclude a poster living in the same town as the
-// viewer. This is an MVP heuristic — once we have real city boundaries we
-// can swap to a proper geocode-based city match.
+// viewer. This is the current radius heuristic; a geocode-based city match
+// would be more precise but requires a reverse-geocode round trip per row.
 const NEAR_ME_RADIUS_METRES = 30_000
 
 function toIsoDay(d: Date): string {

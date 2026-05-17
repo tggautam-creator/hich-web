@@ -384,6 +384,35 @@ describe('DriverHomePage', () => {
     expect(screen.queryByTestId('resume-snooze-button')).not.toBeInTheDocument()
   })
 
+  it('picks up cross-screen snooze event from the decline sheet (no remount needed)', async () => {
+    // Driver lands on home with no snooze, the decline sheet fires
+    // `tago:driver-snoozed` from elsewhere, home should switch to the
+    // Resume button without waiting for a remount or page refresh.
+    mockMaybeSingle.mockResolvedValueOnce({
+      data: { is_online: true, snoozed_until: null },
+      error: null,
+    })
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('online-toggle')).toBeInTheDocument()
+    })
+
+    const inOneHour = new Date(Date.now() + 60 * 60 * 1000)
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('tago:driver-snoozed', {
+          detail: { snoozedUntil: inOneHour },
+        }),
+      )
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('snoozed-indicator')).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId('online-toggle')).not.toBeInTheDocument()
+    expect(screen.getByTestId('resume-snooze-button')).toBeInTheDocument()
+  })
+
   it('Resume button DELETEs /api/rides/snooze and reverts to online toggle', async () => {
     const inOneHour = new Date(Date.now() + 60 * 60 * 1000).toISOString()
     mockMaybeSingle.mockResolvedValueOnce({

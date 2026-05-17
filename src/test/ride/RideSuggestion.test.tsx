@@ -174,11 +174,15 @@ describe('RideSuggestion', () => {
     mockUpdateEq.mockResolvedValue({ data: null, error: null })
     // Default: no existing offer → show form normally
     mockMaybySingle.mockResolvedValue({ data: null, error: null })
+    // The persistence test stashes acceptStage in sessionStorage —
+    // make sure nothing carries over between tests.
+    sessionStorage.clear()
   })
 
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
+    sessionStorage.clear()
   })
 
   it('shows loading spinner while fetching', () => {
@@ -432,6 +436,25 @@ describe('RideSuggestion', () => {
       status: 200,
       json: async () => ({ ride_id: 'ride-123', offer_status: 'pending' }),
     })
+  })
+
+  it('Stage 2 persists across reload via sessionStorage', async () => {
+    // Persistence regression — without it, a tab reload mid-flow
+    // dropped the driver back to stage 1 where re-tapping Accept
+    // would 409. Mirrors iOS DriverAcceptFlowState.
+    setupSuccess()
+    sessionStorage.setItem('tago:acceptStage:ride-123', 'destination')
+
+    try {
+      renderWithRoute()
+      // Should land directly on stage 2 without needing to tap Accept.
+      await waitFor(() => {
+        expect(screen.getByTestId('destination-success-hero')).toBeInTheDocument()
+      })
+      expect(screen.getByTestId('destination-cancel-button')).toBeInTheDocument()
+    } finally {
+      sessionStorage.removeItem('tago:acceptStage:ride-123')
+    }
   })
 
   it('Decline button is no-op while accept is in flight (no /snooze /cancel race)', async () => {

@@ -16,8 +16,9 @@
  * `tip_ride_id` (not `ride_id`) in metadata. The fare webhook handler keys
  * off `ride_id`, so a tip PI's success/failure events are silently ignored
  * by the ride flow — they don't accidentally mark a ride paid or trigger a
- * fare reversal. Async tip failures are out-of-scope for MVP (tips are
- * small + off_session resolves synchronously in 99% of cases).
+ * fare reversal. Async tip failures are not handled here (tips are
+ * small + off_session resolves synchronously in ~99% of cases). If
+ * that assumption breaks we'd need a tip-specific webhook handler.
  */
 import Stripe from 'stripe'
 import { supabaseAdmin } from './supabaseAdmin.ts'
