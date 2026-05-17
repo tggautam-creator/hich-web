@@ -220,9 +220,23 @@ export async function computeFunnelData(
     }
   }
 
-  // 5. Per-user max-step index. We walk steps in order; a user's
-  // max-step is the highest contiguous step they satisfy. Stopping
-  // at the first failure preserves funnel semantics (no skipping).
+  // 5. Per-user max-step index.
+  //
+  // Originally this walked steps in strict order and bailed at the
+  // first failure. That gave the wrong answer for the
+  // payment_or_vehicle → completed_first_ride hop, because a rider
+  // can pay for a ride entirely from wallet balance (promo credit,
+  // refunds, top-ups) without ever saving a `default_payment_method_id`.
+  // The wallet-only path is a first-class flow in
+  // server/routes/rides.ts (see `walletCoversEstimate` at line 419),
+  // so a rider with completed rides but no saved card was being
+  // clamped at max=2 ("stuck at completed_profile") even though
+  // they'd actually finished a ride.
+  //
+  // Fix: if a user has a completed ride in their role, treat that as
+  // also satisfying every earlier step regardless of the cached
+  // payment/vehicle columns. Completing a ride is empirical proof
+  // that the platform's earlier gates let them through.
   const maxStepByUserId = new Map<string, number>()
   for (const u of cohort) {
     let max = 0 // everyone in cohort is at least signed_up
@@ -231,17 +245,23 @@ export async function computeFunnelData(
       if (u.onboarding_completed) {
         max = 2
         const passedStep3 = userPassedPaymentOrVehicle(u, driversWithVehicle, mode)
-        if (passedStep3) {
-          max = 3
-          const passedStep4 = userPassedCompletedRide(
-            u,
-            completedAsRider,
-            completedAsDriver,
-            mode,
-          )
-          if (passedStep4) max = 4
-        }
+        if (passedStep3) max = 3
       }
+    }
+    // Completed-ride override: a finished ride wins outright. This
+    // catches wallet-only riders + any other path that bypasses the
+    // cached payment/vehicle column without bypassing the actual ride.
+    const passedStep4 = userPassedCompletedRide(
+      u,
+      completedAsRider,
+      completedAsDriver,
+      mode,
+    )
+    if (passedStep4) {
+      // Lift to step 4 — and bump prerequisites if they were stranded
+      // earlier (a completed ride implies signup + verified email +
+      // onboarding + something-resembling-payment-or-vehicle).
+      max = 4
     }
     maxStepByUserId.set(u.id, max)
   }

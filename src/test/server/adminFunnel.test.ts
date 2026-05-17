@@ -382,4 +382,49 @@ describe('GET /api/admin/users/stuck', () => {
     expect(res.body.limit).toBe(3)
     expect(res.body.offset).toBe(2)
   })
+
+  // Regression for the 2026-05-17 bug Tarun caught: a rider who
+  // completed rides via wallet balance (no saved default_payment_method_id)
+  // was being clamped at max=2 ("stuck at completed_profile") even though
+  // they had finished a ride. Fix lets a completed ride lift to step 4
+  // regardless of the cached payment column.
+  it('wallet-only rider with a completed ride lands at completed_first_ride, not stuck earlier', async () => {
+    const nowIso = new Date().toISOString()
+    const wallet: UserRow = {
+      id: 'u-wallet',
+      email: 'wallet@x.edu',
+      full_name: 'Wallet Wendy',
+      is_driver: false,
+      onboarding_completed: true,
+      default_payment_method_id: null, // never saved a card
+      created_at: nowIso,
+    }
+    setupFixture({
+      users: [wallet],
+      vehicles: [],
+      rides: [{ rider_id: 'u-wallet', driver_id: null, status: 'completed' }],
+      authUsers: [{ id: 'u-wallet', email_confirmed_at: nowIso }],
+    })
+
+    // Should NOT show in stuck_at_completed_profile (max=2 audience)
+    const stuckProfile = await request(app)
+      .get('/api/admin/users/stuck?step=completed_profile&mode=both&range=all')
+      .set('Authorization', VALID_JWT)
+    expect(stuckProfile.body.users.map((u: { id: string }) => u.id)).not.toContain('u-wallet')
+
+    // Should NOT show in stuck_at_payment_or_vehicle (max=3 audience)
+    const stuckPv = await request(app)
+      .get('/api/admin/users/stuck?step=payment_or_vehicle&mode=both&range=all')
+      .set('Authorization', VALID_JWT)
+    expect(stuckPv.body.users.map((u: { id: string }) => u.id)).not.toContain('u-wallet')
+
+    // Funnel step 5 (completed_first_ride) count should include them.
+    const funnel = await request(app)
+      .get('/api/admin/metrics/funnel?mode=both&range=all')
+      .set('Authorization', VALID_JWT)
+    const completed = funnel.body.steps.find(
+      (s: { key: string; count: number }) => s.key === 'completed_first_ride',
+    )
+    expect(completed.count).toBe(1)
+  })
 })
