@@ -157,9 +157,17 @@ export default function LiveOpsPage() {
           testid="kpi-online-drivers"
           label="Online drivers"
           value={availableCount}
-          subValue={onlineDrivers.length > availableCount ? `${onlineDrivers.length} total · ${onlineDrivers.length - availableCount} on ride` : undefined}
+          subValue={(() => {
+            const parts: string[] = []
+            if (onlineDrivers.length > availableCount) {
+              parts.push(`${onlineDrivers.length - availableCount} on ride`)
+            }
+            const staleCount = onlineDrivers.filter((d) => d.ping_stale).length
+            if (staleCount > 0) parts.push(`${staleCount} stale ping`)
+            return parts.length > 0 ? parts.join(' · ') : undefined
+          })()}
           tone={availableCount > 0 ? 'success' : 'neutral'}
-          tooltip="Drivers whose app pinged GPS in the last 5 min, is_online=true, and not snoozed. The big number is drivers AVAILABLE (no active ride); sub-line breaks out the busy ones."
+          tooltip="Drivers with is_online=true who are still in the matcher's reach pool (the same 7-day window the cleanup cron uses — matches what the matcher actually pushes to). 'Stale ping' = GPS hasn't refreshed in 5+ min; the matcher still notifies them via the visible push, but the on-map dot may be at their last-known position."
         />
         <KpiCard
           testid="kpi-snoozed-drivers"
@@ -299,8 +307,12 @@ export default function LiveOpsPage() {
               <span>Stuck ride</span>
             </div>
             <div className="flex items-center gap-2 mt-1">
-              <span className="h-2.5 w-2.5 rounded-full bg-success" />
+              <span className="h-2.5 w-2.5 rounded-full bg-success border border-white" />
               <span>Online driver (idle)</span>
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="h-2.5 w-2.5 rounded-full bg-success/40 border border-warning" />
+              <span>Online · stale ping</span>
             </div>
           </div>
         </section>
@@ -492,19 +504,29 @@ function RideMarkers({
 
 function OnlineDriverMarker({ driver }: { driver: OnlineDriver }) {
   // Small idle-green pulse — distinct from the active-ride driver's
-  // primary-color marker. Tooltip surfaces who they are + when they
-  // last pinged.
-  const stale = Date.now() - new Date(driver.last_ping_at).getTime() > 60_000
+  // primary-color marker. Stale-ping drivers (>5 min old) render
+  // dimmer + no pulse, so admin can tell at a glance which dots
+  // reflect current position vs a last-known-spot. Per Tarun's
+  // matcher design, these drivers are STILL reachable via the
+  // matcher Stage 1 fallback's visible push — we display them
+  // because the matcher would notify them, not just because they
+  // happen to be pinging.
+  const stale = driver.ping_stale
+  const tooltip =
+    `${driver.name ?? driver.email ?? driver.user_id.slice(0, 8)} · pinged ${timeAgo(driver.last_ping_at)} ago` +
+    (stale ? ' (stale — matcher still pushes)' : '')
   return (
     <AdvancedMarker
       position={{ lat: driver.lat, lng: driver.lng }}
-      title={`${driver.name ?? driver.email ?? driver.user_id.slice(0, 8)} · pinged ${timeAgo(driver.last_ping_at)} ago`}
+      title={tooltip}
     >
       <div className="relative flex items-center justify-center">
         {!stale && (
           <span className="absolute h-4 w-4 rounded-full bg-success/30 animate-ping" />
         )}
-        <span className={`relative h-2.5 w-2.5 rounded-full ${stale ? 'bg-success/50' : 'bg-success'} border border-white shadow-sm`} />
+        <span
+          className={`relative h-2.5 w-2.5 rounded-full border ${stale ? 'bg-success/40 border-warning' : 'bg-success border-white'} shadow-sm`}
+        />
       </div>
     </AdvancedMarker>
   )

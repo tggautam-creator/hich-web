@@ -28,10 +28,20 @@ const EVENT_WINDOW_MIN = 60
 const MAX_ACTIVE_RIDES = 200
 const MAX_EVENTS = 100
 
-// Slice 1.7d — "online driver" = will receive a ride notification right now.
-// Mirrors the matcher RPC's gate in supabase/migrations/064 + 025:
-// driver_locations.is_online=true, recent ping, not snoozed.
-const ONLINE_PING_WINDOW_MIN = 5
+// Slice 1.7d / fix 2026-05-17 — "online driver" = will receive a ride
+// notification right now. Per Tarun's design (preserved in
+// server/lib/scheduledReminders.ts clearStaleOnlineFlags →
+// STALE_ONLINE_HOURS = 24 * 7), a driver who toggled is_online=true
+// stays online for **7 days** of no pings before the cron flips them
+// off. The matcher Stage 1 fallback (rides.ts ~534) fires the visible
+// push regardless of GPS ping freshness because iOS delivers alert
+// pushes to force-quit apps. So this admin overlay must use the SAME
+// 7-day window — not a tight 5-min gate, which previously hid online
+// drivers from the admin even though the matcher would still notify
+// them. The 5-min threshold lives on as the "stale ping" warning for
+// visibility (UI badges drivers whose GPS isn't fresh).
+const ONLINE_INCLUSION_WINDOW_HOURS = 24 * 7   // matches clearStaleOnlineFlags
+const STALE_PING_THRESHOLD_MIN = 5             // ping older than this → stale flag
 const MAX_ONLINE_DRIVERS = 500
 
 // Stuck thresholds — adjust based on ops feedback. Each constant exists
@@ -85,7 +95,9 @@ interface OnlineDriver {
   user_id: string
   name: string | null
   email: string | null
-  /** Most recent driver_locations.recorded_at — proves the app is open. */
+  /** Most recent driver_locations.recorded_at. Driver stays "online"
+   * up to 7 days after this even without further pings (matches the
+   * matcher's behavior + the clearStaleOnlineFlags cron). */
   last_ping_at: string
   /** Last GPS coords; map renders these as green dots. */
   lat: number
@@ -94,6 +106,14 @@ interface OnlineDriver {
    * ride. Lets the UI render them as "busy" rather than "available"
    * even though they're technically online. */
   on_active_ride: boolean
+  /** True when the GPS ping is older than STALE_PING_THRESHOLD_MIN.
+   * The matcher will STILL notify them (visible push reaches force-
+   * quit apps), but their on-map dot may not reflect their actual
+   * current position. UI surfaces this as a warning. */
+  ping_stale: boolean
+  /** Age of the last ping in milliseconds — UI formats this for the
+   * tooltip ("pinged 6 min ago"). */
+  ping_age_ms: number
 }
 
 interface LiveSnapshotResponse {
@@ -401,15 +421,20 @@ adminLiveRouter.get('/snapshot', async (_req: Request, res: Response, next: Next
     // but we surface every "willing" driver here — the on-map dot tells
     // ops the driver's app is open; whether the push token registered
     // is a separate concern + would double the round trips.
-    const onlinePingCutoff = new Date(
-      nowMs - ONLINE_PING_WINDOW_MIN * 60 * 1000,
+    // Use the 7-day window — anything inside this matches what the
+    // clearStaleOnlineFlags cron leaves alone, which is the matcher's
+    // effective pool. The 5-min freshness is applied later as the
+    // `ping_stale` flag for UI awareness, not as a filter.
+    const onlineInclusionCutoff = new Date(
+      nowMs - ONLINE_INCLUSION_WINDOW_HOURS * 60 * 60 * 1000,
     ).toISOString()
+    const staleAfterMs = STALE_PING_THRESHOLD_MIN * 60 * 1000
 
     const driverLocQ = await supabaseAdmin
       .from('driver_locations')
       .select('user_id, location, recorded_at, is_online, snoozed_until')
       .eq('is_online', true)
-      .gte('recorded_at', onlinePingCutoff)
+      .gte('recorded_at', onlineInclusionCutoff)
       .order('recorded_at', { ascending: false })
       .limit(MAX_ONLINE_DRIVERS + 1)
     if (driverLocQ.error) throw driverLocQ.error
@@ -492,6 +517,7 @@ adminLiveRouter.get('/snapshot', async (_req: Request, res: Response, next: Next
       if (!info) continue
       if (!info.is_driver) continue
       if (info.suspended_at) continue
+      const pingAgeMs = nowMs - new Date(c.recorded_at).getTime()
       onlineDrivers.push({
         user_id: c.user_id,
         name: info.full_name,
@@ -500,6 +526,8 @@ adminLiveRouter.get('/snapshot', async (_req: Request, res: Response, next: Next
         lat: c.lat,
         lng: c.lng,
         on_active_ride: busyDriverIds.has(c.user_id),
+        ping_stale: pingAgeMs > staleAfterMs,
+        ping_age_ms: pingAgeMs,
       })
     }
 

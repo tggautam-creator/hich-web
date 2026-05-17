@@ -64,6 +64,12 @@ export interface OnlineDriver {
   lat: number
   lng: number
   on_active_ride: boolean
+  /** True when the GPS ping is older than the matcher's freshness
+   * threshold (5 min). The matcher still notifies them; UI surfaces
+   * this as a "stale ping" warning so admin knows the on-map dot
+   * may not reflect their current position. */
+  ping_stale: boolean
+  ping_age_ms: number
 }
 
 export interface LiveSnapshotResponse {

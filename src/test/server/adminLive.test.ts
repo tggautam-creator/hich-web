@@ -470,7 +470,7 @@ describe('GET /api/admin/live/snapshot — Slice 1.7d online drivers', () => {
   })
 
   it('includes online drivers, excludes snoozed + suspended + non-drivers', async () => {
-    const recent = isoMinusMinutes(1) // within 5-min window
+    const recent = isoMinusMinutes(1) // within 5-min window → not stale
     setupFixture({
       activeRides: [],
       eventsRides: [],
@@ -501,8 +501,38 @@ describe('GET /api/admin/live/snapshot — Slice 1.7d online drivers', () => {
     expect(res.body.online_drivers[0].user_id).toBe('d-online')
     expect(res.body.online_drivers[0].name).toBe('Online Olivia')
     expect(res.body.online_drivers[0].on_active_ride).toBe(false)
+    expect(res.body.online_drivers[0].ping_stale).toBe(false)
     expect(res.body.available_driver_count).toBe(1)
     expect(res.body.snoozed_driver_count).toBe(1)
+  })
+
+  it('keeps drivers in the pool when GPS ping is stale (7-day window, not 5-min)', async () => {
+    // Regression for the bug Tarun caught 2026-05-17: testdriver had
+    // a 6m45s old ping and was being hidden from /admin/live, even
+    // though the matcher Stage 1 fallback would STILL push to them
+    // (clearStaleOnlineFlags keeps is_online=true for 7 days).
+    const sixMinAgo = new Date(Date.now() - 6 * 60 * 1000).toISOString()
+    setupFixture({
+      activeRides: [],
+      eventsRides: [],
+      users: [],
+      driverLocations: [
+        { user_id: 'd-stale', location: { type: 'Point', coordinates: [-121.7, 38.5] }, recorded_at: sixMinAgo, is_online: true, snoozed_until: null },
+      ],
+      driverUsers: [
+        { id: 'd-stale', is_driver: true, suspended_at: null, full_name: 'Stale Steve', email: 'steve@davis.edu' },
+      ],
+    })
+
+    const res = await request(app)
+      .get('/api/admin/live/snapshot')
+      .set('Authorization', VALID_JWT)
+
+    expect(res.status).toBe(200)
+    expect(res.body.online_drivers).toHaveLength(1)
+    expect(res.body.online_drivers[0].ping_stale).toBe(true)
+    expect(res.body.online_drivers[0].ping_age_ms).toBeGreaterThan(5 * 60 * 1000)
+    expect(res.body.available_driver_count).toBe(1)
   })
 
   it('marks on_active_ride=true when the online driver is also driving a ride', async () => {
