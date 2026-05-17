@@ -94,3 +94,145 @@ export function useAdminUserDetail(userId: string | undefined) {
     staleTime: FIVE_MIN_MS,
   })
 }
+
+// ── Slice 1.3b — per-tab hooks ───────────────────────────────────────────────
+
+export interface AdminUserRide {
+  id: string
+  status: string
+  role: 'rider' | 'driver'
+  other_party_id: string | null
+  origin_name: string | null
+  destination_name: string | null
+  fare_cents: number | null
+  created_at: string
+  ended_at: string | null
+}
+
+export interface AdminUserRides {
+  ok: true
+  rides: AdminUserRide[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export function useAdminUserRides(args: {
+  userId: string | undefined
+  enabled: boolean
+  limit?: number
+  offset?: number
+}) {
+  const { userId, enabled, limit = 25, offset = 0 } = args
+  return useQuery<AdminUserRides>({
+    queryKey: ['admin', 'users', 'rides', userId, limit, offset],
+    queryFn: () =>
+      adminGet<AdminUserRides>(`/users/${userId}/rides?limit=${limit}&offset=${offset}`),
+    enabled: enabled && typeof userId === 'string' && userId.length > 0,
+    placeholderData: keepPreviousData,
+    staleTime: FIVE_MIN_MS,
+  })
+}
+
+export interface AdminWalletTxn {
+  id: string
+  type: string
+  amount_cents: number
+  balance_after_cents: number
+  description: string | null
+  pm_brand: string | null
+  pm_last4: string | null
+  pm_wallet: string | null
+  ride_id: string | null
+  created_at: string
+  transfer_id: string | null
+  transfer_paid_at: string | null
+}
+
+export interface AdminUserWallet {
+  ok: true
+  wallet_balance_cents: number
+  transactions: AdminWalletTxn[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export function useAdminUserWallet(args: {
+  userId: string | undefined
+  enabled: boolean
+  limit?: number
+  offset?: number
+}) {
+  const { userId, enabled, limit = 25, offset = 0 } = args
+  return useQuery<AdminUserWallet>({
+    queryKey: ['admin', 'users', 'wallet', userId, limit, offset],
+    queryFn: () =>
+      adminGet<AdminUserWallet>(`/users/${userId}/wallet?limit=${limit}&offset=${offset}`),
+    enabled: enabled && typeof userId === 'string' && userId.length > 0,
+    placeholderData: keepPreviousData,
+    staleTime: FIVE_MIN_MS,
+  })
+}
+
+export interface AdminUserNotification {
+  id: string
+  type: string
+  title: string
+  body: string
+  is_read: boolean
+  created_at: string
+}
+
+export interface AdminUserNotifications {
+  ok: true
+  notifications: AdminUserNotification[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export function useAdminUserNotifications(args: {
+  userId: string | undefined
+  enabled: boolean
+  limit?: number
+  offset?: number
+}) {
+  const { userId, enabled, limit = 25, offset = 0 } = args
+  return useQuery<AdminUserNotifications>({
+    queryKey: ['admin', 'users', 'notifications', userId, limit, offset],
+    queryFn: () =>
+      adminGet<AdminUserNotifications>(
+        `/users/${userId}/notifications?limit=${limit}&offset=${offset}`,
+      ),
+    enabled: enabled && typeof userId === 'string' && userId.length > 0,
+    placeholderData: keepPreviousData,
+    staleTime: FIVE_MIN_MS,
+  })
+}
+
+export interface AdminUserDevice {
+  id: string
+  token_suffix: string
+  platform: 'ios' | 'android' | 'web' | null
+  created_at: string
+}
+
+export interface AdminUserDevices {
+  ok: true
+  devices: AdminUserDevice[]
+  total: number
+}
+
+export function useAdminUserDevices(args: {
+  userId: string | undefined
+  enabled: boolean
+}) {
+  const { userId, enabled } = args
+  return useQuery<AdminUserDevices>({
+    queryKey: ['admin', 'users', 'devices', userId],
+    queryFn: () => adminGet<AdminUserDevices>(`/users/${userId}/devices`),
+    enabled: enabled && typeof userId === 'string' && userId.length > 0,
+    staleTime: FIVE_MIN_MS,
+  })
+}

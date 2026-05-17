@@ -9,16 +9,25 @@
 
 | Status | Slices |
 |---|---|
-| ✅ Done | 7 (Phase 0 complete + Slices 1.1 + 1.2 + 1.3a) |
+| ✅ Done | 8 (Phase 0 complete + Slices 1.1 + 1.2 + 1.3a + 1.3b) |
 | 🟡 In progress | 0 |
-| ⚪ Not started | 21 (incl. Slice 1.3b — the deferred 5 user-detail tabs) |
+| ⚪ Not started | 20 (incl. Slice 1.3c — Admin Actions + audit log) |
 | 🔴 Blocked | 0 |
 
-**Current focus:** Slice 1.3a complete on dev branch — search + Overview tab populated, other 5 tabs stubbed as "coming in 1.3b". Awaiting Tarun's QA at `/admin/users`. Next: probably Slice 1.3b (Rides + Wallet tabs) or 1.4 (push composer), depending on which unblocks marketing more.
+**Current focus:** Slice 1.3b complete on dev branch — Rides / Wallet / Notifications / Devices tabs all populated lazily (each only fetches when the user opens that tab). Only Admin Actions tab remains stubbed (deferred to 1.3c because it needs audit-log infra + 6 write surfaces). Awaiting Tarun's QA. Next: 1.3c or jump to 1.4 (push composer).
 **Next action (Tarun):**
-  1. Hard-refresh localhost:5173/admin → click "Users" in the sidebar. Search box should autofocus. Empty query shows newest signups (paginated 25 per page). Type any name / email / phone; results refresh 250ms after the last keystroke. Pasting a full UUID does an exact id lookup.
-  2. Click any row → /admin/users/:id renders header (avatar/name/email/university/signed-up) + 6 tab strip. Overview tab populates 4 cards: Profile, Financial, Activity, Vehicle. Other 5 tabs show "Coming in Slice 1.3b" placeholders with one-line descriptions of what will land there.
-**Phase 1 ETA:** ~1 dev session remaining across slices 1.3b → 1.10. Slice 1.3b (Rides + Wallet + Notifications + Devices read-only tabs) is the next chunky one; 1.3c (Admin Actions + audit log) is the highest-risk because of audit infra + 6 write surfaces.
+  1. Hard-refresh localhost:5173/admin/users → click any user → cycle through the 4 newly-real tabs:
+     - **Rides**: table with When / Role / Status badge / Origin → Destination / Fare. Paginated 25/page.
+     - **Wallet**: balance card (red if negative) + transactions list (type badge, amount in green/red, balance-after column).
+     - **Notifications**: type + title + body + read/unread + timestamp.
+     - **Devices**: platform + token suffix + registered date.
+  2. The Admin Actions tab still shows "Coming in 1.3c". That's intentional.
+**Phase 1 ETA:** ~1 dev session remaining across slices 1.3c → 1.10.
+
+**Known data gaps surfaced by 1.3b (filed as follow-ups):**
+- `notifications` has no `delivered_at` / `opened_at` columns — notifications tab shows read/unread only. Footer of the tab calls this out.
+- `push_tokens` has no `last_seen` / `app_version` — devices tab shows registered date + platform only. Footer calls this out.
+- Pending Stripe transfers not surfaced on Wallet tab (would need a live Stripe API call); pulled from `transactions.transfer_id`/`transfer_paid_at` instead.
 
 ---
 
@@ -35,7 +44,7 @@
 - [x] **1.2** User funnel breakdown (with drop-off lists) — shipped 2026-05-17. Server: `GET /api/admin/metrics/funnel?range=&mode=` returns 5-step funnel (signed_up → verified_email → completed_profile → payment_or_vehicle → completed_first_ride) with per-step count + drop-off % from previous + from top; `GET /api/admin/users/stuck?step=&range=&mode=&limit=&offset=` returns paginated list of users stuck at the given step. Shared `computeFunnelData()` helper drives both endpoints (TS in-memory aggregate same as Slice 1.1; will swap to SQL when row counts grow). Email-verification status pulled via `supabaseAdmin.auth.admin.listUsers` (paginated, capped at 20k for safety). 14 new tests cover permission gate, all 5 steps × 3 modes, drop-off math, pagination, bogus step rejection. Web: `useAdminFunnel` + `useAdminStuckUsers` React Query hooks (5-min staleTime, `keepPreviousData` on filter change); `<FunnelPage>` at `/admin/funnel` with horizontal bar viz, range + mode filter pills, click-step → side drawer drill-down. New "Funnel" item in admin sidebar between Dashboard and Users. PostHog `admin_funnel_loaded` fires on mount. Sidebar footer flipped from "Phase 0" to "Phase 1". Freebie polish in same commit: `[adminAuth]` now logs `userId / is_admin` on every 403 so the next is_admin-got-reset-silently case is debuggable from the dev server console.
 - [~] **1.3** User search + profile detail (Overview / Rides / Wallet / Notifications / Devices / Admin Actions) — **1.3a done 2026-05-17**; 1.3b/c pending.
   - [x] **1.3a** Search + Overview tab — shipped 2026-05-17. Server `GET /api/admin/users/search?q=&limit=&offset=` (ILIKE on email/full_name/phone, exact-id on full UUID, newest-first when q empty) + `GET /api/admin/users/:id` (full profile + email_verified via auth admin + university derived + vehicle + routines/rides counts). 10 new tests cover both endpoints. Web `<UsersPage>` (autofocus search, 250ms debounce, pagination, row click → detail) + `<UserDetailPage>` (avatar + 6-tab strip; Overview tab populated with Profile / Financial / Activity / Vehicle cards each tooltip-explained; Rides / Wallet / Notifications / Devices / Admin Actions stubbed with "Coming in 1.3b" + one-line preview).
-  - [ ] **1.3b** Rides + Wallet + Notifications + Devices read-only tabs
+  - [x] **1.3b** Rides + Wallet + Notifications + Devices read-only tabs — shipped 2026-05-17. Server: 4 new endpoints under `/api/admin/users/:id/` — `/rides` (paginated, role derived from rider_id vs driver_id), `/wallet` (balance + transactions paginated, returns 404 when user missing), `/notifications` (paginated), `/devices` (returns last 8 chars of token only — never the full token). All inherit JWT + adminAuth gate. Web: 4 React Query hooks each with `enabled` flag so a tab only fetches when active; 4 tab components in `<UserDetailPage>` (Rides table, Wallet balance card + transactions table, Notifications list, Devices table). 7 new tests cover all endpoints. Known data gaps surfaced as footer notes in the UI: notifications lack delivered_at/opened_at; push_tokens lack last_seen/app_version. Only Admin Actions tab still stubbed.
   - [ ] **1.3c** Admin Actions tab (write surface) + audit log infra
 - [ ] **1.4** Push notification composer
 - [ ] **1.5** Email broadcast (Resend setup + React Email templates)
@@ -123,6 +132,8 @@ Append-only. Newest entries at the top. Capture every non-obvious decision so fu
 | 2026-05-17 | Slice 1.2 verified on dev (funnel renders, filters work). Tarun requested plain-English explanations for every metric/step. Built `<InfoTooltip>` (small "i" trigger button → click-toggle popup, click-outside + Escape close, design-token styled). Wired into all 12 KPI cards + 3 charts on AdminHomePage + all 5 funnel steps on FunnelPage. Refactored funnel step from "whole card is a button" to "card + explicit 'See who's stuck here →' link" so the InfoTooltip "i" button doesn't sit inside a button (invalid HTML). 1135/1135 tests pass; lint + build clean. | Awaiting Tarun: tap any "i" on /admin or /admin/funnel to verify tooltip readability, then decide push. |
 | 2026-05-17 | Tooltip overflow on funnel page step 5 → fixed by adding `align` prop to InfoTooltip (right anchored default for dashboard cards where "i" sits in card's top-right corner; left anchored for funnel where "i" sits right after a short title with empty card space to the right). Also rewrote `payment_or_vehicle` and `completed_first_ride` tooltips in plainer "what does this number tell me" framing per Tarun's feedback. Pushed Slice 1.2 + tooltips + tooltip-fix to origin/main as commits 80ca03e + 8dbb6c1 + 9fa5090. | Slice 1.2 + tooltips live. |
 | 2026-05-17 | Slice 1.3a code complete: server `GET /api/admin/users/search` (ILIKE text fields + full-UUID exact-match + newest-first when empty) + `GET /api/admin/users/:id` (full profile + email_verified via auth admin + university derived + vehicle + routines/rides counts), 10 new tests. Web `<UsersPage>` (autofocus search, 250ms debounce, pagination, hover-row → /admin/users/:id) + `<UserDetailPage>` (header w/ avatar + 6-tab strip; Overview populated, other 5 stubbed). 1145/1145 tests pass; lint + build clean. No migrations needed. | Awaiting Tarun: hard-refresh /admin/users, search for any user, click through to the profile, sanity-check the Overview cards. |
+| 2026-05-17 | Slice 1.3a verified + pushed (e2c4b3e). | Slice 1.3a live. |
+| 2026-05-17 | Slice 1.3b code complete: 4 server endpoints under /api/admin/users/:id/ (rides / wallet / notifications / devices); 4 React Query hooks with `enabled` flag for lazy per-tab fetch; 4 tab components in UserDetailPage. Devices endpoint deliberately returns last 8 chars of push token only (never the full token — admins can identify a device without holding a sendable secret). 7 new tab tests pass. 1152/1152 tests; lint + build clean. No migrations. Surfaced 3 data gaps as follow-ups (notification delivery columns, push_token last_seen / app_version, live Stripe pending transfers). | Awaiting Tarun: hard-refresh /admin/users/:id, cycle through the 4 newly-real tabs, confirm data looks right for at least one user with rides + transactions. |
 
 ---
 

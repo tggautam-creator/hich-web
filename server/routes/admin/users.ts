@@ -319,3 +319,235 @@ adminUsersRouter.get(
     }
   },
 )
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Slice 1.3b — per-user read-only tab endpoints (rides / wallet /
+// notifications / devices). All paginated except /devices (one row
+// per user post-migration 009, so pagination is pointless).
+//
+// Permissions: inherited from adminRouter — JWT + adminAuth gate.
+// All endpoints return 400 INVALID_USER_ID for non-UUID :id values.
+// ──────────────────────────────────────────────────────────────────────────────
+
+function parsePaging(req: Request, defaultLimit = 25): { limit: number; offset: number } {
+  const limit = Math.min(
+    Math.max(parseInt(String(req.query['limit'] ?? defaultLimit), 10) || defaultLimit, 1),
+    100,
+  )
+  const offset = Math.max(parseInt(String(req.query['offset'] ?? '0'), 10) || 0, 0)
+  return { limit, offset }
+}
+
+function parseUserIdParam(req: Request, res: Response): string | null {
+  const raw = req.params['id']
+  const id = typeof raw === 'string' ? raw : ''
+  if (!id || !isFullUuid(id)) {
+    res.status(400).json({
+      error: { code: 'INVALID_USER_ID', message: 'user id must be a UUID' },
+    })
+    return null
+  }
+  return id
+}
+
+// ── GET /:id/rides ──────────────────────────────────────────────────────────
+
+interface UserRideRow {
+  id: string
+  status: string
+  role: 'rider' | 'driver'
+  other_party_id: string | null
+  origin_name: string | null
+  destination_name: string | null
+  fare_cents: number | null
+  created_at: string
+  ended_at: string | null
+}
+
+adminUsersRouter.get(
+  '/:id/rides',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = parseUserIdParam(req, res)
+      if (!id) return
+      const { limit, offset } = parsePaging(req)
+
+      const { data, count, error } = await supabaseAdmin
+        .from('rides')
+        .select(
+          'id, status, rider_id, driver_id, origin_name, destination_name, fare_cents, created_at, ended_at',
+          { count: 'exact' },
+        )
+        .or(`rider_id.eq.${id},driver_id.eq.${id}`)
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1)
+      if (error) throw error
+
+      const rows: UserRideRow[] = (data ?? []).map((r) => ({
+        id: r.id,
+        status: r.status,
+        role: r.rider_id === id ? 'rider' : 'driver',
+        other_party_id: r.rider_id === id ? r.driver_id : r.rider_id,
+        origin_name: r.origin_name,
+        destination_name: r.destination_name,
+        fare_cents: r.fare_cents,
+        created_at: r.created_at,
+        ended_at: r.ended_at,
+      }))
+
+      res.status(200).json({
+        ok: true,
+        rides: rows,
+        total: count ?? rows.length,
+        limit,
+        offset,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// ── GET /:id/wallet ─────────────────────────────────────────────────────────
+
+interface WalletTxnRow {
+  id: string
+  type: string
+  amount_cents: number
+  balance_after_cents: number
+  description: string | null
+  pm_brand: string | null
+  pm_last4: string | null
+  pm_wallet: string | null
+  ride_id: string | null
+  created_at: string
+  transfer_id: string | null
+  transfer_paid_at: string | null
+}
+
+adminUsersRouter.get(
+  '/:id/wallet',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = parseUserIdParam(req, res)
+      if (!id) return
+      const { limit, offset } = parsePaging(req)
+
+      const [userRes, txRes] = await Promise.all([
+        supabaseAdmin
+          .from('users')
+          .select('wallet_balance')
+          .eq('id', id)
+          .maybeSingle(),
+        supabaseAdmin
+          .from('transactions')
+          .select(
+            'id, type, amount_cents, balance_after_cents, description, pm_brand, pm_last4, pm_wallet, ride_id, created_at, transfer_id, transfer_paid_at',
+            { count: 'exact' },
+          )
+          .eq('user_id', id)
+          .order('created_at', { ascending: false })
+          .range(offset, offset + limit - 1),
+      ])
+      if (userRes.error) throw userRes.error
+      if (!userRes.data) {
+        res.status(404).json({
+          error: { code: 'NOT_FOUND', message: 'user not found' },
+        })
+        return
+      }
+      if (txRes.error) throw txRes.error
+
+      res.status(200).json({
+        ok: true,
+        wallet_balance_cents: userRes.data.wallet_balance,
+        transactions: (txRes.data ?? []) as WalletTxnRow[],
+        total: txRes.count ?? txRes.data?.length ?? 0,
+        limit,
+        offset,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// ── GET /:id/notifications ──────────────────────────────────────────────────
+
+interface NotificationRow {
+  id: string
+  type: string
+  title: string
+  body: string
+  is_read: boolean
+  created_at: string
+}
+
+adminUsersRouter.get(
+  '/:id/notifications',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = parseUserIdParam(req, res)
+      if (!id) return
+      const { limit, offset } = parsePaging(req)
+
+      const { data, count, error } = await supabaseAdmin
+        .from('notifications')
+        .select('id, type, title, body, is_read, created_at', { count: 'exact' })
+        .eq('user_id', id)
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1)
+      if (error) throw error
+
+      res.status(200).json({
+        ok: true,
+        notifications: (data ?? []) as NotificationRow[],
+        total: count ?? data?.length ?? 0,
+        limit,
+        offset,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// ── GET /:id/devices ────────────────────────────────────────────────────────
+
+interface DeviceRow {
+  id: string
+  token_suffix: string // last 8 chars only — full token is enough to send a push
+  platform: 'ios' | 'android' | 'web' | null
+  created_at: string
+}
+
+adminUsersRouter.get(
+  '/:id/devices',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = parseUserIdParam(req, res)
+      if (!id) return
+
+      const { data, error } = await supabaseAdmin
+        .from('push_tokens')
+        .select('id, token, platform, created_at')
+        .eq('user_id', id)
+        .order('created_at', { ascending: false })
+      if (error) throw error
+
+      const rows: DeviceRow[] = (data ?? []).map((d) => ({
+        id: d.id,
+        token_suffix: d.token.slice(-8),
+        platform: d.platform,
+        created_at: d.created_at,
+      }))
+      res.status(200).json({
+        ok: true,
+        devices: rows,
+        total: rows.length,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
