@@ -35,11 +35,12 @@ iOS items stay in the deferred queue below.
 - [x] "Find another driver" calls `POST /api/rides/:id/find-new-driver`. "Cancel ride" calls `PATCH /api/rides/:id/cancel`.
 - [x] Wired into `MessagingWindow.tsx` (replaces the bare modal) and `RiderPickupPage.tsx` (replaces the 3-second auto-dismiss anti-pattern). WaitingRoom keeps the toast-style handler because the rider is still in the matching loop there.
 
-#### Slice 3 — Decline reason sheet + snooze + Driver Home pill (W-T1-D1 + W-T1-D2)
-- [ ] New `DeclineReasonSheet.tsx` component: 7 reason pills + 6 snooze duration pills. Submits both reason + snooze in parallel calls (`POST /api/rides/snooze` + `PATCH /api/rides/:id/cancel`).
-- [ ] Wire into `RideRequestNotification.tsx` banner Decline button.
-- [ ] Wire into `RideSuggestion.tsx` decline path (replaces the current direct nav).
-- [ ] `DriverHomePage.tsx`: read `snoozed_until` alongside `is_online`. Render orange "Snoozed · Xm left" pill in the top bar AND replace the online toggle with a RESUME button while snoozed. Live countdown via `setInterval`.
+#### Slice 3 — Decline reason sheet + snooze + Driver Home pill (W-T1-D1 + W-T1-D2) ✅ shipped 2026-05-16 (awaiting prod QA)
+- [x] New `DeclineReasonSheet.tsx` component: 7 reason pills + 6 snooze duration pills, "Just decline" skip path, dynamic submit label.
+- [x] Wired into `RideRequestNotification.tsx` banner Decline button (the auto-decline countdown stays silent — sheet is for explicit user gestures only).
+- [x] Wired into `RideSuggestion.tsx` Decline button (countdown auto-decline and Back-arrow still silent).
+- [x] Submit flow: POST `/api/rides/snooze` first (durable, ride-independent), then PATCH `/api/rides/:id/cancel` with reason only. Matches iOS `submitDecline` pattern.
+- [x] `DriverHomePage.tsx`: reads `snoozed_until` alongside `is_online` from `driver_locations`, treats past values as not-snoozed, renders orange "Snoozed · Xm left" pill in the top bar (replaces the Online/Offline pill while paused), swaps the online toggle for a Resume button → DELETE `/api/rides/snooze`. Live countdown via single `setInterval` that auto-clears at zero. Optimistic resume with rollback on failure.
 
 #### Slice 4 — Two-step accept flow (W-T1-D3)
 - [ ] Split `RideSuggestion.tsx::handleAccept` into stage 1 (commit-accept with empty body, no destination needed) and stage 2 (destination entry).
@@ -52,16 +53,16 @@ iOS items stay in the deferred queue below.
 
 | Status | Count |
 |---|---|
-| Not started | 3 |
+| Not started | 1 |
 | In progress | 0 |
-| Done (awaiting QA) | 3 |
+| Done (awaiting QA) | 5 |
 | Done (verified + pushed) | 0 |
 
 ### Current focus
-Slice 3 (Decline reason sheet + snooze + Driver Home pill).
+Slice 4 (Two-step accept flow).
 
 ### Next action
-Wait for user QA of Slices 1+2 on prod; then start Slice 3.
+Wait for user QA of Slices 1+2+3 on prod; then start Slice 4.
 
 ---
 

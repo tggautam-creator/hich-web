@@ -237,7 +237,11 @@ describe('RideSuggestion', () => {
     expect(screen.getByTestId('accept-button')).toHaveTextContent('Enter destination first')
   })
 
-  it('Decline button navigates to driver home without cancelling ride', async () => {
+  it('Decline button opens the reason sheet; submitting from "Just decline" navigates home', async () => {
+    // Sprint 2 W-T1-D1 — tapping Decline now opens DeclineReasonSheet
+    // instead of immediately cancelling. The legacy silent-decline
+    // path still exists for the auto-decline countdown (covered by
+    // the separate "auto-declines after 150 seconds" test below).
     setupSuccess()
     renderWithRoute()
 
@@ -249,7 +253,15 @@ describe('RideSuggestion', () => {
       fireEvent.click(screen.getByTestId('decline-button'))
     })
 
-    // Decline should NOT update ride status — just navigate away
+    // Sheet should be visible; nav should NOT have happened yet
+    expect(screen.getByTestId('decline-reason-sheet')).toBeInTheDocument()
+    expect(mockNavigate).not.toHaveBeenCalledWith('/home/driver', expect.anything())
+
+    // Tap "Just decline" — no reason, no snooze. Should navigate.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('decline-skip'))
+    })
+
     expect(mockUpdate).not.toHaveBeenCalled()
     expect(mockNavigate).toHaveBeenCalledWith('/home/driver', { replace: true })
   })

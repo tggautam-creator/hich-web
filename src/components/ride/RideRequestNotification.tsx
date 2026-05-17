@@ -8,6 +8,7 @@ import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { reverseGeocode } from '@/lib/geocode'
 import AppIcon from '@/components/ui/AppIcon'
+import DeclineReasonSheet from '@/components/ride/DeclineReasonSheet'
 
 // ── Dismiss callback ref (stable across renders) ──────────────────────────────
 
@@ -129,6 +130,12 @@ export default function RideRequestNotification({
    * countdown to 90s** — bug repro: queue 2 requests in quick succession
    * and the first one never auto-declines.
    */
+  /**
+   * Auto-decline path (countdown expiry) and any internal silent
+   * decline. PATCHes /api/rides/:id/cancel WITHOUT reason or
+   * snooze_minutes — those are user-intentional analytics and don't
+   * make sense for an unattended auto-dismiss.
+   */
   const declineNotification = useCallback(() => {
     const head = queueRef.current[0]
     if (head && !head.isBoardRequest) {
@@ -149,6 +156,79 @@ export default function RideRequestNotification({
     }
     dismiss()
   }, [dismiss])
+
+  // ── Sprint 2 W-T1-D1 — explicit Decline opens the reason sheet ───────
+  // Tracked separately from `declineNotification` (which is the silent
+  // auto-decline path) so countdown expiry stays silent — the sheet is
+  // an explicit, attended user gesture.
+  const [showDeclineSheet, setShowDeclineSheet] = useState(false)
+
+  const openDeclineSheet = useCallback(() => {
+    const head = queueRef.current[0]
+    if (!head || head.isBoardRequest) {
+      // Board requests have a separate review flow; preserve the
+      // legacy "Decline just dismisses the toast" behaviour for them.
+      dismiss()
+      return
+    }
+    // Pause the auto-decline countdown while the sheet is open so the
+    // driver doesn't get yanked mid-choice.
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    setShowDeclineSheet(true)
+  }, [dismiss])
+
+  const submitDeclineWithReason = useCallback(
+    (reason: string | null, snoozeMinutes: number | null) => {
+      const head = queueRef.current[0]
+      setShowDeclineSheet(false)
+      if (!head) { dismiss(); return }
+      const rideId = head.rideId
+      void (async () => {
+        try {
+          const token = (await supabase.auth.getSession()).data.session?.access_token
+          if (!token) return
+          // Snooze first — durable user intent decoupled from the
+          // specific ride (matches iOS submitDecline pattern). Cancel
+          // is independent; either failing doesn't roll back the other.
+          if (snoozeMinutes != null) {
+            void fetch('/api/rides/snooze', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({ snooze_minutes: snoozeMinutes }),
+            })
+          }
+          void fetch(`/api/rides/${rideId}/cancel`, {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            // Server already snoozed via POST /snooze; pass reason
+            // only so we don't double-write the snooze_until value.
+            body: reason ? JSON.stringify({ reason }) : undefined,
+          })
+        } catch {
+          // best-effort; sheet has already closed
+        }
+      })()
+      dismiss()
+    },
+    [dismiss],
+  )
+
+  const closeDeclineSheet = useCallback(() => {
+    setShowDeclineSheet(false)
+    // Re-show by leaving the head in the queue; the auto-decline timer
+    // will be re-armed by the existing effect when the head is back in
+    // view. (If the driver swipes the sheet away mid-decision we keep
+    // the request visible so they can re-engage.)
+  }, [])
 
   // Declined toast — shown when a board request is rejected
   const [declinedToast, setDeclinedToast] = useState<{ rideId: string } | null>(null)
@@ -1247,7 +1327,7 @@ export default function RideRequestNotification({
         <div className="px-3 pb-3 flex gap-2">
           <button
             type="button"
-            onClick={declineNotification}
+            onClick={openDeclineSheet}
             className="flex-1 rounded-2xl border border-border py-2.5 text-center text-sm font-semibold text-text-secondary active:bg-surface transition-colors"
             data-testid="decline-button"
           >
@@ -1274,6 +1354,14 @@ export default function RideRequestNotification({
           )}
         </div>
       </div>
+
+      {/* \u2500\u2500 Decline reason sheet (Sprint 2 W-T1-D1) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */}
+      {showDeclineSheet && (
+        <DeclineReasonSheet
+          onSubmit={submitDeclineWithReason}
+          onCancel={closeDeclineSheet}
+        />
+      )}
     </div>,
     portalTarget,
   )

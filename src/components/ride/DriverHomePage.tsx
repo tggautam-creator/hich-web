@@ -20,6 +20,26 @@ interface DriverHomePageProps {
 
 const GPS_INTERVAL_MS = 30_000
 
+/**
+ * Human-friendly remaining time on a snooze: "23h 45m" for a full
+ * "Until tomorrow" pause, "1h 12m" for hours-range, "8m" / "45s" for
+ * the final stretch. Hours / minutes track the same buckets the
+ * snooze sheet exposes so the pill never shows a value that doesn't
+ * line up with what the driver picked.
+ */
+function formatSnoozeRemaining(until: Date, nowMs: number): string {
+  const ms = until.getTime() - nowMs
+  if (ms <= 0) return '0s'
+  const totalSec = Math.ceil(ms / 1000)
+  const hours = Math.floor(totalSec / 3600)
+  const minutes = Math.floor((totalSec % 3600) / 60)
+  if (hours >= 1) {
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`
+  }
+  if (minutes >= 1) return `${minutes}m`
+  return `${totalSec}s`
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function DriverHomePage({ 'data-testid': testId }: DriverHomePageProps) {
@@ -40,6 +60,12 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
   const [hasGps, setHasGps] = useState(false)
   const [isOnline, setIsOnline] = useState(false)
   const [onlineStateLoaded, setOnlineStateLoaded] = useState(false)
+  // Sprint 2 W-T1-D2 — snoozed pill + Resume button. `snoozedUntil`
+  // is null when the driver isn't paused. `nowTick` re-renders every
+  // second so the "Snoozed · Xm left" countdown ticks live.
+  const [snoozedUntil, setSnoozedUntil] = useState<Date | null>(null)
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  const [resumingSnooze, setResumingSnooze] = useState(false)
   const [activeRideCount, setActiveRideCount] = useState(0)
   const [unreadCount, setUnreadCount] = useState(0)
   // Slice 6 — pending earnings: rides where the driver has finished but the
@@ -92,14 +118,38 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
     if (!profile?.id) return
     void supabase
       .from('driver_locations')
-      .select('is_online')
+      .select('is_online, snoozed_until')
       .eq('user_id', profile.id)
       .maybeSingle()
       .then(({ data }) => {
         setIsOnline(data?.is_online === true)
+        // Only treat snoozed_until as active when it's actually in the
+        // future — server's matcher uses the same check, so we mirror
+        // it client-side to avoid a "Snoozed · 0m" stuck pill.
+        const raw = (data as { snoozed_until?: string | null } | null)?.snoozed_until
+        if (raw) {
+          const until = new Date(raw)
+          if (until.getTime() > Date.now()) setSnoozedUntil(until)
+        }
         setOnlineStateLoaded(true)
       })
   }, [profile?.id])
+
+  // ── Snooze countdown — tick every second while snoozedUntil is set ──
+  // Auto-clears when the timer reaches 0 so the pill disappears + the
+  // online toggle re-enables without the driver needing to refresh.
+  useEffect(() => {
+    if (!snoozedUntil) return
+    const id = window.setInterval(() => {
+      const now = Date.now()
+      setNowTick(now)
+      if (snoozedUntil.getTime() <= now) {
+        setSnoozedUntil(null)
+        window.clearInterval(id)
+      }
+    }, 1000)
+    return () => window.clearInterval(id)
+  }, [snoozedUntil])
 
   // ── Post GPS to driver_locations ──────────────────────────────────────────
   const postLocation = useCallback(async () => {
@@ -188,6 +238,41 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
     searchParams.delete('stripe_return')
     setSearchParams(searchParams, { replace: true })
   }, [searchParams, setSearchParams, refreshProfile])
+
+  /**
+   * Sprint 2 W-T1-D2 — clears the snooze server-side so the driver
+   * resumes receiving ride requests immediately. Optimistically clears
+   * locally; rolls back if the API call fails.
+   */
+  async function handleResumeSnooze() {
+    if (resumingSnooze) return
+    setResumingSnooze(true)
+    const previous = snoozedUntil
+    setSnoozedUntil(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        setSnoozedUntil(previous)
+        showToast('Sign in to resume.')
+        return
+      }
+      const resp = await fetch('/api/rides/snooze', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
+      if (!resp.ok) {
+        setSnoozedUntil(previous)
+        showToast("Couldn't resume — try again.")
+        return
+      }
+      showToast('Resumed — ride requests will appear here')
+    } catch {
+      setSnoozedUntil(previous)
+      showToast('Network error — try again.')
+    } finally {
+      setResumingSnooze(false)
+    }
+  }
 
   async function handleToggleOnline() {
     // F3 — cap gate: at $100 without a bank, we block going online and
@@ -285,24 +370,47 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         className="absolute left-0 right-0 top-0 z-[1000] bg-white/90 backdrop-blur-sm border-b border-border flex items-center justify-between px-4"
         style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
       >
-        {/* Status indicator (non-interactive — toggle is the big button below) */}
-        <div
-          data-testid="online-indicator"
-          className={[
-            'flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold',
-            isOnline
-              ? 'bg-success/10 text-success'
-              : 'bg-border/50 text-text-secondary',
-          ].join(' ')}
-        >
-          <span
+        {/* Status indicator — Snoozed takes priority over Online/Offline
+            so the driver always sees their most relevant state. */}
+        {snoozedUntil ? (
+          <div
+            data-testid="snoozed-indicator"
+            className="flex items-center gap-2 rounded-full bg-warning/15 px-3 py-1.5 text-xs font-bold text-warning"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              className="h-3.5 w-3.5"
+              aria-hidden="true"
+            >
+              <path
+                fillRule="evenodd"
+                d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zM12.75 6a.75.75 0 00-1.5 0v6c0 .414.336.75.75.75h4.5a.75.75 0 000-1.5h-3.75V6z"
+                clipRule="evenodd"
+              />
+            </svg>
+            Snoozed · {formatSnoozeRemaining(snoozedUntil, nowTick)}
+          </div>
+        ) : (
+          <div
+            data-testid="online-indicator"
             className={[
-              'h-2 w-2 rounded-full',
-              isOnline ? 'bg-success animate-pulse' : 'bg-text-secondary',
+              'flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold',
+              isOnline
+                ? 'bg-success/10 text-success'
+                : 'bg-border/50 text-text-secondary',
             ].join(' ')}
-          />
-          {isOnline ? 'Online' : 'Offline'}
-        </div>
+          >
+            <span
+              className={[
+                'h-2 w-2 rounded-full',
+                isOnline ? 'bg-success animate-pulse' : 'bg-text-secondary',
+              ].join(' ')}
+            />
+            {isOnline ? 'Online' : 'Offline'}
+          </div>
+        )}
 
         <span className="font-bold text-sm text-text-primary tracking-wider select-none">
           TAGO DRIVER
@@ -411,39 +519,61 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
           </div>
         )}
 
-        {/* ── Online/Offline toggle ──────────────────────────────────────── */}
-        <button
-          data-testid="online-toggle"
-          onClick={() => { void handleToggleOnline() }}
-          disabled={!onlineStateLoaded || (atWalletCap && !isOnline)}
-          className={[
-            'w-full rounded-2xl shadow-lg px-4 py-3 flex items-center gap-3 active:scale-[0.99] transition-all',
-            !onlineStateLoaded || (atWalletCap && !isOnline) ? 'opacity-60' : '',
-            isOnline
-              ? 'bg-white border-2 border-success'
-              : 'bg-white border border-border',
-          ].join(' ')}
-        >
-          <span className={[
-            'relative flex h-3 w-3 shrink-0',
-          ].join(' ')}>
-            {isOnline && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />}
-            <span className={['relative inline-flex h-3 w-3 rounded-full', isOnline ? 'bg-success' : 'bg-text-secondary'].join(' ')} />
-          </span>
+        {/* ── Online/Offline toggle (or Resume button while snoozed) ───── */}
+        {snoozedUntil ? (
+          <button
+            data-testid="resume-snooze-button"
+            onClick={() => { void handleResumeSnooze() }}
+            disabled={resumingSnooze}
+            className="w-full rounded-2xl bg-warning/15 border-2 border-warning px-4 py-3 flex items-center gap-3 active:scale-[0.99] transition-all disabled:opacity-60"
+          >
+            <span className="relative flex h-3 w-3 shrink-0">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-warning opacity-75" />
+              <span className="relative inline-flex h-3 w-3 rounded-full bg-warning" />
+            </span>
+            <span className="flex-1 text-sm font-bold text-left text-warning">
+              {resumingSnooze
+                ? 'Resuming…'
+                : `Paused — Resume now (${formatSnoozeRemaining(snoozedUntil, nowTick)} left)`}
+            </span>
+            <span className="text-xs font-bold text-warning">
+              {resumingSnooze ? '…' : 'Resume'}
+            </span>
+          </button>
+        ) : (
+          <button
+            data-testid="online-toggle"
+            onClick={() => { void handleToggleOnline() }}
+            disabled={!onlineStateLoaded || (atWalletCap && !isOnline)}
+            className={[
+              'w-full rounded-2xl shadow-lg px-4 py-3 flex items-center gap-3 active:scale-[0.99] transition-all',
+              !onlineStateLoaded || (atWalletCap && !isOnline) ? 'opacity-60' : '',
+              isOnline
+                ? 'bg-white border-2 border-success'
+                : 'bg-white border border-border',
+            ].join(' ')}
+          >
+            <span className={[
+              'relative flex h-3 w-3 shrink-0',
+            ].join(' ')}>
+              {isOnline && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />}
+              <span className={['relative inline-flex h-3 w-3 rounded-full', isOnline ? 'bg-success' : 'bg-text-secondary'].join(' ')} />
+            </span>
 
-          <span className={['flex-1 text-sm font-semibold text-left', isOnline ? 'text-success' : 'text-text-secondary'].join(' ')}>
-            {isOnline
-              ? 'Online — receiving rides'
-              : atWalletCap
-                ? 'Link a bank to go online'
-                : 'Offline — tap to go online'}
-          </span>
+            <span className={['flex-1 text-sm font-semibold text-left', isOnline ? 'text-success' : 'text-text-secondary'].join(' ')}>
+              {isOnline
+                ? 'Online — receiving rides'
+                : atWalletCap
+                  ? 'Link a bank to go online'
+                  : 'Offline — tap to go online'}
+            </span>
 
-          {/* Mini toggle switch */}
-          <div className={['relative h-6 w-10 rounded-full shrink-0 transition-colors', isOnline ? 'bg-success' : 'bg-border'].join(' ')}>
-            <div className={['absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform', isOnline ? 'translate-x-4' : 'translate-x-0.5'].join(' ')} />
-          </div>
-        </button>
+            {/* Mini toggle switch */}
+            <div className={['relative h-6 w-10 rounded-full shrink-0 transition-colors', isOnline ? 'bg-success' : 'bg-border'].join(' ')}>
+              <div className={['absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform', isOnline ? 'translate-x-4' : 'translate-x-0.5'].join(' ')} />
+            </div>
+          </button>
+        )}
 
         {/* ── Pending earnings pill (Slice 6) ─────────────────────────────
             Shown only when there's at least $1 pending. Tap → /payment so

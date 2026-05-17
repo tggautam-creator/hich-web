@@ -8,6 +8,7 @@ import { calculateFare, formatCents } from '@/lib/fare'
 import { searchPlaces, getPlaceCoordinates } from '@/lib/places'
 import type { PlaceSuggestion } from '@/lib/places'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
+import DeclineReasonSheet from '@/components/ride/DeclineReasonSheet'
 import CarMarker from '@/components/map/CarMarker'
 import { MAP_ID } from '@/lib/mapConstants'
 import AppIcon from '@/components/ui/AppIcon'
@@ -294,7 +295,7 @@ export default function RideSuggestion({
     }
   }, [rideId, standbyMode, navigate])
 
-  // ── Decline helper ────────────────────────────────────────────────────────
+  // ── Decline helpers ───────────────────────────────────────────────────────
   // Decline = "this driver isn't interested." We need to release the
   // ride_offer server-side via PATCH /api/rides/:id/cancel so the matcher
   // can keep fanning out to other drivers. Without this call the offer
@@ -305,23 +306,79 @@ export default function RideSuggestion({
   // function. Fire-and-forget — even if the server call fails (e.g. the
   // ride was already actioned by another driver), we still want to
   // navigate the driver home so they aren't stranded.
-  const handleDecline = useCallback(() => {
-    void (async () => {
+  //
+  // Sprint 2 W-T1-D1 — when the driver taps Decline (not the countdown
+  // expiry) we open `DeclineReasonSheet` first so they can optionally
+  // log a reason and snooze. The countdown path stays a silent decline
+  // because it's unattended.
+  const sendDeclineNetwork = useCallback(
+    (reason: string | null, snoozeMinutes: number | null) => {
       if (!rideId) return
-      try {
-        const token = (await supabase.auth.getSession()).data.session?.access_token
-        if (token) {
-          await fetch(`/api/rides/${rideId}/cancel`, {
+      void (async () => {
+        try {
+          const token = (await supabase.auth.getSession()).data.session?.access_token
+          if (!token) return
+          // Snooze first — durable user intent decoupled from the
+          // specific ride (matches iOS submitDecline). Either call
+          // failing doesn't roll back the other.
+          if (snoozeMinutes != null) {
+            void fetch('/api/rides/snooze', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({ snooze_minutes: snoozeMinutes }),
+            })
+          }
+          void fetch(`/api/rides/${rideId}/cancel`, {
             method: 'PATCH',
-            headers: { Authorization: `Bearer ${token}` },
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: reason ? JSON.stringify({ reason }) : undefined,
           })
+        } catch {
+          // best-effort — fall through to nav
         }
-      } catch {
-        // best-effort — fall through to nav
-      }
-    })()
+      })()
+    },
+    [rideId],
+  )
+
+  const handleDecline = useCallback(() => {
+    sendDeclineNetwork(null, null)
     navigate('/home/driver', { replace: true })
-  }, [navigate, rideId])
+  }, [navigate, sendDeclineNetwork])
+
+  const [showDeclineSheet, setShowDeclineSheet] = useState(false)
+
+  const openDeclineSheet = useCallback(() => {
+    // Pause the countdown the moment the sheet opens so the driver
+    // doesn't get yanked mid-choice.
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    setShowDeclineSheet(true)
+  }, [])
+
+  const submitDeclineWithReason = useCallback(
+    (reason: string | null, snoozeMinutes: number | null) => {
+      setShowDeclineSheet(false)
+      sendDeclineNetwork(reason, snoozeMinutes)
+      navigate('/home/driver', { replace: true })
+    },
+    [navigate, sendDeclineNetwork],
+  )
+
+  const closeDeclineSheet = useCallback(() => {
+    setShowDeclineSheet(false)
+    // Driver swiped away mid-decision — leave the suggestion visible.
+    // The countdown effect re-arms below because handleDecline /
+    // openDeclineSheet identity haven't changed.
+  }, [])
 
   // ── Countdown timer (auto-decline on expiry) ─────────────────────────────
   useEffect(() => {
@@ -819,7 +876,7 @@ export default function RideSuggestion({
       <div className="mt-auto px-4 pb-8 pt-4 shrink-0 flex gap-3">
         <button
           type="button"
-          onClick={() => void handleDecline()}
+          onClick={openDeclineSheet}
           disabled={submitting}
           className="flex-1 rounded-2xl border-2 border-danger py-3 text-center font-semibold text-danger active:bg-danger active:text-white disabled:opacity-50"
           data-testid="decline-button"
@@ -836,6 +893,14 @@ export default function RideSuggestion({
           {submitting ? 'Accepting\u2026' : !driverDestCoords ? 'Enter destination first' : 'Accept Ride'}
         </button>
       </div>
+
+      {/* \u2500\u2500 Decline reason sheet (Sprint 2 W-T1-D1) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */}
+      {showDeclineSheet && (
+        <DeclineReasonSheet
+          onSubmit={submitDeclineWithReason}
+          onCancel={closeDeclineSheet}
+        />
+      )}
     </div>
   )
 }

@@ -348,4 +348,73 @@ describe('DriverHomePage', () => {
     })
     expect(screen.getByTestId('online-toggle').textContent).toContain('Offline — tap')
   })
+
+  // ── Sprint 2 W-T1-D2 — snoozed pill + Resume button ──────────────────
+
+  it('renders snoozed indicator + Resume button when snoozed_until is in the future', async () => {
+    const inOneHour = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    mockMaybeSingle.mockResolvedValueOnce({
+      data: { is_online: true, snoozed_until: inOneHour },
+      error: null,
+    })
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('snoozed-indicator')).toBeInTheDocument()
+    })
+    // Online/Offline pill is hidden when snoozed
+    expect(screen.queryByTestId('online-indicator')).not.toBeInTheDocument()
+    // Toggle replaced by Resume button
+    expect(screen.getByTestId('resume-snooze-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('online-toggle')).not.toBeInTheDocument()
+  })
+
+  it('treats an already-elapsed snoozed_until as not snoozed', async () => {
+    const inThePast = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+    mockMaybeSingle.mockResolvedValueOnce({
+      data: { is_online: false, snoozed_until: inThePast },
+      error: null,
+    })
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('online-indicator')).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId('snoozed-indicator')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('resume-snooze-button')).not.toBeInTheDocument()
+  })
+
+  it('Resume button DELETEs /api/rides/snooze and reverts to online toggle', async () => {
+    const inOneHour = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    mockMaybeSingle.mockResolvedValueOnce({
+      data: { is_online: true, snoozed_until: inOneHour },
+      error: null,
+    })
+    const fetchMock = vi.fn(async (url: string, opts?: RequestInit) => {
+      if (url === '/api/rides/snooze' && opts?.method === 'DELETE') {
+        return { ok: true, json: async () => ({ snoozed_until: null }) }
+      }
+      return { ok: true, json: async () => ({ rides: [], count: 0, pending: [], total_cents: 0 }) }
+    })
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('resume-snooze-button')).toBeInTheDocument()
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('resume-snooze-button'))
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('online-toggle')).toBeInTheDocument()
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/rides/snooze',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+  })
 })
