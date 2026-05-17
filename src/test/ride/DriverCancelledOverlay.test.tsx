@@ -270,6 +270,56 @@ describe('DriverCancelledOverlay', () => {
     )
   })
 
+  it('idle timeout does NOT fire /cancel while /find-new-driver is still in flight', async () => {
+    // Regression — review 2026-05-16. Without the dual guard on
+    // cancelRide, a slow /find-new-driver call would let the 120s
+    // countdown fire idleCancel, which would POST /cancel for a ride
+    // the rider was already trying to re-broadcast.
+    let resolveFind: (v: unknown) => void = () => {}
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith('/find-new-driver')) {
+        return new Promise((resolve) => {
+          resolveFind = resolve as (v: unknown) => void
+        })
+      }
+      // Anything else (e.g. /cancel) — track but auto-resolve.
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const onCancel = vi.fn()
+    const onFind = vi.fn()
+
+    render(
+      <DriverCancelledOverlay
+        rideId="ride-001"
+        standbyCount={0}
+        onFindNewDriverSucceeded={onFind}
+        onCancelled={onCancel}
+      />,
+    )
+
+    fireEvent.click(screen.getByTestId('find-another-driver'))
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+
+    // Walk past zero with /find-new-driver still hanging.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(125_000)
+    })
+
+    // Critical assertion: NO /cancel call landed despite the timer
+    // hitting zero. The fetchMock has only seen /find-new-driver.
+    const calls = fetchMock.mock.calls.map(([url]) => url as string)
+    expect(calls).toEqual(['/api/rides/ride-001/find-new-driver'])
+    expect(onCancel).not.toHaveBeenCalled()
+
+    // Clean up the hanging promise so vitest's teardown doesn't warn.
+    resolveFind({ ok: true, status: 200, json: async () => ({}) })
+  })
+
   it('fires the warning vibration on mount when navigator.vibrate exists', () => {
     const vibrate = vi.fn()
     vi.stubGlobal('navigator', { ...navigator, vibrate })

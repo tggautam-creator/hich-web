@@ -362,6 +362,13 @@ export default function RideSuggestion({
   const [showDeclineSheet, setShowDeclineSheet] = useState(false)
 
   const openDeclineSheet = useCallback(() => {
+    // Don't open the sheet while accept is in flight — otherwise the
+    // driver could fire /snooze + /cancel for a ride the server is
+    // mid-way through accepting. Stage 1 button is already
+    // `disabled={submitting}`, but a tap landing in the small window
+    // before disabled propagates would slip through without this
+    // explicit guard.
+    if (submitting) return
     // Pause the countdown the moment the sheet opens so the driver
     // doesn't get yanked mid-choice.
     if (timerRef.current) {
@@ -369,7 +376,7 @@ export default function RideSuggestion({
       timerRef.current = null
     }
     setShowDeclineSheet(true)
-  }, [])
+  }, [submitting])
 
   const submitDeclineWithReason = useCallback(
     (reason: string | null, snoozeMinutes: number | null) => {
@@ -439,6 +446,18 @@ export default function RideSuggestion({
     setSubmitting(true)
     setError(null)
 
+    // Kill the 150s auto-decline countdown SYNCHRONOUSLY at tap time.
+    // Previously we only cleared it after /accept returned — if the
+    // network was slow enough for the countdown to fire while the
+    // request was in flight, the auto-decline path would PATCH /cancel
+    // for the same ride the driver was accepting (race surfaced
+    // 2026-05-16 review). Clearing here matches iOS submitDecline /
+    // handleAccept pattern.
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+
     try {
       const token = (await supabase.auth.getSession()).data.session?.access_token
       const res = await fetch(`/api/rides/${rideId}/accept`, {
@@ -468,13 +487,6 @@ export default function RideSuggestion({
         return
       }
 
-      // Kill the 150s "Responds in" countdown — we're past that gate
-      // now. Otherwise it ticks down behind the destination screen and
-      // auto-declines a ride the driver already committed to.
-      if (timerRef.current) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
-      }
       setSubmitting(false)
       setAcceptStage('destination')
     } catch {

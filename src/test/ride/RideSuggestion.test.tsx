@@ -390,6 +390,84 @@ describe('RideSuggestion', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/home/driver', { replace: true })
   })
 
+  it('Accept kills the 150s countdown synchronously — auto-decline cannot race a slow /accept', async () => {
+    // Regression — review 2026-05-16. Previously the countdown was
+    // cleared only AFTER /accept returned, so a slow network would
+    // let the auto-decline fire PATCH /cancel for a ride the driver
+    // was already accepting.
+    vi.useFakeTimers()
+    setupSuccess()
+
+    // /accept hangs indefinitely
+    let resolveAccept: (v: unknown) => void = () => {}
+    mockFetch.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveAccept = resolve as (v: unknown) => void }),
+    )
+
+    renderWithRoute()
+    await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+
+    // Tap Accept
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('accept-button'))
+    })
+
+    // Now walk past the 150s auto-decline window with /accept still
+    // in flight. The countdown should have been killed synchronously
+    // at tap time, so handleDecline must NOT fire.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(160_000)
+    })
+
+    // Only /accept was called — no /cancel.
+    const calls = mockFetch.mock.calls.map(([url]) => url as string)
+    expect(calls).toEqual(['/api/rides/ride-123/accept'])
+    // Driver was NOT navigated away — they're still on the suggestion
+    // page waiting for /accept to resolve.
+    expect(mockNavigate).not.toHaveBeenCalledWith('/home/driver', expect.anything())
+
+    // Clean up
+    resolveAccept({
+      ok: true,
+      status: 200,
+      json: async () => ({ ride_id: 'ride-123', offer_status: 'pending' }),
+    })
+  })
+
+  it('Decline button is no-op while accept is in flight (no /snooze /cancel race)', async () => {
+    // Regression — review 2026-05-16. Without the openDeclineSheet
+    // submitting-guard, a driver could open the sheet during an
+    // in-flight /accept and fire /snooze + /cancel against a ride
+    // the server is mid-way through committing.
+    vi.useFakeTimers()
+    setupSuccess()
+
+    let resolveAccept: (v: unknown) => void = () => {}
+    mockFetch.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveAccept = resolve as (v: unknown) => void }),
+    )
+
+    renderWithRoute()
+    await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('accept-button'))
+    })
+
+    // Try to open the decline sheet — should be blocked by the guard.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('decline-button'))
+    })
+
+    expect(screen.queryByTestId('decline-reason-sheet')).not.toBeInTheDocument()
+
+    resolveAccept({
+      ok: true,
+      status: 200,
+      json: async () => ({ ride_id: 'ride-123', offer_status: 'pending' }),
+    })
+  })
+
   it('shows error when ride fetch fails', async () => {
     mockSingle.mockResolvedValue({ data: null, error: { message: 'not found' } })
     renderWithRoute()

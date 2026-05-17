@@ -92,7 +92,13 @@ export default function DriverCancelledOverlay({
   // ── Actions ─────────────────────────────────────────────────────────
 
   const cancelRide = async (reason: 'user' | 'idle') => {
-    if (submittingCancel) return
+    // Guard on BOTH in-flight flags. The user-tap path is already
+    // blocked by the disabled attribute when find is in flight, but
+    // the idle-timeout path (fired from the countdown effect) has no
+    // UI gate — without checking submittingFind it would race a
+    // hanging /find-new-driver call and send /cancel to the server
+    // for the same ride.
+    if (submittingCancel || submittingFind) return
     setSubmittingCancel(true)
     setErrorMessage(null)
     try {
@@ -131,7 +137,8 @@ export default function DriverCancelledOverlay({
   idleCancelRef.current = () => cancelRide('idle')
 
   const findAnotherDriver = async () => {
-    if (submittingFind) return
+    // Symmetric guard — block if either button is mid-request.
+    if (submittingFind || submittingCancel) return
     setSubmittingFind(true)
     setErrorMessage(null)
     try {
