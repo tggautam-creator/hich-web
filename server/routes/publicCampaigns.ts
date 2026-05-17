@@ -33,7 +33,7 @@ publicCampaignsRouter.get(
 
       const { data, error } = await supabaseAdmin
         .from('campaigns')
-        .select('slug, title, body, poster_url, sent_at')
+        .select('slug, title, body, poster_url, sent_at, recalled_at')
         .eq('slug', slug)
         .maybeSingle()
       if (error) throw error
@@ -43,8 +43,21 @@ publicCampaignsRouter.get(
         })
         return
       }
+      // Slice 1.4d — recalled campaigns disappear from the public
+      // surface too. Notifications-tab + push deep-links land on the
+      // "expired or never sent" empty state.
+      if (data.recalled_at !== null) {
+        res.status(404).json({
+          error: { code: 'CAMPAIGN_RECALLED', message: 'This message was recalled by an admin.' },
+        })
+        return
+      }
 
-      res.status(200).json({ ok: true, campaign: data })
+      // Strip recalled_at from the response payload — the public
+      // surface shouldn't leak whether a campaign was ever recalled.
+      const { recalled_at: _recalled, ...publicFields } = data
+      void _recalled
+      res.status(200).json({ ok: true, campaign: publicFields })
     } catch (err) {
       next(err)
     }

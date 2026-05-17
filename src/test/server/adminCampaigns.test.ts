@@ -40,6 +40,12 @@ interface SetupOpts {
   notificationsInsertFails?: boolean
   /** Returned by from('campaigns').insert(...).select().single(). null → triggers 23505 retry path. */
   campaignInsertResult?: { id: string; slug: string } | null
+  /** Slice 1.4d — user_ids returned as opted-out by from('notification_preferences'). */
+  optedOutUserIds?: string[]
+  /** Slice 1.4d — campaigns row returned by from('campaigns').eq('id', ...) (for recall lookup). */
+  recallCampaign?: { id: string; slug: string; recalled_at: string | null } | null
+  /** Slice 1.4d — count of notifications row IDs deleted by the recall. */
+  recallDeletedCount?: number
 }
 
 function setup(opts: SetupOpts = {}): void {
@@ -98,6 +104,22 @@ function setup(opts: SetupOpts = {}): void {
           notificationInserts.push(rows)
           return Promise.resolve({ data: null, error: null })
         },
+        // Slice 1.4d — recall wipes inbox rows. Chain ends in .select('id').
+        delete: () => {
+          const chain: Record<string, unknown> = {
+            eq: () => chain,
+            filter: () => chain,
+            select: () =>
+              Promise.resolve({
+                data: Array.from(
+                  { length: opts.recallDeletedCount ?? 0 },
+                  (_, i) => ({ id: `notif-${i}` }),
+                ),
+                error: null,
+              }),
+          }
+          return chain
+        },
       }
     }
     if (table === 'admin_audit_log') {
@@ -124,7 +146,32 @@ function setup(opts: SetupOpts = {}): void {
         update: () => ({
           eq: () => Promise.resolve({ data: null, error: null }),
         }),
+        // Slice 1.4d — recall endpoint reads the campaign first.
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () =>
+              Promise.resolve({
+                data: opts.recallCampaign === undefined
+                  ? null
+                  : opts.recallCampaign,
+                error: null,
+              }),
+          }),
+        }),
       }
+    }
+    if (table === 'notification_preferences') {
+      // Used by both /push (filter recipients) + /audience/preview.
+      // Chainable .in(...).eq('push_promos', false) returns the opted-out rows.
+      const chain: Record<string, unknown> = {
+        in: () => chain,
+        eq: () =>
+          Promise.resolve({
+            data: (opts.optedOutUserIds ?? []).map((id) => ({ user_id: id, push_promos: false })),
+            error: null,
+          }),
+      }
+      return { select: () => chain }
     }
     throw new Error(`unmocked from(${table})`)
   })
@@ -355,6 +402,61 @@ describe('POST /api/admin/campaigns/push', () => {
     expect(auditPayload['slug']).toBeDefined()
   })
 
+  it('filters out push_promos opt-outs from the recipient set', async () => {
+    setup({
+      audienceUsers: [
+        { id: 'u1', email: 'a@x.edu', full_name: 'A' },
+        { id: 'u2', email: 'b@x.edu', full_name: 'B' },
+        { id: 'u3', email: 'c@x.edu', full_name: 'C' },
+      ],
+      optedOutUserIds: ['u2'], // u2 has push_promos=false
+      pushTokens: [
+        { user_id: 'u1', token: 'tokA' },
+        { user_id: 'u3', token: 'tokC' },
+      ],
+      fcmSentCount: 2,
+    })
+    const res = await request(app)
+      .post('/api/admin/campaigns/push')
+      .set('Authorization', VALID_JWT)
+      .send({
+        audience: { type: 'all_users' },
+        title: 'Promo',
+        body: 'Free credit inside',
+      })
+    expect(res.status).toBe(200)
+    // u2 was excluded → 2 recipients, not 3
+    expect(res.body.recipient_count).toBe(2)
+  })
+
+  it('test_to_self bypasses audience + opt-out filter and routes only to the calling admin', async () => {
+    setup({
+      audienceUsers: [
+        { id: 'u1', email: 'a@x.edu', full_name: 'A' },
+        { id: 'u2', email: 'b@x.edu', full_name: 'B' },
+      ],
+      optedOutUserIds: [ADMIN_UID], // admin opted out — should STILL receive when test_to_self
+      pushTokens: [{ user_id: ADMIN_UID, token: 'admin-token' }],
+      fcmSentCount: 1,
+    })
+    const res = await request(app)
+      .post('/api/admin/campaigns/push')
+      .set('Authorization', VALID_JWT)
+      .send({
+        audience: { type: 'all_users' },
+        title: 'Test fire',
+        body: 'Just me',
+        test_to_self: true,
+      })
+    expect(res.status).toBe(200)
+    expect(res.body.recipient_count).toBe(1)
+    expect(res.body.push_sent).toBe(1)
+    // The push_tokens query should have been called with the admin's
+    // uid only — not with u1/u2.
+    // (We can't easily inspect the .in() args; the recipient_count = 1
+    // already confirms the audience didn't expand.)
+  })
+
   it('still audits + sends push even when notifications insert fails', async () => {
     setup({
       audienceUsers: [{ id: 'u1', email: 'a@x.edu', full_name: 'A' }],
@@ -374,5 +476,66 @@ describe('POST /api/admin/campaigns/push', () => {
     expect(res.body.push_sent).toBe(1)
     expect(res.body.notifications_written).toBe(0) // insert failed
     expect(auditInserts.length).toBe(1) // audit still wrote
+  })
+})
+
+// ── /campaigns/:id/recall (Slice 1.4d) ─────────────────────────────────────
+
+describe('POST /api/admin/campaigns/:id/recall', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('400 REASON_REQUIRED when no reason supplied', async () => {
+    setup({ recallCampaign: { id: 'camp-1', slug: 'abc12345xy', recalled_at: null } })
+    const res = await request(app)
+      .post('/api/admin/campaigns/camp-1/recall')
+      .set('Authorization', VALID_JWT)
+      .send({})
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('REASON_REQUIRED')
+  })
+
+  it('404 when campaign does not exist', async () => {
+    setup({ recallCampaign: null })
+    const res = await request(app)
+      .post('/api/admin/campaigns/camp-missing/recall')
+      .set('Authorization', VALID_JWT)
+      .send({ reason: 'whoops' })
+    expect(res.status).toBe(404)
+    expect(res.body.error.code).toBe('CAMPAIGN_NOT_FOUND')
+  })
+
+  it('409 ALREADY_RECALLED when campaign was already recalled', async () => {
+    setup({ recallCampaign: { id: 'camp-1', slug: 'abc12345xy', recalled_at: '2026-05-17T00:00:00Z' } })
+    const res = await request(app)
+      .post('/api/admin/campaigns/camp-1/recall')
+      .set('Authorization', VALID_JWT)
+      .send({ reason: 'second attempt' })
+    expect(res.status).toBe(409)
+    expect(res.body.error.code).toBe('ALREADY_RECALLED')
+  })
+
+  it('200 on happy path: deletes inbox rows + audit-logs + returns deleted count', async () => {
+    setup({
+      recallCampaign: { id: 'camp-1', slug: 'abc12345xy', recalled_at: null },
+      recallDeletedCount: 42,
+    })
+    const res = await request(app)
+      .post('/api/admin/campaigns/camp-1/recall')
+      .set('Authorization', VALID_JWT)
+      .send({ reason: 'typo in the title' })
+    expect(res.status).toBe(200)
+    expect(res.body.notifications_deleted).toBe(42)
+    expect(auditInserts.length).toBe(1)
+    expect(auditInserts[0]).toMatchObject({
+      action: 'recall_campaign',
+      target_user_id: null,
+    })
+    const payload = auditInserts[0]?.['payload'] as Record<string, unknown>
+    expect(payload).toMatchObject({
+      campaign_id: 'camp-1',
+      slug: 'abc12345xy',
+      reason: 'typo in the title',
+      notifications_deleted: 42,
+    })
   })
 })

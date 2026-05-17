@@ -2,8 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   useAdminAudiencePreview,
   useAdminSendCampaignPush,
+  useAdminCampaignHistory,
+  useAdminRecallCampaign,
   type Audience,
   type AudienceType,
+  type CampaignHistoryRow,
 } from '@/hooks/useAdminCampaigns'
 import { AdminApiException } from '@/lib/admin/api'
 import { trackEvent } from '@/lib/analytics'
@@ -221,20 +224,49 @@ export default function CampaignsPage() {
             />
           </label>
 
-          <button
-            type="button"
-            data-testid="campaign-send"
-            onClick={() => setShowConfirm(true)}
-            disabled={!canSend}
-            className={[
-              'w-full rounded-md px-4 py-2 text-sm font-semibold transition-colors',
-              !canSend
-                ? 'bg-border cursor-not-allowed text-text-secondary'
-                : 'bg-primary text-white hover:bg-primary-dark',
-            ].join(' ')}
-          >
-            Review &amp; send…
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="campaign-send"
+              onClick={() => setShowConfirm(true)}
+              disabled={!canSend}
+              className={[
+                'flex-1 rounded-md px-4 py-2 text-sm font-semibold transition-colors',
+                !canSend
+                  ? 'bg-border cursor-not-allowed text-text-secondary'
+                  : 'bg-primary text-white hover:bg-primary-dark',
+              ].join(' ')}
+            >
+              Review &amp; send…
+            </button>
+            <button
+              type="button"
+              data-testid="campaign-send-test"
+              disabled={!composerValid || send.isPending}
+              onClick={() => {
+                if (!audience) return
+                send.mutate(
+                  {
+                    audience,
+                    title: title.trim(),
+                    body: body.trim(),
+                    reason: reason.trim() || undefined,
+                    poster_url: posterUrl ?? undefined,
+                    test_to_self: true,
+                  },
+                )
+              }}
+              className={[
+                'rounded-md border px-3 py-2 text-sm font-medium transition-colors',
+                !composerValid || send.isPending
+                  ? 'border-border bg-white cursor-not-allowed text-text-secondary'
+                  : 'border-primary bg-white text-primary hover:bg-primary-light',
+              ].join(' ')}
+              title="Sends just to your own user. Bypasses audience + opt-outs."
+            >
+              Test to me
+            </button>
+          </div>
 
           {send.isSuccess && send.data && (
             <p data-testid="campaign-send-result" className="text-xs text-success">
@@ -257,6 +289,22 @@ export default function CampaignsPage() {
           preview={preview}
         />
       </div>
+
+      {/* ── Past campaigns history (Slice 1.4d) ────────────────── */}
+      <CampaignHistorySection
+        onDuplicate={(row) => {
+          // Prefill the composer + scroll to top so the admin can
+          // tweak before resending.
+          const aud = row.audience as { type?: string; domain?: string }
+          if (aud?.type) setAudienceType(aud.type as AudienceType)
+          if (aud?.domain) setDomain(aud.domain)
+          setTitle(row.title)
+          setBody(row.body)
+          setReason('')
+          setPosterUrl(row.poster_url)
+          window.scrollTo({ top: 0, behavior: 'smooth' })
+        }}
+      />
 
       {showConfirm && audience && preview.data && (
         <ConfirmSendDialog
@@ -606,3 +654,224 @@ function PosterUploadField({
   )
 }
 
+
+// ── Campaign history section (Slice 1.4d) ──────────────────────────────────
+
+function CampaignHistorySection({
+  onDuplicate,
+}: {
+  onDuplicate: (row: CampaignHistoryRow) => void
+}) {
+  const { data, isLoading, error } = useAdminCampaignHistory({})
+  const [recallTarget, setRecallTarget] = useState<CampaignHistoryRow | null>(null)
+
+  return (
+    <div className="space-y-3 rounded-2xl border border-border bg-white p-5">
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold text-text-primary">Past campaigns</h2>
+        <InfoTooltip
+          align="left"
+          text="Every broadcast Tago has sent, newest first. Recall removes the message from all recipients' in-app inboxes AND 404s the public /c/<slug> page — both are reversible only by clearing the recalled_at column in SQL. Duplicate pre-fills the composer above with this campaign's title, body, audience, and poster so you can tweak + resend."
+        />
+      </div>
+
+      {isLoading && !data && (
+        <p className="text-xs text-text-secondary">Loading…</p>
+      )}
+      {error && (
+        <p className="text-xs text-danger">
+          {error instanceof AdminApiException
+            ? `${error.code}: ${error.message}`
+            : error.message}
+        </p>
+      )}
+      {data && data.campaigns.length === 0 && (
+        <p className="text-xs text-text-secondary">
+          No campaigns yet. Compose one above.
+        </p>
+      )}
+      {data && data.campaigns.length > 0 && (
+        <ul className="divide-y divide-border">
+          {data.campaigns.map((row) => {
+            const aud = row.audience as { type?: string; domain?: string }
+            return (
+              <li
+                key={row.id}
+                data-testid={`history-row-${row.id}`}
+                className="py-3"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-sm font-semibold text-text-primary truncate">
+                        {row.title}
+                      </span>
+                      {row.recalled_at && (
+                        <span className="rounded bg-danger/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide font-semibold text-danger">
+                          recalled
+                        </span>
+                      )}
+                      {row.poster_url && (
+                        <span className="rounded bg-primary-light px-1.5 py-0.5 text-[10px] uppercase tracking-wide font-semibold text-primary">
+                          poster
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-xs text-text-secondary line-clamp-2">
+                      {row.body}
+                    </p>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-text-secondary">
+                      <span>{aud.type ?? 'unknown'}{aud.domain ? `: ${aud.domain}` : ''}</span>
+                      <span>·</span>
+                      <span>{row.recipient_count} recipients</span>
+                      <span>·</span>
+                      <span>{row.push_sent_count} pushes delivered</span>
+                      <span>·</span>
+                      <span>{new Date(row.sent_at).toLocaleString()}</span>
+                      <span>·</span>
+                      <span>by {row.sent_by_email ?? row.sent_by.slice(0, 8) + '…'}</span>
+                    </div>
+                    {row.recalled_at && (
+                      <div className="mt-1 text-[11px] text-danger">
+                        Recalled {new Date(row.recalled_at).toLocaleString()}
+                        {row.recalled_reason && ` — ${row.recalled_reason}`}
+                      </div>
+                    )}
+                  </div>
+                  <div className="shrink-0 flex items-center gap-2">
+                    <button
+                      type="button"
+                      data-testid={`history-duplicate-${row.id}`}
+                      onClick={() => onDuplicate(row)}
+                      className="rounded-md border border-border bg-white px-2.5 py-1 text-xs font-medium text-text-primary hover:bg-surface"
+                    >
+                      Duplicate
+                    </button>
+                    {!row.recalled_at && (
+                      <button
+                        type="button"
+                        data-testid={`history-recall-${row.id}`}
+                        onClick={() => setRecallTarget(row)}
+                        className="rounded-md border border-danger bg-white px-2.5 py-1 text-xs font-medium text-danger hover:bg-danger/5"
+                      >
+                        Recall
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+
+      {recallTarget && (
+        <RecallCampaignDialog
+          row={recallTarget}
+          onCancel={() => setRecallTarget(null)}
+          onSuccess={() => setRecallTarget(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+function RecallCampaignDialog({
+  row,
+  onCancel,
+  onSuccess,
+}: {
+  row: CampaignHistoryRow
+  onCancel: () => void
+  onSuccess: () => void
+}) {
+  const [reason, setReason] = useState('')
+  const m = useAdminRecallCampaign(row.id)
+  const ok = reason.trim().length > 0
+
+  return (
+    <div
+      data-testid="campaign-recall-dialog"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+    >
+      <div
+        role="dialog"
+        aria-label="Confirm recall"
+        className="w-full max-w-md rounded-2xl border border-border bg-white p-6 shadow-xl"
+      >
+        <div className="text-sm font-semibold uppercase tracking-wide text-text-secondary">
+          Confirm recall
+        </div>
+        <div className="mt-3 text-3xl font-bold text-danger text-center">RECALL</div>
+        <div className="mt-2 text-center text-xs text-text-secondary">
+          “{row.title}”
+        </div>
+
+        <p className="mt-4 text-xs text-text-secondary">
+          Tago will delete the in-app inbox row for every recipient
+          ({row.recipient_count} users) AND make the public /c/{row.slug} page
+          return 404. Audit-logged. Reversible only by clearing
+          <span className="font-mono"> recalled_at </span>
+          in SQL.
+        </p>
+
+        <div className="mt-4">
+          <label className="block">
+            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+              Reason (required)
+            </div>
+            <input
+              data-testid="campaign-recall-reason"
+              type="text"
+              autoFocus
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="e.g. typo in the title"
+              maxLength={300}
+              className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+            />
+          </label>
+        </div>
+
+        {m.error && (
+          <p className="mt-2 text-xs text-danger">
+            ✗ {m.error instanceof AdminApiException
+              ? `${m.error.code}: ${m.error.message}`
+              : m.error.message}
+          </p>
+        )}
+
+        <div className="mt-6 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            data-testid="campaign-recall-cancel"
+            onClick={onCancel}
+            disabled={m.isPending}
+            className="rounded-md border border-border bg-white px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            data-testid="campaign-recall-confirm"
+            disabled={!ok || m.isPending}
+            onClick={() => {
+              m.mutate(
+                { reason: reason.trim() },
+                { onSuccess: () => onSuccess() },
+              )
+            }}
+            className={[
+              'rounded-md px-4 py-2 text-sm font-semibold text-white transition-colors',
+              !ok || m.isPending
+                ? 'bg-border cursor-not-allowed text-text-secondary'
+                : 'bg-danger hover:opacity-90',
+            ].join(' ')}
+          >
+            {m.isPending ? 'Recalling…' : 'Confirm recall'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

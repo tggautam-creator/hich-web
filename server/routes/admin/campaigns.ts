@@ -148,14 +148,33 @@ adminCampaignsRouter.get(
         })
         return
       }
-      const users = await resolveAudience(audience)
-      // Surface a small sample (up to 10) so the admin can sanity-check
-      // who they're about to message. Real send still hits all users.
+      const usersRaw = await resolveAudience(audience)
+
+      // Apply the same notification_preferences.push_promos opt-out
+      // filter the send endpoint applies, so the count the admin sees
+      // matches the actual reach. Users without a preferences row
+      // default to opt-in (push_promos defaults true).
+      let users = usersRaw
+      if (usersRaw.length > 0) {
+        const ids = usersRaw.map((u) => u.id)
+        const { data: optOuts, error: optErr } = await supabaseAdmin
+          .from('notification_preferences')
+          .select('user_id, push_promos')
+          .in('user_id', ids)
+          .eq('push_promos', false)
+        if (optErr) throw optErr
+        const optOutIds = new Set(
+          ((optOuts ?? []) as Array<{ user_id: string; push_promos: boolean }>).map((p) => p.user_id),
+        )
+        users = usersRaw.filter((u) => !optOutIds.has(u.id))
+      }
+
       const sample = users.slice(0, 10)
       res.status(200).json({
         ok: true,
         audience,
         count: users.length,
+        opted_out_count: usersRaw.length - users.length,
         sample_users: sample,
       })
     } catch (err) {
@@ -175,6 +194,14 @@ interface SendPushBody {
   confirm_count?: unknown
   /** Public URL of an uploaded poster image (campaign-posters bucket). Optional. */
   poster_url?: unknown
+  /**
+   * Slice 1.4d test-mode. When true, the recipient set is forced to
+   * just the calling admin's user_id (audience is still recorded on
+   * the campaign row for traceability, but no fan-out happens). Lets
+   * the admin preview the actual push + inbox + /c/<slug> page
+   * before broadcasting to real users.
+   */
+  test_to_self?: unknown
 }
 
 /**
@@ -220,6 +247,7 @@ adminCampaignsRouter.post(
       const posterUrl = typeof b.poster_url === 'string' && b.poster_url.trim().length > 0
         ? b.poster_url.trim()
         : null
+      const testToSelf = b.test_to_self === true
       if (!title || !body) {
         res.status(400).json({
           error: { code: 'INVALID_BODY', message: 'title and body are required' },
@@ -234,14 +262,41 @@ adminCampaignsRouter.post(
       }
 
       // 1. Resolve audience.
-      const users = await resolveAudience(audience)
-      const recipientIds = users.map((u) => u.id)
+      //    test_to_self short-circuits the audience and routes the
+      //    push exclusively to the calling admin so they can preview
+      //    end-to-end (banner + inbox + /c/<slug>) before going broad.
+      //    Audience is still recorded on the campaign row for
+      //    traceability — recipient_count just reads 1.
+      const callerId = res.locals['userId'] as string
+      const users = testToSelf
+        ? [{ id: callerId, email: '', full_name: null }]
+        : await resolveAudience(audience)
+      let recipientIds = users.map((u) => u.id)
+
+      // 1.5 Honor user opt-outs (notification_preferences.push_promos).
+      //     Skipped for test_to_self — the admin is opting into their own
+      //     preview deliberately. Users without a notification_preferences
+      //     row default to opt-IN (push_promos defaults true) so they
+      //     stay in the recipient set.
+      if (!testToSelf && recipientIds.length > 0) {
+        const { data: optOuts, error: optErr } = await supabaseAdmin
+          .from('notification_preferences')
+          .select('user_id, push_promos')
+          .in('user_id', recipientIds)
+          .eq('push_promos', false)
+        if (optErr) throw optErr
+        const optOutIds = new Set(
+          ((optOuts ?? []) as Array<{ user_id: string; push_promos: boolean }>).map((p) => p.user_id),
+        )
+        recipientIds = recipientIds.filter((id) => !optOutIds.has(id))
+      }
 
       // 2. Optional safety: if the admin passed `confirm_count` (the
       // value the preview returned), require it to match the current
       // resolution. Catches the case where 60+ seconds pass between
       // preview + send and new users have signed up.
-      if (confirmCount !== null && confirmCount !== recipientIds.length) {
+      // Skipped for test_to_self (single-user send by definition).
+      if (!testToSelf && confirmCount !== null && confirmCount !== recipientIds.length) {
         res.status(409).json({
           error: {
             code: 'AUDIENCE_DRIFT',
@@ -423,21 +478,25 @@ adminCampaignsRouter.get(
       const { data, count, error } = await supabaseAdmin
         .from('campaigns')
         .select(
-          'id, slug, audience, title, body, poster_url, recipient_count, push_sent_count, sent_by, sent_at',
+          'id, slug, audience, title, body, poster_url, recipient_count, push_sent_count, sent_by, sent_at, recalled_at, recalled_reason, recalled_by',
           { count: 'exact' },
         )
         .order('sent_at', { ascending: false })
         .range(offset, offset + limit - 1)
       if (error) throw error
 
-      // Hydrate the sender's email so the UI doesn't have to round-trip.
-      const senderIds = Array.from(new Set((data ?? []).map((c) => c.sent_by)))
+      // Hydrate sender + recaller emails so the UI doesn't have to round-trip.
+      const adminIds = new Set<string>()
+      for (const c of data ?? []) {
+        adminIds.add(c.sent_by)
+        if (c.recalled_by) adminIds.add(c.recalled_by)
+      }
       const emailById = new Map<string, string>()
-      if (senderIds.length > 0) {
+      if (adminIds.size > 0) {
         const { data: senders, error: sErr } = await supabaseAdmin
           .from('users')
           .select('id, email')
-          .in('id', senderIds)
+          .in('id', Array.from(adminIds))
         if (sErr) throw sErr
         for (const s of senders ?? []) emailById.set(s.id, s.email)
       }
@@ -447,10 +506,109 @@ adminCampaignsRouter.get(
         campaigns: (data ?? []).map((c) => ({
           ...c,
           sent_by_email: emailById.get(c.sent_by) ?? null,
+          recalled_by_email: c.recalled_by ? emailById.get(c.recalled_by) ?? null : null,
         })),
         total: count ?? data?.length ?? 0,
         limit,
         offset,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// ── POST /:id/recall ────────────────────────────────────────────────────────
+
+interface RecallBody {
+  reason?: unknown
+}
+
+adminCampaignsRouter.post(
+  '/:id/recall',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const rawId = req.params['id']
+      const campaignId = typeof rawId === 'string' ? rawId : ''
+      if (!campaignId) {
+        res.status(400).json({
+          error: { code: 'INVALID_CAMPAIGN_ID', message: 'campaign id required' },
+        })
+        return
+      }
+
+      const reason = typeof (req.body as RecallBody).reason === 'string'
+        ? ((req.body as RecallBody).reason as string).trim()
+        : ''
+      if (!reason) {
+        res.status(400).json({
+          error: { code: 'REASON_REQUIRED', message: 'A reason is required to recall a campaign.' },
+        })
+        return
+      }
+
+      const { data: campaign, error: lookupErr } = await supabaseAdmin
+        .from('campaigns')
+        .select('id, slug, recalled_at')
+        .eq('id', campaignId)
+        .maybeSingle()
+      if (lookupErr) throw lookupErr
+      if (!campaign) {
+        res.status(404).json({
+          error: { code: 'CAMPAIGN_NOT_FOUND', message: 'No campaign with that id.' },
+        })
+        return
+      }
+      if (campaign.recalled_at !== null) {
+        res.status(409).json({
+          error: { code: 'ALREADY_RECALLED', message: 'This campaign was already recalled.' },
+        })
+        return
+      }
+
+      const adminId = res.locals['userId'] as string
+
+      // 1. Wipe the in-app inbox copies. notifications.data is jsonb;
+      // we filter on the campaign_id field we wrote at send-time.
+      // PostgREST exposes jsonb-key access via `data->>campaign_id`.
+      const { data: deleted, error: delErr } = await supabaseAdmin
+        .from('notifications')
+        .delete()
+        .eq('type', 'admin_broadcast')
+        .filter('data->>campaign_id', 'eq', campaignId)
+        .select('id')
+      if (delErr) throw delErr
+      const deletedCount = deleted?.length ?? 0
+
+      // 2. Soft-delete the campaign so /c/<slug> 404s + the row shows
+      // as RECALLED in the history list.
+      const { error: updateErr } = await supabaseAdmin
+        .from('campaigns')
+        .update({
+          recalled_at: new Date().toISOString(),
+          recalled_reason: reason,
+          recalled_by: adminId,
+        })
+        .eq('id', campaignId)
+      if (updateErr) throw updateErr
+
+      // 3. Audit log.
+      await writeAuditLog({
+        adminId,
+        targetUserId: null,
+        action: 'recall_campaign',
+        payload: {
+          campaign_id: campaignId,
+          slug: campaign.slug,
+          reason,
+          notifications_deleted: deletedCount,
+        },
+      })
+
+      res.status(200).json({
+        ok: true,
+        campaign_id: campaignId,
+        notifications_deleted: deletedCount,
       })
     } catch (err) {
       next(err)

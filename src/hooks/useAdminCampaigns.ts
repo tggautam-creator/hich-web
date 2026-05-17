@@ -28,6 +28,7 @@ export interface AudiencePreviewResponse {
   ok: true
   audience: Audience
   count: number
+  opted_out_count?: number
   sample_users: Array<{ id: string; email: string; full_name: string | null }>
 }
 
@@ -38,6 +39,8 @@ export interface SendCampaignPushArgs {
   reason?: string
   confirm_count?: number
   poster_url?: string
+  /** Slice 1.4d — when true, push only to the calling admin's uid. Bypasses audience + opt-outs. */
+  test_to_self?: boolean
 }
 
 export interface SendCampaignPushResult {
@@ -49,6 +52,62 @@ export interface SendCampaignPushResult {
   tokens_attempted?: number
   notifications_written: number
   audience: Audience
+}
+
+// ── Slice 1.4d — history list + recall ──────────────────────────────────────
+
+export interface CampaignHistoryRow {
+  id: string
+  slug: string
+  audience: Record<string, unknown>
+  title: string
+  body: string
+  poster_url: string | null
+  recipient_count: number
+  push_sent_count: number
+  sent_by: string
+  sent_by_email: string | null
+  sent_at: string
+  recalled_at: string | null
+  recalled_reason: string | null
+  recalled_by: string | null
+  recalled_by_email: string | null
+}
+
+export interface CampaignHistoryResponse {
+  ok: true
+  campaigns: CampaignHistoryRow[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export function useAdminCampaignHistory(args: { enabled?: boolean; limit?: number; offset?: number } = {}) {
+  const { enabled = true, limit = 25, offset = 0 } = args
+  return useQuery<CampaignHistoryResponse>({
+    queryKey: ['admin', 'campaigns', 'history', limit, offset],
+    queryFn: () =>
+      adminGet<CampaignHistoryResponse>(`/campaigns?limit=${limit}&offset=${offset}`),
+    enabled,
+    placeholderData: keepPreviousData,
+    staleTime: HALF_MIN_MS,
+  })
+}
+
+interface RecallArgs { reason: string }
+interface RecallResult { ok: true; campaign_id: string; notifications_deleted: number }
+
+export function useAdminRecallCampaign(campaignId: string) {
+  const qc = useQueryClient()
+  return useMutation<RecallResult, Error, RecallArgs>({
+    mutationFn: (args) =>
+      adminPost<RecallResult>(`/campaigns/${campaignId}/recall`, args),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'campaigns', 'history'] })
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'audit'] })
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'notifications'] })
+    },
+  })
 }
 
 const HALF_MIN_MS = 30 * 1000

@@ -1019,6 +1019,9 @@ export type Database = {
           push_sent_count: number
           sent_by: string
           sent_at: string
+          recalled_at: string | null
+          recalled_reason: string | null
+          recalled_by: string | null
           created_at: string
         }
         Insert: {
@@ -1032,6 +1035,9 @@ export type Database = {
           push_sent_count?: number
           sent_by: string
           sent_at?: string
+          recalled_at?: string | null
+          recalled_reason?: string | null
+          recalled_by?: string | null
           created_at?: string
         }
         Update: {
@@ -1045,6 +1051,9 @@ export type Database = {
           push_sent_count?: number
           sent_by?: string
           sent_at?: string
+          recalled_at?: string | null
+          recalled_reason?: string | null
+          recalled_by?: string | null
           created_at?: string
         }
         Relationships: never[]
