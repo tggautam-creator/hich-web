@@ -61,28 +61,52 @@ describe('WithdrawSheet (F5)', () => {
     expect(screen.getByTestId('withdraw-sheet-amount').textContent).toContain('$42.50')
   })
 
-  it('posts to /api/wallet/withdraw with Idempotency-Key header on confirm', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ status: 'transferring', transfer_id: 'tr_1', amount_cents: 2000, eta_days: 2 }),
+  it('Continue opens the confirm dialog; Withdraw POSTs with the full amount', async () => {
+    // W-T1-P4 — confirm step before the irreversible Stripe transfer.
+    const fetchMock = vi.fn((url: string) => {
+      if (url === '/api/connect/status') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            payout_method_label: 'Chase',
+            payout_method_last4: '4242',
+          }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ status: 'transferring' }),
+      })
     })
     vi.stubGlobal('fetch', fetchMock)
 
     const onSuccess = vi.fn()
     renderSheet({ onSuccess })
 
+    // Continue opens the confirm dialog — no POST yet.
     fireEvent.click(screen.getByTestId('withdraw-sheet-confirm'))
+    expect(screen.getByTestId('withdraw-confirm-dialog')).toBeInTheDocument()
+    expect(
+      fetchMock.mock.calls.some(([url]) => (url as string) === '/api/wallet/withdraw'),
+    ).toBe(false)
 
+    // Withdraw button inside the dialog actually POSTs.
+    fireEvent.click(screen.getByTestId('withdraw-confirm-yes'))
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(
+        fetchMock.mock.calls.some(([url]) => (url as string) === '/api/wallet/withdraw'),
+      ).toBe(true)
     })
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('/api/wallet/withdraw')
-    expect(init.method).toBe('POST')
-    const headers = init.headers as Record<string, string>
+
+    const withdrawCall = fetchMock.mock.calls.find(
+      ([url]) => (url as string) === '/api/wallet/withdraw',
+    ) as [string, RequestInit] | undefined
+    expect(withdrawCall).toBeDefined()
+    expect(withdrawCall![1].method).toBe('POST')
+    const headers = withdrawCall![1].headers as Record<string, string>
     expect(headers['Idempotency-Key']).toBeTruthy()
     expect(headers['Authorization']).toBe('Bearer tok_test')
-    expect(init.body).toBe(JSON.stringify({ amount_cents: 2000 }))
+    expect(withdrawCall![1].body).toBe(JSON.stringify({ amount_cents: 2000 }))
 
     await waitFor(() => {
       expect(screen.getByTestId('withdraw-sheet-done')).toBeInTheDocument()
@@ -90,38 +114,75 @@ describe('WithdrawSheet (F5)', () => {
     expect(onSuccess).toHaveBeenCalledTimes(1)
   })
 
-  it('surfaces the error message on failure', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: false,
-      json: () => Promise.resolve({ error: { code: 'BANK_NOT_LINKED', message: 'Link a bank account' } }),
+  it('Cancel inside the confirm dialog leaves the sheet open without firing /withdraw', () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url === '/api/connect/status') {
+        return Promise.resolve({ ok: true, json: async () => ({}) })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) })
     })
     vi.stubGlobal('fetch', fetchMock)
 
     renderSheet()
     fireEvent.click(screen.getByTestId('withdraw-sheet-confirm'))
+    expect(screen.getByTestId('withdraw-confirm-dialog')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('withdraw-confirm-cancel'))
+    expect(screen.queryByTestId('withdraw-confirm-dialog')).not.toBeInTheDocument()
+    expect(
+      fetchMock.mock.calls.some(([url]) => (url as string) === '/api/wallet/withdraw'),
+    ).toBe(false)
+  })
+
+  it('surfaces the error message on failure', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url === '/api/connect/status') {
+        return Promise.resolve({ ok: true, json: async () => ({}) })
+      }
+      return Promise.resolve({
+        ok: false,
+        json: async () => ({ error: { code: 'BANK_NOT_LINKED', message: 'Link a bank account' } }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderSheet()
+    fireEvent.click(screen.getByTestId('withdraw-sheet-confirm'))
+    fireEvent.click(screen.getByTestId('withdraw-confirm-yes'))
 
     await waitFor(() => {
       expect(screen.getByTestId('withdraw-sheet-error').textContent).toContain('Link a bank account')
     })
   })
 
-  it('disables the confirm button while submitting', async () => {
-    let resolveFetch: (v: unknown) => void = () => {}
-    const fetchMock = vi.fn().mockImplementation(
-      () => new Promise((r) => { resolveFetch = r }),
-    )
-    vi.stubGlobal('fetch', fetchMock)
+  // ── W-T1-P3 — amount picker ────────────────────────────────────────────
 
-    renderSheet()
-    const btn = screen.getByTestId('withdraw-sheet-confirm') as HTMLButtonElement
-    fireEvent.click(btn)
+  it('Half pill sets the amount to half the balance', () => {
+    renderSheet({ balanceCents: 4000 })
+    fireEvent.click(screen.getByTestId('withdraw-sheet-pill-half'))
+    const input = screen.getByTestId('withdraw-sheet-amount-input') as HTMLInputElement
+    expect(input.value).toBe('20.00')
+  })
 
-    await waitFor(() => expect(btn.textContent).toContain('Transferring'))
-    expect(btn.disabled).toBe(true)
+  it('All pill sets the amount to the full balance', () => {
+    renderSheet({ balanceCents: 4000 })
+    fireEvent.click(screen.getByTestId('withdraw-sheet-pill-all'))
+    const input = screen.getByTestId('withdraw-sheet-amount-input') as HTMLInputElement
+    expect(input.value).toBe('40.00')
+  })
 
-    resolveFetch({
-      ok: true,
-      json: () => Promise.resolve({ status: 'transferring', transfer_id: 'tr_1', amount_cents: 2000, eta_days: 2 }),
-    })
+  it('blocks Continue when amount exceeds available balance', () => {
+    renderSheet({ balanceCents: 1000 })
+    const input = screen.getByTestId('withdraw-sheet-amount-input') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '50' } })
+    expect(screen.getByTestId('withdraw-sheet-validation').textContent).toContain('Max is')
+    expect((screen.getByTestId('withdraw-sheet-confirm') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('blocks Continue when amount is below the $1 minimum', () => {
+    renderSheet({ balanceCents: 5000 })
+    const input = screen.getByTestId('withdraw-sheet-amount-input') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '0.50' } })
+    expect(screen.getByTestId('withdraw-sheet-validation').textContent).toContain('Minimum')
+    expect((screen.getByTestId('withdraw-sheet-confirm') as HTMLButtonElement).disabled).toBe(true)
   })
 })

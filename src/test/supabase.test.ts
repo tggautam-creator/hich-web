@@ -73,6 +73,7 @@ describe('database types — row aliases', () => {
       date_of_birth: null,
       onboarding_completed: false,
       is_admin: false,
+      last_active_at: null,
       created_at: new Date().toISOString(),
     }
     expect(user.wallet_balance).toBe(500)
@@ -188,7 +189,7 @@ describe('database types — row aliases', () => {
 
   it('PushToken Row type has token field', () => {
     const pt: PushToken = {
-      id: 'pt1', user_id: 'u1', token: 'fcm-token-abc',
+      id: 'pt1', user_id: 'u1', token: 'fcm-token-abc', platform: 'web',
       created_at: new Date().toISOString(),
     }
     expect(pt.token).toBe('fcm-token-abc')
