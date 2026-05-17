@@ -35,6 +35,7 @@ import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
 import { writeAuditLog } from '../../lib/adminAudit.ts'
 import { sendFcmPush } from '../../lib/fcm.ts'
 import { sendEmailToMany, isAllowedFromAddress, FROM_ADDRESS_ALLOWLIST } from '../../lib/resend.ts'
+import { computeFunnelData, STEP_ORDER, type FunnelStep } from './funnel.ts'
 
 export const adminCampaignsRouter = Router()
 
@@ -48,6 +49,16 @@ export type AudienceType =
   | 'active_last_7d'
   | 'active_last_30d'
   | 'dormant_30d'
+  // Slice 1.7c — funnel-step nudges. "stuck_after_<step>" =
+  // users whose furthest funnel step is exactly <step> and they
+  // never progressed to the next. Reuses computeFunnelData so the
+  // exact same membership rules drive both /admin/funnel and these
+  // audiences (no drift between what the funnel chart shows and
+  // who a campaign actually reaches).
+  | 'stuck_after_signup'             // signed up, never verified email
+  | 'stuck_after_verified_email'     // verified email, never completed profile
+  | 'stuck_after_completed_profile'  // completed profile, no payment method / vehicle
+  | 'stuck_after_payment_or_vehicle' // has payment / vehicle, no first ride yet
 
 export interface Audience {
   type: AudienceType
@@ -71,7 +82,50 @@ interface UserMini {
  * small enough today. When user counts cross ~50k we'll page through
  * via a SQL function or RPC instead of in-memory.
  */
+/**
+ * Maps a stuck-after-* audience type to the funnel step the user must
+ * be CURRENTLY parked at (their maxStep === this index, never made it
+ * to the next). Null = not a stuck-step audience.
+ */
+const STUCK_STEP_BY_TYPE: Partial<Record<AudienceType, FunnelStep>> = {
+  stuck_after_signup: 'signed_up',
+  stuck_after_verified_email: 'verified_email',
+  stuck_after_completed_profile: 'completed_profile',
+  stuck_after_payment_or_vehicle: 'payment_or_vehicle',
+}
+
 export async function resolveAudience(audience: Audience): Promise<UserMini[]> {
+  // Stuck-step audiences run the funnel computation rather than a flat
+  // users query. The opt-out filter applied downstream still works the
+  // same — these are users that have signed up, so the
+  // notification_preferences gate behaves identically.
+  const stuckStep = STUCK_STEP_BY_TYPE[audience.type]
+  if (stuckStep) {
+    const stepIdx = STEP_ORDER.indexOf(stuckStep)
+    // Run across all-time, both roles. Cohort restriction by date or
+    // role would deny marketing the ability to nudge older inactive
+    // users, which is the most common use case for these audiences.
+    const { cohort, maxStepByUserId } = await computeFunnelData('all', 'both')
+    // Filter out suspended users defensively. computeFunnelData uses
+    // the public.users base table which we can't currently filter by
+    // suspended_at without duplicating the query — easier to drop them
+    // here.
+    const { data: suspended, error: susErr } = await supabaseAdmin
+      .from('users')
+      .select('id')
+      .not('suspended_at', 'is', null)
+    if (susErr) throw susErr
+    const suspendedIds = new Set(
+      ((suspended ?? []) as Array<{ id: string }>).map((u) => u.id),
+    )
+    const stuck = cohort.filter((u) => {
+      if (suspendedIds.has(u.id)) return false
+      const max = maxStepByUserId.get(u.id) ?? 0
+      return max === stepIdx
+    })
+    return stuck.map((u) => ({ id: u.id, email: u.email, full_name: u.full_name }))
+  }
+
   let query = supabaseAdmin
     .from('users')
     .select('id, email, full_name, is_driver, last_active_at, suspended_at')
@@ -111,6 +165,10 @@ function parseAudienceFromQuery(req: Request): Audience | null {
   const validTypes: AudienceType[] = [
     'all_users', 'all_drivers', 'all_riders', 'by_university',
     'active_last_7d', 'active_last_30d', 'dormant_30d',
+    'stuck_after_signup',
+    'stuck_after_verified_email',
+    'stuck_after_completed_profile',
+    'stuck_after_payment_or_vehicle',
   ]
   if (!validTypes.includes(type as AudienceType)) return null
   const domain = typeof req.query['domain'] === 'string' ? req.query['domain'] : undefined
@@ -124,6 +182,10 @@ function parseAudienceFromBody(body: unknown): Audience | null {
   const validTypes: AudienceType[] = [
     'all_users', 'all_drivers', 'all_riders', 'by_university',
     'active_last_7d', 'active_last_30d', 'dormant_30d',
+    'stuck_after_signup',
+    'stuck_after_verified_email',
+    'stuck_after_completed_profile',
+    'stuck_after_payment_or_vehicle',
   ]
   if (!validTypes.includes(a.type as AudienceType)) return null
   const domain = typeof a.domain === 'string' ? a.domain : undefined

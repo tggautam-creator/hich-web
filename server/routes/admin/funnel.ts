@@ -118,7 +118,7 @@ const STEP_LABELS: Record<FunnelStep, string> = {
   completed_first_ride: 'Completed first ride',
 }
 
-const STEP_ORDER: FunnelStep[] = [
+export const STEP_ORDER: FunnelStep[] = [
   'signed_up',
   'verified_email',
   'completed_profile',
@@ -134,7 +134,7 @@ const STEP_ORDER: FunnelStep[] = [
  * Shared between /funnel (counts the histogram) and /users/stuck
  * (filters to users whose max-step is one less than the queried step).
  */
-async function computeFunnelData(
+export async function computeFunnelData(
   range: FunnelRange,
   mode: FunnelMode,
 ): Promise<{

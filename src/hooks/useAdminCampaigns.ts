@@ -18,6 +18,11 @@ export type AudienceType =
   | 'active_last_7d'
   | 'active_last_30d'
   | 'dormant_30d'
+  // Slice 1.7c — funnel-step nudges (server-side `computeFunnelData`).
+  | 'stuck_after_signup'
+  | 'stuck_after_verified_email'
+  | 'stuck_after_completed_profile'
+  | 'stuck_after_payment_or_vehicle'
 
 export interface Audience {
   type: AudienceType

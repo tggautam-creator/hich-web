@@ -42,6 +42,11 @@ const AUDIENCE_OPTIONS: Array<{
   { value: 'active_last_7d', label: 'Active in last 7 days', description: 'last_active_at within 7 days.' },
   { value: 'active_last_30d', label: 'Active in last 30 days', description: 'last_active_at within 30 days.' },
   { value: 'dormant_30d', label: 'Dormant (no activity in 30d)', description: 'last_active_at older than 30 days but not NULL.' },
+  // ── Funnel-step nudges (Slice 1.7c) ──────────────────────────────
+  { value: 'stuck_after_signup', label: 'Stuck — signed up, no verified email', description: 'Signed up but never confirmed their email. Good for a re-verify nudge.' },
+  { value: 'stuck_after_verified_email', label: 'Stuck — verified email, no profile', description: 'Verified email but bounced before completing the profile. Good for a "finish setting up" nudge.' },
+  { value: 'stuck_after_completed_profile', label: 'Stuck — completed profile, no payment / vehicle', description: 'Completed profile but never added a payment method (rider) or vehicle (driver).' },
+  { value: 'stuck_after_payment_or_vehicle', label: 'Stuck — set up, no first ride', description: 'Fully set up but never completed a ride. Good for a "your first ride is on us" offer.' },
 ]
 
 const LARGE_AUDIENCE = 100
