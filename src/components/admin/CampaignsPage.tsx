@@ -2,12 +2,15 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   useAdminAudiencePreview,
   useAdminSendCampaignPush,
+  useAdminSendCampaignEmail,
+  useAdminFromAddresses,
   useAdminCampaignHistory,
   useAdminRecallCampaign,
   type Audience,
   type AudienceType,
   type CampaignHistoryRow,
 } from '@/hooks/useAdminCampaigns'
+import RichTextEditor from './RichTextEditor'
 import { AdminApiException } from '@/lib/admin/api'
 import { trackEvent } from '@/lib/analytics'
 import { supabase } from '@/lib/supabase'
@@ -44,14 +47,21 @@ const AUDIENCE_OPTIONS: Array<{
 const LARGE_AUDIENCE = 100
 
 export default function CampaignsPage() {
+  const [channel, setChannel] = useState<'push' | 'email'>('push')
   const [audienceType, setAudienceType] = useState<AudienceType>('all_users')
   const [domain, setDomain] = useState('')
+  // Push fields
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
-  const [reason, setReason] = useState('')
   const [posterUrl, setPosterUrl] = useState<string | null>(null)
   const [posterUploading, setPosterUploading] = useState(false)
   const [posterError, setPosterError] = useState<string | null>(null)
+  // Email fields (Slice 1.5)
+  const [subject, setSubject] = useState('')
+  const [bodyHtml, setBodyHtml] = useState('')
+  const [emailFrom, setEmailFrom] = useState<string>('')
+  // Shared
+  const [reason, setReason] = useState('')
   const [showConfirm, setShowConfirm] = useState(false)
 
   useEffect(() => {
@@ -67,12 +77,27 @@ export default function CampaignsPage() {
     return { type: audienceType }
   }, [audienceType, domain])
 
-  const preview = useAdminAudiencePreview({ audience, enabled: audience !== null })
+  const preview = useAdminAudiencePreview({ audience, enabled: audience !== null, channel })
   const send = useAdminSendCampaignPush()
+  const sendEmail = useAdminSendCampaignEmail()
+  const fromAddresses = useAdminFromAddresses(channel === 'email')
 
-  const composerValid =
-    title.trim().length > 0 && body.trim().length > 0 && audience !== null
+  // Default the From address to the first allowlisted entry once it loads.
+  useEffect(() => {
+    if (channel === 'email' && !emailFrom && fromAddresses.data?.addresses[0]) {
+      setEmailFrom(fromAddresses.data.addresses[0].value)
+    }
+  }, [channel, emailFrom, fromAddresses.data])
+
+  const composerValid = audience !== null && (
+    channel === 'push'
+      ? title.trim().length > 0 && body.trim().length > 0
+      : subject.trim().length > 0
+        && bodyHtml.replace(/<[^>]+>/g, '').trim().length > 0
+        && emailFrom.length > 0
+  )
   const canSend = composerValid && preview.data !== undefined && preview.data.count > 0
+  const activeMutation = channel === 'push' ? send : sendEmail
 
   return (
     <div data-testid="admin-campaigns" className="space-y-6">
@@ -89,6 +114,29 @@ export default function CampaignsPage() {
           Compose a one-shot push to a segment. Email + in-app banner
           composers land in Slice 1.5 / 1.6.
         </p>
+      </div>
+
+      {/* Slice 1.5 — channel switcher above the composer */}
+      <div data-testid="campaign-channel-tabs" className="inline-flex rounded-lg border border-border bg-white p-0.5">
+        {(['push', 'email'] as const).map((ch) => {
+          const active = ch === channel
+          return (
+            <button
+              key={ch}
+              type="button"
+              data-testid={`campaign-channel-${ch}`}
+              onClick={() => setChannel(ch)}
+              className={[
+                'rounded-md px-4 py-1.5 text-sm font-medium transition-colors',
+                active
+                  ? 'bg-primary-light text-primary'
+                  : 'text-text-secondary hover:text-text-primary',
+              ].join(' ')}
+            >
+              {ch === 'push' ? 'Push notification' : 'Email'}
+            </button>
+          )
+        })}
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
@@ -134,37 +182,86 @@ export default function CampaignsPage() {
             </label>
           )}
 
-          <label className="block">
-            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
-              Title <span className="text-text-secondary">(≤ 120 chars)</span>
-            </div>
-            <input
-              data-testid="campaign-title"
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Heads up"
-              maxLength={120}
-              className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-            />
-          </label>
+          {channel === 'push' && (
+            <>
+              <label className="block">
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+                  Title <span className="text-text-secondary">(≤ 120 chars)</span>
+                </div>
+                <input
+                  data-testid="campaign-title"
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Heads up"
+                  maxLength={120}
+                  className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+              </label>
 
-          <label className="block">
-            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
-              Body <span className="text-text-secondary">(≤ 500 chars)</span>
-            </div>
-            <textarea
-              data-testid="campaign-body"
-              rows={4}
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              placeholder="What you want to say…"
-              maxLength={500}
-              className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-            />
-          </label>
+              <label className="block">
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+                  Body <span className="text-text-secondary">(≤ 500 chars)</span>
+                </div>
+                <textarea
+                  data-testid="campaign-body"
+                  rows={4}
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  placeholder="What you want to say…"
+                  maxLength={500}
+                  className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+              </label>
+            </>
+          )}
 
-          <PosterUploadField
+          {channel === 'email' && (
+            <>
+              <label className="block">
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+                  From
+                </div>
+                <select
+                  data-testid="campaign-email-from"
+                  value={emailFrom}
+                  onChange={(e) => setEmailFrom(e.target.value)}
+                  className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                >
+                  {fromAddresses.isLoading && <option>Loading…</option>}
+                  {fromAddresses.data?.addresses.map((a) => (
+                    <option key={a.value} value={a.value}>{a.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+                  Subject <span className="text-text-secondary">(≤ 200 chars)</span>
+                </div>
+                <input
+                  data-testid="campaign-email-subject"
+                  type="text"
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  placeholder="Your Tago weekly digest"
+                  maxLength={200}
+                  className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+              </label>
+              <label className="block">
+                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+                  Body
+                </div>
+                <RichTextEditor
+                  value={bodyHtml}
+                  onChange={setBodyHtml}
+                  placeholder="Write the email — bold, lists, links, headings…"
+                />
+              </label>
+            </>
+          )}
+
+          {channel === 'push' && <PosterUploadField
             posterUrl={posterUrl}
             uploading={posterUploading}
             error={posterError}
@@ -207,7 +304,7 @@ export default function CampaignsPage() {
                 setPosterUploading(false)
               }
             }}
-          />
+          />}
 
           <label className="block">
             <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
@@ -242,23 +339,32 @@ export default function CampaignsPage() {
             <button
               type="button"
               data-testid="campaign-send-test"
-              disabled={!composerValid || send.isPending}
+              disabled={!composerValid || activeMutation.isPending}
               onClick={() => {
                 if (!audience) return
-                send.mutate(
-                  {
+                if (channel === 'push') {
+                  send.mutate({
                     audience,
                     title: title.trim(),
                     body: body.trim(),
                     reason: reason.trim() || undefined,
                     poster_url: posterUrl ?? undefined,
                     test_to_self: true,
-                  },
-                )
+                  })
+                } else {
+                  sendEmail.mutate({
+                    audience,
+                    subject: subject.trim(),
+                    body_html: bodyHtml,
+                    from: emailFrom,
+                    reason: reason.trim() || undefined,
+                    test_to_self: true,
+                  })
+                }
               }}
               className={[
                 'rounded-md border px-3 py-2 text-sm font-medium transition-colors',
-                !composerValid || send.isPending
+                !composerValid || activeMutation.isPending
                   ? 'border-border bg-white cursor-not-allowed text-text-secondary'
                   : 'border-primary bg-white text-primary hover:bg-primary-light',
               ].join(' ')}
@@ -268,17 +374,23 @@ export default function CampaignsPage() {
             </button>
           </div>
 
-          {send.isSuccess && send.data && (
+          {channel === 'push' && send.isSuccess && send.data && (
             <p data-testid="campaign-send-result" className="text-xs text-success">
               ✓ Sent: {send.data.push_sent} pushes delivered to {send.data.recipient_count} users
               ({send.data.notifications_written} inbox notifications written).
             </p>
           )}
-          {send.error && (
+          {channel === 'email' && sendEmail.isSuccess && sendEmail.data && (
+            <p data-testid="campaign-send-result" className="text-xs text-success">
+              ✓ Sent: {sendEmail.data.sent} emails delivered to {sendEmail.data.recipient_count} users
+              ({sendEmail.data.failed} failed).
+            </p>
+          )}
+          {activeMutation.error && (
             <p data-testid="campaign-send-error" className="text-xs text-danger">
-              ✗ {send.error instanceof AdminApiException
-                ? `${send.error.code}: ${send.error.message}`
-                : send.error.message}
+              ✗ {activeMutation.error instanceof AdminApiException
+                ? `${activeMutation.error.code}: ${activeMutation.error.message}`
+                : activeMutation.error.message}
             </p>
           )}
         </div>
@@ -294,52 +406,81 @@ export default function CampaignsPage() {
       <CampaignHistorySection
         onDuplicate={(row) => {
           // Prefill the composer + scroll to top so the admin can
-          // tweak before resending.
+          // tweak before resending. Swap to the right channel tab
+          // based on which channel the original was.
           const aud = row.audience as { type?: string; domain?: string }
           if (aud?.type) setAudienceType(aud.type as AudienceType)
           if (aud?.domain) setDomain(aud.domain)
-          setTitle(row.title)
-          setBody(row.body)
+          setChannel(row.channel)
+          if (row.channel === 'push') {
+            setTitle(row.title)
+            setBody(row.body)
+            setPosterUrl(row.poster_url)
+          } else {
+            setSubject(row.title)
+            setBodyHtml(row.body)
+            if (row.email_from) setEmailFrom(row.email_from)
+          }
           setReason('')
-          setPosterUrl(row.poster_url)
           window.scrollTo({ top: 0, behavior: 'smooth' })
         }}
       />
 
       {showConfirm && audience && preview.data && (
         <ConfirmSendDialog
+          channel={channel}
           audience={audience}
           count={preview.data.count}
-          title={title.trim()}
-          body={body.trim()}
+          title={channel === 'push' ? title.trim() : subject.trim()}
+          body={channel === 'push' ? body.trim() : bodyHtml}
           reason={reason.trim()}
-          submitting={send.isPending}
+          submitting={activeMutation.isPending}
           onCancel={() => setShowConfirm(false)}
           onConfirm={() => {
-            send.mutate(
-              {
-                audience,
-                title: title.trim(),
-                body: body.trim(),
-                reason: reason.trim() || undefined,
-                confirm_count: preview.data!.count,
-                poster_url: posterUrl ?? undefined,
-              },
-              {
-                onSuccess: () => {
-                  setShowConfirm(false)
-                  setTitle('')
-                  setBody('')
-                  setReason('')
-                  setPosterUrl(null)
+            if (channel === 'push') {
+              send.mutate(
+                {
+                  audience,
+                  title: title.trim(),
+                  body: body.trim(),
+                  reason: reason.trim() || undefined,
+                  confirm_count: preview.data!.count,
+                  poster_url: posterUrl ?? undefined,
                 },
-                onError: () => {
-                  // Keep dialog open so the admin sees the error.
+                {
+                  onSuccess: () => {
+                    setShowConfirm(false)
+                    setTitle('')
+                    setBody('')
+                    setReason('')
+                    setPosterUrl(null)
+                  },
+                  onError: () => { /* keep dialog open */ },
                 },
-              },
-            )
+              )
+            } else {
+              sendEmail.mutate(
+                {
+                  audience,
+                  subject: subject.trim(),
+                  body_html: bodyHtml,
+                  from: emailFrom,
+                  reason: reason.trim() || undefined,
+                  confirm_count: preview.data!.count,
+                },
+                {
+                  onSuccess: () => {
+                    setShowConfirm(false)
+                    setSubject('')
+                    setBodyHtml('')
+                    setReason('')
+                  },
+                  onError: () => { /* keep dialog open */ },
+                },
+              )
+            }
           }}
-          posterUrl={posterUrl}
+          posterUrl={channel === 'push' ? posterUrl : null}
         />
       )}
     </div>
@@ -425,6 +566,7 @@ function AudiencePreviewCard({
 // ── Confirm dialog ─────────────────────────────────────────────────────────
 
 function ConfirmSendDialog({
+  channel,
   audience,
   count,
   title,
@@ -435,6 +577,7 @@ function ConfirmSendDialog({
   onCancel,
   onConfirm,
 }: {
+  channel: 'push' | 'email'
   audience: Audience
   count: number
   title: string
@@ -461,7 +604,7 @@ function ConfirmSendDialog({
         className="w-full max-w-md rounded-2xl border border-border bg-white p-6 shadow-xl"
       >
         <div className="text-sm font-semibold uppercase tracking-wide text-text-secondary">
-          Confirm broadcast
+          Confirm {channel === 'push' ? 'broadcast push' : 'broadcast email'}
         </div>
 
         <div className="mt-3 text-center">
@@ -487,13 +630,20 @@ function ConfirmSendDialog({
             </>
           )}
           <div className={posterUrl ? 'mt-3 text-[10px] font-semibold uppercase tracking-wide text-text-secondary' : 'text-[10px] font-semibold uppercase tracking-wide text-text-secondary'}>
-            Title
+            {channel === 'push' ? 'Title' : 'Subject'}
           </div>
           <div className="mt-1 text-sm font-semibold text-text-primary">{title}</div>
           <div className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
             Body
           </div>
-          <div className="mt-1 text-xs text-text-primary whitespace-pre-wrap">{body}</div>
+          {channel === 'email' ? (
+            <div
+              className="mt-1 max-h-40 overflow-y-auto rounded bg-white p-2 text-xs text-text-primary prose prose-sm max-w-none"
+              dangerouslySetInnerHTML={{ __html: body }}
+            />
+          ) : (
+            <div className="mt-1 text-xs text-text-primary whitespace-pre-wrap">{body}</div>
+          )}
           {reason && (
             <>
               <div className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
@@ -703,6 +853,14 @@ function CampaignHistorySection({
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
+                      <span
+                        className={[
+                          'rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide font-semibold',
+                          row.channel === 'email' ? 'bg-success/10 text-success' : 'bg-primary-light text-primary',
+                        ].join(' ')}
+                      >
+                        {row.channel}
+                      </span>
                       <span className="text-sm font-semibold text-text-primary truncate">
                         {row.title}
                       </span>
@@ -717,9 +875,15 @@ function CampaignHistorySection({
                         </span>
                       )}
                     </div>
-                    <p className="mt-0.5 text-xs text-text-secondary line-clamp-2">
-                      {row.body}
-                    </p>
+                    {row.channel === 'email' ? (
+                      <p className="mt-0.5 text-xs text-text-secondary line-clamp-2">
+                        {row.body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()}
+                      </p>
+                    ) : (
+                      <p className="mt-0.5 text-xs text-text-secondary line-clamp-2">
+                        {row.body}
+                      </p>
+                    )}
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-text-secondary">
                       <span>{aud.type ?? 'unknown'}{aud.domain ? `: ${aud.domain}` : ''}</span>
                       <span>·</span>

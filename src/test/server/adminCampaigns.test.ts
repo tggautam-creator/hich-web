@@ -8,13 +8,14 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest'
 import request from 'supertest'
 
-const { mockAuth, mockFrom, mockSendFcm } = vi.hoisted(() => ({
+const { mockAuth, mockFrom, mockSendFcm, mockSendEmail } = vi.hoisted(() => ({
   mockAuth: {
     getUser: vi.fn(),
     admin: { listUsers: vi.fn(), getUserById: vi.fn(), generateLink: vi.fn() },
   },
   mockFrom: vi.fn(),
   mockSendFcm: vi.fn(),
+  mockSendEmail: vi.fn(),
 }))
 
 vi.mock('../../../server/lib/supabaseAdmin.ts', () => ({
@@ -22,6 +23,15 @@ vi.mock('../../../server/lib/supabaseAdmin.ts', () => ({
 }))
 vi.mock('../../../server/lib/fcm.ts', () => ({
   sendFcmPush: mockSendFcm,
+}))
+vi.mock('../../../server/lib/resend.ts', () => ({
+  sendEmailToMany: mockSendEmail,
+  isAllowedFromAddress: (addr: string) =>
+    ['marketing@tagorides.com', 'hello@tagorides.com', 'support@tagorides.com', 'admin@tagorides.com']
+      .includes(addr.toLowerCase()),
+  FROM_ADDRESS_ALLOWLIST: [
+    { value: 'marketing@tagorides.com', label: 'Marketing' },
+  ],
 }))
 
 import { app } from '../../../server/app.ts'
@@ -46,6 +56,8 @@ interface SetupOpts {
   recallCampaign?: { id: string; slug: string; recalled_at: string | null } | null
   /** Slice 1.4d — count of notifications row IDs deleted by the recall. */
   recallDeletedCount?: number
+  /** Slice 1.5 — Resend result for sendEmailToMany. */
+  emailSendResult?: { sent: number; failed: number; failures: string[] }
 }
 
 function setup(opts: SetupOpts = {}): void {
@@ -58,6 +70,7 @@ function setup(opts: SetupOpts = {}): void {
     error: null,
   })
   mockSendFcm.mockResolvedValue(opts.fcmSentCount ?? (opts.pushTokens?.length ?? 0))
+  mockSendEmail.mockResolvedValue(opts.emailSendResult ?? { sent: 0, failed: 0, failures: [] })
 
   mockFrom.mockImplementation((table: string) => {
     if (table === 'users') {
@@ -76,6 +89,7 @@ function setup(opts: SetupOpts = {}): void {
           const chain: Record<string, unknown> = {
             is: () => chain,
             eq: () => chain,
+            in: () => chain,
             ilike: () => chain,
             gte: () => chain,
             lt: () => chain,
@@ -476,6 +490,148 @@ describe('POST /api/admin/campaigns/push', () => {
     expect(res.body.push_sent).toBe(1)
     expect(res.body.notifications_written).toBe(0) // insert failed
     expect(auditInserts.length).toBe(1) // audit still wrote
+  })
+})
+
+// ── /campaigns/email (Slice 1.5) ───────────────────────────────────────────
+
+describe('POST /api/admin/campaigns/email', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('400 INVALID_BODY when subject or body_html is missing', async () => {
+    setup()
+    const res = await request(app)
+      .post('/api/admin/campaigns/email')
+      .set('Authorization', VALID_JWT)
+      .send({
+        audience: { type: 'all_users' },
+        subject: 'Hi',
+        from: 'marketing@tagorides.com',
+      })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('INVALID_BODY')
+  })
+
+  it('400 INVALID_FROM when from is not in allowlist', async () => {
+    setup()
+    const res = await request(app)
+      .post('/api/admin/campaigns/email')
+      .set('Authorization', VALID_JWT)
+      .send({
+        audience: { type: 'all_users' },
+        subject: 'Hi',
+        body_html: '<p>Hello</p>',
+        from: 'admin@some-random-domain.com',
+      })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('INVALID_FROM')
+  })
+
+  it('400 TOO_LONG when subject > 200 chars', async () => {
+    setup()
+    const res = await request(app)
+      .post('/api/admin/campaigns/email')
+      .set('Authorization', VALID_JWT)
+      .send({
+        audience: { type: 'all_users' },
+        subject: 'x'.repeat(250),
+        body_html: '<p>ok</p>',
+        from: 'marketing@tagorides.com',
+      })
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('TOO_LONG')
+  })
+
+  it('200 happy path: looks up emails, fires Resend, audit-logs', async () => {
+    setup({
+      audienceUsers: [
+        { id: 'u1', email: 'a@x.edu', full_name: 'A' },
+        { id: 'u2', email: 'b@x.edu', full_name: 'B' },
+      ],
+      emailSendResult: { sent: 2, failed: 0, failures: [] },
+    })
+    const res = await request(app)
+      .post('/api/admin/campaigns/email')
+      .set('Authorization', VALID_JWT)
+      .send({
+        audience: { type: 'all_users' },
+        subject: 'Weekly digest',
+        body_html: '<h1>Hi</h1><p>Welcome to Tago.</p>',
+        from: 'marketing@tagorides.com',
+        reason: 'weekly send',
+      })
+
+    expect(res.status).toBe(200)
+    expect(res.body.recipient_count).toBe(2)
+    expect(res.body.sent).toBe(2)
+    expect(res.body.slug).toBeDefined()
+
+    expect(mockSendEmail).toHaveBeenCalledWith({
+      from: 'marketing@tagorides.com',
+      subject: 'Weekly digest',
+      html: '<h1>Hi</h1><p>Welcome to Tago.</p>',
+      recipients: ['a@x.edu', 'b@x.edu'],
+    })
+
+    expect(auditInserts.length).toBe(1)
+    expect(auditInserts[0]).toMatchObject({
+      action: 'send_campaign_email',
+      target_user_id: null,
+    })
+    const payload = auditInserts[0]?.['payload'] as Record<string, unknown>
+    expect(payload).toMatchObject({
+      subject: 'Weekly digest',
+      from: 'marketing@tagorides.com',
+      recipient_count: 2,
+      sent: 2,
+    })
+    // body_plain_preview should be stripped HTML, no tags
+    expect(payload['body_plain_preview']).toBe('Hi Welcome to Tago.')
+  })
+
+  it('filters by email_marketing opt-outs (not push_promos)', async () => {
+    setup({
+      audienceUsers: [
+        { id: 'u1', email: 'a@x.edu', full_name: 'A' },
+        { id: 'u2', email: 'b@x.edu', full_name: 'B' },
+        { id: 'u3', email: 'c@x.edu', full_name: 'C' },
+      ],
+      optedOutUserIds: ['u2'], // u2 has email_marketing=false
+      emailSendResult: { sent: 2, failed: 0, failures: [] },
+    })
+    const res = await request(app)
+      .post('/api/admin/campaigns/email')
+      .set('Authorization', VALID_JWT)
+      .send({
+        audience: { type: 'all_users' },
+        subject: 'Promo',
+        body_html: '<p>Promo</p>',
+        from: 'marketing@tagorides.com',
+      })
+    expect(res.status).toBe(200)
+    expect(res.body.recipient_count).toBe(2) // u2 excluded
+  })
+
+  it('test_to_self routes only to the calling admin', async () => {
+    setup({
+      audienceUsers: [
+        { id: 'u1', email: 'a@x.edu', full_name: 'A' },
+        { id: 'u2', email: 'b@x.edu', full_name: 'B' },
+      ],
+      emailSendResult: { sent: 1, failed: 0, failures: [] },
+    })
+    const res = await request(app)
+      .post('/api/admin/campaigns/email')
+      .set('Authorization', VALID_JWT)
+      .send({
+        audience: { type: 'all_users' },
+        subject: 'Test',
+        body_html: '<p>Just me</p>',
+        from: 'marketing@tagorides.com',
+        test_to_self: true,
+      })
+    expect(res.status).toBe(200)
+    expect(res.body.recipient_count).toBe(1)
   })
 })
 

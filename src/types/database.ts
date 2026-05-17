@@ -1022,6 +1022,8 @@ export type Database = {
           recalled_at: string | null
           recalled_reason: string | null
           recalled_by: string | null
+          channel: 'push' | 'email'
+          email_from: string | null
           created_at: string
         }
         Insert: {
@@ -1038,6 +1040,8 @@ export type Database = {
           recalled_at?: string | null
           recalled_reason?: string | null
           recalled_by?: string | null
+          channel?: 'push' | 'email'
+          email_from?: string | null
           created_at?: string
         }
         Update: {
@@ -1054,6 +1058,8 @@ export type Database = {
           recalled_at?: string | null
           recalled_reason?: string | null
           recalled_by?: string | null
+          channel?: 'push' | 'email'
+          email_from?: string | null
           created_at?: string
         }
         Relationships: never[]

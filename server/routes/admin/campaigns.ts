@@ -34,6 +34,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
 import { writeAuditLog } from '../../lib/adminAudit.ts'
 import { sendFcmPush } from '../../lib/fcm.ts'
+import { sendEmailToMany, isAllowedFromAddress, FROM_ADDRESS_ALLOWLIST } from '../../lib/resend.ts'
 
 export const adminCampaignsRouter = Router()
 
@@ -148,23 +149,28 @@ adminCampaignsRouter.get(
         })
         return
       }
+      // Slice 1.5 — apply the right opt-out filter based on channel.
+      // ?channel=email uses notification_preferences.email_marketing;
+      // anything else (default push) uses push_promos.
+      const channel = req.query['channel'] === 'email' ? 'email' : 'push'
+      const optOutColumn = channel === 'email' ? 'email_marketing' : 'push_promos'
+
       const usersRaw = await resolveAudience(audience)
 
-      // Apply the same notification_preferences.push_promos opt-out
-      // filter the send endpoint applies, so the count the admin sees
-      // matches the actual reach. Users without a preferences row
-      // default to opt-in (push_promos defaults true).
+      // Apply the channel-appropriate opt-out filter so the count the
+      // admin sees matches the actual reach. Users without a
+      // preferences row default to opt-in (both columns default true).
       let users = usersRaw
       if (usersRaw.length > 0) {
         const ids = usersRaw.map((u) => u.id)
         const { data: optOuts, error: optErr } = await supabaseAdmin
           .from('notification_preferences')
-          .select('user_id, push_promos')
+          .select(`user_id, ${optOutColumn}`)
           .in('user_id', ids)
-          .eq('push_promos', false)
+          .eq(optOutColumn, false)
         if (optErr) throw optErr
         const optOutIds = new Set(
-          ((optOuts ?? []) as Array<{ user_id: string; push_promos: boolean }>).map((p) => p.user_id),
+          ((optOuts ?? []) as Array<{ user_id: string }>).map((p) => p.user_id),
         )
         users = usersRaw.filter((u) => !optOutIds.has(u.id))
       }
@@ -173,6 +179,7 @@ adminCampaignsRouter.get(
       res.status(200).json({
         ok: true,
         audience,
+        channel,
         count: users.length,
         opted_out_count: usersRaw.length - users.length,
         sample_users: sample,
@@ -609,6 +616,244 @@ adminCampaignsRouter.post(
         ok: true,
         campaign_id: campaignId,
         notifications_deleted: deletedCount,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// ── GET /from-addresses (Slice 1.5 — email composer dropdown) ──────────────
+
+adminCampaignsRouter.get(
+  '/from-addresses',
+  (_req: Request, res: Response) => {
+    res.status(200).json({ ok: true, addresses: FROM_ADDRESS_ALLOWLIST })
+  },
+)
+
+// ── POST /email (Slice 1.5 — broadcast email via Resend) ───────────────────
+
+interface SendEmailBody {
+  audience?: unknown
+  subject?: unknown
+  body_html?: unknown
+  from?: unknown
+  reason?: unknown
+  confirm_count?: unknown
+  test_to_self?: unknown
+}
+
+function htmlToPlainText(html: string): string {
+  // Tiny strip — Resend expects either html OR text; we only send html
+  // but log a plain-text variant in the audit row so support can grep
+  // recall reasons later. Not security-critical (we control the input).
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+adminCampaignsRouter.post(
+  '/email',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const b = req.body as SendEmailBody
+      const audience = parseAudienceFromBody(b.audience)
+      if (!audience) {
+        res.status(400).json({
+          error: { code: 'INVALID_AUDIENCE', message: '`audience.type` must be a valid audience type' },
+        })
+        return
+      }
+      if (audience.type === 'by_university' && !audience.domain) {
+        res.status(400).json({
+          error: { code: 'DOMAIN_REQUIRED', message: '`audience.domain` is required when type=by_university' },
+        })
+        return
+      }
+      const subject = typeof b.subject === 'string' ? b.subject.trim() : ''
+      const html = typeof b.body_html === 'string' ? b.body_html.trim() : ''
+      const fromRaw = typeof b.from === 'string' ? b.from.trim().toLowerCase() : ''
+      const reason = typeof b.reason === 'string' ? b.reason.trim() : ''
+      const confirmCount = typeof b.confirm_count === 'number' ? Math.floor(b.confirm_count) : null
+      const testToSelf = b.test_to_self === true
+
+      if (!subject || !html) {
+        res.status(400).json({
+          error: { code: 'INVALID_BODY', message: 'subject and body_html are required' },
+        })
+        return
+      }
+      if (subject.length > 200) {
+        res.status(400).json({
+          error: { code: 'TOO_LONG', message: 'subject must be ≤ 200 chars' },
+        })
+        return
+      }
+      if (html.length > 50_000) {
+        res.status(400).json({
+          error: { code: 'TOO_LONG', message: 'body_html must be ≤ 50,000 chars' },
+        })
+        return
+      }
+      if (!fromRaw || !isAllowedFromAddress(fromRaw)) {
+        res.status(400).json({
+          error: {
+            code: 'INVALID_FROM',
+            message: '`from` must be one of the allowlisted addresses (see /api/admin/campaigns/from-addresses).',
+          },
+        })
+        return
+      }
+
+      const adminId = res.locals['userId'] as string
+
+      // 1. Resolve audience. test_to_self short-circuits to the
+      //    caller's own user (email lookup happens below).
+      let cohortUserIds: string[]
+      if (testToSelf) {
+        cohortUserIds = [adminId]
+      } else {
+        const users = await resolveAudience(audience)
+        cohortUserIds = users.map((u) => u.id)
+      }
+
+      // 1.5 Honor email_marketing opt-outs (vs push_promos for push).
+      if (!testToSelf && cohortUserIds.length > 0) {
+        const { data: optOuts, error: optErr } = await supabaseAdmin
+          .from('notification_preferences')
+          .select('user_id, email_marketing')
+          .in('user_id', cohortUserIds)
+          .eq('email_marketing', false)
+        if (optErr) throw optErr
+        const optOutIds = new Set(
+          ((optOuts ?? []) as Array<{ user_id: string; email_marketing: boolean }>).map((p) => p.user_id),
+        )
+        cohortUserIds = cohortUserIds.filter((id) => !optOutIds.has(id))
+      }
+
+      // 2. Drift check (skipped for test_to_self).
+      if (!testToSelf && confirmCount !== null && confirmCount !== cohortUserIds.length) {
+        res.status(409).json({
+          error: {
+            code: 'AUDIENCE_DRIFT',
+            message: `Audience size changed since preview (was ${confirmCount}, now ${cohortUserIds.length}). Re-preview and confirm.`,
+          },
+          previous_count: confirmCount,
+          current_count: cohortUserIds.length,
+        })
+        return
+      }
+
+      // 3. Create the campaign row.
+      let slug = generateCampaignSlug()
+      let campaignId: string | null = null
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const { data: created, error: createErr } = await supabaseAdmin
+          .from('campaigns')
+          .insert({
+            slug,
+            audience: audience as unknown as Record<string, unknown>,
+            title: subject,
+            body: html,
+            poster_url: null,
+            recipient_count: cohortUserIds.length,
+            push_sent_count: 0,
+            sent_by: adminId,
+            channel: 'email',
+            email_from: fromRaw,
+          })
+          .select('id, slug')
+          .single()
+        if (createErr) {
+          if ((createErr as { code?: string }).code === '23505') {
+            slug = generateCampaignSlug()
+            continue
+          }
+          throw createErr
+        }
+        campaignId = created.id
+        slug = created.slug
+        break
+      }
+      if (!campaignId) {
+        res.status(500).json({
+          error: {
+            code: 'CAMPAIGN_INSERT_FAILED',
+            message: 'Could not create campaign row after slug retries.',
+          },
+        })
+        return
+      }
+
+      if (cohortUserIds.length === 0) {
+        res.status(200).json({
+          ok: true,
+          campaign_id: campaignId,
+          slug,
+          recipient_count: 0,
+          sent: 0,
+          failed: 0,
+        })
+        return
+      }
+
+      // 4. Look up email addresses for the recipients.
+      const { data: emailRows, error: emailErr } = await supabaseAdmin
+        .from('users')
+        .select('id, email')
+        .in('id', cohortUserIds)
+      if (emailErr) throw emailErr
+      const emails = (emailRows ?? [])
+        .map((u) => u.email)
+        .filter((e): e is string => typeof e === 'string' && e.length > 0)
+
+      // 5. Fire the batch send via Resend.
+      const sendResult = await sendEmailToMany({
+        from: fromRaw,
+        subject,
+        html,
+        recipients: emails,
+      })
+
+      // 6. Update the campaign row with delivered count (reusing
+      //    push_sent_count as a generic "delivered count" across
+      //    channels — fine for now; if we grow channel-specific
+      //    counters, rename in a follow-up migration).
+      await supabaseAdmin
+        .from('campaigns')
+        .update({ push_sent_count: sendResult.sent })
+        .eq('id', campaignId)
+
+      // 7. Audit.
+      await writeAuditLog({
+        adminId,
+        targetUserId: null,
+        action: 'send_campaign_email',
+        payload: {
+          campaign_id: campaignId,
+          slug,
+          audience,
+          subject,
+          body_plain_preview: htmlToPlainText(html).slice(0, 200),
+          from: fromRaw,
+          reason: reason || null,
+          recipient_count: cohortUserIds.length,
+          sent: sendResult.sent,
+          failed: sendResult.failed,
+        },
+      })
+
+      res.status(200).json({
+        ok: true,
+        campaign_id: campaignId,
+        slug,
+        recipient_count: cohortUserIds.length,
+        sent: sendResult.sent,
+        failed: sendResult.failed,
       })
     } catch (err) {
       next(err)

@@ -72,6 +72,8 @@ export interface CampaignHistoryRow {
   recalled_reason: string | null
   recalled_by: string | null
   recalled_by_email: string | null
+  channel: 'push' | 'email'
+  email_from: string | null
 }
 
 export interface CampaignHistoryResponse {
@@ -126,13 +128,15 @@ function audienceQuery(audience: Audience): string {
 export function useAdminAudiencePreview(args: {
   audience: Audience | null
   enabled: boolean
+  /** Slice 1.5 — channel decides which opt-out column the preview filters by. */
+  channel?: 'push' | 'email'
 }) {
-  const { audience, enabled } = args
+  const { audience, enabled, channel = 'push' } = args
   return useQuery<AudiencePreviewResponse>({
-    queryKey: ['admin', 'campaigns', 'audience', audience],
+    queryKey: ['admin', 'campaigns', 'audience', audience, channel],
     queryFn: () =>
       adminGet<AudiencePreviewResponse>(
-        `/campaigns/audience/preview?${audienceQuery(audience as Audience)}`,
+        `/campaigns/audience/preview?${audienceQuery(audience as Audience)}&channel=${channel}`,
       ),
     enabled: enabled && audience !== null,
     placeholderData: keepPreviousData,
@@ -151,6 +155,60 @@ export function useAdminSendCampaignPush() {
       // shows up in the global audit feed.
       void qc.invalidateQueries({ queryKey: ['admin', 'users', 'audit'] })
       void qc.invalidateQueries({ queryKey: ['admin', 'users', 'notifications'] })
+    },
+  })
+}
+
+// ── Slice 1.5 — email broadcast ────────────────────────────────────────────
+
+export interface AdminFromAddress {
+  value: string
+  label: string
+}
+
+export interface AdminFromAddressesResponse {
+  ok: true
+  addresses: AdminFromAddress[]
+}
+
+/** From-address allowlist (config + verified-domain mailboxes). */
+export function useAdminFromAddresses(enabled: boolean) {
+  return useQuery<AdminFromAddressesResponse>({
+    queryKey: ['admin', 'campaigns', 'from-addresses'],
+    queryFn: () =>
+      adminGet<AdminFromAddressesResponse>('/campaigns/from-addresses'),
+    enabled,
+    staleTime: Infinity, // server-side config; refetch on hard reload only
+  })
+}
+
+export interface SendCampaignEmailArgs {
+  audience: Audience
+  subject: string
+  body_html: string
+  from: string
+  reason?: string
+  confirm_count?: number
+  test_to_self?: boolean
+}
+
+export interface SendCampaignEmailResult {
+  ok: true
+  campaign_id: string
+  slug: string
+  recipient_count: number
+  sent: number
+  failed: number
+}
+
+export function useAdminSendCampaignEmail() {
+  const qc = useQueryClient()
+  return useMutation<SendCampaignEmailResult, Error, SendCampaignEmailArgs>({
+    mutationFn: (args) =>
+      adminPost<SendCampaignEmailResult>('/campaigns/email', args),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'campaigns', 'history'] })
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'audit'] })
     },
   })
 }
