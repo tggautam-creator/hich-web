@@ -7,6 +7,7 @@ import { adminUsersRouter } from './users.ts'
 import { adminActionsRouter } from './actions.ts'
 import { adminStripeRouter } from './stripe.ts'
 import { adminRefundsRouter } from './refunds.ts'
+import { adminCampaignsRouter } from './campaigns.ts'
 
 /**
  * `/api/admin/*` — Tago internal admin API.
@@ -75,3 +76,5 @@ adminRouter.use('/users', adminActionsRouter)
 adminRouter.use('/stripe', adminStripeRouter)
 // Slice 1.3e — ride refunds. Owns POST /api/admin/rides/:rideId/refund.
 adminRouter.use('/rides', adminRefundsRouter)
+// Slice 1.4 — broadcast push composer. Owns GET /audience/preview + POST /push.
+adminRouter.use('/campaigns', adminCampaignsRouter)
