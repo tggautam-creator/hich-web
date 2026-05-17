@@ -26,6 +26,11 @@ const ResetPasswordPage = lazy(() => import('@/components/auth/ResetPasswordPage
 const TermsPage = lazy(() => import('@/components/legal/TermsPage'))
 const PrivacyPage = lazy(() => import('@/components/legal/PrivacyPage'))
 
+// ── Admin panel (Phase 0 shell; phases 1+ extend) ────────────────────────────
+const AdminGuard = lazy(() => import('@/components/admin/AdminGuard'))
+const AdminLayout = lazy(() => import('@/components/admin/AdminLayout'))
+const AdminHomePage = lazy(() => import('@/components/admin/AdminHomePage'))
+
 // ── Onboarding ───────────────────────────────────────────────────────────────
 const CreateProfilePage = lazy(() => import('@/components/auth/CreateProfilePage'))
 const LocationPermissionsPage = lazy(() => import('@/components/auth/LocationPermissionsPage'))
@@ -183,6 +188,18 @@ createRoot(rootEl).render(
               <Route path="/settings" element={<Suspense fallback={<FormPageSkeleton />}><SettingsPage /></Suspense>} />
               <Route path="/report-issue" element={<Suspense fallback={<FormPageSkeleton />}><ReportIssuePage /></Suspense>} />
               <Route path="/report/:rideId" element={<Suspense fallback={<FormPageSkeleton />}><RideReportPage /></Suspense>} />
+
+              {/* ── Admin panel (Phase 0 shell — gated by AdminGuard) ── */}
+              <Route element={<Suspense fallback={<FormPageSkeleton />}><AdminGuard /></Suspense>}>
+                <Route element={<Suspense fallback={<FormPageSkeleton />}><AdminLayout /></Suspense>}>
+                  <Route path="/admin" element={<Suspense fallback={<FormPageSkeleton />}><AdminHomePage /></Suspense>} />
+                  <Route path="/admin/users"      element={<Placeholder name="Users — Slice 1.3" />} />
+                  <Route path="/admin/campaigns"  element={<Placeholder name="Campaigns — Slice 1.4" />} />
+                  <Route path="/admin/live"       element={<Placeholder name="Live ops — Slice 1.7" />} />
+                  <Route path="/admin/audit-log"  element={<Placeholder name="Audit log — Slice 1.8" />} />
+                  <Route path="/admin/settings"   element={<Placeholder name="Admin settings — future" />} />
+                </Route>
+              </Route>
 
             </Route>
 

@@ -977,6 +977,19 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
         )}
       </div>
 
+      {/* ── Admin panel link — only visible to internal admins ─────────────── */}
+      {profile?.is_admin && (
+        <div className="mx-4 mt-6">
+          <button
+            data-testid="profile-admin-link"
+            onClick={() => navigate('/admin')}
+            className="w-full rounded-2xl py-3 text-sm font-semibold text-primary bg-primary-light active:opacity-80 transition-opacity"
+          >
+            Open Admin Panel
+          </button>
+        </div>
+      )}
+
       {/* ── Sign out ──────────────────────────────────────────────────────── */}
       <div className="mx-4 mt-6">
         <button

@@ -11,7 +11,7 @@ import type { Request, Response, NextFunction } from 'express'
  * Tracks:
  *  - total requests + bytes served (process lifetime)
  *  - monthly totals (current calendar month UTC; resets when month rolls)
- *  - per-path request counts (top-N exposed via /api/admin/health)
+ *  - per-path request counts (top-N exposed via /api/ops/health — renamed from /api/admin/health on 2026-05-17)
  *
  * All in-process memory — survives nothing, intentionally. If the server
  * restarts, counters reset. For durability, graduate to Redis or Postgres

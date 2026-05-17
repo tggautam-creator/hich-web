@@ -1,11 +1,23 @@
 /**
- * Operator-only health + metrics endpoints.
+ * Operator-only health + maintenance endpoints.
  *
- * `/api/admin/health` is the bandwidth meter: a live view into how much of
+ * `/api/ops/health` is the bandwidth meter: a live view into how much of
  * the Supabase free-tier 2 GB/month egress budget the server has consumed
  * this month, which routes dominate request volume, and how long the
- * process has been up. Meant for the single operator to eyeball during
- * beta, not for a public dashboard.
+ * process has been up. Meant for the single operator (Tarun) to eyeball
+ * during beta, not for a public dashboard.
+ *
+ * Renamed from `/api/admin/*` → `/api/ops/*` on 2026-05-17 (admin panel
+ * Slice 0.3) so the `/api/admin/` namespace can be reserved for the new
+ * JWT+is_admin-gated team admin panel API. The two have different access
+ * models on purpose:
+ *
+ *   - `/api/ops/*`   (this file) — gated by `x-admin-token` shared secret
+ *                                  header. One operator, one secret.
+ *   - `/api/admin/*` (admin/index.ts) — gated by Supabase JWT + the
+ *                                       caller's `users.is_admin = true`
+ *                                       row. Per-user permission, audit
+ *                                       trail per team member.
  *
  * Access is gated by a shared secret header (`x-admin-token`) so random
  * students can't hit it. Secret comes from `ADMIN_TOKEN` env; when unset,
@@ -20,9 +32,9 @@ import { sendGhostDriverReminders, processGhostDriverRefunds } from '../jobs/gho
 import { sendPendingPaymentNudges } from '../jobs/paymentDunning.ts'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 
-export const adminRouter = Router()
+export const opsRouter = Router()
 
-function requireAdminToken(req: Request, res: Response, next: NextFunction) {
+function requireOpsToken(req: Request, res: Response, next: NextFunction) {
   const expected = process.env['ADMIN_TOKEN']
   if (!expected) {
     // No secret configured → pretend the route doesn't exist at all. Beats
@@ -41,11 +53,11 @@ function requireAdminToken(req: Request, res: Response, next: NextFunction) {
 // ── F7 — Ghost-driver refund queue ────────────────────────────────────────────
 
 /**
- * GET /api/admin/ghost-refunds — inspect pending / completed refunds.
+ * GET /api/ops/ghost-refunds — inspect pending / completed refunds.
  *   ?status=pending   (default) — reminder rows that have not yet refunded
  *   ?status=refunded              — history of completed auto-refunds
  */
-adminRouter.get('/ghost-refunds', requireAdminToken, async (req: Request, res: Response, next: NextFunction) => {
+opsRouter.get('/ghost-refunds', requireOpsToken, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const status = req.query['status'] === 'refunded' ? 'refunded' : 'pending'
     const q = supabaseAdmin
@@ -67,10 +79,10 @@ adminRouter.get('/ghost-refunds', requireAdminToken, async (req: Request, res: R
 })
 
 /**
- * POST /api/admin/ghost-refunds/run — trigger the day-60 or day-90 sweep.
+ * POST /api/ops/ghost-refunds/run — trigger the day-60 or day-90 sweep.
  *   { kind: 'reminders' | 'refunds' }
  */
-adminRouter.post('/ghost-refunds/run', requireAdminToken, async (req: Request, res: Response, next: NextFunction) => {
+opsRouter.post('/ghost-refunds/run', requireOpsToken, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const kind = (req.body as { kind?: string } | undefined)?.kind
     if (kind !== 'reminders' && kind !== 'refunds') {
@@ -87,20 +99,20 @@ adminRouter.post('/ghost-refunds/run', requireAdminToken, async (req: Request, r
 // ── 24 h payment-dunning cron ────────────────────────────────────────────────
 
 /**
- * POST /api/admin/payment-dunning/run — fire the 24/48/72h FCM push sweep.
+ * POST /api/ops/payment-dunning/run — fire the 24/48/72h FCM push sweep.
  *
  * No body. Intended to be called by a daily cron (or manually by ops while
  * no scheduler is wired up). Idempotent — `payment_nudges (ride_id, bucket)`
  * UNIQUE makes re-running the same day a no-op.
  */
-adminRouter.post('/payment-dunning/run', requireAdminToken, async (_req: Request, res: Response, next: NextFunction) => {
+opsRouter.post('/payment-dunning/run', requireOpsToken, async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const result = await sendPendingPaymentNudges()
     res.json({ result })
   } catch (err) { next(err) }
 })
 
-adminRouter.get('/health', requireAdminToken, (_req: Request, res: Response) => {
+opsRouter.get('/health', requireOpsToken, (_req: Request, res: Response) => {
   const snap = getMetricsSnapshot()
   const mb = (bytes: number) => Math.round((bytes / (1024 * 1024)) * 10) / 10
 

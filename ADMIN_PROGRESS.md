@@ -9,14 +9,14 @@
 
 | Status | Slices |
 |---|---|
-| ✅ Done | 2 |
-| 🟡 In progress | 1 (Slice 0.3 — code starting next) |
-| ⚪ Not started | 25 |
+| ✅ Done | 4 (Phase 0 complete) |
+| 🟡 In progress | 0 |
+| ⚪ Not started | 24 |
 | 🔴 Blocked | 0 |
 
-**Current focus:** Slice 0.3 — admin auth middleware + admin app shell.
-**Next action:** Build `server/middleware/adminAuth.ts`, scaffold `server/routes/admin/index.ts`, add `<AdminLayout>` + `<AdminGuard>` web shells under `src/components/admin/`. Wire `/admin` route in `main.tsx`.
-**Phase 1 ETA:** Once Phase 0 is approved + done, Phase 1 is roughly 2–3 dev sessions across slices 1.1 → 1.10.
+**Current focus:** Phase 0 wrap-up — pending Tarun's prod-side dance.
+**Next action (Tarun):** apply migration 069 to prod Supabase + configure Resend SMTP on prod project (mirror dev setup) + bootstrap `admin@tagorides.com` in prod via the same flow. Once Phase 0 is verified end-to-end on prod, Phase 1 starts with Slice 1.1 (Overview dashboard — KPI cards + charts).
+**Phase 1 ETA:** ~2–3 dev sessions across slices 1.1 → 1.10. First server slice (`/api/admin/metrics/overview`) lands within a few hours of start.
 
 ---
 
@@ -24,8 +24,8 @@
 
 - [x] **0.1** Resend wired to send AS `*@tagorides.com` (GoDaddy DNS records added; domain verified 2026-05-16; first API key rotated after exposure; new key added to EC2 `~/hich-web/.env` as `RESEND_API_KEY`) — **Tarun, no code**
 - [x] **0.2** Signup allows `@tagorides.com` in addition to `.edu` + `users.is_admin` boolean — **verified end-to-end in dev 2026-05-17**. Migration `069_users_is_admin.sql`, web `validation.ts` + `database.ts` + `AuthGuard.tsx`, iOS `Validation.swift` + `UserProfile.swift` + `RootView.swift`. Email-domain bypass added (checks `auth.user.email` even before `public.users` row exists, so fresh admin signups don't get trapped at CreateProfile). 17 new validation tests pass.
-- [ ] **0.3** `admin_users` table + `adminAuth` middleware + first manual bootstrap
-- [ ] **0.4** Admin app shell + routing (`<AdminLayout>`, `<AdminGuard>`, sidebar, env badge)
+- [x] **0.3** `adminAuth` middleware (JWT + `users.is_admin = true` check) — shipped 2026-05-17. `server/middleware/adminAuth.ts`, `server/routes/admin/index.ts` with `GET /api/admin/ping` health probe. 6 middleware tests cover all permission paths (401 MISSING_TOKEN / 401 INVALID_TOKEN / 403 NOT_AN_ADMIN / 200 / 500 ADMIN_LOOKUP_FAILED). Old token-gated operator router `server/routes/admin.ts` renamed → `server/routes/ops.ts` mounted at `/api/ops/*`, freeing `/api/admin/*` for the team panel. The plan's reference to a separate `admin_users` table is deferred to Phase 3 (RBAC); for Phase 1 `users.is_admin` is sufficient source-of-truth.
+- [x] **0.4** Admin app shell + routing — shipped 2026-05-17. `<AdminGuard>` (two-layer permission: `@tagorides.com` email OR `profile.is_admin === true`), `<AdminLayout>` (sidebar with 6 nav items + topbar with PROD/DEV env badge + sign out + admin email), `<AdminHomePage>` placeholder with `/api/admin/ping` probe + Phase 1 preview. `/admin/*` routes wired in `main.tsx` (nested under `AuthGuard` then `AdminGuard` then `AdminLayout`). "Open Admin Panel" button in ProfilePage (visible only for admins).
 
 ## Phase 1 — MVP Admin
 
@@ -100,6 +100,7 @@ Append-only. Newest entries at the top. Capture every non-obvious decision so fu
 | 2026-05-16 | Slice 0.1 done by Tarun: Resend → tagorides.com → DNS via GoDaddy → domain Verified. First API key was exposed in chat → instructed rotation. New key lives in EC2 `~/hich-web/.env` as `RESEND_API_KEY`. Plan updated with credentials-boundary table. | Phase 0 unblocked for code work; Slice 0.2 starts next |
 | 2026-05-16 | Slice 0.2 code: migration 069 (`users.is_admin`), web `isValidEduEmail` + `isAdminEmail` accept `@tagorides.com`, web `database.ts` type adds `is_admin`, web `AuthGuard` bypass for admins, iOS `Validation.isAdminEmail` + `UserProfile.isAdmin` + `RootView.isProfileIncomplete` bypass. 17 new validation tests pass; 1069/1069 web tests green; lint clean; build clean; iOS sim builds. Local `.env`/`.env.dev` get `RESEND_API_KEY=` placeholder (Tarun pastes the rotated key locally). | Code complete, awaiting Tarun's dev signup test |
 | 2026-05-17 | Slice 0.2 finalized: hardened the admin bypass to check `auth.user.email` BEFORE the profile-nil guard (fresh signups no longer trap at CreateProfile despite `is_admin` not yet set). Resolved email-template OTP-vs-link mismatch by copying prod's templates to dev. Dev SQL UPDATE flipped `is_admin=true` on `admin@tagorides.com`. End-to-end verified: signup → OTP confirm → sign-in lands directly on Home tab. 1081 tests green; lint+build clean. Encountered + diagnosed: Supabase rate limit (resolved via Resend custom SMTP); 8-digit-code-vs-link email confusion (resolved via template clone); CreateProfile trap (resolved via auth.user.email bypass). | Slice 0.2 done; ready for Slice 0.3 |
+| 2026-05-17 | Slice 0.3 + 0.4 in one push: `adminAuth` middleware + `/api/admin/ping` endpoint; renamed old `/api/admin/*` operator-token-gated endpoints → `/api/ops/*` (4 endpoints: health, ghost-refunds GET+POST, payment-dunning); web `<AdminGuard>`, `<AdminLayout>` (sidebar + env badge + sign out), `<AdminHomePage>` (placeholder + ping probe + Phase 1 preview); `/admin/*` routes in `main.tsx`; "Open Admin Panel" button in ProfilePage. 6 new adminAuth tests cover all permission paths. 1090 tests green; lint+build clean. Phase 0 fully done. | Phase 0 complete; Phase 1 starts whenever Tarun says go |
 
 ---
 

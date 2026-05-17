@@ -18,9 +18,10 @@ import { safetyRouter } from './routes/safety.ts'
 import { authRouter } from './routes/auth.ts'
 import { gasPriceRouter } from './routes/gasPrice.ts'
 import { addressesRouter } from './routes/addresses.ts'
+import { adminRouter } from './routes/admin/index.ts'
+import { opsRouter } from './routes/ops.ts'
 import { vehicleRouter } from './routes/vehicle.ts'
 import { reportRouter } from './routes/report.ts'
-import { adminRouter } from './routes/admin.ts'
 import { accountRouter } from './routes/account.ts'
 import { usersRouter } from './routes/users.ts'
 import { liveActivityRouter } from './routes/liveActivity.ts'
@@ -125,6 +126,9 @@ app.use('/api/gas-price', gasPriceRouter)
 app.use('/api/addresses', addressesRouter)
 app.use('/api/vehicle', vehicleRouter)
 app.use('/api/report', reportRouter)
+// Operator-only token-gated maintenance endpoints (was `/api/admin/*` pre-2026-05-17).
+app.use('/api/ops', opsRouter)
+// Team admin panel — JWT + users.is_admin = true. Slice 0.3 of ADMIN_PLAN.md.
 app.use('/api/admin', adminRouter)
 app.use('/api/account', accountRouter)
 app.use('/api/users', usersRouter)
