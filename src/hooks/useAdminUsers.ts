@@ -102,6 +102,7 @@ export function useAdminUserDetail(userId: string | undefined) {
 export interface AdminUserRide {
   id: string
   status: string
+  payment_status: string | null
   role: 'rider' | 'driver'
   other_party_id: string | null
   origin_name: string | null
@@ -383,6 +384,40 @@ export function useAdminResetPassword(userId: string) {
       adminPost<ResetPasswordResult>(`/users/${userId}/actions/reset-password`, args),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'users', 'audit', userId] })
+    },
+  })
+}
+
+// ── Slice 1.3e — refund a ride ──────────────────────────────────────────────
+
+export interface AdminRefundArgs {
+  reason: string
+  allow_driver_overdraft?: boolean
+}
+
+export interface AdminRefundResult {
+  ok: true
+  ride_id: string
+  fare_cents: number
+  rider_balance_after_cents: number | null
+  driver_balance_after_cents: number | null
+}
+
+/**
+ * Mutation for refunding a ride.
+ * Caller must know the rideId AND the currently-viewed user id (for
+ * invalidating that user's wallet / rides / audit queries on success).
+ */
+export function useAdminRefundRide(args: { rideId: string; viewedUserId: string }) {
+  const { rideId, viewedUserId } = args
+  const qc = useQueryClient()
+  return useMutation<AdminRefundResult, Error, AdminRefundArgs>({
+    mutationFn: (body) =>
+      adminPost<AdminRefundResult>(`/rides/${rideId}/refund`, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'audit', viewedUserId] })
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'wallet', viewedUserId] })
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'rides', viewedUserId] })
     },
   })
 }

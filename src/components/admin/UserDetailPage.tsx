@@ -13,8 +13,10 @@ import {
   useAdminSuspend,
   useAdminResetPassword,
   useAdminStripeBalance,
+  useAdminRefundRide,
   type AdminUserOverview,
   type AdminAuditRow,
+  type AdminUserRide,
 } from '@/hooks/useAdminUsers'
 import { AdminApiException } from '@/lib/admin/api'
 import { trackEvent } from '@/lib/analytics'
@@ -1158,6 +1160,12 @@ function summarisePayload(action: string, p: Record<string, unknown>): string {
     const reason = typeof p['reason'] === 'string' ? p['reason'] : ''
     return email + (reason ? ` · ${reason}` : '')
   }
+  if (action === 'refund_ride') {
+    const amount = typeof p['amount_cents'] === 'number' ? p['amount_cents'] : 0
+    const role = typeof p['role'] === 'string' ? p['role'] : ''
+    const reason = typeof p['reason'] === 'string' ? p['reason'] : ''
+    return `${role} ${amount >= 0 ? '+' : ''}${fmtCents(amount)}${reason ? ` · ${reason}` : ''}`
+  }
   return JSON.stringify(p)
 }
 
@@ -1284,6 +1292,7 @@ function ActionResult<T>({
 
 function RidesTab({ userId, active }: { userId: string; active: boolean }) {
   const [page, setPage] = useState(0)
+  const [refundRide, setRefundRide] = useState<AdminUserRide | null>(null)
   const limit = 25
   const { data, error, isLoading } = useAdminUserRides({
     userId,
@@ -1297,56 +1306,257 @@ function RidesTab({ userId, active }: { userId: string; active: boolean }) {
   if (data.rides.length === 0)
     return <EmptyState text="This user hasn't been on any rides yet." />
   return (
-    <div data-testid="tab-rides" className="space-y-4">
-      <div className="overflow-hidden rounded-2xl border border-border bg-white">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border bg-surface text-left text-xs font-medium uppercase tracking-wide text-text-secondary">
-              <th className="px-4 py-2.5">When</th>
-              <th className="px-4 py-2.5">Role</th>
-              <th className="px-4 py-2.5">Status</th>
-              <th className="px-4 py-2.5">Origin → Destination</th>
-              <th className="px-4 py-2.5 text-right">Fare</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {data.rides.map((r) => (
-              <tr
-                key={r.id}
-                data-testid={`ride-row-${r.id}`}
-                className="hover:bg-surface"
-              >
-                <td className="px-4 py-3 text-text-secondary whitespace-nowrap">
-                  {fmtDateTime(r.created_at)}
-                </td>
-                <td className="px-4 py-3 text-text-secondary">{r.role}</td>
-                <td className="px-4 py-3">
-                  <StatusBadge status={r.status} />
-                </td>
-                <td className="px-4 py-3 text-text-primary">
-                  <div className="truncate">{r.origin_name ?? '—'}</div>
-                  <div className="truncate text-xs text-text-secondary">
-                    → {r.destination_name ?? '—'}
-                  </div>
-                </td>
-                <td className="px-4 py-3 text-right font-medium text-text-primary">
-                  {r.fare_cents !== null ? fmtCents(r.fare_cents) : '—'}
-                </td>
+    <>
+      <div data-testid="tab-rides" className="space-y-4">
+        <div className="overflow-hidden rounded-2xl border border-border bg-white">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border bg-surface text-left text-xs font-medium uppercase tracking-wide text-text-secondary">
+                <th className="px-4 py-2.5">When</th>
+                <th className="px-4 py-2.5">Role</th>
+                <th className="px-4 py-2.5">Status</th>
+                <th className="px-4 py-2.5">Origin → Destination</th>
+                <th className="px-4 py-2.5 text-right">Fare</th>
+                <th className="px-4 py-2.5 text-right">Actions</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {data.rides.map((r) => {
+                const refundable =
+                  r.status === 'completed' &&
+                  r.payment_status === 'paid' &&
+                  typeof r.fare_cents === 'number' &&
+                  r.fare_cents > 0
+                return (
+                  <tr
+                    key={r.id}
+                    data-testid={`ride-row-${r.id}`}
+                    className="hover:bg-surface"
+                  >
+                    <td className="px-4 py-3 text-text-secondary whitespace-nowrap">
+                      {fmtDateTime(r.created_at)}
+                    </td>
+                    <td className="px-4 py-3 text-text-secondary">{r.role}</td>
+                    <td className="px-4 py-3">
+                      <StatusBadge status={r.status} />
+                      {r.payment_status === 'refunded' && (
+                        <span className="ml-1 rounded bg-warning/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide font-semibold text-warning">
+                          refunded
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-text-primary">
+                      <div className="truncate">{r.origin_name ?? '—'}</div>
+                      <div className="truncate text-xs text-text-secondary">
+                        → {r.destination_name ?? '—'}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right font-medium text-text-primary">
+                      {r.fare_cents !== null ? fmtCents(r.fare_cents) : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {refundable ? (
+                        <button
+                          type="button"
+                          data-testid={`ride-refund-${r.id}`}
+                          onClick={() => setRefundRide(r)}
+                          className="rounded-md border border-border bg-white px-2.5 py-1 text-xs font-medium text-text-primary hover:bg-surface"
+                        >
+                          Refund
+                        </button>
+                      ) : (
+                        <span className="text-[11px] text-text-secondary">—</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+        <Pagination
+          page={page}
+          total={data.total}
+          limit={limit}
+          onPrev={() => setPage((p) => Math.max(0, p - 1))}
+          onNext={() => setPage((p) => p + 1)}
+        />
       </div>
-      <Pagination
-        page={page}
-        total={data.total}
-        limit={limit}
-        onPrev={() => setPage((p) => Math.max(0, p - 1))}
-        onNext={() => setPage((p) => p + 1)}
-      />
+
+      {refundRide && (
+        <RefundRideDialog
+          ride={refundRide}
+          viewedUserId={userId}
+          onClose={() => setRefundRide(null)}
+        />
+      )}
+    </>
+  )
+}
+
+// ── Refund dialog ───────────────────────────────────────────────────────────
+
+function RefundRideDialog({
+  ride,
+  viewedUserId,
+  onClose,
+}: {
+  ride: AdminUserRide
+  viewedUserId: string
+  onClose: () => void
+}) {
+  const [reason, setReason] = useState('')
+  const [allowOverdraft, setAllowOverdraft] = useState(false)
+  const [overdraftWarning, setOverdraftWarning] = useState<{
+    driverBalanceCents: number
+    fareCents: number
+    gapCents: number
+  } | null>(null)
+  const m = useAdminRefundRide({ rideId: ride.id, viewedUserId })
+
+  const fare = ride.fare_cents ?? 0
+  const ok = reason.trim().length > 0
+
+  function handleSubmit() {
+    setOverdraftWarning(null)
+    m.mutate(
+      { reason: reason.trim(), allow_driver_overdraft: allowOverdraft },
+      {
+        onSuccess: () => {
+          onClose()
+        },
+        onError: (err) => {
+          // The adminPost helper throws AdminApiException which doesn't
+          // carry the full response body. Detect 409 by message + code
+          // and ask the admin to opt into overdraft.
+          if (err instanceof AdminApiException && err.code === 'DRIVER_WOULD_OVERDRAFT') {
+            // We don't have the exact gap from the exception, so fetch
+            // it from the message OR display a generic prompt. Generic
+            // is fine — the server message includes the rough info.
+            setOverdraftWarning({
+              driverBalanceCents: 0, // unknown without parsing
+              fareCents: fare,
+              gapCents: fare,
+            })
+          }
+        },
+      },
+    )
+  }
+
+  return (
+    <div
+      data-testid="refund-dialog"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+    >
+      <div
+        role="dialog"
+        aria-label="Refund ride"
+        className="w-full max-w-md rounded-2xl border border-border bg-white p-6 shadow-xl"
+      >
+        <div className="text-sm font-semibold uppercase tracking-wide text-text-secondary">
+          Refund ride
+        </div>
+
+        <div className="mt-3 text-center">
+          <div className="text-4xl font-bold text-danger">
+            −{fmtCents(fare)}
+          </div>
+          <div className="mt-1 text-xs text-text-secondary">refund to rider</div>
+        </div>
+
+        <div className="mt-4 rounded-md border border-border bg-surface p-3 text-xs text-text-primary">
+          <div className="grid grid-cols-[120px_1fr] gap-1">
+            <div className="text-text-secondary">Ride</div>
+            <div className="font-mono text-[10px] truncate">{ride.id}</div>
+            <div className="text-text-secondary">When</div>
+            <div>{fmtDateTime(ride.created_at)}</div>
+            <div className="text-text-secondary">Origin</div>
+            <div className="truncate">{ride.origin_name ?? '—'}</div>
+            <div className="text-text-secondary">Destination</div>
+            <div className="truncate">{ride.destination_name ?? '—'}</div>
+          </div>
+        </div>
+
+        <Field
+          label="Reason (required)"
+          value={reason}
+          onChange={setReason}
+          placeholder="e.g. driver was rude, rider reported route deviation"
+          maxLength={300}
+        />
+
+        {overdraftWarning && (
+          <div className="mt-3 rounded-md border border-warning bg-warning/5 p-3 text-xs text-text-primary">
+            <div className="font-semibold text-warning">
+              ⚠ Driver would overdraft
+            </div>
+            <p className="mt-1 text-text-secondary">
+              {m.error instanceof AdminApiException ? m.error.message : 'Driver wallet is below the refund amount.'}
+            </p>
+            <label className="mt-2 flex items-center gap-2">
+              <input
+                type="checkbox"
+                data-testid="refund-allow-overdraft"
+                checked={allowOverdraft}
+                onChange={(e) => setAllowOverdraft(e.target.checked)}
+                className="rounded border-border"
+              />
+              <span className="text-text-primary">
+                Allow driver wallet to go negative
+              </span>
+            </label>
+          </div>
+        )}
+
+        {m.error && m.error instanceof AdminApiException && m.error.code !== 'DRIVER_WOULD_OVERDRAFT' && (
+          <p className="mt-3 text-xs text-danger">
+            ✗ {m.error.code}: {m.error.message}
+          </p>
+        )}
+
+        <p className="mt-4 text-xs text-text-secondary">
+          This will credit the rider, debit the driver, and flip the
+          ride's payment_status to <span className="font-mono">refunded</span>.
+          Two audit log rows are written (one per party). Irreversible
+          from here — to reverse, re-charge the rider and credit the
+          driver manually.
+        </p>
+
+        <div className="mt-6 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            data-testid="refund-cancel"
+            onClick={onClose}
+            disabled={m.isPending}
+            className="rounded-md border border-border bg-white px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            data-testid="refund-confirm"
+            onClick={handleSubmit}
+            disabled={!ok || m.isPending || (overdraftWarning !== null && !allowOverdraft)}
+            className={[
+              'rounded-md px-4 py-2 text-sm font-semibold text-white transition-colors',
+              !ok || m.isPending || (overdraftWarning !== null && !allowOverdraft)
+                ? 'bg-border cursor-not-allowed text-text-secondary'
+                : 'bg-danger hover:opacity-90',
+            ].join(' ')}
+          >
+            {m.isPending
+              ? 'Refunding…'
+              : overdraftWarning && allowOverdraft
+                ? 'Confirm — overdraft driver'
+                : 'Confirm refund'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
+
 
 // ── Wallet tab ───────────────────────────────────────────────────────────────
 

@@ -357,6 +357,7 @@ function parseUserIdParam(req: Request, res: Response): string | null {
 interface UserRideRow {
   id: string
   status: string
+  payment_status: string | null
   role: 'rider' | 'driver'
   other_party_id: string | null
   origin_name: string | null
@@ -377,7 +378,7 @@ adminUsersRouter.get(
       const { data, count, error } = await supabaseAdmin
         .from('rides')
         .select(
-          'id, status, rider_id, driver_id, origin_name, destination_name, fare_cents, created_at, ended_at',
+          'id, status, payment_status, rider_id, driver_id, origin_name, destination_name, fare_cents, created_at, ended_at',
           { count: 'exact' },
         )
         .or(`rider_id.eq.${id},driver_id.eq.${id}`)
@@ -388,6 +389,7 @@ adminUsersRouter.get(
       const rows: UserRideRow[] = (data ?? []).map((r) => ({
         id: r.id,
         status: r.status,
+        payment_status: r.payment_status,
         role: r.rider_id === id ? 'rider' : 'driver',
         other_party_id: r.rider_id === id ? r.driver_id : r.rider_id,
         origin_name: r.origin_name,
