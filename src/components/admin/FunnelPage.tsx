@@ -8,6 +8,20 @@ import {
   type FunnelRange,
   type FunnelStep,
 } from '@/hooks/useAdminFunnel'
+import InfoTooltip from './InfoTooltip'
+
+const STEP_INFO: Record<FunnelStep, string> = {
+  signed_up:
+    'Every user in the filtered cohort. The starting point of the funnel — by definition everyone reaches this step, so there are no users "stuck" here.',
+  verified_email:
+    'Users whose Supabase auth.users.email_confirmed_at is set (they clicked the confirmation link in their email or entered the OTP code). Stuck here = signed up but never confirmed.',
+  completed_profile:
+    'Users whose public.users.onboarding_completed=true (full name, phone, DOB, etc. all filled in — the whole onboarding flow finished). Stuck here = verified email but never finished onboarding.',
+  payment_or_vehicle:
+    'Role-aware step. A rider satisfies it by saving a default payment method (users.default_payment_method_id is set). A driver satisfies it by registering at least one non-deleted vehicle. For mode=Both, each user is evaluated against whichever applies based on their is_driver flag.',
+  completed_first_ride:
+    'Users with at least one ride whose status="completed" in their applicable role: riders count completions where they were the rider, drivers count completions where they were the driver. For mode=Both, each user is evaluated against their is_driver role.',
+}
 
 /**
  * Slice 1.2 — User funnel breakdown page.
@@ -112,20 +126,20 @@ export default function FunnelPage() {
           const isFirst = idx === 0
           const dropFromPrev = step.drop_off_from_previous_pct
           return (
-            <button
+            <div
               key={step.key}
-              type="button"
               data-testid={`funnel-step-${step.key}`}
-              onClick={() => setSelectedStep(step.key)}
-              disabled={isFirst} // signed_up has no stuck users
-              className={[
-                'block w-full rounded-2xl border border-border bg-white p-4 text-left transition-shadow',
-                isFirst ? 'cursor-default' : 'hover:shadow-md cursor-pointer',
-              ].join(' ')}
+              className="relative rounded-2xl border border-border bg-white p-4"
             >
               <div className="flex items-baseline justify-between">
-                <div className="text-sm font-semibold text-text-primary">
-                  {idx + 1}. {step.label}
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="text-sm font-semibold text-text-primary truncate">
+                    {idx + 1}. {step.label}
+                  </div>
+                  <InfoTooltip
+                    testid={`funnel-step-${step.key}-info`}
+                    text={STEP_INFO[step.key]}
+                  />
                 </div>
                 <div className="flex items-baseline gap-3">
                   <span className="text-2xl font-bold text-text-primary">
@@ -144,7 +158,17 @@ export default function FunnelPage() {
                   style={{ width: `${widthPct}%` }}
                 />
               </div>
-            </button>
+              {!isFirst && (
+                <button
+                  type="button"
+                  data-testid={`funnel-step-${step.key}-drill`}
+                  onClick={() => setSelectedStep(step.key)}
+                  className="mt-3 text-xs font-medium text-primary hover:underline"
+                >
+                  See who's stuck here →
+                </button>
+              )}
+            </div>
           )
         })}
       </div>

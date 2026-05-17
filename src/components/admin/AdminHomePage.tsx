@@ -14,6 +14,7 @@ import { useAdminOverview } from '@/hooks/useAdminOverview'
 import { AdminApiException } from '@/lib/admin/api'
 import { trackEvent } from '@/lib/analytics'
 import { colors } from '@/lib/tokens'
+import InfoTooltip from './InfoTooltip'
 
 /**
  * Admin Overview dashboard (Slice 1.1).
@@ -99,11 +100,13 @@ export default function AdminHomePage() {
           testid="kpi-total-users"
           title="Total users"
           value={fmtNumber(k.total_users)}
+          info="All-time count of rows in the users table. Includes admins, suspended accounts, and anyone who has ever signed up."
         />
         <KpiCard
           testid="kpi-new-signups-today"
           title="New signups today"
           value={fmtNumber(k.new_signups_today)}
+          info="Users created since midnight UTC today. Resets at 00:00 UTC each day, not local midnight."
         />
         <TripleKpiCard
           testid="kpi-active-users"
@@ -113,22 +116,26 @@ export default function AdminHomePage() {
             { label: 'WAU', value: fmtNumber(k.active_users.wau) },
             { label: 'MAU', value: fmtNumber(k.active_users.mau) },
           ]}
+          info="Distinct users whose last_active_at falls within the past 1 day (DAU), 7 days (WAU), or 30 days (MAU). last_active_at is bumped on every authenticated API call, throttled to once per 5 minutes per user. Tracking started with migration 070 — pre-migration users count themselves once they next hit any endpoint."
         />
         <KpiCard
           testid="kpi-active-rides-now"
           title="Active rides now"
           value={fmtNumber(k.active_rides_now)}
           accent={k.active_rides_now > 0 ? 'success' : undefined}
+          info="Rides currently in flight: status is one of requested, accepted, coordinating, or active. Excludes completed, cancelled, and expired rides."
         />
         <KpiCard
           testid="kpi-rides-completed-today"
           title="Rides completed today"
           value={fmtNumber(k.rides_completed_today)}
+          info="Rides whose status='completed' AND ended_at is today (UTC bucket). Counts the second QR scan, not the request time."
         />
         <KpiCard
           testid="kpi-revenue-this-week"
           title="Revenue this week"
           value={fmtCents(k.revenue_this_week_cents)}
+          info="Sum of fare_cents across rides that completed in the past 7 days (rolling window, not calendar week). Drivers currently keep 100% — no platform fee is taken, so this is also driver earnings."
         />
         <KpiCard
           testid="kpi-ios-install-rate"
@@ -139,34 +146,40 @@ export default function AdminHomePage() {
               ? 'No platform-tagged tokens yet'
               : undefined
           }
+          info="Of users whose push_tokens.platform is set (ios / android / web), what fraction is 'ios'. NULL-platform tokens (registered before migration 071) are excluded from BOTH numerator and denominator. Will be 0% until the iOS client ships its platform-write update — every existing iOS user currently shows as 'unknown platform'."
         />
         <KpiCard
           testid="kpi-driver-activation-rate"
           title="Driver activation"
           value={fmtPercent(k.driver_activation_rate)}
           subtitle="drivers w/ ≥1 completed ride"
+          info="Of users with is_driver=true, the fraction who have completed at least one ride as the driver. Tells you how many drivers actually picked someone up vs just signed up."
         />
         <KpiCard
           testid="kpi-rider-activation-rate"
           title="Rider activation"
           value={fmtPercent(k.rider_activation_rate)}
           subtitle="users w/ ≥1 completed ride"
+          info="Of total users (every account, not just non-drivers), the fraction who have completed at least one ride as the rider. Tells you how many users actually took a ride."
         />
         <KpiCard
           testid="kpi-retention-7d"
           title="7-day retention"
           value={fmtPercent(k.retention_7d)}
           subtitle="active in last 7d / signed up ≥7d ago"
+          info="Of users who signed up 7+ days ago, the fraction with any authenticated activity in the past 7 days. Will read artificially low for the first week or two after migration 070 because last_active_at only began tracking then — give it time to backfill."
         />
         <KpiCard
           testid="kpi-avg-ride-fare"
           title="Avg ride fare"
           value={fmtCents(k.avg_ride_fare_cents)}
+          info="Mean fare_cents across all completed rides (any time, not just this week). Displayed in dollars. Driven by the fare formula: gas-cost + 5¢/min, min $5."
         />
         <KpiCard
           testid="kpi-avg-driver-rating"
           title="Avg driver rating"
           value={fmtRating(k.avg_driver_rating)}
+          info="Mean stars across every ride_ratings row whose rated_id equals the ride's driver_id (i.e., the rider rating the driver). Rider-facing ratings on the same ride are excluded."
         />
       </div>
 
@@ -175,12 +188,14 @@ export default function AdminHomePage() {
         <ChartCard
           testid="chart-signups-14d"
           title="Daily signups (last 14 days)"
+          info="Count of new user rows per day for the past 14 days, bucketed by UTC date. Today's bar is partial until midnight UTC."
         >
           <DailyBarChart data={data.charts.signups_14d} fill={colors.primary} />
         </ChartCard>
         <ChartCard
           testid="chart-completed-rides-14d"
           title="Completed rides (last 14 days)"
+          info="Count of rides whose status='completed' AND ended_at falls within each day, bucketed by UTC. Today's bar is partial."
         >
           <DailyBarChart
             data={data.charts.completed_rides_14d}
@@ -191,6 +206,7 @@ export default function AdminHomePage() {
           testid="chart-top-email-domains"
           title="Top 10 email domains"
           className="lg:col-span-2"
+          info="Most-frequent email domains across the users table. Raw domain after the @ — no name mapping (davis.edu stays as davis.edu rather than 'UC Davis'). Useful to see which schools are using Tago most."
         >
           <TopDomainsChart data={data.charts.top_email_domains} />
         </ChartCard>
@@ -207,9 +223,10 @@ interface KpiCardProps {
   value: string
   subtitle?: string
   accent?: 'success' | 'warning' | 'danger'
+  info?: string
 }
 
-function KpiCard({ testid, title, value, subtitle, accent }: KpiCardProps) {
+function KpiCard({ testid, title, value, subtitle, accent, info }: KpiCardProps) {
   const accentClass =
     accent === 'success'
       ? 'text-success'
@@ -221,10 +238,13 @@ function KpiCard({ testid, title, value, subtitle, accent }: KpiCardProps) {
   return (
     <div
       data-testid={testid}
-      className="rounded-2xl border border-border bg-white p-4"
+      className="relative rounded-2xl border border-border bg-white p-4"
     >
-      <div className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-        {title}
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+          {title}
+        </div>
+        {info && <InfoTooltip testid={`${testid}-info`} text={info} />}
       </div>
       <div className={`mt-2 text-3xl font-semibold ${accentClass}`}>{value}</div>
       {subtitle && (
@@ -238,16 +258,20 @@ interface TripleKpiCardProps {
   testid: string
   title: string
   rows: Array<{ label: string; value: string }>
+  info?: string
 }
 
-function TripleKpiCard({ testid, title, rows }: TripleKpiCardProps) {
+function TripleKpiCard({ testid, title, rows, info }: TripleKpiCardProps) {
   return (
     <div
       data-testid={testid}
-      className="rounded-2xl border border-border bg-white p-4"
+      className="relative rounded-2xl border border-border bg-white p-4"
     >
-      <div className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-        {title}
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+          {title}
+        </div>
+        {info && <InfoTooltip testid={`${testid}-info`} text={info} />}
       </div>
       <div className="mt-2 space-y-1">
         {rows.map((row) => (
@@ -269,16 +293,20 @@ interface ChartCardProps {
   testid: string
   title: string
   className?: string
+  info?: string
   children: React.ReactNode
 }
 
-function ChartCard({ testid, title, className = '', children }: ChartCardProps) {
+function ChartCard({ testid, title, className = '', info, children }: ChartCardProps) {
   return (
     <div
       data-testid={testid}
-      className={`rounded-2xl border border-border bg-white p-4 ${className}`}
+      className={`relative rounded-2xl border border-border bg-white p-4 ${className}`}
     >
-      <div className="text-sm font-semibold text-text-primary">{title}</div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-sm font-semibold text-text-primary">{title}</div>
+        {info && <InfoTooltip testid={`${testid}-info`} text={info} />}
+      </div>
       <div className="mt-3 h-64">{children}</div>
     </div>
   )
