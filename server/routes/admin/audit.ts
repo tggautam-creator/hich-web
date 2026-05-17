@@ -70,6 +70,13 @@ adminAuditRouter.get(
       const targetFilter = typeof req.query['target_user_id'] === 'string'
         ? String(req.query['target_user_id']).trim()
         : ''
+      // Slice 1.8b — free-text search across `action` + the stringified
+      // jsonb payload. Strips chars that would break a PostgREST .or()
+      // filter (the `%` is fine, but `,` `(` `)` are delimiters).
+      const qRaw = typeof req.query['q'] === 'string'
+        ? String(req.query['q']).trim()
+        : ''
+      const qSafe = qRaw.replace(/[,()*]/g, '')
 
       // Validate UUID filters before they hit Postgres — a malformed
       // UUID bubbles up as a 500 from supabase-js otherwise.
@@ -101,6 +108,13 @@ adminAuditRouter.get(
         query = query.is('target_user_id', null)
       } else if (targetFilter) {
         query = query.eq('target_user_id', targetFilter)
+      }
+      // Free-text: match either the action token or anything inside
+      // the jsonb payload (cast to text so we don't need a separate
+      // tsvector index — fine while admin_audit_log is small).
+      if (qSafe.length > 0) {
+        const pat = `%${qSafe}%`
+        query = query.or(`action.ilike.${pat},payload::text.ilike.${pat}`)
       }
 
       const { data, count, error } = await query

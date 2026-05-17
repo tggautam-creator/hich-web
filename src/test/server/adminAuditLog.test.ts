@@ -86,6 +86,10 @@ function setup(opts: SetupOpts = {}) {
           lastFilters[col + '_is'] = String(val)
           return chain
         },
+        or: (clause: string) => {
+          lastFilters['_or'] = clause
+          return chain
+        },
         then: (resolve: (v: unknown) => void) =>
           resolve({ data: rows, count: total, error: null }),
       }
@@ -244,5 +248,27 @@ describe('GET /api/admin/audit-log — filter validation', () => {
       .set('Authorization', VALID_JWT)
     expect(res.status).toBe(200)
     expect(res.body.limit).toBe(100)
+  })
+
+  it('Slice 1.8b — q= applies an .or() filter across action + payload::text', async () => {
+    setup({ rows: [], total: 0 })
+    const res = await request(app)
+      .get('/api/admin/audit-log?q=spring+fling')
+      .set('Authorization', VALID_JWT)
+    expect(res.status).toBe(200)
+    expect(typeof lastFilters['_or']).toBe('string')
+    expect(lastFilters['_or']).toContain('action.ilike.%spring fling%')
+    expect(lastFilters['_or']).toContain('payload::text.ilike.%spring fling%')
+  })
+
+  it('Slice 1.8b — q= strips PostgREST-breaking chars before sending', async () => {
+    setup({ rows: [], total: 0 })
+    const res = await request(app)
+      .get('/api/admin/audit-log?q=(foo)*,bar')
+      .set('Authorization', VALID_JWT)
+    expect(res.status).toBe(200)
+    // Commas + parens + asterisks would split the .or() clause; should be stripped
+    expect(lastFilters['_or']).toContain('foobar')
+    expect(lastFilters['_or']).not.toMatch(/[(),*]foo/)
   })
 })

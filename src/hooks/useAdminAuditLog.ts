@@ -35,6 +35,8 @@ export interface AuditLogFilters {
   admin_id?: string
   /** UUID string, or the literal 'null' to filter for broadcast (no target). */
   target_user_id?: string
+  /** Free-text search across `action` + stringified payload. */
+  q?: string
 }
 
 interface UseAdminAuditLogArgs {
@@ -56,6 +58,7 @@ export function useAdminAuditLog(args: UseAdminAuditLogArgs = {}) {
   if (filters.action) params.set('action', filters.action)
   if (filters.admin_id) params.set('admin_id', filters.admin_id)
   if (filters.target_user_id) params.set('target_user_id', filters.target_user_id)
+  if (filters.q) params.set('q', filters.q)
 
   return useQuery<AuditLogResponse>({
     queryKey: ['admin', 'audit-log', limit, offset, filters],

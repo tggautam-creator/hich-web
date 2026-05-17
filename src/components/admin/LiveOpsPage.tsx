@@ -61,12 +61,29 @@ export default function LiveOpsPage() {
   const [filter, setFilter] = useState<FilterMode>('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [showOnlineDrivers, setShowOnlineDrivers] = useState(true)
+  const [search, setSearch] = useState('')
 
   const filteredActive = useMemo(() => {
-    if (filter === 'all') return allActive
-    if (filter === 'stuck') return allActive.filter((r) => r.stuck_reason !== null)
-    return allActive.filter((r) => r.status === filter)
-  }, [allActive, filter])
+    let rides = allActive
+    if (filter === 'stuck') rides = rides.filter((r) => r.stuck_reason !== null)
+    else if (filter !== 'all') rides = rides.filter((r) => r.status === filter)
+    const q = search.trim().toLowerCase()
+    if (q.length > 0) {
+      rides = rides.filter((r) => {
+        const rider = (r.rider_name ?? '').toLowerCase()
+        const driver = (r.driver_name ?? '').toLowerCase()
+        const origin = (r.origin_name ?? '').toLowerCase()
+        const dest = (r.destination_name ?? '').toLowerCase()
+        return (
+          rider.includes(q) ||
+          driver.includes(q) ||
+          origin.includes(q) ||
+          dest.includes(q)
+        )
+      })
+    }
+    return rides
+  }, [allActive, filter, search])
 
   const selectedRide = useMemo(
     () => (selectedId ? allActive.find((r) => r.id === selectedId) ?? null : null),
@@ -152,41 +169,63 @@ export default function LiveOpsPage() {
         />
       </div>
 
-      {/* Filter pills */}
-      <div
-        data-testid="live-filter-pills"
-        className="inline-flex flex-wrap gap-1 rounded-lg border border-border bg-white p-0.5"
-      >
-        {FILTER_TABS.map((tab) => {
-          const active = filter === tab.id
-          const count =
-            tab.id === 'all'
-              ? allActive.length
-              : tab.id === 'stuck'
-                ? stuckCount
-                : allActive.filter((r) => r.status === tab.id).length
-          return (
+      {/* Filter pills + search */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div
+          data-testid="live-filter-pills"
+          className="inline-flex flex-wrap gap-1 rounded-lg border border-border bg-white p-0.5"
+        >
+          {FILTER_TABS.map((tab) => {
+            const active = filter === tab.id
+            const count =
+              tab.id === 'all'
+                ? allActive.length
+                : tab.id === 'stuck'
+                  ? stuckCount
+                  : allActive.filter((r) => r.status === tab.id).length
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                data-testid={`live-filter-${tab.id}`}
+                onClick={() => setFilter(tab.id)}
+                className={[
+                  'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                  active
+                    ? tab.id === 'stuck'
+                      ? 'bg-danger/10 text-danger'
+                      : 'bg-primary-light text-primary'
+                    : 'text-text-secondary hover:bg-surface',
+                ].join(' ')}
+              >
+                {tab.label}
+                <span className="ml-1.5 rounded-full bg-surface px-1.5 py-0.5 text-xs">
+                  {count}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+        <div className="relative flex-1 min-w-[200px] max-w-md">
+          <input
+            data-testid="live-search"
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search rider, driver, or location…"
+            className="w-full rounded-md border border-border bg-white px-3 py-1.5 pr-8 text-sm"
+          />
+          {search && (
             <button
-              key={tab.id}
               type="button"
-              data-testid={`live-filter-${tab.id}`}
-              onClick={() => setFilter(tab.id)}
-              className={[
-                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-                active
-                  ? tab.id === 'stuck'
-                    ? 'bg-danger/10 text-danger'
-                    : 'bg-primary-light text-primary'
-                  : 'text-text-secondary hover:bg-surface',
-              ].join(' ')}
+              aria-label="Clear search"
+              onClick={() => setSearch('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-primary"
             >
-              {tab.label}
-              <span className="ml-1.5 rounded-full bg-surface px-1.5 py-0.5 text-xs">
-                {count}
-              </span>
+              ✕
             </button>
-          )
-        })}
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

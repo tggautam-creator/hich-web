@@ -80,6 +80,17 @@ export default function AuditLogPage() {
         data-testid="audit-log-filters"
         className="rounded-2xl border border-border bg-white p-4 flex flex-wrap items-end gap-3"
       >
+        <FilterField label="Search" tooltip="Free-text search across the action token AND the JSON payload. Use this to find a specific push title, refund reason, or any string the server stored.">
+          <input
+            data-testid="filter-q"
+            type="search"
+            value={filters.q ?? ''}
+            onChange={(e) => setFilter('q', e.target.value || undefined)}
+            placeholder="search action or payload…"
+            className="w-72 rounded-md border border-border px-2 py-1.5 text-sm"
+          />
+        </FilterField>
+
         <FilterField label="Action" tooltip="Token written by the server when the action ran (e.g. send_push, grant_wallet_credit, force_cancel_ride).">
           <select
             data-testid="filter-action"
