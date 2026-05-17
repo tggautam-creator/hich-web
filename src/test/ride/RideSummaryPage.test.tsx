@@ -31,11 +31,18 @@ vi.mock('@/lib/env', () => ({
   },
 }))
 
-const profileRef = { current: { id: 'rider-001' } }
+type TestProfile = {
+  id: string
+  stripe_customer_id?: string | null
+  default_payment_method_id?: string | null
+  wallet_balance?: number
+}
+
+const profileRef: { current: TestProfile } = { current: { id: 'rider-001' } }
 
 vi.mock('@/stores/authStore', () => ({
   useAuthStore: vi.fn(
-    (selector: (s: { profile: { id: string } | null; refreshProfile: () => Promise<void> }) => unknown) =>
+    (selector: (s: { profile: TestProfile | null; refreshProfile: () => Promise<void> }) => unknown) =>
       selector({ profile: profileRef.current, refreshProfile: async () => {} }),
   ),
 }))
@@ -43,6 +50,9 @@ vi.mock('@/stores/authStore', () => ({
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
 const mockSingleFns: Record<string, ReturnType<typeof vi.fn>> = {}
+// Override for list queries (e.g. ride_ratings, transactions). Default
+// is empty list so unrelated tests stay quiet.
+const mockListFns: Record<string, ReturnType<typeof vi.fn>> = {}
 
 const { mockSingle } = vi.hoisted(() => ({
   mockSingle: vi.fn(),
@@ -52,23 +62,38 @@ vi.mock('@/lib/supabase', () => ({
   supabase: {
     from: (table: string) => ({
       select: () => {
-        // Chained .eq().eq().in() lands here as a "list" query — used by
-        // the wallet/card-split fetch in RideSummaryPage. Default: empty
-        // list so the split row stays hidden in tests that don't care.
-        const listResult = Promise.resolve({ data: [], error: null })
+        const listResult = () =>
+          mockListFns[table]?.() ?? Promise.resolve({ data: [], error: null })
         const single = () => {
           const fn = mockSingleFns[table]
           return fn ? fn() : mockSingle()
         }
-        const eqChain = () => ({
-          eq: eqChain,
-          in: () => listResult,
-          single,
-          maybeSingle: single,
-        })
+        // Thenable so `await select().eq(...)` resolves to the list
+        // result, while .single() / .maybeSingle() / .in() keep their
+        // existing semantics.
+        const eqChain = () => {
+          const chain: Record<string, unknown> = {
+            eq: eqChain,
+            in: () => listResult(),
+            single,
+            maybeSingle: single,
+          }
+          ;(chain as { then: PromiseLike<unknown>['then'] }).then = (
+            onFulfilled,
+            onRejected,
+          ) => listResult().then(onFulfilled, onRejected)
+          return chain
+        }
         return { eq: eqChain }
       },
     }),
+    auth: {
+      getSession: () =>
+        Promise.resolve({
+          data: { session: { access_token: 'test-token' } },
+          error: null,
+        }),
+    },
   },
 }))
 
@@ -153,6 +178,8 @@ describe('RideSummaryPage', () => {
     mockSingleFns['rides'] = vi.fn(() => Promise.resolve({ data: null, error: null }))
     mockSingleFns['users'] = vi.fn(() => Promise.resolve({ data: null, error: null }))
     mockSingleFns['vehicles'] = vi.fn(() => Promise.resolve({ data: null, error: null }))
+    // Reset list-query overrides each test.
+    for (const k of Object.keys(mockListFns)) delete mockListFns[k]
   })
 
   it('shows loading spinner initially', () => {
@@ -256,21 +283,194 @@ describe('RideSummaryPage', () => {
       expect(screen.queryByTestId('fare-breakdown')).not.toBeInTheDocument()
     })
 
-    it('has Rate button labelled for rider', async () => {
+    // Sprint 2 W-T1-R1+R2 — rating + tip are now inline on RideSummary.
+    // The old "Rate Your Driver" PrimaryButton + navigate-to-rate-page
+    // flow has been folded into the new `rate-section`. The two tests
+    // that exercised the old surface (`rate-button` exists + navigates)
+    // are replaced with verifications of the new inline form.
+    it('renders the inline rate section with prompt + star row', async () => {
       renderWithRouter()
       await waitFor(() => {
-        expect(screen.getByTestId('rate-button')).toHaveTextContent('Rate Your Driver')
+        expect(screen.getByTestId('rate-section')).toBeInTheDocument()
       })
+      expect(screen.getByText('How was your trip?')).toBeInTheDocument()
+      expect(screen.getByTestId('star-row')).toBeInTheDocument()
+      expect(screen.getByTestId('submit-rating')).toBeDisabled()
     })
 
-    it('Rate button navigates to rate page', async () => {
+    it('enables Submit button once stars are picked', async () => {
       renderWithRouter()
-      await waitFor(() => screen.getByTestId('rate-button'))
+      await waitFor(() => screen.getByTestId('star-row'))
+      fireEvent.click(screen.getByTestId('star-5'))
+      expect(screen.getByTestId('submit-rating')).not.toBeDisabled()
+    })
 
-      fireEvent.click(screen.getByTestId('rate-button'))
-      await waitFor(() => {
-        expect(screen.getByTestId('rate-page')).toBeInTheDocument()
+    // Sprint 2 W-T1-R1+R2 — happy-path coverage for the new inline
+    // submit flow. The previous form-behavior tests lived on the
+    // separate /ride/rate page (now a redirect); these replace them
+    // for the consolidated screen.
+
+    it('low rating shows comment textarea + issue-style tags', async () => {
+      renderWithRouter()
+      await waitFor(() => screen.getByTestId('star-row'))
+
+      // 2 stars → low rating
+      fireEvent.click(screen.getByTestId('star-2'))
+      expect(screen.getByText('What could be improved?')).toBeInTheDocument()
+      expect(screen.getByTestId('comment-input')).toBeInTheDocument()
+      // One of the driver-issue tags should render (proves issue tag set is in use)
+      expect(screen.getByTestId('tag-Late pickup')).toBeInTheDocument()
+
+      // Flip up to 5 stars → tags should switch to positive set, no comment
+      fireEvent.click(screen.getByTestId('star-5'))
+      expect(screen.getByText('What went well?')).toBeInTheDocument()
+      expect(screen.queryByTestId('comment-input')).not.toBeInTheDocument()
+      expect(screen.getByTestId('tag-Smooth driving')).toBeInTheDocument()
+    })
+
+    it('submit POSTs /rate and transitions to thank-you state', async () => {
+      const fetchMock = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: async () => ({ revealed: false, other_rating: null }),
       })
+      vi.stubGlobal('fetch', fetchMock)
+
+      try {
+        renderWithRouter()
+        await waitFor(() => screen.getByTestId('star-row'))
+
+        fireEvent.click(screen.getByTestId('star-5'))
+        fireEvent.click(screen.getByTestId('submit-rating'))
+
+        await waitFor(() => {
+          expect(screen.getByTestId('rate-submitted')).toBeInTheDocument()
+        })
+        expect(screen.getByText('Thanks for your feedback!')).toBeInTheDocument()
+        expect(screen.getByTestId('waiting-reveal')).toBeInTheDocument()
+
+        // Verify the /rate call was made with the right payload
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+        const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit]
+        expect(url).toBe('/api/rides/ride-001/rate')
+        expect(opts.method).toBe('POST')
+        const body = JSON.parse(opts.body as string) as { stars: number; tags: string[] }
+        expect(body.stars).toBe(5)
+        expect(body.tags).toEqual([])
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('submit with tip POSTs /rate then /tip and shows tip confirmation', async () => {
+      // Rider has a saved card so tip goes via card path
+      profileRef.current = {
+        id: 'rider-001',
+        stripe_customer_id: 'cus_test',
+        default_payment_method_id: 'pm_test',
+        wallet_balance: 0,
+      }
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 201,
+          json: async () => ({ revealed: false, other_rating: null }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 201,
+          json: async () => ({ tipped: true, method: 'card', stripe_fee_cents: 33 }),
+        })
+      vi.stubGlobal('fetch', fetchMock)
+
+      try {
+        renderWithRouter()
+        await waitFor(() => screen.getByTestId('star-row'))
+
+        fireEvent.click(screen.getByTestId('star-5'))
+        // Pick the 20% chip
+        await waitFor(() => screen.getByTestId('tip-picker'))
+        fireEvent.click(screen.getByTestId('tip-20%'))
+
+        // Submit
+        fireEvent.click(screen.getByTestId('submit-rating'))
+
+        await waitFor(() => {
+          expect(screen.getByTestId('rate-submitted')).toBeInTheDocument()
+        })
+        expect(screen.getByTestId('tip-method-confirm')).toBeInTheDocument()
+
+        // Both endpoints called in order
+        expect(fetchMock).toHaveBeenCalledTimes(2)
+        expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/rides/ride-001/rate')
+        expect((fetchMock.mock.calls[1] as [string])[0]).toBe('/api/rides/ride-001/tip')
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('hydrates submitted state when the rider already rated this ride', async () => {
+      // Mirrors iOS hydrateExistingRating — re-opening /ride/summary/<id>
+      // for an already-rated ride should show "Thanks for your feedback!"
+      // + the revealed counterpart rating, not the empty form.
+      mockListFns['ride_ratings'] = vi.fn(() =>
+        Promise.resolve({
+          data: [
+            {
+              rater_id: 'rider-001',
+              stars: 4,
+              tags: ['On time', 'Friendly'],
+              comment: null,
+            },
+            {
+              rater_id: 'driver-001',
+              stars: 5,
+              tags: ['Respectful'],
+              comment: null,
+            },
+          ],
+          error: null,
+        }),
+      )
+
+      renderWithRouter()
+
+      await waitFor(() => {
+        expect(screen.getByTestId('rate-submitted')).toBeInTheDocument()
+      })
+      // Empty form should NOT render
+      expect(screen.queryByTestId('star-row')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('submit-rating')).not.toBeInTheDocument()
+      // Counterpart rating revealed
+      expect(screen.getByTestId('revealed-rating')).toBeInTheDocument()
+    })
+
+    it('rate API failure surfaces an error and keeps form open', async () => {
+      const fetchMock = vi.fn().mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: async () => ({ error: { code: 'INTERNAL', message: 'Server exploded' } }),
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      try {
+        renderWithRouter()
+        await waitFor(() => screen.getByTestId('star-row'))
+
+        fireEvent.click(screen.getByTestId('star-5'))
+        fireEvent.click(screen.getByTestId('submit-rating'))
+
+        await waitFor(() => {
+          expect(screen.getByTestId('rating-error')).toHaveTextContent('Server exploded')
+        })
+        // Form stays open — no submitted state
+        expect(screen.queryByTestId('rate-submitted')).not.toBeInTheDocument()
+        expect(screen.getByTestId('submit-rating')).toBeInTheDocument()
+      } finally {
+        vi.unstubAllGlobals()
+      }
     })
 
     it('Done button navigates rider to /home/rider', async () => {
@@ -318,11 +518,16 @@ describe('RideSummaryPage', () => {
       })
     })
 
-    it('has Rate button labelled for driver', async () => {
+    it('driver view also renders the inline rate section (but no tip picker)', async () => {
       renderWithRouter()
       await waitFor(() => {
-        expect(screen.getByTestId('rate-button')).toHaveTextContent('Rate Your Rider')
+        expect(screen.getByTestId('rate-section')).toBeInTheDocument()
       })
+      // The "How was your trip?" prompt is the same for driver + rider.
+      expect(screen.getByText('How was your trip?')).toBeInTheDocument()
+      // Tip picker is rider-only — drivers never see it even at 5 stars.
+      fireEvent.click(screen.getByTestId('star-5'))
+      expect(screen.queryByTestId('tip-picker')).not.toBeInTheDocument()
     })
 
     it('Done button navigates driver to /home/driver', async () => {

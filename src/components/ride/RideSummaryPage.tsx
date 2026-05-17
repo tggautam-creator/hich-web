@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { supabase } from '@/lib/supabase'
@@ -7,6 +7,108 @@ import { colors as tokenColors } from '@/lib/tokens'
 import { haversineMetres } from '@/lib/geo'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import type { Ride, User, Vehicle } from '@/types/database'
+
+// ── Rating tag options (mirrors RateRidePage before consolidation) ────────────
+
+// Tags shown when a RIDER rates a DRIVER
+const DRIVER_POSITIVE_TAGS = [
+  'Great conversation',
+  'Smooth driving',
+  'On time',
+  'Clean car',
+  'Friendly',
+  'Good music',
+]
+
+const DRIVER_ISSUE_TAGS = [
+  'Late pickup',
+  'Unsafe driving',
+  'Rude behavior',
+  'Car not clean',
+  'Wrong route',
+  'Made me uncomfortable',
+]
+
+// Tags shown when a DRIVER rates a RIDER
+const RIDER_POSITIVE_TAGS = [
+  'Great conversation',
+  'Friendly',
+  'On time',
+  'Respectful',
+  'Good directions',
+  'Pleasant ride',
+]
+
+const RIDER_ISSUE_TAGS = [
+  'Late to pickup',
+  'Rude behavior',
+  'Left mess in car',
+  'Wrong pickup spot',
+  'Made me uncomfortable',
+  'Disruptive',
+]
+
+// ── Star button (shared between rating + reveal) ──────────────────────────────
+
+function StarButton({
+  filled,
+  onClick,
+  index,
+}: {
+  filled: boolean
+  onClick: () => void
+  index: number
+}) {
+  return (
+    <button
+      onClick={onClick}
+      data-testid={`star-${index}`}
+      className="p-1 transition-transform active:scale-110"
+      type="button"
+    >
+      <svg
+        className={`h-9 w-9 ${filled ? 'text-warning' : 'text-border'}`}
+        fill={filled ? 'currentColor' : 'none'}
+        stroke="currentColor"
+        strokeWidth={1.5}
+        viewBox="0 0 24 24"
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z"
+        />
+      </svg>
+    </button>
+  )
+}
+
+// Smaller (24px) star used inside the reveal card after submit.
+function MiniStar({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      className={`h-5 w-5 ${filled ? 'text-warning' : 'text-border'}`}
+      fill={filled ? 'currentColor' : 'none'}
+      stroke="currentColor"
+      strokeWidth={1.5}
+      viewBox="0 0 24 24"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z"
+      />
+    </svg>
+  )
+}
+
+/**
+ * Round cents to nearest 50 (e.g. 285 → 300, 264 → 250). Used for the
+ * fare-scaled tip-percentage chips so users see "round" tip amounts.
+ */
+function roundToHalfDollar(cents: number): number {
+  return Math.round(cents / 50) * 50
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -113,6 +215,32 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
   // transactions in their history mean they were charged twice.
   const [walletPaidCents, setWalletPaidCents] = useState<number>(0)
 
+  // ── Inline rating + tip state (Sprint 2 / W-T1-R1+R2) ────────────────────
+  // The old separate `/ride/rate/:id` page is now a thin redirect to this
+  // screen; all rating + tip flow lives inline here, matching iOS.
+  const [stars, setStars] = useState(0)
+  const [selectedTags, setSelectedTags] = useState<string[]>([])
+  const [comment, setComment] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [submitted, setSubmitted] = useState(false)
+  const [revealed, setRevealed] = useState(false)
+  const [otherRating, setOtherRating] = useState<{ stars: number; tags: string[] } | null>(null)
+  const [rateError, setRateError] = useState<string | null>(null)
+
+  // Tip state — rider-only, optional.
+  // `selectedTipCents` is the chip value: a positive cents number, -1 for
+  // "Custom", or null for nothing picked. Custom dollar value lives in
+  // `customTip`. `tipResult` captures what the server actually charged so
+  // the post-submit toast can be specific (card vs wallet, total + fee).
+  const [selectedTipCents, setSelectedTipCents] = useState<number | null>(null)
+  const [customTip, setCustomTip] = useState('')
+  const [tipError, setTipError] = useState<string | null>(null)
+  const [tipResult, setTipResult] = useState<{
+    method: 'card' | 'wallet'
+    cents: number
+    feeCents?: number
+  } | null>(null)
+
   const isDriver = profile?.id === ride?.driver_id
 
   // Refresh profile to get latest wallet_balance after fare transfer
@@ -176,6 +304,40 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
           else if (r.type === 'wallet_refund') refunded += amt
         }
         setWalletPaidCents(Math.max(0, debited - refunded))
+      }
+
+      // Hydrate any prior rating for this ride so a history re-open
+      // (or a deep-link from FCM/email to an already-rated ride)
+      // renders the submitted state instead of an empty form. Mirrors
+      // iOS `RideSummaryPage.swift::hydrateExistingRating`. RLS lets
+      // any participant read their own row + the counterpart's row
+      // for the same ride.
+      const { data: ratingRows } = (await supabase
+        .from('ride_ratings')
+        .select('rater_id, stars, tags, comment')
+        .eq('ride_id', rideData.id)) as {
+          data:
+            | Array<{
+                rater_id: string
+                stars: number
+                tags: string[] | null
+                comment: string | null
+              }>
+            | null
+        }
+      if (ratingRows && ratingRows.length > 0) {
+        const mine = ratingRows.find((r) => r.rater_id === profileId)
+        if (mine) {
+          setStars(mine.stars)
+          setSelectedTags(mine.tags ?? [])
+          setComment(mine.comment ?? '')
+          setSubmitted(true)
+        }
+        const theirs = ratingRows.find((r) => r.rater_id !== profileId)
+        if (theirs) {
+          setRevealed(true)
+          setOtherRating({ stars: theirs.stars, tags: theirs.tags ?? [] })
+        }
       }
 
       setLoading(false)
@@ -287,8 +449,181 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
     }
   }
 
-  const goRate = () => {
-    navigate(`/ride/rate/${rideId}`)
+  // ── Rating + tip derived values ────────────────────────────────────────
+
+  const isPositiveRating = stars >= 4
+
+  // Switch tag set based on who's rating whom + sentiment.
+  const availableTags = isDriver
+    ? (isPositiveRating ? RIDER_POSITIVE_TAGS : RIDER_ISSUE_TAGS)
+    : (isPositiveRating ? DRIVER_POSITIVE_TAGS : DRIVER_ISSUE_TAGS)
+
+  // Reset tags when sentiment flips so the user doesn't carry a "Smooth
+  // driving" tag into a 2-star rating where it'd be nonsensical. Done
+  // in the star click handler (not a useEffect on isPositiveRating)
+  // so programmatic stars updates from hydration don't wipe the
+  // already-loaded tags. Effect-based reset would fire AFTER hydration
+  // set both stars + tags, clobbering the tags before the user even
+  // sees them.
+  const pickStars = (i: number) => {
+    if ((i >= 4) !== isPositiveRating) {
+      setSelectedTags([])
+    }
+    setStars(i)
+  }
+
+  // Fare-scaled tip chips (15% / 20% / 25%) rounded to nearest $0.50.
+  // Falls back to flat $1 / $2 / $5 when fare isn't loaded yet, so the
+  // chips never render at $0.00. iOS uses the same pattern
+  // (`RideSummaryPage.swift:778-798`).
+  const tipChips = useMemo<Array<{ label: string; subtitle: string; cents: number }>>(() => {
+    if (fareCents > 0) {
+      return [15, 20, 25].map((pct) => {
+        const cents = Math.max(100, roundToHalfDollar(Math.round(fareCents * (pct / 100))))
+        return {
+          label: `${pct}%`,
+          subtitle: `$${(cents / 100).toFixed(2)}`,
+          cents,
+        }
+      })
+    }
+    return [
+      { label: '$1', subtitle: '', cents: 100 },
+      { label: '$2', subtitle: '', cents: 200 },
+      { label: '$5', subtitle: '', cents: 500 },
+    ]
+  }, [fareCents])
+
+  // Resolve the picker into a cents value: chip → its cents; -1 → custom
+  // dollars parsed from the input. Null = nothing chosen (no tip).
+  const tipCents = useMemo<number | null>(() => {
+    if (selectedTipCents == null) return null
+    if (selectedTipCents === -1) {
+      const dollars = parseFloat(customTip)
+      if (!Number.isFinite(dollars)) return null
+      return Math.round(dollars * 100)
+    }
+    return selectedTipCents
+  }, [selectedTipCents, customTip])
+
+  // Mirror the server's path-selection: card-first if a saved card is on
+  // file (rider's stripe_customer_id + default_payment_method_id), else
+  // wallet if it covers the tip.
+  const hasCard = !!profile?.stripe_customer_id && !!profile?.default_payment_method_id
+  const walletBalanceCents = profile?.wallet_balance ?? 0
+  const willTipUseCard = hasCard
+  const walletCoversTip = tipCents != null && walletBalanceCents >= tipCents
+  const tipFeeCents = willTipUseCard && tipCents && tipCents > 0 ? estimateStripeFee(tipCents) : 0
+  const tipChargeTotal = (tipCents ?? 0) + (willTipUseCard ? tipFeeCents : 0)
+
+  const toggleTag = (tag: string) => {
+    setSelectedTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
+    )
+  }
+
+  // Single Submit handler: posts /rate, then (rider only, when a tip was
+  // picked) posts /tip. Both happen before the "thank you" state appears
+  // so the user doesn't see two distinct loading spinners. Matches iOS
+  // `RideSummaryPage.swift::handleSubmit`.
+  const handleSubmitRatingAndTip = async () => {
+    if (stars === 0 || submitting) return
+    setSubmitting(true)
+    setRateError(null)
+    setTipError(null)
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        setRateError('Please sign in to submit your rating.')
+        setSubmitting(false)
+        return
+      }
+
+      // 1. Rating
+      const rateResp = await fetch(`/api/rides/${rideId}/rate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          stars,
+          tags: selectedTags,
+          comment: comment.trim() || undefined,
+        }),
+      })
+      const rateBody = (await rateResp.json()) as {
+        revealed?: boolean
+        other_rating?: { stars: number; tags: string[] } | null
+        error?: { code?: string; message?: string }
+      }
+
+      // 'ALREADY_RATED' is treated as success — the user re-tapped Submit
+      // after the row already landed (network double-fire, back/forward,
+      // tab reopen). iOS does the same (`RideSummaryPage.swift:1188`).
+      const alreadyRated = rateBody.error?.code === 'ALREADY_RATED'
+      if (!rateResp.ok && !alreadyRated) {
+        setRateError(rateBody.error?.message ?? 'Failed to submit rating')
+        setSubmitting(false)
+        return
+      }
+
+      // 2. Tip (rider only, only when picked). Wrapped in its own
+      // try/catch so a tip-side network failure doesn't get reported
+      // as a rating failure — the rating already landed by this point.
+      let resolvedTipResult: { method: 'card' | 'wallet'; cents: number; feeCents?: number } | null = null
+      if (!isDriver && tipCents != null && tipCents > 0) {
+        if (tipCents < 100 || tipCents > 2000) {
+          setTipError('Tip must be between $1 and $20')
+        } else if (!willTipUseCard && !walletCoversTip) {
+          setTipError(`Add a card or top up your wallet ($${(walletBalanceCents / 100).toFixed(2)} available) to tip $${(tipCents / 100).toFixed(2)}`)
+        } else {
+          try {
+            const tipResp = await fetch(`/api/rides/${rideId}/tip`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${session.access_token}`,
+              },
+              body: JSON.stringify({ tip_cents: tipCents }),
+            })
+            const tipBody = (await tipResp.json()) as {
+              method?: 'card' | 'wallet'
+              stripe_fee_cents?: number
+              error?: { code?: string; message?: string }
+            }
+            if (!tipResp.ok && tipBody.error?.code !== 'ALREADY_TIPPED') {
+              setTipError(tipBody.error?.message ?? 'Tip failed')
+            } else {
+              resolvedTipResult = {
+                method: tipBody.method ?? (willTipUseCard ? 'card' : 'wallet'),
+                cents: tipCents,
+                feeCents: tipBody.stripe_fee_cents,
+              }
+              // Wallet path drains rider balance — refresh profile so any
+              // other open screen / next nav sees the new amount.
+              void refreshProfile()
+            }
+          } catch {
+            setTipError('Tip failed — network error. Your rating was saved.')
+          }
+        }
+      }
+
+      // 3. Commit to the thank-you state. Reveal info comes from the rate
+      // response.
+      if (rateBody.revealed && rateBody.other_rating) {
+        setRevealed(true)
+        setOtherRating(rateBody.other_rating)
+      }
+      if (resolvedTipResult) setTipResult(resolvedTipResult)
+      setSubmitted(true)
+    } catch {
+      setRateError('Network error — try again')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   // ── Loading state ──────────────────────────────────────────────────────
@@ -522,15 +857,241 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
         )}
       </div>
 
+      {/* ── Inline rating + tip section ────────────────────────────────────
+          Sprint 2 W-T1-R1+R2 — replaces the old `/ride/rate/:id` page
+          navigation. Single Submit fires /rate then (if applicable) /tip
+          in sequence so the user only sees one loading spinner.
+       */}
+      <div className="mx-6 mt-4 rounded-2xl bg-white p-5 shadow-sm" data-testid="rate-section">
+        {!submitted ? (
+          <>
+            <p className="mb-3 text-center text-sm font-semibold text-text-primary">
+              How was your trip?
+            </p>
+
+            <div className="flex justify-center gap-1" data-testid="star-row">
+              {[1, 2, 3, 4, 5].map((i) => (
+                <StarButton
+                  key={i}
+                  index={i}
+                  filled={i <= stars}
+                  onClick={() => pickStars(i)}
+                />
+              ))}
+            </div>
+
+            {/* Tags */}
+            {stars > 0 && (
+              <div className="mt-4" data-testid="tags-section">
+                <p className="mb-2 text-xs font-medium text-text-secondary">
+                  {isPositiveRating ? 'What went well?' : 'What could be improved?'}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {availableTags.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => toggleTag(tag)}
+                      data-testid={`tag-${tag}`}
+                      className={`rounded-full border px-3 py-1.5 text-xs transition-colors ${
+                        selectedTags.includes(tag)
+                          ? isPositiveRating
+                            ? 'border-success bg-success/10 text-success'
+                            : 'border-danger bg-danger/10 text-danger'
+                          : 'border-border text-text-secondary'
+                      }`}
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Comment — only for low ratings */}
+            {stars > 0 && !isPositiveRating && (
+              <textarea
+                value={comment}
+                onChange={(e) => setComment(e.target.value)}
+                placeholder="Tell us more (optional)"
+                rows={3}
+                data-testid="comment-input"
+                className="mt-3 w-full rounded-2xl border border-border bg-white px-4 py-3 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none"
+              />
+            )}
+
+            {/* Tip — riders only, only when positive rating */}
+            {!isDriver && stars >= 4 && (
+              <div className="mt-5 border-t border-border pt-4 space-y-3" data-testid="tip-picker">
+                <p className="text-sm font-semibold text-text-primary">
+                  Add a tip for {otherUser?.full_name?.split(' ')[0] ?? 'your driver'}?
+                </p>
+
+                {/* Payment-method row — always visible above the chips so
+                    rider knows whether their card or wallet will be hit. */}
+                <button
+                  type="button"
+                  onClick={() => navigate('/payment/methods')}
+                  data-testid="tip-method-row"
+                  className="flex w-full items-center justify-between rounded-xl bg-surface px-3 py-2 text-left text-xs"
+                >
+                  <span className="text-text-secondary">
+                    {willTipUseCard ? (
+                      <>Tip charged to <span className="font-semibold text-text-primary">your card</span></>
+                    ) : walletBalanceCents > 0 ? (
+                      <>Tip taken from your <span className="font-semibold text-text-primary">Tago credit</span></>
+                    ) : (
+                      <span className="text-danger">No card or wallet balance — add one to tip</span>
+                    )}
+                  </span>
+                  <span className="text-primary font-medium">
+                    {willTipUseCard ? 'Change' : 'Add card'}
+                  </span>
+                </button>
+
+                {/* Chips */}
+                <div className="grid grid-cols-4 gap-2">
+                  {tipChips.map((chip) => {
+                    const active = selectedTipCents === chip.cents
+                    return (
+                      <button
+                        key={chip.label}
+                        type="button"
+                        onClick={() => { setSelectedTipCents(chip.cents); setTipError(null) }}
+                        data-testid={`tip-${chip.label}`}
+                        aria-pressed={active}
+                        className={`rounded-xl py-2 text-sm font-semibold transition-colors ${
+                          active ? 'bg-primary text-white' : 'bg-surface text-text-primary'
+                        }`}
+                      >
+                        <span className="block">{chip.label}</span>
+                        {chip.subtitle && (
+                          <span className={`block text-[10px] font-normal ${active ? 'text-white/80' : 'text-text-secondary'}`}>
+                            {chip.subtitle}
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })}
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedTipCents(-1); setTipError(null) }}
+                    data-testid="tip-custom"
+                    aria-pressed={selectedTipCents === -1}
+                    className={`rounded-xl py-2 text-sm font-semibold transition-colors ${
+                      selectedTipCents === -1 ? 'bg-primary text-white' : 'bg-surface text-text-primary'
+                    }`}
+                  >
+                    Custom
+                  </button>
+                </div>
+
+                {/* Custom amount input */}
+                {selectedTipCents === -1 && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-text-secondary">$</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="20"
+                      step="0.01"
+                      inputMode="decimal"
+                      enterKeyHint="done"
+                      value={customTip}
+                      onChange={(e) => setCustomTip(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          (e.target as HTMLInputElement).blur()
+                        }
+                      }}
+                      placeholder="1 – 20"
+                      data-testid="tip-custom-input"
+                      className="flex-1 rounded-xl border border-border bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none"
+                    />
+                  </div>
+                )}
+
+                {/* Total line — shown when a tip amount is picked */}
+                {tipCents != null && tipCents >= 100 && tipCents <= 2000 && (
+                  <p className="text-xs text-text-secondary" data-testid="tip-total">
+                    {willTipUseCard ? (
+                      <>Total · <span className="font-semibold text-text-primary">${(tipChargeTotal / 100).toFixed(2)}</span> charged (${(tipCents / 100).toFixed(2)} tip + ${(tipFeeCents / 100).toFixed(2)} fee)</>
+                    ) : walletCoversTip ? (
+                      <>Total · <span className="font-semibold text-text-primary">${(tipCents / 100).toFixed(2)}</span> from wallet (no fee)</>
+                    ) : null}
+                  </p>
+                )}
+
+                {tipError && (
+                  <p data-testid="tip-error" className="text-xs text-danger">{tipError}</p>
+                )}
+              </div>
+            )}
+
+            {rateError && (
+              <p className="mt-3 text-center text-sm text-danger" data-testid="rating-error">{rateError}</p>
+            )}
+          </>
+        ) : (
+          // ── Submitted thank-you state ───────────────────────────────────
+          <div className="text-center" data-testid="rate-submitted">
+            <p className="text-base font-semibold text-text-primary mb-2">
+              Thanks for your feedback!
+            </p>
+            {revealed && otherRating ? (
+              <div data-testid="revealed-rating" className="mt-3 inline-flex flex-col items-center">
+                <p className="text-xs text-text-secondary mb-1">
+                  {otherUser?.full_name ?? 'Your match'} rated you
+                </p>
+                <div className="flex justify-center gap-1">
+                  {[1, 2, 3, 4, 5].map((i) => (
+                    <MiniStar key={i} filled={i <= otherRating.stars} />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-text-secondary" data-testid="waiting-reveal">
+                Your rating is revealed once they rate you too.
+              </p>
+            )}
+            {tipResult && (
+              <p
+                className="mt-3 text-xs text-success"
+                data-testid="tip-method-confirm"
+              >
+                {tipResult.method === 'card'
+                  ? `Tip sent — $${((tipResult.cents + (tipResult.feeCents ?? 0)) / 100).toFixed(2)} charged${tipResult.feeCents ? ` (incl. $${(tipResult.feeCents / 100).toFixed(2)} fee)` : ''}.`
+                  : `Tip sent — $${(tipResult.cents / 100).toFixed(2)} taken from your wallet.`}
+              </p>
+            )}
+            {tipError && !tipResult && (
+              // Rating succeeded but the tip leg failed (e.g. card decline,
+              // no payment method). Surface it so the user knows the tip
+              // didn't send and can revisit via the wallet / cards pages.
+              <p
+                className="mt-3 text-xs text-danger"
+                data-testid="tip-error-post-submit"
+              >
+                {tipError}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* ── Actions ───────────────────────────────────────────────────────── */}
       <div className="mt-auto space-y-3 px-6 pb-8 pt-6">
-        <PrimaryButton
-          onClick={goRate}
-          className="w-full"
-          data-testid="rate-button"
-        >
-          Rate Your {isDriver ? 'Rider' : 'Driver'}
-        </PrimaryButton>
+        {!submitted && (
+          <PrimaryButton
+            onClick={() => { void handleSubmitRatingAndTip() }}
+            className="w-full"
+            disabled={stars === 0 || submitting}
+            data-testid="submit-rating"
+          >
+            {submitting ? 'Submitting…' : (tipCents && tipCents > 0 ? 'Submit & send tip' : 'Submit rating')}
+          </PrimaryButton>
+        )}
 
         <button
           onClick={goHome}

@@ -2,7 +2,70 @@
 
 > Companion to [WEB_PARITY_REPORT_2026-05-12.md](WEB_PARITY_REPORT_2026-05-12.md). This file is the **live scoreboard** for the web-side parity work. It is read at the start of every Claude session — keep it up to date.
 
-## Sprint 1 — Correctness bugs
+## Sprint 2 — Tier-1 UX gaps
+
+**Goal:** close 6 high-impact UX gaps from the parity report. Web-only;
+iOS items stay in the deferred queue below.
+
+**Status:** ⏳ In progress — Slice 1 starting 2026-05-16.
+
+### Decisions (locked 2026-05-16)
+
+| Decision | Value | Implication |
+|---|---|---|
+| Tip placement | **Inline on RideSummary** (matches iOS) | RideSummary becomes a single screen for stars + tags + comment + tip + Submit. `/ride/rate/:id` either deprecates or renders the same embedded component. |
+| Snooze durations | **Full iOS set** | 6 pills: 15 min / 1 h / 2 h / 4 h / 8 h / Until tomorrow. |
+| Decline reasons | **7-pill set** (extended) | Too far / Wrong direction / Busy right now / Taking a break / Detour too long / Pickup too far from me / Other |
+| Sprint scope | All 6 items, 4 slices | Closes every Tier-1 web UX gap in one sprint. |
+
+### Sprint 2 slice plan
+
+#### Slice 1 — Tip + inline rating on RideSummary (W-T1-R1 + W-T1-R2) ✅ shipped 2026-05-16 (awaiting prod QA)
+- [x] Move stars + dynamic tag picker + (low-rating) comment field + tip percentage chips + tip-payment row + Total line + Submit into `RideSummaryPage.tsx`.
+- [x] Use fare-scaled chips `15% / 20% / 25%` rounded to nearest $0.50, with flat $1/$2/$5 fallback when fare isn't loaded.
+- [x] "Tip charged to Visa / Wallet / Add card" always-visible row above the picker. Tap → navigates to `/payment/methods`.
+- [x] Server's `/api/rides/:id/rate` + `/api/rides/:id/tip` endpoints unchanged — single Submit fires both in sequence; ALREADY_RATED/ALREADY_TIPPED treated as success.
+- [x] `/ride/rate/:id` now redirects to `/ride/summary/:id` (legacy FCM / email deep-links keep working).
+
+#### Slice 2 — DriverCancelledChoiceOverlay on web (W-T1-R3)
+- [ ] Replace bare modal in `MessagingWindow.tsx:2176-2229` with a full-screen overlay matching iOS `DriverCancelledChoiceOverlay`.
+- [ ] Warning haptic on appearance (web fallback: `navigator.vibrate(...)` on Android).
+- [ ] Standby driver count visible in subtitle.
+- [ ] 2-minute idle countdown pill (red <30s). Auto-fires Cancel at zero.
+- [ ] "Find Another Driver" calls `POST /api/rides/:id/find-new-driver` (not just nav back).
+- [ ] Reuse on `RiderPickupPage.tsx:196-200` to fix the auto-dismiss-3s anti-pattern.
+
+#### Slice 3 — Decline reason sheet + snooze + Driver Home pill (W-T1-D1 + W-T1-D2)
+- [ ] New `DeclineReasonSheet.tsx` component: 7 reason pills + 6 snooze duration pills. Submits both reason + snooze in parallel calls (`POST /api/rides/snooze` + `PATCH /api/rides/:id/cancel`).
+- [ ] Wire into `RideRequestNotification.tsx` banner Decline button.
+- [ ] Wire into `RideSuggestion.tsx` decline path (replaces the current direct nav).
+- [ ] `DriverHomePage.tsx`: read `snoozed_until` alongside `is_online`. Render orange "Snoozed · Xm left" pill in the top bar AND replace the online toggle with a RESUME button while snoozed. Live countdown via `setInterval`.
+
+#### Slice 4 — Two-step accept flow (W-T1-D3)
+- [ ] Split `RideSuggestion.tsx::handleAccept` into stage 1 (commit-accept with empty body, no destination needed) and stage 2 (destination entry).
+- [ ] Stage 1: single big "Accept ride" CTA. POSTs `/api/rides/:id/accept` with empty body → ride_offer status=pending → rider sees `ride_accepted` broadcast immediately.
+- [ ] Stage 2: full-screen destination input page or sheet. Cancel pill in header with confirm dialog ("Rider has already been notified you accepted").
+- [ ] Submits destination to `PATCH /api/rides/:id/driver-destination` (or equivalent — verify endpoint name).
+- [ ] Disable back-button on stage 2 to prevent half-accepted state.
+
+### Sprint 2 summary
+
+| Status | Count |
+|---|---|
+| Not started | 4 |
+| In progress | 0 |
+| Done (awaiting QA) | 2 |
+| Done (verified + pushed) | 0 |
+
+### Current focus
+Slice 2 (DriverCancelledChoiceOverlay).
+
+### Next action
+Wait for user QA of Slice 1 on prod; then start Slice 2.
+
+---
+
+## Sprint 1 — Correctness bugs ✅ shipped 2026-05-13
 
 **Goal:** ship the 12 Tier-0 fixes flagged in the parity report. Each fix is a true correctness divergence (broken endpoint, dropped state, stale data, wrong copy). No new features in this sprint.
 
