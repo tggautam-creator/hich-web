@@ -57,6 +57,7 @@ export type Database = {
           date_of_birth: string | null
           onboarding_completed: boolean
           is_admin: boolean
+          last_active_at: string | null
           created_at: string
         }
         Insert: {
@@ -78,6 +79,7 @@ export type Database = {
           date_of_birth?: string | null
           onboarding_completed?: boolean
           is_admin?: boolean
+          last_active_at?: string | null
           created_at?: string
         }
         Update: {
@@ -99,6 +101,7 @@ export type Database = {
           date_of_birth?: string | null
           onboarding_completed?: boolean
           is_admin?: boolean
+          last_active_at?: string | null
           created_at?: string
         }
         Relationships: never[]
@@ -562,18 +565,21 @@ export type Database = {
           id: string
           user_id: string
           token: string
+          platform: 'ios' | 'android' | 'web' | null
           created_at: string
         }
         Insert: {
           id?: string
           user_id: string
           token: string
+          platform?: 'ios' | 'android' | 'web' | null
           created_at?: string
         }
         Update: {
           id?: string
           user_id?: string
           token?: string
+          platform?: 'ios' | 'android' | 'web' | null
           created_at?: string
         }
         Relationships: never[]

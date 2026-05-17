@@ -12,35 +12,35 @@
 
 ### Sprint 3 slice plan
 
-#### Slice 1 — Driver-facing payment UX (W-T1-P9 + W-T1-P5)
-- [ ] **P9** RideSummaryPage: never show "PAYMENT FAILED" to drivers — drivers didn't fail anything. Branch by role and show iOS's neutral reassurance copy ("You earned this fare. We're working with the rider's card to settle. You'll see this credited to your wallet within 48 hours.").
-- [ ] **P5** WalletPage: honour the server's 429 `retry_after_seconds` on the payment nudge button + drive a live `setInterval` countdown so a returning driver sees the actual remaining cooldown instead of a permanently-disabled button.
+#### Slice 1 — Driver-facing payment UX (W-T1-P9 + W-T1-P5) ✅ shipped 2026-05-16
+- [x] **P9** RideSummaryPage role-aware payment badge + Settling reassurance card (driver never sees "Payment failed"); same neutral copy on WalletPage pending-earnings rows.
+- [x] **P5** WalletPage nudge button honours 429 `retry_after_seconds` with a live `setInterval` countdown that self-stops when every per-ride deadline clears.
 
-#### Slice 2 — Withdraw flow (W-T1-P3 + W-T1-P4)
-- [ ] **P3** WithdrawSheet: editable amount + Half/All quick pills, $1 minimum, max = current balance.
-- [ ] **P4** WithdrawSheet: confirmation dialog ("Withdraw $X to <bank>? Irreversible from Tago.") before firing the Stripe transfer.
+#### Slice 2 — Withdraw flow (W-T1-P3 + W-T1-P4) ✅ shipped 2026-05-16
+- [x] **P3** WithdrawSheet editable amount + Half/All quick pills + $1 minimum + max = current balance, live validation messaging.
+- [x] **P4** Confirm dialog with iOS copy ("Withdraw $X? Funds go to Chase •••• 4242. This action is irreversible from Tago.") loaded from `/api/connect/status`.
 
-#### Slice 3 — Top-up flow (W-T1-P2 + W-T1-P1)
-- [ ] **P2** AddFundsPage: load default saved card on mount, render "Use saved card · Visa •••• 4242" button above CardElement, charge via `confirmCardPayment(clientSecret, { payment_method: pmId })`.
-- [ ] **P1** AddFundsPage: Stripe Payment Request Button for Apple Pay / Google Pay above the card form (detected via `paymentRequest.canMakePayment()`). Requires `.well-known/apple-developer-merchantid-domain-association` for Apple Pay on web.
+#### Slice 3 — Top-up flow (W-T1-P2 + W-T1-P1) ✅ shipped 2026-05-16
+- [x] **P2** AddFundsPage loads default saved card via `/api/payment/methods`, renders "Use saved card · Visa •••• 4242" one-tap row + "Use a different card" toggle for the CardElement. Saved-card mode charges with `{ payment_method: pmId }` — no retype.
+- [x] **P1** Stripe Payment Request Button (Apple Pay on Safari iOS, Google Pay on Chrome Android) above the card form, gated by `canMakePayment()` so it stays hidden where unsupported. Wallet sheet `paymentmethod` handler POSTs `/topup` → confirms with the wallet's PM → completes the sheet → fires `/confirm-topup`.
 
-#### Slice 4 — Transaction visibility (W-T1-P6)
-- [ ] **P6** New `/wallet/transaction/:id` route + page: signed amount hero, status pill, withdrawal-failure banner with Stripe reason, copyable Stripe IDs, "View ride details" deep link, settle date, wallet-balance-after. Tappable rows on WalletPage drive into it.
+#### Slice 4 — Transaction visibility (W-T1-P6) ✅ shipped 2026-05-16
+- [x] **P6** New `/wallet/transaction/:id` route + `TransactionDetailPage.tsx`. Signed-amount hero (sign + danger/success colour), status pill, withdrawal-failure banner stripping the server's `Refund — withdrawal declined: ` prefix, counterparty card (ride-linked rows fetch the other party + role), funding-source card for top-ups with `pm_brand` / `pm_wallet`, copyable references (Transaction ID, Stripe PaymentIntent, Stripe Transfer, Linked ride), description, "View ride details" deep-link, posted-at, settled-at (withdrawals), wallet-balance-after. Every WalletPage row is now tappable (previously only ride-linked).
 
 ### Sprint 3 summary
 
 | Status | Count |
 |---|---|
-| Not started | 7 |
+| Not started | 0 |
 | In progress | 0 |
-| Done (awaiting QA) | 0 |
+| Done (awaiting QA) | 7 |
 | Done (verified + pushed) | 0 |
 
 ### Current focus
-Slice 1 (driver payment UX).
+All Sprint 3 wallet / payment / profile items shipped. Awaiting prod QA.
 
 ### Next action
-Implement Slice 1 → run gates → commit + push.
+User QA on prod, then pick the next sprint area (Ride Board / Scheduling, Messaging, or Auth).
 
 ---
 

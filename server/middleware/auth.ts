@@ -30,6 +30,7 @@ export async function validateJwt(
       const decoded = jwt.verify(token, jwtSecret) as { sub?: string }
       if (decoded.sub) {
         res.locals['userId'] = decoded.sub
+        bumpLastActive(decoded.sub)
         next()
         return
       }
@@ -49,5 +50,54 @@ export async function validateJwt(
   }
 
   res.locals['userId'] = data.user.id
+  bumpLastActive(data.user.id)
   next()
+}
+
+// ── last_active_at bump ──────────────────────────────────────────────────────
+//
+// Every authenticated request flips users.last_active_at so the admin
+// Overview dashboard can compute DAU/WAU/MAU. To keep this cheap on a
+// chatty client (foreground polling, retries, background syncs), we
+// throttle to one DB write per user per BUMP_THROTTLE_MS. The map is
+// in-memory + per-process, so a PM2 restart re-arms it — that's fine,
+// it just costs one extra write per user post-restart.
+//
+// Fire-and-forget: we don't await the UPDATE before calling next().
+// If the write fails we log and move on — never block the request.
+
+const BUMP_THROTTLE_MS = 5 * 60 * 1000
+const lastBumpAt = new Map<string, number>()
+
+function bumpLastActive(userId: string): void {
+  const now = Date.now()
+  const prev = lastBumpAt.get(userId) ?? 0
+  if (now - prev < BUMP_THROTTLE_MS) return
+  lastBumpAt.set(userId, now)
+  // Defensive: the test suite mocks `supabaseAdmin.from()` and many
+  // mocks only cover the `.select()` path used by the specific
+  // handler under test. The bump is fire-and-forget — any error
+  // (real DB failure OR a mock that doesn't return a thenable) must
+  // not propagate to the request lifecycle.
+  try {
+    const result = supabaseAdmin
+      .from('users')
+      .update({ last_active_at: new Date().toISOString() })
+      .eq('id', userId)
+    const maybeThenable = result as unknown as { then?: unknown }
+    if (maybeThenable && typeof maybeThenable.then === 'function') {
+      void (maybeThenable as unknown as Promise<{ error: { message: string } | null }>).then(
+        ({ error }) => {
+          if (error) {
+            console.warn('[validateJwt] last_active_at bump failed:', error.message)
+          }
+        },
+        (err: unknown) => {
+          console.warn('[validateJwt] last_active_at bump threw:', err)
+        },
+      )
+    }
+  } catch (err) {
+    console.warn('[validateJwt] last_active_at bump threw sync:', err)
+  }
 }

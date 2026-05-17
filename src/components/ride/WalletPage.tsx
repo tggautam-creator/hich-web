@@ -514,12 +514,12 @@ export default function WalletPage() {
               const isLandedWithdrawal = isWithdrawalRow
                 && withdrawalEtaDate(tx.created_at).getTime() <= Date.now()
               const isInTransitWithdrawal = isWithdrawalRow && !isLandedWithdrawal
-              // Slice 7: ride-linked rows tap through to the ride receipt
-              // so a rider/driver auditing their wallet can answer "which
-              // ride was this?" in one tap. Non-ride rows (topups,
-              // withdrawals) stay non-interactive.
-              const rideId = tx.ride_id ?? null
-              const isTappable = !!rideId
+              // Sprint 3 W-T1-P6 — every row now taps into the new
+              // /wallet/transaction/:id detail page (signed amount
+              // hero, status pill, refs, "View ride" deep-link when
+              // ride-linked, etc.). Previously only ride-linked rows
+              // were tappable.
+              const isTappable = true
               const innerContent = (
                 <>
                   <div>
@@ -571,10 +571,10 @@ export default function WalletPage() {
                 <button
                   key={tx.id}
                   type="button"
-                  onClick={() => { navigate(`/ride/summary/${rideId}`) }}
+                  onClick={() => { navigate(`/wallet/transaction/${tx.id}`) }}
                   className="w-full flex items-center justify-between rounded-2xl bg-white px-4 py-3 text-left active:scale-[0.99] transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                   data-testid="transaction-item"
-                  aria-label={`View ride summary — ${transactionTitle(tx)}`}
+                  aria-label={`View transaction — ${transactionTitle(tx)}`}
                 >
                   {innerContent}
                 </button>

@@ -105,10 +105,12 @@ async function _doRequestAndSaveToken(): Promise<string | null> {
 
     // Upsert: one token per user. Migration 009 enforces UNIQUE(user_id),
     // so onConflict: 'user_id' replaces any stale token on new login.
+    // platform: 'web' (migration 071) drives the iOS install rate KPI
+    // on the admin Overview dashboard.
     const { error } = await supabase
       .from('push_tokens')
       .upsert(
-        { user_id: user.id, token },
+        { user_id: user.id, token, platform: 'web' },
         { onConflict: 'user_id' },
       )
 
