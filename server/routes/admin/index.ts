@@ -4,6 +4,7 @@ import { adminAuth } from '../../middleware/adminAuth.ts'
 import { adminMetricsRouter } from './metrics.ts'
 import { adminFunnelRouter } from './funnel.ts'
 import { adminUsersRouter } from './users.ts'
+import { adminActionsRouter } from './actions.ts'
 
 /**
  * `/api/admin/*` — Tago internal admin API.
@@ -64,3 +65,8 @@ adminRouter.use('/metrics', adminMetricsRouter)
 // lives in its own file alongside the per-user drill-down endpoint.
 adminMetricsRouter.use('/funnel', adminFunnelRouter)
 adminRouter.use('/users', adminUsersRouter)
+// Admin Actions tab — write surfaces + per-user audit reads. Mounted
+// under /users so the routes share the /:id parameter shape with
+// adminUsersRouter (`POST /api/admin/users/:id/actions/push`,
+// `GET /api/admin/users/:id/audit`, etc.).
+adminRouter.use('/users', adminActionsRouter)

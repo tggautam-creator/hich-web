@@ -6,7 +6,12 @@ import {
   useAdminUserWallet,
   useAdminUserNotifications,
   useAdminUserDevices,
+  useAdminUserAudit,
+  useAdminSendPush,
+  useAdminGrantCredit,
+  useAdminOverrideOnboarding,
   type AdminUserOverview,
+  type AdminAuditRow,
 } from '@/hooks/useAdminUsers'
 import { AdminApiException } from '@/lib/admin/api'
 import { trackEvent } from '@/lib/analytics'
@@ -34,7 +39,7 @@ const TABS: Array<{ key: TabKey; label: string; comingSoon?: boolean }> = [
   { key: 'wallet', label: 'Wallet' },
   { key: 'notifications', label: 'Notifications' },
   { key: 'devices', label: 'Devices' },
-  { key: 'actions', label: 'Admin Actions', comingSoon: true },
+  { key: 'actions', label: 'Admin Actions' },
 ]
 
 export default function UserDetailPage() {
@@ -129,7 +134,13 @@ export default function UserDetailPage() {
         <NotificationsTab userId={id} active={tab === 'notifications'} />
       )}
       {tab === 'devices' && id && <DevicesTab userId={id} active={tab === 'devices'} />}
-      {tab === 'actions' && <ComingSoon tabKey="actions" />}
+      {tab === 'actions' && id && (
+        <ActionsTab
+          userId={id}
+          currentOnboardingCompleted={data.user.onboarding_completed}
+          active={tab === 'actions'}
+        />
+      )}
     </div>
   )
 }
@@ -338,25 +349,412 @@ function Card({
   )
 }
 
-// ── Coming-soon stub (only Admin Actions tab now) ───────────────────────────
+// ── Admin Actions tab ───────────────────────────────────────────────────────
 
-function ComingSoon({ tabKey }: { tabKey: Exclude<TabKey, 'overview'> }) {
-  const label = TABS.find((t) => t.key === tabKey)?.label ?? tabKey
+function ActionsTab({
+  userId,
+  currentOnboardingCompleted,
+  active,
+}: {
+  userId: string
+  currentOnboardingCompleted: boolean
+  active: boolean
+}) {
   return (
-    <div
-      data-testid={`tab-${tabKey}-stub`}
-      className="rounded-2xl border border-dashed border-border bg-white p-8 text-center"
-    >
-      <div className="text-sm font-semibold text-text-primary">
-        {label} tab — coming in Slice 1.3c
+    <div data-testid="tab-actions" className="space-y-6">
+      <div className="rounded-2xl border border-warning bg-warning/5 p-4 text-xs text-text-primary">
+        <div className="font-semibold">⚠ Every action below writes an audit row.</div>
+        <div className="mt-1 text-text-secondary">
+          Suspend account, refund a ride, and force-reset password are
+          deferred to Slice 1.3d. The three actions here are reversible
+          (push is one-shot; credit can be negated; onboarding can be
+          flipped back) — but please use them deliberately.
+        </div>
       </div>
-      <p className="mt-1.5 text-xs text-text-secondary max-w-md mx-auto">
-        Write surfaces: send custom push, grant wallet credit, refund a ride,
-        suspend account, force-reset password, override onboarding_completed.
-        Every action is audit-logged.
-      </p>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <SendPushCard userId={userId} />
+        <GrantCreditCard userId={userId} />
+        <OverrideOnboardingCard
+          userId={userId}
+          current={currentOnboardingCompleted}
+        />
+      </div>
+
+      <AuditList userId={userId} active={active} />
     </div>
   )
+}
+
+// ── Send push card ──────────────────────────────────────────────────────────
+
+function SendPushCard({ userId }: { userId: string }) {
+  const [title, setTitle] = useState('')
+  const [body, setBody] = useState('')
+  const [reason, setReason] = useState('')
+  const m = useAdminSendPush(userId)
+  const ok = title.trim().length > 0 && body.trim().length > 0
+
+  return (
+    <ActionCard
+      testid="action-send-push"
+      title="Send push notification"
+      info="Delivers a one-off push to every device this user has registered with us (push_tokens). Bypasses the per-user notification preferences — use sparingly. Reason is optional but recorded in the audit log."
+    >
+      <Field
+        label="Title"
+        value={title}
+        onChange={setTitle}
+        placeholder="Heads up"
+        maxLength={120}
+      />
+      <Field
+        label="Body"
+        value={body}
+        onChange={setBody}
+        placeholder="Quick note about your ride…"
+        maxLength={500}
+        multiline
+      />
+      <Field
+        label="Reason (optional)"
+        value={reason}
+        onChange={setReason}
+        placeholder="e.g. follow-up on support ticket #1234"
+      />
+      <ActionButton
+        testid="action-send-push-submit"
+        label="Send push"
+        loading={m.isPending}
+        disabled={!ok}
+        onClick={() => {
+          m.mutate(
+            { title: title.trim(), body: body.trim(), reason: reason.trim() || undefined },
+            {
+              onSuccess: () => {
+                setTitle('')
+                setBody('')
+                setReason('')
+              },
+            },
+          )
+        }}
+      />
+      <ActionResult mutation={m} successText={(d) => `Pushed to ${d.sent}/${d.total_tokens} devices`} />
+    </ActionCard>
+  )
+}
+
+// ── Grant credit card ───────────────────────────────────────────────────────
+
+function GrantCreditCard({ userId }: { userId: string }) {
+  const [dollars, setDollars] = useState('')
+  const [reason, setReason] = useState('')
+  const m = useAdminGrantCredit(userId)
+  const cents = Math.round(parseFloat(dollars) * 100)
+  const validAmount = Number.isFinite(cents) && cents !== 0
+  const ok = validAmount && reason.trim().length > 0
+
+  return (
+    <ActionCard
+      testid="action-credit"
+      title="Grant wallet credit"
+      info="Adjusts the user's wallet balance via wallet_apply_delta (the same atomic primitive every other wallet write uses). Positive credits the user; negative debits. Cap is $10,000 per action. Reason is required and shown to ops in the audit log."
+    >
+      <Field
+        label="Amount in dollars (negative to debit)"
+        value={dollars}
+        onChange={setDollars}
+        placeholder="5.00"
+        inputMode="decimal"
+      />
+      {dollars && !validAmount && (
+        <p className="text-xs text-danger">Enter a nonzero dollar amount.</p>
+      )}
+      <Field
+        label="Reason"
+        value={reason}
+        onChange={setReason}
+        placeholder="e.g. goodwill gesture for cancelled ride"
+        maxLength={200}
+      />
+      <ActionButton
+        testid="action-credit-submit"
+        label={cents > 0 ? 'Credit wallet' : cents < 0 ? 'Debit wallet' : 'Apply'}
+        loading={m.isPending}
+        disabled={!ok}
+        onClick={() => {
+          m.mutate(
+            { amount_cents: cents, reason: reason.trim() },
+            {
+              onSuccess: () => {
+                setDollars('')
+                setReason('')
+              },
+            },
+          )
+        }}
+      />
+      <ActionResult
+        mutation={m}
+        successText={(d) =>
+          d.balance_after_cents !== null
+            ? `Applied ${fmtCents(d.amount_cents)} → balance now ${fmtCents(d.balance_after_cents)}`
+            : `Applied ${fmtCents(d.amount_cents)}`
+        }
+      />
+    </ActionCard>
+  )
+}
+
+// ── Override onboarding card ────────────────────────────────────────────────
+
+function OverrideOnboardingCard({
+  userId,
+  current,
+}: {
+  userId: string
+  current: boolean
+}) {
+  const [reason, setReason] = useState('')
+  const m = useAdminOverrideOnboarding(userId)
+  const desired = !current
+  const ok = reason.trim().length > 0
+
+  return (
+    <ActionCard
+      testid="action-override-onboarding"
+      title="Override onboarding state"
+      info="Toggles users.onboarding_completed. Use when a user is stuck mid-onboarding due to a client bug (e.g. CreateProfile won't save) — flipping it to true lets them into the home screen. Flipping it false forces them back through onboarding on next sign-in. Reason is required."
+    >
+      <p className="text-xs text-text-secondary">
+        Currently:{' '}
+        <span className={current ? 'text-success font-medium' : 'text-danger font-medium'}>
+          {current ? 'completed' : 'not completed'}
+        </span>
+      </p>
+      <Field
+        label="Reason"
+        value={reason}
+        onChange={setReason}
+        placeholder="e.g. CreateProfile blocked by a bug, manually unblocking"
+        maxLength={200}
+      />
+      <ActionButton
+        testid="action-override-onboarding-submit"
+        label={`Set to ${desired ? 'completed' : 'not completed'}`}
+        loading={m.isPending}
+        disabled={!ok}
+        onClick={() => {
+          m.mutate(
+            { onboarding_completed: desired, reason: reason.trim() },
+            { onSuccess: () => setReason('') },
+          )
+        }}
+      />
+      <ActionResult
+        mutation={m}
+        successText={(d) =>
+          d.changed
+            ? `Set to ${d.onboarding_completed ? 'completed' : 'not completed'}`
+            : `Already ${d.onboarding_completed ? 'completed' : 'not completed'} — no change`
+        }
+      />
+    </ActionCard>
+  )
+}
+
+// ── Audit list ──────────────────────────────────────────────────────────────
+
+function AuditList({ userId, active }: { userId: string; active: boolean }) {
+  const { data, isLoading } = useAdminUserAudit({ userId, enabled: active })
+  return (
+    <div className="rounded-2xl border border-border bg-white p-5">
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold text-text-primary">Recent admin actions</h2>
+        <InfoTooltip
+          text="Forensic record of every admin write against this user. Each row shows the admin who did it, the action token (send_push / grant_wallet_credit / override_onboarding / …), the payload, and when. Reads do not log."
+          align="left"
+        />
+      </div>
+      <div className="mt-3">
+        {isLoading && !data && <p className="text-xs text-text-secondary">Loading…</p>}
+        {data && data.audit.length === 0 && (
+          <p className="text-xs text-text-secondary">No admin actions logged for this user yet.</p>
+        )}
+        {data && data.audit.length > 0 && (
+          <ul className="divide-y divide-border">
+            {data.audit.map((row) => (
+              <li key={row.id} data-testid={`audit-row-${row.id}`} className="py-3">
+                <AuditRowLine row={row} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function AuditRowLine({ row }: { row: AdminAuditRow }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="rounded bg-surface px-1.5 py-0.5 text-[10px] uppercase tracking-wide font-semibold text-text-secondary">
+            {row.action}
+          </span>
+          <span className="text-xs text-text-primary truncate">
+            {summarisePayload(row.action, row.payload)}
+          </span>
+        </div>
+        <div className="mt-0.5 text-[11px] text-text-secondary truncate">
+          by {row.admin_email ?? row.admin_id.slice(0, 8) + '…'}
+        </div>
+      </div>
+      <div className="shrink-0 text-[11px] text-text-secondary">
+        {fmtDateTime(row.created_at)}
+      </div>
+    </div>
+  )
+}
+
+function summarisePayload(action: string, p: Record<string, unknown>): string {
+  if (action === 'send_push') {
+    const title = typeof p['title'] === 'string' ? p['title'] : ''
+    const sent = typeof p['tokens_succeeded'] === 'number' ? p['tokens_succeeded'] : '?'
+    const attempted = typeof p['tokens_attempted'] === 'number' ? p['tokens_attempted'] : '?'
+    return `"${title}" → ${sent}/${attempted} devices`
+  }
+  if (action === 'grant_wallet_credit') {
+    const amount = typeof p['amount_cents'] === 'number' ? p['amount_cents'] : 0
+    const reason = typeof p['reason'] === 'string' ? p['reason'] : ''
+    return `${fmtCents(amount)} · ${reason}`
+  }
+  if (action === 'override_onboarding') {
+    return `${String(p['from'])} → ${String(p['to'])}` +
+      (typeof p['reason'] === 'string' ? ` · ${p['reason']}` : '')
+  }
+  return JSON.stringify(p)
+}
+
+// ── shared action atoms ─────────────────────────────────────────────────────
+
+function ActionCard({
+  testid,
+  title,
+  info,
+  children,
+}: {
+  testid: string
+  title: string
+  info: string
+  children: React.ReactNode
+}) {
+  return (
+    <div data-testid={testid} className="relative rounded-2xl border border-border bg-white p-5">
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold text-text-primary">{title}</h2>
+        <InfoTooltip text={info} align="left" />
+      </div>
+      <div className="mt-4 space-y-3">{children}</div>
+    </div>
+  )
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  placeholder,
+  maxLength,
+  inputMode,
+  multiline,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  maxLength?: number
+  inputMode?: 'text' | 'decimal'
+  multiline?: boolean
+}) {
+  const common = {
+    value,
+    onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => onChange(e.target.value),
+    placeholder,
+    maxLength,
+    inputMode,
+    className:
+      'w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20',
+  } as const
+  return (
+    <label className="block">
+      <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+        {label}
+      </div>
+      {multiline ? <textarea rows={3} {...common} /> : <input type="text" {...common} />}
+    </label>
+  )
+}
+
+function ActionButton({
+  testid,
+  label,
+  loading,
+  disabled,
+  onClick,
+}: {
+  testid: string
+  label: string
+  loading: boolean
+  disabled: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={testid}
+      onClick={onClick}
+      disabled={disabled || loading}
+      className={[
+        'mt-1 w-full rounded-md px-3 py-2 text-sm font-semibold transition-colors',
+        disabled || loading
+          ? 'bg-border text-text-secondary cursor-not-allowed'
+          : 'bg-primary text-white hover:bg-primary-dark',
+      ].join(' ')}
+    >
+      {loading ? 'Working…' : label}
+    </button>
+  )
+}
+
+interface MutationLike<T> {
+  isPending: boolean
+  isSuccess: boolean
+  isError: boolean
+  data?: T
+  error?: Error | null
+}
+
+function ActionResult<T>({
+  mutation,
+  successText,
+}: {
+  mutation: MutationLike<T>
+  successText: (data: T) => string
+}) {
+  if (mutation.isSuccess && mutation.data) {
+    return (
+      <p className="text-xs text-success">✓ {successText(mutation.data)}</p>
+    )
+  }
+  if (mutation.isError && mutation.error) {
+    const e = mutation.error
+    const msg = e instanceof AdminApiException ? `${e.code}: ${e.message}` : e.message
+    return <p className="text-xs text-danger">✗ {msg}</p>
+  }
+  return null
 }
 
 // ── Rides tab ────────────────────────────────────────────────────────────────

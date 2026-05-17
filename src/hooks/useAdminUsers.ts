@@ -1,5 +1,5 @@
-import { useQuery, keepPreviousData } from '@tanstack/react-query'
-import { adminGet } from '@/lib/admin/api'
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
+import { adminGet, adminPost } from '@/lib/admin/api'
 
 /**
  * Slice 1.3a — admin user search + profile detail hooks.
@@ -234,5 +234,94 @@ export function useAdminUserDevices(args: {
     queryFn: () => adminGet<AdminUserDevices>(`/users/${userId}/devices`),
     enabled: enabled && typeof userId === 'string' && userId.length > 0,
     staleTime: FIVE_MIN_MS,
+  })
+}
+
+// ── Slice 1.3c — Admin Actions tab hooks ────────────────────────────────────
+
+export interface AdminAuditRow {
+  id: string
+  admin_id: string
+  admin_email: string | null
+  action: string
+  payload: Record<string, unknown>
+  created_at: string
+}
+
+export interface AdminUserAudit {
+  ok: true
+  audit: AdminAuditRow[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export function useAdminUserAudit(args: {
+  userId: string | undefined
+  enabled: boolean
+  limit?: number
+  offset?: number
+}) {
+  const { userId, enabled, limit = 25, offset = 0 } = args
+  return useQuery<AdminUserAudit>({
+    queryKey: ['admin', 'users', 'audit', userId, limit, offset],
+    queryFn: () =>
+      adminGet<AdminUserAudit>(`/users/${userId}/audit?limit=${limit}&offset=${offset}`),
+    enabled: enabled && typeof userId === 'string' && userId.length > 0,
+    placeholderData: keepPreviousData,
+    // Audit rows write-once-read-many; a 30s window keeps the UI
+    // fresh enough to show a just-fired action without hammering.
+    staleTime: 30 * 1000,
+  })
+}
+
+interface SendPushArgs { title: string; body: string; reason?: string }
+interface SendPushResult { ok: true; sent: number; total_tokens: number }
+
+/**
+ * Builds a useMutation that fires an admin action against userId.
+ * On success, invalidates the audit list + (when relevant) the
+ * tab the action affects so the UI refreshes without a manual reload.
+ */
+export function useAdminSendPush(userId: string) {
+  const qc = useQueryClient()
+  return useMutation<SendPushResult, Error, SendPushArgs>({
+    mutationFn: (args) =>
+      adminPost<SendPushResult>(`/users/${userId}/actions/push`, args),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'audit', userId] })
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'notifications', userId] })
+    },
+  })
+}
+
+interface GrantCreditArgs { amount_cents: number; reason: string }
+interface GrantCreditResult { ok: true; amount_cents: number; balance_after_cents: number | null }
+
+export function useAdminGrantCredit(userId: string) {
+  const qc = useQueryClient()
+  return useMutation<GrantCreditResult, Error, GrantCreditArgs>({
+    mutationFn: (args) =>
+      adminPost<GrantCreditResult>(`/users/${userId}/actions/credit`, args),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'audit', userId] })
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'wallet', userId] })
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'detail', userId] })
+    },
+  })
+}
+
+interface OverrideOnbArgs { onboarding_completed: boolean; reason: string }
+interface OverrideOnbResult { ok: true; changed: boolean; onboarding_completed: boolean }
+
+export function useAdminOverrideOnboarding(userId: string) {
+  const qc = useQueryClient()
+  return useMutation<OverrideOnbResult, Error, OverrideOnbArgs>({
+    mutationFn: (args) =>
+      adminPost<OverrideOnbResult>(`/users/${userId}/actions/override-onboarding`, args),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'audit', userId] })
+      void qc.invalidateQueries({ queryKey: ['admin', 'users', 'detail', userId] })
+    },
   })
 }

@@ -63,3 +63,42 @@ export async function adminGet<T>(path: string): Promise<T> {
 
   return (await res.json()) as T
 }
+
+/**
+ * POST a JSON body to an `/api/admin/*` endpoint. Same auth + error
+ * envelope as adminGet. Used by every mutation in the Admin Actions
+ * tab.
+ */
+export async function adminPost<T>(path: string, body: unknown): Promise<T> {
+  const { data: sessionRes } = await supabase.auth.getSession()
+  const token = sessionRes.session?.access_token
+  if (!token) {
+    throw new AdminApiException({
+      status: 0,
+      code: 'NO_SESSION',
+      message: 'No active session — sign in again.',
+    })
+  }
+
+  const res = await fetch(`/api/admin${path}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as
+      | { error?: { code?: string; message?: string } }
+      | undefined
+    throw new AdminApiException({
+      status: res.status,
+      code: errBody?.error?.code ?? 'UNKNOWN',
+      message: errBody?.error?.message ?? `Server returned ${res.status}`,
+    })
+  }
+
+  return (await res.json()) as T
+}

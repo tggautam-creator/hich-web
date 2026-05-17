@@ -1000,6 +1000,35 @@ export type Database = {
         Relationships: never[]
       }
 
+      // ── admin_audit_log ─────────────────────────────────────────────────────
+      admin_audit_log: {
+        Row: {
+          id: string
+          admin_id: string
+          target_user_id: string | null
+          action: string
+          payload: Record<string, unknown>
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          admin_id: string
+          target_user_id?: string | null
+          action: string
+          payload?: Record<string, unknown>
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          admin_id?: string
+          target_user_id?: string | null
+          action?: string
+          payload?: Record<string, unknown>
+          created_at?: string
+        }
+        Relationships: never[]
+      }
+
       // ── request_idempotency ─────────────────────────────────────────────────
       request_idempotency: {
         Row: {
