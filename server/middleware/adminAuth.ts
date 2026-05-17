@@ -68,6 +68,14 @@ export async function adminAuth(
   // anyone without an explicit `is_admin = true` row in public.users.
   const isAdmin = data?.is_admin === true
   if (!isAdmin) {
+    // Diagnostic log — when a 403 happens, the dev/prod console says
+    // exactly which user got rejected and whether their row was
+    // missing (data === null) or just is_admin=false. Caught us once
+    // when dev users.is_admin got reset to FALSE silently between
+    // slices and the dashboard 403'd with no clue why.
+    console.warn(
+      `[adminAuth] 403 NOT_AN_ADMIN userId=${userId.slice(0, 8)}… is_admin=${data === null ? 'NO_ROW' : String(data.is_admin)}`,
+    )
     res.status(403).json({
       error: {
         code: 'NOT_AN_ADMIN',

@@ -30,6 +30,7 @@ const PrivacyPage = lazy(() => import('@/components/legal/PrivacyPage'))
 const AdminGuard = lazy(() => import('@/components/admin/AdminGuard'))
 const AdminLayout = lazy(() => import('@/components/admin/AdminLayout'))
 const AdminHomePage = lazy(() => import('@/components/admin/AdminHomePage'))
+const AdminFunnelPage = lazy(() => import('@/components/admin/FunnelPage'))
 
 // ── Onboarding ───────────────────────────────────────────────────────────────
 const CreateProfilePage = lazy(() => import('@/components/auth/CreateProfilePage'))
@@ -195,6 +196,7 @@ createRoot(rootEl).render(
               <Route element={<Suspense fallback={<FormPageSkeleton />}><AdminGuard /></Suspense>}>
                 <Route element={<Suspense fallback={<FormPageSkeleton />}><AdminLayout /></Suspense>}>
                   <Route path="/admin" element={<Suspense fallback={<FormPageSkeleton />}><AdminHomePage /></Suspense>} />
+                  <Route path="/admin/funnel"     element={<Suspense fallback={<FormPageSkeleton />}><AdminFunnelPage /></Suspense>} />
                   <Route path="/admin/users"      element={<Placeholder name="Users — Slice 1.3" />} />
                   <Route path="/admin/campaigns"  element={<Placeholder name="Campaigns — Slice 1.4" />} />
                   <Route path="/admin/live"       element={<Placeholder name="Live ops — Slice 1.7" />} />

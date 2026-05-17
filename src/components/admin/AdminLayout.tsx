@@ -27,6 +27,7 @@ interface NavItem {
 
 const NAV_ITEMS: readonly NavItem[] = [
   { to: '/admin',             label: 'Dashboard',  testId: 'admin-nav-dashboard' },
+  { to: '/admin/funnel',      label: 'Funnel',     testId: 'admin-nav-funnel' },
   { to: '/admin/users',       label: 'Users',      testId: 'admin-nav-users' },
   { to: '/admin/campaigns',   label: 'Campaigns',  testId: 'admin-nav-campaigns' },
   { to: '/admin/live',        label: 'Live',       testId: 'admin-nav-live' },
@@ -94,7 +95,7 @@ export default function AdminLayout() {
           ))}
         </nav>
         <div className="px-6 py-4 border-t border-border text-xs text-text-secondary">
-          Admin Panel · Phase 0
+          Admin Panel · Phase 1
         </div>
       </aside>
 

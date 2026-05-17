@@ -2,6 +2,8 @@ import { Router, type Request, type Response } from 'express'
 import { validateJwt } from '../../middleware/auth.ts'
 import { adminAuth } from '../../middleware/adminAuth.ts'
 import { adminMetricsRouter } from './metrics.ts'
+import { adminFunnelRouter } from './funnel.ts'
+import { adminUsersRouter } from './users.ts'
 
 /**
  * `/api/admin/*` — Tago internal admin API.
@@ -57,3 +59,8 @@ adminRouter.get('/ping', (_req: Request, res: Response) => {
 
 // Sub-routers attach below. Each one owns a slice of the admin surface.
 adminRouter.use('/metrics', adminMetricsRouter)
+// /funnel mounts under /metrics so the URL is /api/admin/metrics/funnel,
+// matching the rest of the analytics surface even though the implementation
+// lives in its own file alongside the per-user drill-down endpoint.
+adminMetricsRouter.use('/funnel', adminFunnelRouter)
+adminRouter.use('/users', adminUsersRouter)
