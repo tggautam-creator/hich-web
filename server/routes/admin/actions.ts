@@ -172,7 +172,7 @@ interface CreditBody {
   reason?: unknown
 }
 
-const MAX_CREDIT_CENTS = 10_000 * 100 // $10,000 safety cap per action
+const MAX_CREDIT_CENTS = 50 * 100 // $50 safety cap per action — tightened 2026-05-17 after Tarun's "what if I mis-click" review.
 
 adminActionsRouter.post(
   '/:id/actions/credit',
@@ -193,8 +193,12 @@ adminActionsRouter.post(
       }
       // Sign rule: positive credits the user; negative debits. Cap both.
       if (Math.abs(amount) > MAX_CREDIT_CENTS) {
+        const capDollars = (MAX_CREDIT_CENTS / 100).toFixed(2)
         res.status(400).json({
-          error: { code: 'AMOUNT_TOO_LARGE', message: `|amount_cents| must be ≤ ${MAX_CREDIT_CENTS}` },
+          error: {
+            code: 'AMOUNT_TOO_LARGE',
+            message: `|amount| must be ≤ $${capDollars}. Larger ops grants require a code change after a deliberate review.`,
+          },
         })
         return
       }

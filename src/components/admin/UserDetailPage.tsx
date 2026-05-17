@@ -451,8 +451,13 @@ function SendPushCard({ userId }: { userId: string }) {
 
 // ── Grant credit card ───────────────────────────────────────────────────────
 
-/** Above this threshold the confirm dialog requires re-typing the dollar amount. */
-const LARGE_GRANT_CENTS = 50_00
+/**
+ * Above this threshold the confirm dialog requires re-typing the dollar
+ * amount. Tuned below the server-side `MAX_CREDIT_CENTS` cap ($50) so
+ * grants in the upper half of the allowed range get an extra friction
+ * step. Smaller grants (<$25) get the confirm dialog only.
+ */
+const LARGE_GRANT_CENTS = 25_00
 
 function GrantCreditCard({
   userId,
@@ -506,7 +511,7 @@ function GrantCreditCard({
       <ActionCard
         testid="action-credit"
         title="Grant wallet credit"
-        info="Adjusts the user's wallet balance via wallet_apply_delta (the same atomic primitive every other wallet write uses). Positive credits the user; negative debits. Cap is $10,000 per action. Reason is required and shown to ops in the audit log. Positive credits are HARD-BLOCKED if they exceed Tago's Stripe platform balance — otherwise a phantom liability could fail at withdrawal time."
+        info="Adjusts the user's wallet balance via wallet_apply_delta (the same atomic primitive every other wallet write uses). Positive credits the user; negative debits. Cap is $50 per action — larger grants require a code change after a deliberate review. Reason is required and shown to ops in the audit log. Positive credits are HARD-BLOCKED if they exceed Tago's Stripe platform balance — otherwise a phantom liability could fail at withdrawal time."
       >
         <Field
           label="Amount in dollars (negative to debit)"
