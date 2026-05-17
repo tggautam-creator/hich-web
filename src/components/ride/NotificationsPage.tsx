@@ -150,6 +150,15 @@ export default function NotificationsPage({
 
   // Handle tapping on accepted/declined notifications
   function handleTap(notif: NotificationItem) {
+    // Slice 1.4b — admin broadcasts carry a slug instead of a
+    // ride_id. Branch here BEFORE the ride_id early-return so the
+    // tap deep-links to the public marketing page.
+    if (notif.type === 'admin_broadcast') {
+      const slug = notif.data['slug'] as string | undefined
+      if (slug) navigate(`/c/${slug}`)
+      return
+    }
+
     const rideId = notif.data['ride_id'] as string | undefined
     if (!rideId) return
 
@@ -184,6 +193,7 @@ export default function NotificationsPage({
       case 'ride_reminder':          return { name: 'bell', color: 'text-warning' }
       case 'ride_missed':            return { name: 'x-circle', color: 'text-warning' }
       case 'ride_request':           return { name: 'car-request', color: 'text-primary' }
+      case 'admin_broadcast':        return { name: 'bell', color: 'text-primary' }
       default:                       return { name: 'bell', color: 'text-text-secondary' }
     }
   }
@@ -280,6 +290,18 @@ export default function NotificationsPage({
                         </span>
                       </div>
                       <p className="text-sm text-text-secondary mt-0.5">{notif.body}</p>
+
+                      {/* Slice 1.4b — inline poster for admin broadcasts */}
+                      {notif.type === 'admin_broadcast' &&
+                        typeof notif.data['poster_url'] === 'string' &&
+                        (notif.data['poster_url'] as string).length > 0 && (
+                          <img
+                            src={notif.data['poster_url'] as string}
+                            alt=""
+                            data-testid={`notification-poster-${notif.id}`}
+                            className="mt-2 max-h-48 w-full rounded-lg object-cover"
+                          />
+                        )}
 
                       {/* Route info for board requests */}
                       {route && (

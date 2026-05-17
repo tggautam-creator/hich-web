@@ -34,6 +34,7 @@ const AdminFunnelPage = lazy(() => import('@/components/admin/FunnelPage'))
 const AdminUsersPage = lazy(() => import('@/components/admin/UsersPage'))
 const AdminUserDetailPage = lazy(() => import('@/components/admin/UserDetailPage'))
 const AdminCampaignsPage = lazy(() => import('@/components/admin/CampaignsPage'))
+const CampaignDetailPage = lazy(() => import('@/components/campaign/CampaignDetailPage'))
 
 // ── Onboarding ───────────────────────────────────────────────────────────────
 const CreateProfilePage = lazy(() => import('@/components/auth/CreateProfilePage'))
@@ -132,6 +133,7 @@ createRoot(rootEl).render(
             <Route path="/track/:token" element={<Suspense fallback={<FormPageSkeleton />}><TrackPage /></Suspense>} />
             <Route path="/terms" element={<Suspense fallback={<FormPageSkeleton />}><TermsPage /></Suspense>} />
             <Route path="/privacy" element={<Suspense fallback={<FormPageSkeleton />}><PrivacyPage /></Suspense>} />
+            <Route path="/c/:slug" element={<Suspense fallback={<FormPageSkeleton />}><CampaignDetailPage /></Suspense>} />
 
             {/* ── Authenticated routes — AuthGuard checks session + profile ── */}
             <Route element={<AuthGuard />}>

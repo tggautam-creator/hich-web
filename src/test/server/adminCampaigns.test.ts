@@ -38,6 +38,8 @@ interface SetupOpts {
   pushTokens?: Array<{ user_id: string; token: string }>
   fcmSentCount?: number
   notificationsInsertFails?: boolean
+  /** Returned by from('campaigns').insert(...).select().single(). null → triggers 23505 retry path. */
+  campaignInsertResult?: { id: string; slug: string } | null
 }
 
 function setup(opts: SetupOpts = {}): void {
@@ -104,6 +106,24 @@ function setup(opts: SetupOpts = {}): void {
           auditInserts.push(row)
           return Promise.resolve({ data: null, error: null })
         },
+      }
+    }
+    if (table === 'campaigns') {
+      const insertResult = opts.campaignInsertResult === undefined
+        ? { id: 'camp-1', slug: 'abc12345xy' }
+        : opts.campaignInsertResult
+      return {
+        insert: () => ({
+          select: () => ({
+            single: () =>
+              insertResult === null
+                ? Promise.resolve({ data: null, error: { message: 'fail', code: '23505' } })
+                : Promise.resolve({ data: insertResult, error: null }),
+          }),
+        }),
+        update: () => ({
+          eq: () => Promise.resolve({ data: null, error: null }),
+        }),
       }
     }
     throw new Error(`unmocked from(${table})`)
@@ -295,6 +315,44 @@ describe('POST /api/admin/campaigns/push', () => {
       tokens_attempted: 2,
     })
     expect((payload['audience'] as Record<string, unknown>)['type']).toBe('by_university')
+  })
+
+  it('passes poster_url through to push data + notifications row + audit', async () => {
+    setup({
+      audienceUsers: [{ id: 'u1', email: 'a@x.edu', full_name: 'A' }],
+      pushTokens: [{ user_id: 'u1', token: 'tokA' }],
+      fcmSentCount: 1,
+    })
+    const res = await request(app)
+      .post('/api/admin/campaigns/push')
+      .set('Authorization', VALID_JWT)
+      .send({
+        audience: { type: 'all_users' },
+        title: 'Free pizza',
+        body: 'Tap to see the flyer',
+        poster_url: 'https://example.com/posters/free-pizza.png',
+      })
+    expect(res.status).toBe(200)
+    expect(res.body.slug).toBeDefined()
+    expect(res.body.campaign_id).toBeDefined()
+
+    // sendFcmPush was called with data containing image + slug + type
+    const callArgs = mockSendFcm.mock.calls[0]
+    const payload = callArgs?.[1] as { data: Record<string, string> }
+    expect(payload.data['type']).toBe('admin_broadcast')
+    expect(payload.data['slug']).toBeDefined()
+    expect(payload.data['image']).toBe('https://example.com/posters/free-pizza.png')
+
+    // notifications row carries poster_url for inline rendering
+    const notifRow = notificationInserts[0]?.[0] as Record<string, unknown>
+    const notifData = notifRow['data'] as Record<string, unknown>
+    expect(notifData['poster_url']).toBe('https://example.com/posters/free-pizza.png')
+
+    // Audit row includes poster_url + campaign_id + slug
+    const auditPayload = auditInserts[0]?.['payload'] as Record<string, unknown>
+    expect(auditPayload['poster_url']).toBe('https://example.com/posters/free-pizza.png')
+    expect(auditPayload['campaign_id']).toBeDefined()
+    expect(auditPayload['slug']).toBeDefined()
   })
 
   it('still audits + sends push even when notifications insert fails', async () => {

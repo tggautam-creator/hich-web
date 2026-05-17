@@ -48,12 +48,21 @@ messaging.onBackgroundMessage((payload) => {
   const title = data.title ?? 'TAGO'
   const body  = data.body  ?? 'You have a new notification'
 
-  self.registration.showNotification(title, {
+  // Slice 1.4b — admin broadcasts can carry a `data.image` URL
+  // (campaign poster from the campaign-posters bucket). Browsers
+  // that support it (Chrome on Android, modern desktop) render the
+  // image in the notification banner.
+  const notificationOptions = {
     body,
     icon: '/icon-192x192.png',
     badge: '/icon-192x192.png',
     data,
-  })
+  }
+  if (typeof data.image === 'string' && data.image.length > 0) {
+    notificationOptions.image = data.image
+  }
+
+  self.registration.showNotification(title, notificationOptions)
 })
 
 function extractNotificationData(notification) {
@@ -104,6 +113,10 @@ self.addEventListener('notificationclick', (event) => {
     url = '/notifications'
   } else if (inferredType === 'ride_reminder' && data.ride_id) {
     url = '/ride/messaging/' + data.ride_id
+  } else if (inferredType === 'admin_broadcast' && typeof data.slug === 'string' && data.slug.length > 0) {
+    // Slice 1.4b — admin broadcast deep-link. Slug came down in the
+    // FCM data payload; route to the public /c/<slug> marketing page.
+    url = '/c/' + data.slug
   }
 
   console.log('[SW] notificationclick route:', { url, inferredType, data })

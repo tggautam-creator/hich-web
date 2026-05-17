@@ -25,6 +25,7 @@ import { reportRouter } from './routes/report.ts'
 import { accountRouter } from './routes/account.ts'
 import { usersRouter } from './routes/users.ts'
 import { liveActivityRouter } from './routes/liveActivity.ts'
+import { publicCampaignsRouter } from './routes/publicCampaigns.ts'
 import { errorHandler } from './middleware/errorHandler.ts'
 import { metricsMiddleware } from './middleware/metrics.ts'
 
@@ -133,6 +134,10 @@ app.use('/api/admin', adminRouter)
 app.use('/api/account', accountRouter)
 app.use('/api/users', usersRouter)
 app.use('/api/live-activity', liveActivityRouter)
+// Public read of admin-broadcast campaigns by slug. Anonymous —
+// powers the /c/:slug marketing surface that admin pushes deep-link
+// into. See server/routes/publicCampaigns.ts + migration 077.
+app.use('/api/campaigns', publicCampaignsRouter)
 
 // ── SPA fallback — serve built frontend in production ─────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url))

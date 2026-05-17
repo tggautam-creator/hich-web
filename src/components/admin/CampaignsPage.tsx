@@ -7,6 +7,7 @@ import {
 } from '@/hooks/useAdminCampaigns'
 import { AdminApiException } from '@/lib/admin/api'
 import { trackEvent } from '@/lib/analytics'
+import { supabase } from '@/lib/supabase'
 import InfoTooltip from './InfoTooltip'
 
 /**
@@ -45,6 +46,9 @@ export default function CampaignsPage() {
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [reason, setReason] = useState('')
+  const [posterUrl, setPosterUrl] = useState<string | null>(null)
+  const [posterUploading, setPosterUploading] = useState(false)
+  const [posterError, setPosterError] = useState<string | null>(null)
   const [showConfirm, setShowConfirm] = useState(false)
 
   useEffect(() => {
@@ -157,6 +161,51 @@ export default function CampaignsPage() {
             />
           </label>
 
+          <PosterUploadField
+            posterUrl={posterUrl}
+            uploading={posterUploading}
+            error={posterError}
+            onChange={async (file) => {
+              setPosterError(null)
+              if (!file) {
+                setPosterUrl(null)
+                return
+              }
+              if (file.size > 2 * 1024 * 1024) {
+                setPosterError('Poster must be ≤ 2 MB.')
+                return
+              }
+              if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+                setPosterError('Poster must be a JPEG, PNG, or WebP.')
+                return
+              }
+              setPosterUploading(true)
+              try {
+                // Filename: timestamp-randomslug.<ext> — collision-free
+                // without leaking the admin's identity.
+                const ext = file.name.split('.').pop()?.toLowerCase() ?? 'png'
+                const rand = Math.random().toString(36).slice(2, 10)
+                const path = `${Date.now()}-${rand}.${ext}`
+                const { error: uploadErr } = await supabase.storage
+                  .from('campaign-posters')
+                  .upload(path, file, { upsert: false, contentType: file.type })
+                if (uploadErr) {
+                  setPosterError(uploadErr.message)
+                  setPosterUploading(false)
+                  return
+                }
+                const { data: urlData } = supabase.storage
+                  .from('campaign-posters')
+                  .getPublicUrl(path)
+                setPosterUrl(urlData.publicUrl)
+              } catch (err) {
+                setPosterError(err instanceof Error ? err.message : 'Upload failed.')
+              } finally {
+                setPosterUploading(false)
+              }
+            }}
+          />
+
           <label className="block">
             <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
               Reason (optional)
@@ -226,6 +275,7 @@ export default function CampaignsPage() {
                 body: body.trim(),
                 reason: reason.trim() || undefined,
                 confirm_count: preview.data!.count,
+                poster_url: posterUrl ?? undefined,
               },
               {
                 onSuccess: () => {
@@ -233,6 +283,7 @@ export default function CampaignsPage() {
                   setTitle('')
                   setBody('')
                   setReason('')
+                  setPosterUrl(null)
                 },
                 onError: () => {
                   // Keep dialog open so the admin sees the error.
@@ -240,6 +291,7 @@ export default function CampaignsPage() {
               },
             )
           }}
+          posterUrl={posterUrl}
         />
       )}
     </div>
@@ -330,6 +382,7 @@ function ConfirmSendDialog({
   title,
   body,
   reason,
+  posterUrl,
   submitting,
   onCancel,
   onConfirm,
@@ -339,6 +392,7 @@ function ConfirmSendDialog({
   title: string
   body: string
   reason: string
+  posterUrl: string | null
   submitting: boolean
   onCancel: () => void
   onConfirm: () => void
@@ -372,7 +426,19 @@ function ConfirmSendDialog({
         </div>
 
         <div className="mt-4 rounded-md border border-border bg-surface p-3">
-          <div className="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
+          {posterUrl && (
+            <>
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
+                Poster
+              </div>
+              <img
+                src={posterUrl}
+                alt=""
+                className="mt-1 max-h-40 w-full rounded-md object-cover"
+              />
+            </>
+          )}
+          <div className={posterUrl ? 'mt-3 text-[10px] font-semibold uppercase tracking-wide text-text-secondary' : 'text-[10px] font-semibold uppercase tracking-wide text-text-secondary'}>
             Title
           </div>
           <div className="mt-1 text-sm font-semibold text-text-primary">{title}</div>
@@ -458,3 +524,84 @@ function ConfirmSendDialog({
     </div>
   )
 }
+
+// ── Poster upload field ────────────────────────────────────────────────────
+
+function PosterUploadField({
+  posterUrl,
+  uploading,
+  error,
+  onChange,
+}: {
+  posterUrl: string | null
+  uploading: boolean
+  error: string | null
+  onChange: (file: File | null) => void
+}) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+        Marketing poster (optional)
+        <InfoTooltip
+          text="Optional image shown in the push banner (Android + web — iOS needs a Notification Service Extension which ships in Slice 1.4c) AND inline on the /c/<slug> detail page that the push deep-links to. ≤ 2 MB, JPEG / PNG / WebP. Uploads to the campaign-posters Supabase Storage bucket (public read)."
+          align="left"
+        />
+      </div>
+      {posterUrl ? (
+        <div className="rounded-md border border-border bg-surface p-2">
+          <img
+            src={posterUrl}
+            alt=""
+            data-testid="campaign-poster-preview"
+            className="max-h-40 w-full rounded object-cover"
+          />
+          <div className="mt-2 flex items-center justify-between">
+            <span className="truncate font-mono text-[10px] text-text-secondary">
+              {posterUrl.split('/').pop()}
+            </span>
+            <button
+              type="button"
+              data-testid="campaign-poster-remove"
+              onClick={() => onChange(null)}
+              className="rounded-md border border-border bg-white px-2 py-1 text-[11px] font-medium text-text-primary hover:bg-surface"
+            >
+              Remove
+            </button>
+          </div>
+        </div>
+      ) : (
+        <label
+          data-testid="campaign-poster-dropzone"
+          className="flex cursor-pointer flex-col items-center gap-1 rounded-md border border-dashed border-border bg-surface px-3 py-6 text-xs text-text-secondary hover:bg-white"
+        >
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            className="hidden"
+            disabled={uploading}
+            onChange={(e) => {
+              const f = e.target.files?.[0] ?? null
+              onChange(f)
+              // Allow re-selecting the same file later.
+              e.target.value = ''
+            }}
+          />
+          {uploading ? (
+            <span data-testid="campaign-poster-uploading">Uploading…</span>
+          ) : (
+            <>
+              <span className="font-medium text-text-primary">Add a poster</span>
+              <span>Click to pick a file (≤ 2 MB, JPEG/PNG/WebP)</span>
+            </>
+          )}
+        </label>
+      )}
+      {error && (
+        <p data-testid="campaign-poster-error" className="mt-1 text-[11px] text-danger">
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+

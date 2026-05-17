@@ -173,6 +173,22 @@ interface SendPushBody {
   reason?: unknown
   /** Safety: require the admin to re-enter the audience count from the preview. Prevents stale-count sends. */
   confirm_count?: unknown
+  /** Public URL of an uploaded poster image (campaign-posters bucket). Optional. */
+  poster_url?: unknown
+}
+
+/**
+ * Generates a short URL-friendly slug for the campaign. 10 chars of
+ * base36 ≈ 3.7 quadrillion combinations — collision-free in practice
+ * for Tago's volume; if a collision ever happens, the INSERT below
+ * will 23505 and we retry.
+ */
+function generateCampaignSlug(): string {
+  let s = ''
+  for (let i = 0; i < 10; i++) {
+    s += Math.floor(Math.random() * 36).toString(36)
+  }
+  return s
 }
 
 adminCampaignsRouter.post(
@@ -197,6 +213,13 @@ adminCampaignsRouter.post(
       const body = typeof b.body === 'string' ? b.body.trim() : ''
       const reason = typeof b.reason === 'string' ? b.reason.trim() : ''
       const confirmCount = typeof b.confirm_count === 'number' ? Math.floor(b.confirm_count) : null
+      // Posters arrive as already-uploaded public URLs from the
+      // campaign-posters bucket. We store the URL on the campaign row
+      // and include it in the push payload data field so the SW can
+      // render it in the banner + the detail page renders it inline.
+      const posterUrl = typeof b.poster_url === 'string' && b.poster_url.trim().length > 0
+        ? b.poster_url.trim()
+        : null
       if (!title || !body) {
         res.status(400).json({
           error: { code: 'INVALID_BODY', message: 'title and body are required' },
@@ -230,9 +253,62 @@ adminCampaignsRouter.post(
         return
       }
 
+      // 2.5 Create the campaigns row up-front so we have a slug for
+      // the deep link in the push payload. Done before sending so a
+      // zero-recipient broadcast still leaves a campaign row in
+      // history (admins can see "tried to broadcast to dormant_30d,
+      // hit 0 users"). Slug retry once on collision.
+      const adminId = res.locals['userId'] as string
+      let slug = generateCampaignSlug()
+      let campaignId: string | null = null
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const { data: created, error: createErr } = await supabaseAdmin
+          .from('campaigns')
+          .insert({
+            slug,
+            // Cast — Audience is a typed union but the DB column is
+            // jsonb (Record<string, unknown>). The two are structurally
+            // compatible; the cast is just to satisfy the index-signature
+            // requirement on Insert.
+            audience: audience as unknown as Record<string, unknown>,
+            title,
+            body,
+            poster_url: posterUrl,
+            recipient_count: recipientIds.length,
+            push_sent_count: 0, // updated after send
+            sent_by: adminId,
+          })
+          .select('id, slug')
+          .single()
+        if (createErr) {
+          // 23505 = unique_violation on the slug. Regenerate + retry.
+          if ((createErr as { code?: string }).code === '23505') {
+            slug = generateCampaignSlug()
+            continue
+          }
+          throw createErr
+        }
+        campaignId = created.id
+        slug = created.slug
+        break
+      }
+      if (!campaignId) {
+        // Three slug collisions in a row is statistically impossible —
+        // something else is wrong. Fail loud.
+        res.status(500).json({
+          error: {
+            code: 'CAMPAIGN_INSERT_FAILED',
+            message: 'Could not create campaign row after slug retries.',
+          },
+        })
+        return
+      }
+
       if (recipientIds.length === 0) {
         res.status(200).json({
           ok: true,
+          campaign_id: campaignId,
+          slug,
           recipient_count: 0,
           push_sent: 0,
           notifications_written: 0,
@@ -251,11 +327,25 @@ adminCampaignsRouter.post(
 
       // 4. Fire the push (best-effort; failures per token are
       // swallowed by sendFcmPush which returns a count of successes).
+      // Data payload carries:
+      //   - type='admin_broadcast' so the SW + iOS router know to
+      //     deep-link to /c/<slug>
+      //   - slug + campaign_id so the router can resolve the URL
+      //   - image (when posterUrl set) so the SW can render it in
+      //     the notification banner (Android + web; iOS needs an
+      //     NSE which lands in Slice 1.4c)
+      const pushData: Record<string, string> = {
+        source: 'admin_panel',
+        type: 'admin_broadcast',
+        campaign_id: campaignId,
+        slug,
+      }
+      if (posterUrl) pushData['image'] = posterUrl
       const pushSent = tokens.length > 0
         ? await sendFcmPush(tokens, {
             title,
             body,
-            data: { source: 'admin_panel', campaign_kind: 'broadcast' },
+            data: pushData,
           })
         : 0
 
@@ -266,7 +356,7 @@ adminCampaignsRouter.post(
         type: 'admin_broadcast',
         title,
         body,
-        data: { source: 'admin_panel', campaign_kind: 'broadcast' },
+        data: { ...pushData, poster_url: posterUrl },
       }))
       const { error: notifErr } = await supabaseAdmin
         .from('notifications')
@@ -277,16 +367,25 @@ adminCampaignsRouter.post(
         // record-keeping nicety not a delivery requirement.
       }
 
-      // 6. Audit log — single row, target_user_id null (broadcast).
+      // 6. Update the campaign row with the final push count + audit.
+      await supabaseAdmin
+        .from('campaigns')
+        .update({ push_sent_count: pushSent })
+        .eq('id', campaignId)
+
+      // 7. Audit log — single row, target_user_id null (broadcast).
       await writeAuditLog({
-        adminId: res.locals['userId'] as string,
+        adminId,
         targetUserId: null,
         action: 'send_campaign_push',
         payload: {
+          campaign_id: campaignId,
+          slug,
           audience,
           title,
           body,
           reason: reason || null,
+          poster_url: posterUrl,
           recipient_count: recipientIds.length,
           push_sent: pushSent,
           tokens_attempted: tokens.length,
@@ -295,11 +394,63 @@ adminCampaignsRouter.post(
 
       res.status(200).json({
         ok: true,
+        campaign_id: campaignId,
+        slug,
         recipient_count: recipientIds.length,
         push_sent: pushSent,
         tokens_attempted: tokens.length,
         notifications_written: notifErr ? 0 : recipientIds.length,
         audience,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// ── GET / (campaign history list) ───────────────────────────────────────────
+
+adminCampaignsRouter.get(
+  '/',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const limit = Math.min(
+        Math.max(parseInt(String(req.query['limit'] ?? '25'), 10) || 25, 1),
+        100,
+      )
+      const offset = Math.max(parseInt(String(req.query['offset'] ?? '0'), 10) || 0, 0)
+
+      const { data, count, error } = await supabaseAdmin
+        .from('campaigns')
+        .select(
+          'id, slug, audience, title, body, poster_url, recipient_count, push_sent_count, sent_by, sent_at',
+          { count: 'exact' },
+        )
+        .order('sent_at', { ascending: false })
+        .range(offset, offset + limit - 1)
+      if (error) throw error
+
+      // Hydrate the sender's email so the UI doesn't have to round-trip.
+      const senderIds = Array.from(new Set((data ?? []).map((c) => c.sent_by)))
+      const emailById = new Map<string, string>()
+      if (senderIds.length > 0) {
+        const { data: senders, error: sErr } = await supabaseAdmin
+          .from('users')
+          .select('id, email')
+          .in('id', senderIds)
+        if (sErr) throw sErr
+        for (const s of senders ?? []) emailById.set(s.id, s.email)
+      }
+
+      res.status(200).json({
+        ok: true,
+        campaigns: (data ?? []).map((c) => ({
+          ...c,
+          sent_by_email: emailById.get(c.sent_by) ?? null,
+        })),
+        total: count ?? data?.length ?? 0,
+        limit,
+        offset,
       })
     } catch (err) {
       next(err)

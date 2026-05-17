@@ -1006,6 +1006,50 @@ export type Database = {
         Relationships: never[]
       }
 
+      // ── campaigns ───────────────────────────────────────────────────────────
+      campaigns: {
+        Row: {
+          id: string
+          slug: string
+          audience: Record<string, unknown>
+          title: string
+          body: string
+          poster_url: string | null
+          recipient_count: number
+          push_sent_count: number
+          sent_by: string
+          sent_at: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          slug: string
+          audience: Record<string, unknown>
+          title: string
+          body: string
+          poster_url?: string | null
+          recipient_count?: number
+          push_sent_count?: number
+          sent_by: string
+          sent_at?: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          slug?: string
+          audience?: Record<string, unknown>
+          title?: string
+          body?: string
+          poster_url?: string | null
+          recipient_count?: number
+          push_sent_count?: number
+          sent_by?: string
+          sent_at?: string
+          created_at?: string
+        }
+        Relationships: never[]
+      }
+
       // ── admin_audit_log ─────────────────────────────────────────────────────
       admin_audit_log: {
         Row: {

@@ -37,10 +37,13 @@ export interface SendCampaignPushArgs {
   body: string
   reason?: string
   confirm_count?: number
+  poster_url?: string
 }
 
 export interface SendCampaignPushResult {
   ok: true
+  campaign_id: string
+  slug: string
   recipient_count: number
   push_sent: number
   tokens_attempted?: number
