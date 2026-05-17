@@ -2,6 +2,48 @@
 
 > Companion to [WEB_PARITY_REPORT_2026-05-12.md](WEB_PARITY_REPORT_2026-05-12.md). This file is the **live scoreboard** for the web-side parity work. It is read at the start of every Claude session — keep it up to date.
 
+## Sprint 3 — Wallet / Payments / Profile parity
+
+**Goal:** close every remaining Tier-1 wallet/payment/profile gap vs iOS so the money side of the web app feels identical to iOS. Tago is a live production project — every drift gets closed, no "polish later" framing.
+
+**Scope:** W-T1-P1, P2, P3, P4, P5, P6, P9 (7 items). P7 + P8 are already shipped on web (flagged as iOS gaps in the report).
+
+**Status:** ⏳ In progress — Slice 1 starting 2026-05-16.
+
+### Sprint 3 slice plan
+
+#### Slice 1 — Driver-facing payment UX (W-T1-P9 + W-T1-P5)
+- [ ] **P9** RideSummaryPage: never show "PAYMENT FAILED" to drivers — drivers didn't fail anything. Branch by role and show iOS's neutral reassurance copy ("You earned this fare. We're working with the rider's card to settle. You'll see this credited to your wallet within 48 hours.").
+- [ ] **P5** WalletPage: honour the server's 429 `retry_after_seconds` on the payment nudge button + drive a live `setInterval` countdown so a returning driver sees the actual remaining cooldown instead of a permanently-disabled button.
+
+#### Slice 2 — Withdraw flow (W-T1-P3 + W-T1-P4)
+- [ ] **P3** WithdrawSheet: editable amount + Half/All quick pills, $1 minimum, max = current balance.
+- [ ] **P4** WithdrawSheet: confirmation dialog ("Withdraw $X to <bank>? Irreversible from Tago.") before firing the Stripe transfer.
+
+#### Slice 3 — Top-up flow (W-T1-P2 + W-T1-P1)
+- [ ] **P2** AddFundsPage: load default saved card on mount, render "Use saved card · Visa •••• 4242" button above CardElement, charge via `confirmCardPayment(clientSecret, { payment_method: pmId })`.
+- [ ] **P1** AddFundsPage: Stripe Payment Request Button for Apple Pay / Google Pay above the card form (detected via `paymentRequest.canMakePayment()`). Requires `.well-known/apple-developer-merchantid-domain-association` for Apple Pay on web.
+
+#### Slice 4 — Transaction visibility (W-T1-P6)
+- [ ] **P6** New `/wallet/transaction/:id` route + page: signed amount hero, status pill, withdrawal-failure banner with Stripe reason, copyable Stripe IDs, "View ride details" deep link, settle date, wallet-balance-after. Tappable rows on WalletPage drive into it.
+
+### Sprint 3 summary
+
+| Status | Count |
+|---|---|
+| Not started | 7 |
+| In progress | 0 |
+| Done (awaiting QA) | 0 |
+| Done (verified + pushed) | 0 |
+
+### Current focus
+Slice 1 (driver payment UX).
+
+### Next action
+Implement Slice 1 → run gates → commit + push.
+
+---
+
 ## Sprint 2 — Tier-1 UX gaps
 
 **Goal:** close 6 high-impact UX gaps from the parity report. Web-only;

@@ -249,4 +249,71 @@ describe('WalletPage', () => {
     })
     expect(screen.queryByTestId('tx-pending-payout-tag')).not.toBeInTheDocument()
   })
+
+  // ── Sprint 3 W-T1-P5 — live nudge cooldown countdown ─────────────────
+
+  it('shows a "Try again in Xs" countdown after a 429 cooldown response', async () => {
+    profileRef.current = { id: 'driver-001', is_driver: true, stripe_onboarding_complete: false, wallet_balance: 0 }
+
+    let nudgeAttempts = 0
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (typeof url === 'string' && url.includes('/pending-earnings')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            pending: [
+              {
+                ride_id: 'ride-pending-001',
+                rider_name: 'Sam',
+                destination_name: 'Davis Amtrak',
+                ended_at: '2026-03-09T10:00:00Z',
+                fare_cents: 850,
+                payment_status: 'pending',
+              },
+            ],
+            total_cents: 850,
+          }),
+        })
+      }
+      if (typeof url === 'string' && url.includes('/nudge-rider')) {
+        nudgeAttempts++
+        return Promise.resolve({
+          ok: false,
+          status: 429,
+          json: async () => ({
+            error: { code: 'COOLDOWN', message: 'Please wait 45s before nudging again' },
+            retry_after_seconds: 45,
+          }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ transactions: [] }),
+      })
+    }))
+
+    try {
+      renderWallet()
+      await waitFor(() => {
+        expect(screen.getByTestId('nudge-rider-button')).toBeInTheDocument()
+      })
+
+      // Fire the nudge — server returns 429 + retry_after_seconds=45
+      fireEvent.click(screen.getByTestId('nudge-rider-button'))
+
+      // The label should flip to "Try again in Ns" once the response
+      // lands and state updates.
+      await waitFor(() => {
+        expect(screen.getByTestId('nudge-rider-button').textContent).toMatch(
+          /Try again in \d+s/,
+        )
+      })
+      const btn = screen.getByTestId('nudge-rider-button')
+      expect(btn).toBeDisabled()
+      // Server endpoint hit exactly once — no auto-retry.
+      expect(nudgeAttempts).toBe(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })

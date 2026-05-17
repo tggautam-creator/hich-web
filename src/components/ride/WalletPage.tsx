@@ -89,6 +89,26 @@ export default function WalletPage() {
   const [nudgingRideId, setNudgingRideId] = useState<string | null>(null)
   const [nudgeError, setNudgeError] = useState<string | null>(null)
   const [nudgedRideIds, setNudgedRideIds] = useState<Set<string>>(new Set())
+  // Per-ride cooldown end (epoch ms). The server returns 429 with
+  // `retry_after_seconds` when the driver re-nudges before the
+  // 60 s window expires; we honour it by displaying a live tick so
+  // the driver sees the actual remaining time instead of a button
+  // that's permanently disabled. Mirrors iOS
+  // `PendingEarningsPage::nudgeCooldownRemaining` (W-T1-P5).
+  const [nudgeCooldownUntil, setNudgeCooldownUntil] = useState<Record<string, number>>({})
+  // Tick state — re-renders the countdown labels every second while
+  // any cooldown is still in the future.
+  const [nudgeNowTick, setNudgeNowTick] = useState(() => Date.now())
+
+  useEffect(() => {
+    // Bail when there's nothing to count down — avoids a perpetual
+    // tick that wakes the page every second after every cooldown
+    // has expired.
+    const hasActive = Object.values(nudgeCooldownUntil).some((until) => until > Date.now())
+    if (!hasActive) return
+    const id = window.setInterval(() => setNudgeNowTick(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [nudgeCooldownUntil])
 
   async function handleNudge(rideId: string) {
     setNudgingRideId(rideId)
@@ -101,7 +121,22 @@ export default function WalletPage() {
         headers: { Authorization: `Bearer ${session.access_token}` },
       })
       if (!resp.ok) {
-        const body = (await resp.json().catch(() => ({}))) as { error?: { message?: string } }
+        const body = (await resp.json().catch(() => ({}))) as {
+          error?: { message?: string }
+          retry_after_seconds?: number
+        }
+        // 429 cooldown: stash the per-ride deadline so the button
+        // can show a live "Try again in 42s" countdown.
+        if (resp.status === 429 && typeof body.retry_after_seconds === 'number') {
+          const deadline = Date.now() + body.retry_after_seconds * 1000
+          setNudgeCooldownUntil((prev) => ({ ...prev, [rideId]: deadline }))
+          setNudgeNowTick(Date.now())
+          // Don't surface a separate error — the countdown IS the
+          // feedback. Clear any pre-existing error so it doesn't
+          // linger above an unrelated row.
+          setNudgeError(null)
+          return
+        }
         setNudgeError(body.error?.message ?? 'Could not send nudge.')
         return
       }
@@ -110,11 +145,23 @@ export default function WalletPage() {
         next.add(rideId)
         return next
       })
+      // Successful nudge also kicks the cooldown so re-tap is
+      // pre-blocked until the server window expires.
+      const deadline = Date.now() + 60_000
+      setNudgeCooldownUntil((prev) => ({ ...prev, [rideId]: deadline }))
+      setNudgeNowTick(Date.now())
     } catch {
       setNudgeError('Network error. Please try again.')
     } finally {
       setNudgingRideId(null)
     }
+  }
+
+  function nudgeCooldownSecondsRemaining(rideId: string): number {
+    const until = nudgeCooldownUntil[rideId]
+    if (!until) return 0
+    const remaining = Math.ceil((until - nudgeNowTick) / 1000)
+    return remaining > 0 ? remaining : 0
   }
 
   function formatDate(iso: string): string {
@@ -325,6 +372,8 @@ export default function WalletPage() {
             {pendingList.map((p) => {
               const alreadyNudged = nudgedRideIds.has(p.ride_id)
               const nudging = nudgingRideId === p.ride_id
+              const cooldownSec = nudgeCooldownSecondsRemaining(p.ride_id)
+              const inCooldown = cooldownSec > 0
               return (
                 <div
                   key={p.ride_id}
@@ -339,14 +388,14 @@ export default function WalletPage() {
                           <span className="text-text-secondary font-normal"> · {p.destination_name}</span>
                         )}
                       </p>
+                      {/* Payment-status pill — same role-neutral copy
+                          as the iOS WalletHubPage row. Drivers don't
+                          see "PAYMENT FAILED" on their own
+                          earnings list either (W-T1-P9 parity). */}
                       <p className="mt-0.5 text-xs text-text-secondary">
                         {formatDate(p.ended_at)}
-                        <span className={`ml-2 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                          p.payment_status === 'failed'
-                            ? 'bg-danger/10 text-danger'
-                            : 'bg-warning/10 text-warning'
-                        }`}>
-                          {p.payment_status === 'failed' ? 'Payment failed' : 'Payment pending'}
+                        <span className="ml-2 rounded-full bg-warning/10 px-2 py-0.5 text-[10px] font-semibold text-warning">
+                          Payment pending
                         </span>
                       </p>
                     </div>
@@ -357,10 +406,16 @@ export default function WalletPage() {
                   <button
                     data-testid="nudge-rider-button"
                     onClick={() => { void handleNudge(p.ride_id) }}
-                    disabled={nudging || alreadyNudged}
+                    disabled={nudging || alreadyNudged || inCooldown}
                     className="mt-2 text-xs font-semibold text-primary active:opacity-70 disabled:opacity-50"
                   >
-                    {alreadyNudged ? 'Nudge sent ✓' : nudging ? 'Sending…' : 'Nudge rider →'}
+                    {alreadyNudged
+                      ? 'Nudge sent ✓'
+                      : nudging
+                        ? 'Sending…'
+                        : inCooldown
+                          ? `Try again in ${cooldownSec}s`
+                          : 'Nudge rider →'}
                   </button>
                 </div>
               )

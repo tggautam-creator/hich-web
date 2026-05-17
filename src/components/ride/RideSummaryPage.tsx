@@ -758,23 +758,64 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
           }
         </p>
 
-        {/* Payment status badge */}
-        {paymentStatus && paymentStatus !== 'paid' && (
-          <span
-            data-testid="payment-status"
-            className={`mt-1 rounded-full px-3 py-0.5 text-xs font-medium ${
-              paymentStatus === 'processing' ? 'bg-warning/10 text-warning' :
-              paymentStatus === 'failed' ? 'bg-danger/10 text-danger' :
-              'bg-gray-100 text-text-secondary'
-            }`}
+        {/* Payment status badge — role-aware framing (W-T1-P9). RIDER
+            sees the literal status because they need the friction
+            ("Payment failed") to be motivated to update their card.
+            DRIVER never sees "PAYMENT FAILED" — they didn't fail
+            anything; their work is done. Show neutral "Payment
+            pending" in warning tone so the driver knows it's in
+            flight without anxiety. Matches iOS `paymentStatusBadge`. */}
+        {paymentStatus && paymentStatus !== 'paid' && (() => {
+          const badge = isDriver
+            ? { label: 'Payment pending', className: 'bg-warning/10 text-warning' }
+            : paymentStatus === 'processing'
+              ? { label: 'Payment processing', className: 'bg-warning/10 text-warning' }
+              : paymentStatus === 'failed'
+                ? { label: 'Payment failed', className: 'bg-danger/10 text-danger' }
+                : { label: 'Payment pending', className: 'bg-gray-100 text-text-secondary' }
+          return (
+            <span
+              data-testid="payment-status"
+              className={`mt-1 rounded-full px-3 py-0.5 text-xs font-medium ${badge.className}`}
+            >
+              {badge.label}
+            </span>
+          )
+        })()}
+
+        {/* Driver "Settling with the rider" reassurance (W-T1-P9,
+            matches iOS `driverPaymentPendingNote`). Driver always
+            earns their fare — settlement is Tago's problem to chase.
+            Hidden when payment is paid OR processing OR for the rider
+            (the rider sees the dunning CTAs below instead). */}
+        {isDriver && (paymentStatus === 'failed' || paymentStatus === 'pending') && (
+          <div
+            className="mt-3 mx-6 w-full max-w-md rounded-xl bg-warning/10 px-4 py-3"
+            data-testid="driver-settling-note"
           >
-            {paymentStatus === 'processing' ? 'Payment processing' :
-             paymentStatus === 'failed' ? 'Payment failed' :
-             'Payment pending'}
-          </span>
+            <div className="mb-1 flex items-center gap-1.5 text-text-primary">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                className="h-3.5 w-3.5 text-warning"
+                aria-hidden="true"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12zm8.706-1.442c1.146-.573 2.437.463 2.126 1.706l-.709 2.836.042-.02a.75.75 0 01.67 1.34l-.04.022c-1.147.573-2.438-.463-2.127-1.706l.71-2.836-.042.02a.75.75 0 11-.671-1.34l.041-.022zM12 9a.75.75 0 100-1.5.75.75 0 000 1.5z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              <span className="text-xs font-bold">Settling with the rider</span>
+            </div>
+            <p className="text-xs text-text-secondary">
+              You earned this fare. We&apos;re working with the rider&apos;s card to settle. You&apos;ll see this credited to your wallet within 48 hours.
+            </p>
+          </div>
         )}
 
-        {/* Retry payment for rider when payment failed */}
+        {/* Retry payment for rider when payment failed/pending */}
         {!isDriver && (paymentStatus === 'failed' || paymentStatus === 'pending') && (
           <div className="mt-3 flex flex-col items-center gap-2 w-full px-6">
             {retryError && (

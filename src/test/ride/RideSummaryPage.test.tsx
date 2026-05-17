@@ -703,6 +703,32 @@ describe('RideSummaryPage', () => {
       })
     })
 
+    // Sprint 3 W-T1-P9 — drivers never see "PAYMENT FAILED" and DO see
+    // the "Settling with the rider" reassurance card when payment is
+    // pending/failed. They earn the fare either way; only riders need
+    // the dunning friction.
+    it('driver view shows "Payment pending" + Settling note when payment_status=failed', async () => {
+      mockSingleFns['rides'] = vi.fn(() =>
+        Promise.resolve({
+          data: { ...completedRide, payment_status: 'failed' },
+          error: null,
+        }),
+      )
+      mockSingleFns['users'] = vi.fn(() => Promise.resolve({ data: { ...otherUser, id: 'rider-001', full_name: 'John Rider', is_driver: false }, error: null }))
+      mockSingleFns['vehicles'] = vi.fn(() => Promise.resolve({ data: vehicle, error: null }))
+
+      renderWithRouter()
+      await waitFor(() => {
+        expect(screen.getByTestId('fare-message')).toHaveTextContent('You earned')
+      })
+      const pill = screen.getByTestId('payment-status')
+      expect(pill).toHaveTextContent('Payment pending')
+      expect(pill).not.toHaveTextContent('failed')
+      expect(screen.getByTestId('driver-settling-note')).toBeInTheDocument()
+      // Rider-only dunning CTAs must NOT render
+      expect(screen.queryByTestId('retry-payment-button')).not.toBeInTheDocument()
+    })
+
     it('does not show vehicle info for driver', async () => {
       renderWithRouter()
       await waitFor(() => {
