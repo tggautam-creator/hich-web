@@ -111,8 +111,9 @@ export default function CampaignsPage() {
           />
         </div>
         <p className="mt-1 text-sm text-text-secondary">
-          Compose a one-shot push to a segment. Email + in-app banner
-          composers land in Slice 1.5 / 1.6.
+          Compose a broadcast to a segment — switch between push and email
+          below. Push notifications render as an in-app banner for users
+          who happen to be foregrounded; no separate composer.
         </p>
       </div>
 

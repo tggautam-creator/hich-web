@@ -34,6 +34,7 @@ const AdminFunnelPage = lazy(() => import('@/components/admin/FunnelPage'))
 const AdminUsersPage = lazy(() => import('@/components/admin/UsersPage'))
 const AdminUserDetailPage = lazy(() => import('@/components/admin/UserDetailPage'))
 const AdminCampaignsPage = lazy(() => import('@/components/admin/CampaignsPage'))
+const AdminLiveOpsPage = lazy(() => import('@/components/admin/LiveOpsPage'))
 const CampaignDetailPage = lazy(() => import('@/components/campaign/CampaignDetailPage'))
 
 // ── Onboarding ───────────────────────────────────────────────────────────────
@@ -205,7 +206,7 @@ createRoot(rootEl).render(
                   <Route path="/admin/users"      element={<Suspense fallback={<FormPageSkeleton />}><AdminUsersPage /></Suspense>} />
                   <Route path="/admin/users/:id"  element={<Suspense fallback={<FormPageSkeleton />}><AdminUserDetailPage /></Suspense>} />
                   <Route path="/admin/campaigns"  element={<Suspense fallback={<FormPageSkeleton />}><AdminCampaignsPage /></Suspense>} />
-                  <Route path="/admin/live"       element={<Placeholder name="Live ops — Slice 1.7" />} />
+                  <Route path="/admin/live"       element={<Suspense fallback={<MapPageSkeleton />}><AdminLiveOpsPage /></Suspense>} />
                   <Route path="/admin/audit-log"  element={<Placeholder name="Audit log — Slice 1.8" />} />
                   <Route path="/admin/settings"   element={<Placeholder name="Admin settings — future" />} />
                 </Route>
