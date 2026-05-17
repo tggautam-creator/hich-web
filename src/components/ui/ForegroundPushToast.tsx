@@ -32,6 +32,10 @@ interface ToastState {
   body: string
   tint: 'success' | 'warning' | 'danger' | 'primary'
   onTap?: () => void
+  /** Slice 1.6 — admin broadcast carries a poster URL we render inline. */
+  posterUrl?: string
+  /** Override default dwell. Admin marketing banners get more time to read. */
+  durationMs?: number
 }
 
 const HANDLED_ELSEWHERE = new Set([
@@ -50,6 +54,7 @@ const HANDLED_ELSEWHERE = new Set([
 ])
 
 const TOAST_DURATION_MS = 6000
+const ADMIN_BROADCAST_DURATION_MS = 10_000
 
 const TINT_CLASSES: Record<ToastState['tint'], string> = {
   success: 'bg-success/10 border-success/30 text-success',
@@ -146,6 +151,28 @@ export default function ForegroundPushToast() {
           }
           break
 
+        case 'admin_broadcast': {
+          // Slice 1.6 — in-app banner for admin marketing pushes.
+          // Foreground tabs would otherwise miss the OS banner entirely.
+          // Tap routes to the same /c/<slug> hero page the OS-banner tap
+          // (firebase-messaging-sw.js notificationclick handler) goes to,
+          // so the experience is consistent foreground vs background.
+          const slug = data.slug
+          const image = data.image
+          next = {
+            id: `${type}-${Date.now()}`,
+            title: fallbackTitle ?? 'New from Tago',
+            body: fallbackBody ?? '',
+            tint: 'primary',
+            posterUrl: typeof image === 'string' && image.length > 0 ? image : undefined,
+            durationMs: ADMIN_BROADCAST_DURATION_MS,
+            onTap: typeof slug === 'string' && slug.length > 0
+              ? () => navigateRef.current(`/c/${slug}`)
+              : () => navigateRef.current('/notifications'),
+          }
+          break
+        }
+
         case 'schedule_match':
           next = {
             id: `${type}-${Date.now()}`,
@@ -185,7 +212,8 @@ export default function ForegroundPushToast() {
   // optional chaining, so the eslint-disable explicitly opts out.
   useEffect(() => {
     if (!toast) return
-    const timeoutId = window.setTimeout(() => setToast(null), TOAST_DURATION_MS)
+    const duration = toast.durationMs ?? TOAST_DURATION_MS
+    const timeoutId = window.setTimeout(() => setToast(null), duration)
     return () => window.clearTimeout(timeoutId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toast?.id])
@@ -206,12 +234,21 @@ export default function ForegroundPushToast() {
           toast.onTap?.()
           setToast(null)
         }}
-        className={`w-full rounded-2xl border ${tint} bg-white shadow-lg px-4 py-3 text-left active:opacity-80 transition-opacity`}
+        className={`w-full rounded-2xl border ${tint} bg-white shadow-lg px-4 py-3 text-left active:opacity-80 transition-opacity ${toast.posterUrl ? 'flex items-center gap-3' : ''}`}
       >
-        <p className="text-sm font-semibold text-text-primary">{toast.title}</p>
-        {toast.body && (
-          <p className="text-xs text-text-secondary mt-0.5">{toast.body}</p>
+        {toast.posterUrl && (
+          <img
+            src={toast.posterUrl}
+            alt=""
+            className="h-12 w-12 rounded-lg object-cover flex-shrink-0"
+          />
         )}
+        <div className={toast.posterUrl ? 'min-w-0 flex-1' : ''}>
+          <p className="text-sm font-semibold text-text-primary truncate">{toast.title}</p>
+          {toast.body && (
+            <p className="text-xs text-text-secondary mt-0.5 line-clamp-2">{toast.body}</p>
+          )}
+        </div>
       </button>
     </div>
   )
