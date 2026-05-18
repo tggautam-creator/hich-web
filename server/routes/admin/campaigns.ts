@@ -263,6 +263,10 @@ interface SendPushBody {
   confirm_count?: unknown
   /** Public URL of an uploaded poster image (campaign-posters bucket). Optional. */
   poster_url?: unknown
+  /** Slice 1.6 — optional destination URL the poster should open
+   * when clicked from the CampaignDetailPage / View. Persisted on
+   * the row + returned by the public /api/campaigns/:slug endpoint. */
+  poster_link_url?: unknown
   /**
    * Slice 1.4d test-mode. When true, the recipient set is forced to
    * just the calling admin's user_id (audience is still recorded on
@@ -315,6 +319,9 @@ adminCampaignsRouter.post(
       // render it in the banner + the detail page renders it inline.
       const posterUrl = typeof b.poster_url === 'string' && b.poster_url.trim().length > 0
         ? b.poster_url.trim()
+        : null
+      const pushPosterLinkUrl = typeof b.poster_link_url === 'string' && b.poster_link_url.trim().length > 0
+        ? b.poster_link_url.trim()
         : null
       const testToSelf = b.test_to_self === true
       if (!title || !body) {
@@ -398,6 +405,7 @@ adminCampaignsRouter.post(
             title,
             body,
             poster_url: posterUrl,
+            poster_link_url: pushPosterLinkUrl,
             recipient_count: recipientIds.length,
             push_sent_count: 0, // updated after send
             sent_by: adminId,
@@ -510,6 +518,7 @@ adminCampaignsRouter.post(
           body,
           reason: reason || null,
           poster_url: posterUrl,
+          poster_link_url: pushPosterLinkUrl,
           recipient_count: recipientIds.length,
           push_sent: pushSent,
           tokens_attempted: tokens.length,
@@ -547,7 +556,7 @@ adminCampaignsRouter.get(
       const { data, count, error } = await supabaseAdmin
         .from('campaigns')
         .select(
-          'id, slug, audience, title, body, poster_url, recipient_count, push_sent_count, sent_by, sent_at, recalled_at, recalled_reason, recalled_by',
+          'id, slug, audience, title, body, poster_url, poster_link_url, recipient_count, push_sent_count, sent_by, sent_at, recalled_at, recalled_reason, recalled_by, channel, email_from',
           { count: 'exact' },
         )
         .order('sent_at', { ascending: false })
@@ -709,7 +718,42 @@ interface SendEmailBody {
    * When present, the server prepends an `<img>` tag at the top of
    * the email body so it renders as the hero. */
   poster_url?: unknown
+  /** Slice 1.6 — optional destination URL the poster should open
+   * when clicked. When set alongside poster_url, the prepended
+   * `<img>` is wrapped in an `<a href="...">`. Also persisted so
+   * the campaign detail page (web + iOS) can mirror the click target. */
+  poster_link_url?: unknown
 }
+
+/**
+ * Slice 1.6 — Tago-branded footer auto-appended to every marketing
+ * email. Standard practice (Mailchimp / WotC / etc.) — gives the
+ * recipient legal / unsubscribe context without the admin having to
+ * type it every campaign. Inline styles only (Gmail/Outlook strip
+ * `<style>` blocks).
+ *
+ * Unsubscribe links to `/settings` — once the recipient logs in
+ * there's a notification-preferences row with an `email_marketing`
+ * toggle. (Full per-recipient one-click unsubscribe tokens are a
+ * Phase 2 item; the settings-page path satisfies CAN-SPAM and the
+ * server-side opt-out filter at send time honors the flag.)
+ */
+const EMAIL_FOOTER_HTML = `
+<div style="margin-top:32px;padding-top:24px;border-top:1px solid #e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;line-height:1.6;color:#6b7280;text-align:center;">
+  <p style="margin:0 0 8px 0;">
+    ©2026 <strong style="color:#374151;">Tago</strong>. Carpooling for university students.
+  </p>
+  <p style="margin:0 0 12px 0;">
+    <a href="https://www.tagorides.com/terms" style="color:#6b7280;text-decoration:underline;">Terms of Use</a>
+    &nbsp;·&nbsp;
+    <a href="https://www.tagorides.com/privacy" style="color:#6b7280;text-decoration:underline;">Privacy</a>
+    &nbsp;·&nbsp;
+    <a href="https://www.tagorides.com/settings" style="color:#6b7280;text-decoration:underline;">Unsubscribe</a>
+  </p>
+  <p style="margin:0;font-size:11px;color:#9ca3af;">
+    You received this email because you have a Tago account. To stop receiving marketing emails, visit your <a href="https://www.tagorides.com/settings" style="color:#9ca3af;text-decoration:underline;">notification settings</a>.
+  </p>
+</div>`
 
 function htmlToPlainText(html: string): string {
   // Tiny strip — Resend expects either html OR text; we only send html
@@ -749,6 +793,9 @@ adminCampaignsRouter.post(
       const testToSelf = b.test_to_self === true
       const posterUrl = typeof b.poster_url === 'string' && b.poster_url.trim().length > 0
         ? b.poster_url.trim()
+        : null
+      const posterLinkUrl = typeof b.poster_link_url === 'string' && b.poster_link_url.trim().length > 0
+        ? b.poster_link_url.trim()
         : null
 
       if (!subject || !html) {
@@ -834,6 +881,7 @@ adminCampaignsRouter.post(
             title: subject,
             body: html,
             poster_url: posterUrl,
+            poster_link_url: posterLinkUrl,
             recipient_count: cohortUserIds.length,
             push_sent_count: 0,
             sent_by: adminId,
@@ -889,13 +937,22 @@ adminCampaignsRouter.post(
       //    prepended as a centered <img> with sane mobile-friendly
       //    styling — full-width on phones, capped at 600px on desktop.
       //    Inline styles only (Gmail / Outlook strip <style> blocks).
-      const finalHtml = posterUrl
+      //    When poster_link_url is set, the <img> is wrapped in an
+      //    <a href="..."> so the hero is clickable in the inbox.
+      //    Branded footer auto-appended.
+      const imgTag = posterUrl
+        ? `<img src="${posterUrl}" alt="" ` +
+          `style="display:block;width:100%;max-width:600px;height:auto;` +
+            `border-radius:8px;margin:0 auto;border:0;" />`
+        : ''
+      const heroBlock = posterUrl
         ? `<div style="text-align:center;margin-bottom:16px;">` +
-          `<img src="${posterUrl}" alt="" ` +
-            `style="display:block;width:100%;max-width:600px;height:auto;` +
-              `border-radius:8px;margin:0 auto;" />` +
-          `</div>` + html
-        : html
+            (posterLinkUrl
+              ? `<a href="${posterLinkUrl}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">${imgTag}</a>`
+              : imgTag) +
+          `</div>`
+        : ''
+      const finalHtml = heroBlock + html + EMAIL_FOOTER_HTML
 
       const sendResult = await sendEmailToMany({
         from: fromRaw,
@@ -925,6 +982,7 @@ adminCampaignsRouter.post(
           subject,
           body_plain_preview: htmlToPlainText(html).slice(0, 200),
           poster_url: posterUrl,
+          poster_link_url: posterLinkUrl,
           from: fromRaw,
           reason: reason || null,
           recipient_count: cohortUserIds.length,

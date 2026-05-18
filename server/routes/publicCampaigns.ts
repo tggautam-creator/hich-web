@@ -33,7 +33,7 @@ publicCampaignsRouter.get(
 
       const { data, error } = await supabaseAdmin
         .from('campaigns')
-        .select('slug, title, body, poster_url, sent_at, recalled_at')
+        .select('slug, title, body, poster_url, poster_link_url, sent_at, recalled_at')
         .eq('slug', slug)
         .maybeSingle()
       if (error) throw error

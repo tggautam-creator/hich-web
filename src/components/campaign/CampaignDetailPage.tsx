@@ -18,6 +18,8 @@ interface CampaignResponse {
     title: string
     body: string
     poster_url: string | null
+    /** Slice 1.6 — optional URL the poster should open when clicked. */
+    poster_link_url: string | null
     sent_at: string
   }
 }
@@ -94,12 +96,29 @@ export default function CampaignDetailPage() {
             className="mt-6 overflow-hidden rounded-2xl border border-border bg-white"
           >
             {data.poster_url && (
-              <img
-                src={data.poster_url}
-                alt=""
-                data-testid="campaign-detail-poster"
-                className="w-full object-cover"
-              />
+              data.poster_link_url ? (
+                <a
+                  href={data.poster_link_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-testid="campaign-detail-poster-link"
+                  className="block"
+                >
+                  <img
+                    src={data.poster_url}
+                    alt=""
+                    data-testid="campaign-detail-poster"
+                    className="w-full object-cover"
+                  />
+                </a>
+              ) : (
+                <img
+                  src={data.poster_url}
+                  alt=""
+                  data-testid="campaign-detail-poster"
+                  className="w-full object-cover"
+                />
+              )
             )}
             <div className="p-6">
               <h1 className="text-2xl font-bold text-text-primary">{data.title}</h1>

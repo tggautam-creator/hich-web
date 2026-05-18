@@ -59,6 +59,10 @@ export default function CampaignsPage() {
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [posterUrl, setPosterUrl] = useState<string | null>(null)
+  // Slice 1.6 — optional URL the poster opens when clicked.
+  // Applies to both push (via CampaignDetailPage/View) and email
+  // (wrapped around the inline hero <img> on send).
+  const [posterLinkUrl, setPosterLinkUrl] = useState<string>('')
   const [posterUploading, setPosterUploading] = useState(false)
   const [posterError, setPosterError] = useState<string | null>(null)
   // Email fields (Slice 1.5)
@@ -278,6 +282,7 @@ export default function CampaignsPage() {
               setPosterError(null)
               if (!file) {
                 setPosterUrl(null)
+                    setPosterLinkUrl('')
                 return
               }
               if (file.size > 2 * 1024 * 1024) {
@@ -314,6 +319,26 @@ export default function CampaignsPage() {
               }
             }}
           />
+
+          {/* Slice 1.6 — make the poster clickable */}
+          {posterUrl && (
+            <label className="block">
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+                Poster link (optional)
+              </div>
+              <input
+                data-testid="campaign-poster-link"
+                type="url"
+                value={posterLinkUrl}
+                onChange={(e) => setPosterLinkUrl(e.target.value)}
+                placeholder="https://www.tagorides.com/c/spring-promo  or  https://partner.com/tickets"
+                className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+              />
+              <p className="mt-1 text-[11px] text-text-tertiary">
+                Poster becomes clickable. Use any URL — a Tago page (tagorides.com/…) or external link.
+              </p>
+            </label>
+          )}
 
           <label className="block">
             <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
@@ -358,6 +383,7 @@ export default function CampaignsPage() {
                     body: body.trim(),
                     reason: reason.trim() || undefined,
                     poster_url: posterUrl ?? undefined,
+                    poster_link_url: posterLinkUrl.trim() || undefined,
                     test_to_self: true,
                   })
                 } else {
@@ -368,6 +394,7 @@ export default function CampaignsPage() {
                     from: emailFrom,
                     reason: reason.trim() || undefined,
                     poster_url: posterUrl ?? undefined,
+                    poster_link_url: posterLinkUrl.trim() || undefined,
                     test_to_self: true,
                   })
                 }
@@ -426,6 +453,7 @@ export default function CampaignsPage() {
             setTitle(row.title)
             setBody(row.body)
             setPosterUrl(row.poster_url)
+            setPosterLinkUrl(row.poster_link_url ?? '')
           } else {
             setSubject(row.title)
             setBodyHtml(row.body)
@@ -433,6 +461,7 @@ export default function CampaignsPage() {
             // pre-fill it on duplicate so the admin doesn't have to
             // re-upload to reuse the same hero.
             setPosterUrl(row.poster_url)
+            setPosterLinkUrl(row.poster_link_url ?? '')
             if (row.email_from) setEmailFrom(row.email_from)
           }
           setReason('')
@@ -460,6 +489,7 @@ export default function CampaignsPage() {
                   reason: reason.trim() || undefined,
                   confirm_count: preview.data!.count,
                   poster_url: posterUrl ?? undefined,
+                    poster_link_url: posterLinkUrl.trim() || undefined,
                 },
                 {
                   onSuccess: () => {
@@ -468,6 +498,7 @@ export default function CampaignsPage() {
                     setBody('')
                     setReason('')
                     setPosterUrl(null)
+                    setPosterLinkUrl('')
                   },
                   onError: () => { /* keep dialog open */ },
                 },
@@ -482,6 +513,7 @@ export default function CampaignsPage() {
                   reason: reason.trim() || undefined,
                   confirm_count: preview.data!.count,
                   poster_url: posterUrl ?? undefined,
+                    poster_link_url: posterLinkUrl.trim() || undefined,
                 },
                 {
                   onSuccess: () => {
@@ -490,6 +522,7 @@ export default function CampaignsPage() {
                     setBodyHtml('')
                     setReason('')
                     setPosterUrl(null)
+                    setPosterLinkUrl('')
                   },
                   onError: () => { /* keep dialog open */ },
                 },

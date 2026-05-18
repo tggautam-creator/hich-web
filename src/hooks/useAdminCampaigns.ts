@@ -44,6 +44,9 @@ export interface SendCampaignPushArgs {
   reason?: string
   confirm_count?: number
   poster_url?: string
+  /** Slice 1.6 — optional destination URL the poster should open
+   * when clicked from CampaignDetailPage / View. Persisted on the row. */
+  poster_link_url?: string
   /** Slice 1.4d — when true, push only to the calling admin's uid. Bypasses audience + opt-outs. */
   test_to_self?: boolean
 }
@@ -68,6 +71,7 @@ export interface CampaignHistoryRow {
   title: string
   body: string
   poster_url: string | null
+  poster_link_url: string | null
   recipient_count: number
   push_sent_count: number
   sent_by: string
@@ -199,6 +203,10 @@ export interface SendCampaignEmailArgs {
    * Same `campaign-posters` bucket as push posters. Server prepends
    * an `<img>` tag at the top of the email body before sending. */
   poster_url?: string
+  /** Slice 1.6 — optional destination URL the poster opens when
+   * clicked. Server wraps the prepended hero `<img>` in an
+   * `<a href="...">` when this is set. */
+  poster_link_url?: string
 }
 
 export interface SendCampaignEmailResult {

@@ -566,12 +566,16 @@ describe('POST /api/admin/campaigns/email', () => {
     expect(res.body.sent).toBe(2)
     expect(res.body.slug).toBeDefined()
 
-    expect(mockSendEmail).toHaveBeenCalledWith({
-      from: 'marketing@tagorides.com',
-      subject: 'Weekly digest',
-      html: '<h1>Hi</h1><p>Welcome to Tago.</p>',
-      recipients: ['a@x.edu', 'b@x.edu'],
-    })
+    // html now carries an auto-appended footer (Slice 1.6) so we
+    // assert the substring rather than exact match.
+    const call = mockSendEmail.mock.calls[0]?.[0] as {
+      from: string; subject: string; html: string; recipients: string[]
+    }
+    expect(call.from).toBe('marketing@tagorides.com')
+    expect(call.subject).toBe('Weekly digest')
+    expect(call.recipients).toEqual(['a@x.edu', 'b@x.edu'])
+    expect(call.html).toContain('<h1>Hi</h1><p>Welcome to Tago.</p>')
+    expect(call.html).toContain('Terms of Use')
 
     expect(auditInserts.length).toBe(1)
     expect(auditInserts[0]).toMatchObject({
@@ -616,9 +620,56 @@ describe('POST /api/admin/campaigns/email', () => {
     expect(lastCallHtml).toContain('max-width:600px')
     expect(lastCallHtml.indexOf('<img')).toBeLessThan(lastCallHtml.indexOf('<p>Get your tickets.</p>'))
 
+    // Branded footer is auto-appended AFTER the body.
+    expect(lastCallHtml).toContain('©2026')
+    expect(lastCallHtml).toContain('Terms of Use')
+    expect(lastCallHtml).toContain('Privacy')
+    expect(lastCallHtml).toContain('Unsubscribe')
+    expect(lastCallHtml.indexOf('Terms of Use')).toBeGreaterThan(
+      lastCallHtml.indexOf('<p>Get your tickets.</p>'),
+    )
+
     // Audit captures the poster_url so the audit log surfaces it.
     const payload = auditInserts[0]?.['payload'] as Record<string, unknown>
     expect(payload['poster_url']).toBe('https://example.com/spring.png')
+  })
+
+  // Slice 1.6 — clickable poster: when poster_link_url is set, the
+  // server wraps the prepended <img> in an <a href="..."> so the
+  // hero opens the link when tapped in the recipient's inbox.
+  it('wraps the hero <img> in <a href> when poster_link_url is supplied', async () => {
+    setup({
+      audienceUsers: [{ id: 'u1', email: 'a@x.edu', full_name: 'A' }],
+      emailSendResult: { sent: 1, failed: 0, failures: [] },
+    })
+
+    const res = await request(app)
+      .post('/api/admin/campaigns/email')
+      .set('Authorization', VALID_JWT)
+      .send({
+        audience: { type: 'all_users' },
+        subject: 'Spring Fling',
+        body_html: '<p>Get your tickets.</p>',
+        from: 'marketing@tagorides.com',
+        poster_url: 'https://example.com/spring.png',
+        poster_link_url: 'https://www.tagorides.com/c/spring-promo',
+      })
+
+    expect(res.status).toBe(200)
+    const lastCallHtml = (mockSendEmail.mock.calls[0]?.[0] as { html: string }).html
+    expect(lastCallHtml).toContain('<a href="https://www.tagorides.com/c/spring-promo"')
+    expect(lastCallHtml).toContain('target="_blank"')
+    expect(lastCallHtml).toContain('rel="noopener noreferrer"')
+    // The img is still inside the anchor.
+    const anchorIdx = lastCallHtml.indexOf('<a href="https://www.tagorides.com/c/spring-promo"')
+    const imgIdx = lastCallHtml.indexOf('<img src="https://example.com/spring.png"')
+    const anchorClose = lastCallHtml.indexOf('</a>', anchorIdx)
+    expect(imgIdx).toBeGreaterThan(anchorIdx)
+    expect(imgIdx).toBeLessThan(anchorClose)
+
+    // Audit captures the poster_link_url too.
+    const payload = auditInserts[0]?.['payload'] as Record<string, unknown>
+    expect(payload['poster_link_url']).toBe('https://www.tagorides.com/c/spring-promo')
   })
 
   it('filters by email_marketing opt-outs (not push_promos)', async () => {

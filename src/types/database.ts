@@ -1015,6 +1015,8 @@ export type Database = {
           title: string
           body: string
           poster_url: string | null
+          /** Slice 1.6 — optional URL the poster opens when clicked (email anchor wrap + detail-page click target). */
+          poster_link_url: string | null
           recipient_count: number
           push_sent_count: number
           sent_by: string
@@ -1033,6 +1035,7 @@ export type Database = {
           title: string
           body: string
           poster_url?: string | null
+          poster_link_url?: string | null
           recipient_count?: number
           push_sent_count?: number
           sent_by: string
@@ -1051,6 +1054,7 @@ export type Database = {
           title?: string
           body?: string
           poster_url?: string | null
+          poster_link_url?: string | null
           recipient_count?: number
           push_sent_count?: number
           sent_by?: string
