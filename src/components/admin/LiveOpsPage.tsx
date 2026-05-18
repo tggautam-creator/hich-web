@@ -72,6 +72,10 @@ export default function LiveOpsPage() {
   const [filter, setFilter] = useState<FilterMode>('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedDriverId, setSelectedDriverId] = useState<string | null>(null)
+  // Slice 1.11 — separate selection state for "all recent users" dots
+  // (different drawer shape than online-driver drawer since recent
+  // users may not have driver context).
+  const [selectedRecentUserId, setSelectedRecentUserId] = useState<string | null>(null)
   const [showOnlineDrivers, setShowOnlineDrivers] = useState(true)
   // Slice 1.11 — overlay toggles for the new last_known_at user pings.
   // Independent of the online_drivers toggle so ops can pick any combo.
@@ -109,6 +113,11 @@ export default function LiveOpsPage() {
   const selectedDriver = useMemo(
     () => (selectedDriverId ? onlineDrivers.find((d) => d.user_id === selectedDriverId) ?? null : null),
     [onlineDrivers, selectedDriverId],
+  )
+
+  const selectedRecentUser = useMemo(
+    () => (selectedRecentUserId ? recentUsers.find((u) => u.user_id === selectedRecentUserId) ?? null : null),
+    [recentUsers, selectedRecentUserId],
   )
 
   const stuckCount = useMemo(
@@ -297,10 +306,18 @@ export default function LiveOpsPage() {
                     online-driver dots conceptually (smaller, fainter) so the
                     map stays scannable. */}
                 {showActiveUsers && activeUsers.map((u) => (
-                  <RecentUserMarker key={`user-fresh-${u.user_id}`} user={u} />
+                  <RecentUserMarker
+                    key={`user-fresh-${u.user_id}`}
+                    user={u}
+                    onClick={() => setSelectedRecentUserId(u.user_id)}
+                  />
                 ))}
                 {showStaleUsers && staleUsers.map((u) => (
-                  <RecentUserMarker key={`user-stale-${u.user_id}`} user={u} />
+                  <RecentUserMarker
+                    key={`user-stale-${u.user_id}`}
+                    user={u}
+                    onClick={() => setSelectedRecentUserId(u.user_id)}
+                  />
                 ))}
               </Map>
             </APIProvider>
@@ -515,6 +532,13 @@ export default function LiveOpsPage() {
           onClose={() => setSelectedDriverId(null)}
         />
       )}
+
+      {selectedRecentUser && (
+        <RecentUserDrawer
+          user={selectedRecentUser}
+          onClose={() => setSelectedRecentUserId(null)}
+        />
+      )}
     </div>
   )
 }
@@ -561,11 +585,17 @@ function RideMarkers({
   )
 }
 
-function RecentUserMarker({ user }: { user: RecentUser }) {
+function RecentUserMarker({
+  user,
+  onClick,
+}: {
+  user: RecentUser
+  onClick: () => void
+}) {
   // Smaller + fainter than online-driver dots so the map remains
   // scannable when 100+ users are pinging. Color encodes role
   // (driver = blue, rider = gray) + freshness (fresh = saturated,
-  // stale = pale).
+  // stale = pale). Click → drawer with profile + push composer.
   const isFresh = user.freshness === 'fresh'
   const colorClass = user.is_driver
     ? (isFresh ? 'bg-primary' : 'bg-primary/40')
@@ -575,8 +605,9 @@ function RecentUserMarker({ user }: { user: RecentUser }) {
     <AdvancedMarker
       position={{ lat: user.lat, lng: user.lng }}
       title={`${user.name ?? user.email ?? user.user_id.slice(0, 8)} · ${user.is_driver ? 'driver' : 'rider'} · last seen ${ageLabel} ago`}
+      onClick={onClick}
     >
-      <div className={`h-2 w-2 rounded-full ${colorClass} border border-white shadow-sm`} />
+      <div className={`h-2 w-2 rounded-full ${colorClass} border border-white shadow-sm cursor-pointer`} />
     </AdvancedMarker>
   )
 }
@@ -771,6 +802,136 @@ function OnlineDriverDrawer({
                   title: pushTitle.trim(),
                   body: pushBody.trim(),
                   reason: 'live-ops driver pin',
+                })
+              }
+              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {send.isPending ? 'Sending…' : 'Send push'}
+            </button>
+            {send.isSuccess && (
+              <span className="text-xs text-success">
+                Sent to {send.data.sent}/{send.data.total_tokens} devices
+              </span>
+            )}
+            {send.isError && (
+              <span className="text-xs text-danger truncate">{send.error.message}</span>
+            )}
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+}
+
+// ── Recent-user drawer (Slice 1.11) ─────────────────────────────────────────
+
+function RecentUserDrawer({
+  user,
+  onClose,
+}: {
+  user: RecentUser
+  onClose: () => void
+}) {
+  const send = useAdminSendPush(user.user_id)
+  const [pushTitle, setPushTitle] = useState('Tago support')
+  const [pushBody, setPushBody] = useState(
+    `Hi, this is Tago ops checking in. Hope your day's going well!`,
+  )
+
+  const ageMs = Date.now() - new Date(user.last_known_at).getTime()
+  const isStale = ageMs > 5 * 60 * 1000
+
+  return (
+    <div
+      data-testid="recent-user-drawer"
+      className="fixed inset-y-0 right-0 z-50 w-full max-w-md border-l border-border bg-white shadow-2xl overflow-y-auto"
+    >
+      <header className="sticky top-0 bg-white border-b border-border px-5 py-4 flex items-center justify-between">
+        <div className="min-w-0">
+          <p className="text-xs text-text-tertiary uppercase tracking-wide">
+            {user.is_driver ? 'Driver' : 'Rider'}
+          </p>
+          <h2 className="text-lg font-semibold text-text-primary truncate">
+            {user.name ?? user.email ?? user.user_id.slice(0, 8) + '…'}
+          </h2>
+          <div className="flex items-center gap-2 mt-1">
+            <span
+              className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${user.freshness === 'fresh' ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning'}`}
+            >
+              {user.freshness === 'fresh' ? 'active · last hour' : 'stale · 1-24h ago'}
+            </span>
+            {isStale && (
+              <span className="text-xs text-text-tertiary">
+                pinged {relativeAge(user.last_known_at)} ago
+              </span>
+            )}
+          </div>
+        </div>
+        <button
+          type="button"
+          aria-label="Close"
+          className="rounded-md border border-border px-2 py-1 text-sm hover:bg-surface"
+          onClick={onClose}
+        >
+          ✕
+        </button>
+      </header>
+
+      <div className="px-5 py-4 space-y-4">
+        <section className="grid grid-cols-2 gap-3 text-sm">
+          <Field label="Email" value={user.email ?? '—'} />
+          <Field label="Role" value={user.is_driver ? 'driver' : 'rider'} />
+          <Field label="Last seen" value={relativeAge(user.last_known_at) + ' ago'} />
+          <Field label="Coordinates" value={`${user.lat.toFixed(5)}, ${user.lng.toFixed(5)}`} />
+        </section>
+
+        <section className="space-y-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+            Profile
+          </h3>
+          <Link
+            to={`/admin/users/${user.user_id}`}
+            className="block rounded-md border border-border px-3 py-2 text-sm hover:bg-surface"
+          >
+            Open user profile →
+          </Link>
+          <a
+            href={`https://www.google.com/maps/search/?api=1&query=${user.lat},${user.lng}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block rounded-md border border-border px-3 py-2 text-sm hover:bg-surface"
+          >
+            Open in Google Maps ↗
+          </a>
+        </section>
+
+        <section className="rounded-lg border border-border p-3 space-y-2">
+          <h3 className="text-sm font-semibold text-text-primary">Push this user</h3>
+          <input
+            data-testid="recent-user-push-title"
+            type="text"
+            value={pushTitle}
+            onChange={(e) => setPushTitle(e.target.value)}
+            maxLength={120}
+            className="w-full rounded-md border border-border px-2 py-1.5 text-sm"
+          />
+          <textarea
+            data-testid="recent-user-push-body"
+            value={pushBody}
+            onChange={(e) => setPushBody(e.target.value)}
+            maxLength={500}
+            rows={3}
+            className="w-full rounded-md border border-border px-2 py-1.5 text-sm"
+          />
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              disabled={send.isPending || !pushTitle.trim() || !pushBody.trim()}
+              onClick={() =>
+                send.mutate({
+                  title: pushTitle.trim(),
+                  body: pushBody.trim(),
+                  reason: 'live-ops user pin',
                 })
               }
               className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"

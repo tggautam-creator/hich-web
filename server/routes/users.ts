@@ -261,15 +261,52 @@ usersRouter.post(
       return
     }
     try {
-      const { error } = await supabaseAdmin
+      const nowIso = new Date().toISOString()
+      const { data: updated, error } = await supabaseAdmin
         .from('users')
         .update({
           last_known_lat: lat,
           last_known_lng: lng,
-          last_known_at: new Date().toISOString(),
+          last_known_at: nowIso,
         })
         .eq('id', userId)
+        .select('is_driver')
+        .maybeSingle()
       if (error) throw error
+
+      // 2026-05-18 fix — a user who IS a driver shares the same physical
+      // body as the driver. When they ping their generic location (any
+      // foreground), mirror it into `driver_locations` so the matcher's
+      // freshness gate stays current too. WITHOUT this, a driver who's
+      // been toggled Online but isn't on DriverHomePage (e.g. browsing
+      // Profile / Wallet / Inbox) goes stale to the matcher within 5 min
+      // even though the app is clearly still in their hand.
+      //
+      // We preserve is_online state: if the driver had toggled offline,
+      // we don't flip them back on (their explicit choice wins). If
+      // they were online, we keep them online + refresh recorded_at.
+      // If they have no driver_locations row at all (never went online),
+      // we leave it absent — going online is an explicit action elsewhere.
+      if (updated?.is_driver === true) {
+        const { data: existing } = await supabaseAdmin
+          .from('driver_locations')
+          .select('is_online')
+          .eq('user_id', userId)
+          .maybeSingle()
+        if (existing) {
+          await supabaseAdmin
+            .from('driver_locations')
+            .update({
+              // PostGIS accepts GeoJSON via supabase-js — same shape
+              // the iOS DriverHomePage upsert uses (see GeoJSONPoint
+              // in ios/Tago/Models/DriverLocationDTO.swift).
+              location: { type: 'Point', coordinates: [lng, lat] } as never,
+              recorded_at: nowIso,
+            })
+            .eq('user_id', userId)
+        }
+      }
+
       res.status(204).end()
     } catch (err) {
       console.error('[users/me/location POST] update failed:', err)

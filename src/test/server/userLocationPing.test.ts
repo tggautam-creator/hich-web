@@ -23,9 +23,19 @@ const VALID_JWT = 'Bearer valid.jwt.token'
 const USER_ID = '00000000-0000-4000-8000-000000000aaa'
 
 const userUpdates: Array<Record<string, unknown>> = []
+const driverLocationUpdates: Array<Record<string, unknown>> = []
 
-function setup() {
+interface SetupOpts {
+  isDriver?: boolean
+  hasDriverLocationsRow?: boolean
+}
+
+function setup(opts: SetupOpts = {}) {
   userUpdates.length = 0
+  driverLocationUpdates.length = 0
+  const isDriver = opts.isDriver ?? false
+  const hasDriverRow = opts.hasDriverLocationsRow ?? false
+
   mockAuth.getUser.mockResolvedValue({
     data: { user: { id: USER_ID } },
     error: null,
@@ -34,8 +44,34 @@ function setup() {
     if (table === 'users') {
       return {
         update: (patch: Record<string, unknown>) => ({
+          eq: () => ({
+            select: () => ({
+              maybeSingle: () => {
+                userUpdates.push(patch)
+                return Promise.resolve({
+                  data: { is_driver: isDriver },
+                  error: null,
+                })
+              },
+            }),
+          }),
+        }),
+      }
+    }
+    if (table === 'driver_locations') {
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () =>
+              Promise.resolve({
+                data: hasDriverRow ? { is_online: true } : null,
+                error: null,
+              }),
+          }),
+        }),
+        update: (patch: Record<string, unknown>) => ({
           eq: () => {
-            userUpdates.push(patch)
+            driverLocationUpdates.push(patch)
             return Promise.resolve({ data: null, error: null })
           },
         }),
@@ -86,5 +122,55 @@ describe('POST /api/users/me/location', () => {
     expect(patch['last_known_lat']).toBe(38.5449)
     expect(patch['last_known_lng']).toBe(-121.7405)
     expect(typeof patch['last_known_at']).toBe('string')
+  })
+
+  // Slice 1.11 mirror behavior — when the calling user is_driver=true
+  // AND has an existing driver_locations row, the ping mirrors GPS
+  // into driver_locations so the matcher's freshness gate stays
+  // current even when the driver is browsing tabs other than
+  // DriverHomePage.
+  it('mirrors GPS into driver_locations when user.is_driver=true AND row exists', async () => {
+    setup({ isDriver: true, hasDriverLocationsRow: true })
+    const res = await request(app)
+      .post('/api/users/me/location')
+      .set('Authorization', VALID_JWT)
+      .send({ lat: 38.5449, lng: -121.7405 })
+
+    expect(res.status).toBe(204)
+    expect(driverLocationUpdates).toHaveLength(1)
+    const patch = driverLocationUpdates[0] as Record<string, unknown>
+    // Location should be GeoJSON Point with [lng, lat] order (matches
+    // the iOS DriverHomePage GeoJSONPoint upsert shape).
+    expect(patch['location']).toEqual({
+      type: 'Point',
+      coordinates: [-121.7405, 38.5449],
+    })
+    expect(typeof patch['recorded_at']).toBe('string')
+    // is_online is NOT touched — driver's offline toggle wins.
+    expect('is_online' in patch).toBe(false)
+  })
+
+  it('does NOT mirror when user.is_driver=true but no driver_locations row yet', async () => {
+    // Driver who's never toggled online — leave them absent from
+    // the matcher pool until they explicitly go online.
+    setup({ isDriver: true, hasDriverLocationsRow: false })
+    const res = await request(app)
+      .post('/api/users/me/location')
+      .set('Authorization', VALID_JWT)
+      .send({ lat: 38.5, lng: -121.7 })
+
+    expect(res.status).toBe(204)
+    expect(driverLocationUpdates).toHaveLength(0)
+  })
+
+  it('does NOT touch driver_locations when user.is_driver=false (riders)', async () => {
+    setup({ isDriver: false, hasDriverLocationsRow: false })
+    const res = await request(app)
+      .post('/api/users/me/location')
+      .set('Authorization', VALID_JWT)
+      .send({ lat: 38.5, lng: -121.7 })
+
+    expect(res.status).toBe(204)
+    expect(driverLocationUpdates).toHaveLength(0)
   })
 })
