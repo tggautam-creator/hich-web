@@ -704,6 +704,11 @@ interface SendEmailBody {
   reason?: unknown
   confirm_count?: unknown
   test_to_self?: unknown
+  /** Slice 1.6 — optional marketing hero image (Supabase Storage URL,
+   * uploaded to the same `campaign-posters` bucket as push posters).
+   * When present, the server prepends an `<img>` tag at the top of
+   * the email body so it renders as the hero. */
+  poster_url?: unknown
 }
 
 function htmlToPlainText(html: string): string {
@@ -742,6 +747,9 @@ adminCampaignsRouter.post(
       const reason = typeof b.reason === 'string' ? b.reason.trim() : ''
       const confirmCount = typeof b.confirm_count === 'number' ? Math.floor(b.confirm_count) : null
       const testToSelf = b.test_to_self === true
+      const posterUrl = typeof b.poster_url === 'string' && b.poster_url.trim().length > 0
+        ? b.poster_url.trim()
+        : null
 
       if (!subject || !html) {
         res.status(400).json({
@@ -810,7 +818,11 @@ adminCampaignsRouter.post(
         return
       }
 
-      // 3. Create the campaign row.
+      // 3. Create the campaign row. Persist the ORIGINAL author HTML
+      //    in `body` so a future Duplicate-from-history pre-fills the
+      //    composer with just the author's content, not our prepended
+      //    hero `<img>`. The hero is reconstructed at send time from
+      //    `poster_url` — single source of truth.
       let slug = generateCampaignSlug()
       let campaignId: string | null = null
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -821,7 +833,7 @@ adminCampaignsRouter.post(
             audience: audience as unknown as Record<string, unknown>,
             title: subject,
             body: html,
-            poster_url: null,
+            poster_url: posterUrl,
             recipient_count: cohortUserIds.length,
             push_sent_count: 0,
             sent_by: adminId,
@@ -873,11 +885,22 @@ adminCampaignsRouter.post(
         .map((u) => u.email)
         .filter((e): e is string => typeof e === 'string' && e.length > 0)
 
-      // 5. Fire the batch send via Resend.
+      // 5. Fire the batch send via Resend. Hero image (if any) is
+      //    prepended as a centered <img> with sane mobile-friendly
+      //    styling — full-width on phones, capped at 600px on desktop.
+      //    Inline styles only (Gmail / Outlook strip <style> blocks).
+      const finalHtml = posterUrl
+        ? `<div style="text-align:center;margin-bottom:16px;">` +
+          `<img src="${posterUrl}" alt="" ` +
+            `style="display:block;width:100%;max-width:600px;height:auto;` +
+              `border-radius:8px;margin:0 auto;" />` +
+          `</div>` + html
+        : html
+
       const sendResult = await sendEmailToMany({
         from: fromRaw,
         subject,
-        html,
+        html: finalHtml,
         recipients: emails,
       })
 
@@ -901,6 +924,7 @@ adminCampaignsRouter.post(
           audience,
           subject,
           body_plain_preview: htmlToPlainText(html).slice(0, 200),
+          poster_url: posterUrl,
           from: fromRaw,
           reason: reason || null,
           recipient_count: cohortUserIds.length,

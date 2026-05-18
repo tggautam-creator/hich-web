@@ -589,6 +589,38 @@ describe('POST /api/admin/campaigns/email', () => {
     expect(payload['body_plain_preview']).toBe('Hi Welcome to Tago.')
   })
 
+  // Slice 1.6 — email hero image: when poster_url is passed, server
+  // prepends an inline <img> tag to the HTML body before sending.
+  it('prepends an inline hero <img> when poster_url is supplied', async () => {
+    setup({
+      audienceUsers: [{ id: 'u1', email: 'a@x.edu', full_name: 'A' }],
+      emailSendResult: { sent: 1, failed: 0, failures: [] },
+    })
+
+    const res = await request(app)
+      .post('/api/admin/campaigns/email')
+      .set('Authorization', VALID_JWT)
+      .send({
+        audience: { type: 'all_users' },
+        subject: 'Spring Fling',
+        body_html: '<p>Get your tickets.</p>',
+        from: 'marketing@tagorides.com',
+        poster_url: 'https://example.com/spring.png',
+      })
+
+    expect(res.status).toBe(200)
+    const lastCallHtml = (mockSendEmail.mock.calls[0]?.[0] as { html: string }).html
+    // Hero image is centered + capped at 600px + appears BEFORE the
+    // author's body (so it renders as a hero, not a footer).
+    expect(lastCallHtml).toContain('<img src="https://example.com/spring.png"')
+    expect(lastCallHtml).toContain('max-width:600px')
+    expect(lastCallHtml.indexOf('<img')).toBeLessThan(lastCallHtml.indexOf('<p>Get your tickets.</p>'))
+
+    // Audit captures the poster_url so the audit log surfaces it.
+    const payload = auditInserts[0]?.['payload'] as Record<string, unknown>
+    expect(payload['poster_url']).toBe('https://example.com/spring.png')
+  })
+
   it('filters by email_marketing opt-outs (not push_promos)', async () => {
     setup({
       audienceUsers: [

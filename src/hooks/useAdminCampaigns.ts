@@ -195,6 +195,10 @@ export interface SendCampaignEmailArgs {
   reason?: string
   confirm_count?: number
   test_to_self?: boolean
+  /** Slice 1.6 — optional marketing hero image (Supabase Storage URL).
+   * Same `campaign-posters` bucket as push posters. Server prepends
+   * an `<img>` tag at the top of the email body before sending. */
+  poster_url?: string
 }
 
 export interface SendCampaignEmailResult {

@@ -267,7 +267,10 @@ export default function CampaignsPage() {
             </>
           )}
 
-          {channel === 'push' && <PosterUploadField
+          {/* Slice 1.6 — poster upload now available for email too. For push
+              it's the FCM data.image; for email it's prepended as an inline
+              hero <img> at the top of the body. Same bucket, same column. */}
+          <PosterUploadField
             posterUrl={posterUrl}
             uploading={posterUploading}
             error={posterError}
@@ -310,7 +313,7 @@ export default function CampaignsPage() {
                 setPosterUploading(false)
               }
             }}
-          />}
+          />
 
           <label className="block">
             <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
@@ -364,6 +367,7 @@ export default function CampaignsPage() {
                     body_html: bodyHtml,
                     from: emailFrom,
                     reason: reason.trim() || undefined,
+                    poster_url: posterUrl ?? undefined,
                     test_to_self: true,
                   })
                 }
@@ -425,6 +429,10 @@ export default function CampaignsPage() {
           } else {
             setSubject(row.title)
             setBodyHtml(row.body)
+            // Slice 1.6 — email rows can also carry a hero poster now;
+            // pre-fill it on duplicate so the admin doesn't have to
+            // re-upload to reuse the same hero.
+            setPosterUrl(row.poster_url)
             if (row.email_from) setEmailFrom(row.email_from)
           }
           setReason('')
@@ -473,6 +481,7 @@ export default function CampaignsPage() {
                   from: emailFrom,
                   reason: reason.trim() || undefined,
                   confirm_count: preview.data!.count,
+                  poster_url: posterUrl ?? undefined,
                 },
                 {
                   onSuccess: () => {
@@ -480,13 +489,14 @@ export default function CampaignsPage() {
                     setSubject('')
                     setBodyHtml('')
                     setReason('')
+                    setPosterUrl(null)
                   },
                   onError: () => { /* keep dialog open */ },
                 },
               )
             }
           }}
-          posterUrl={channel === 'push' ? posterUrl : null}
+          posterUrl={posterUrl}
         />
       )}
     </div>
