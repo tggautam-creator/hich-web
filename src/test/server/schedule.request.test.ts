@@ -233,11 +233,13 @@ describe('POST /api/schedule/request', () => {
       .set('Authorization', VALID_JWT)
       .send({ schedule_id: 'sched-001' })
 
+    // 2026-05-18 Slice 3 — unified copy pattern. Title is now the
+    // narrative actionLabel; body is route + formatted trip_date.
     expect(mockSendFcmPush).toHaveBeenCalledWith(
       ['fcm-poster-1'],
       expect.objectContaining({
-        title: 'Ride Board Request',
-        body: 'Test User wants to join your ride',
+        title: 'Test User wants to join your ride',
+        body: 'Davis, CA → San Francisco, CA · Apr 1',
         data: expect.objectContaining({
           type: 'board_request',
           ride_id: 'ride-new-001',
@@ -254,10 +256,12 @@ describe('POST /api/schedule/request', () => {
       .set('Authorization', VALID_JWT)
       .send({ schedule_id: 'sched-002' })
 
+    // 2026-05-18 Slice 3 — narrative as title, route + date as body.
     expect(mockSendFcmPush).toHaveBeenCalledWith(
       ['fcm-poster-1'],
       expect.objectContaining({
-        body: 'Test User offered to drive you',
+        title: 'Test User offered to drive you',
+        body: 'Davis, CA → Oakland, CA · Apr 1',
       }),
     )
   })

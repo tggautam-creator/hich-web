@@ -122,17 +122,25 @@ export async function sendFcmPush(
           sound: 'default',
           ...(payload.category ? { category: payload.category } : {}),
           // Time-sensitive interruption breaks through Focus modes
-          // (Do Not Disturb, Driving, Sleep). Critical for both:
+          // (Do Not Disturb, Driving, Sleep). Critical for:
           //  - RIDE_REQUEST: drivers miss earnings if they don't see
           //    the request within ~30s, and many keep DND on while
           //    on the road.
           //  - BOARD_REQUEST: same urgency for scheduled-ride requests.
+          //  - BOARD_OFFER (added 2026-05-18 Slice 4): same urgency
+          //    in reverse — a driver's offer to a rider has a short
+          //    window before the rider books with another driver or
+          //    the trip time passes. Without this, a rider with
+          //    DND/Sleep on misses the offer until the next time
+          //    they wake their phone.
           // Other categories (payment, schedule_match, etc.) stay at
           // the default `active` level — they're informational.
           // Requires the `com.apple.developer.usernotifications.time-
           // sensitive` entitlement on the iOS app, which we ship in
           // both Tago.entitlements + Tago.Release.entitlements.
-          ...(payload.category === 'RIDE_REQUEST' || payload.category === 'BOARD_REQUEST'
+          ...(payload.category === 'RIDE_REQUEST'
+            || payload.category === 'BOARD_REQUEST'
+            || payload.category === 'BOARD_OFFER'
             ? { 'interruption-level': 'time-sensitive' as const }
             : {}),
           // Group banners by ride so multiple events for the same

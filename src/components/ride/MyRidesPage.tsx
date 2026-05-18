@@ -1,10 +1,11 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import BottomNav from '@/components/ui/BottomNav'
 import AppIcon from '@/components/ui/AppIcon'
+import type { ScheduledRide } from '@/components/schedule/boardTypes'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -97,6 +98,44 @@ async function fetchActiveRides(): Promise<ActiveRide[]> {
   return body.rides
 }
 
+// 2026-05-18 web parity W4 — slim Posted/Routines surfaces wired
+// to the same endpoint iOS uses. Returns the user's own pending
+// `ride_schedules` (trip_date >= today) + active `driver_routines`.
+interface MyPostsRoutine {
+  id: string
+  route_name: string
+  day_of_week: number[]
+  departure_time: string | null
+  arrival_time: string | null
+  is_active: boolean
+  origin_address: string | null
+  dest_address: string | null
+}
+interface MyPostsResponse {
+  schedules: ScheduledRide[]
+  routines: MyPostsRoutine[]
+}
+
+async function fetchMyPosts(): Promise<MyPostsResponse> {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) throw new Error('Not authenticated')
+  const resp = await fetch('/api/schedule/my-posts', {
+    headers: { Authorization: `Bearer ${session.access_token}` },
+  })
+  if (!resp.ok) throw new Error('Failed to fetch my posts')
+  return await resp.json() as MyPostsResponse
+}
+
+async function withdrawSchedule(scheduleId: string): Promise<void> {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) throw new Error('Not authenticated')
+  const resp = await fetch(`/api/schedule/${scheduleId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${session.access_token}` },
+  })
+  if (!resp.ok) throw new Error('Failed to withdraw post')
+}
+
 async function fetchUnreadCount(): Promise<number> {
   const { data: { session } } = await supabase.auth.getSession()
   if (!session) return 0
@@ -158,6 +197,14 @@ export default function MyRidesPage({
     queryFn: fetchActiveRides,
   })
 
+  // 2026-05-18 W4 — user's own pending posts + active routines.
+  const { data: myPosts } = useQuery({
+    queryKey: ['my-posts'],
+    queryFn: fetchMyPosts,
+  })
+  const myPostedSchedules: ScheduledRide[] = myPosts?.schedules ?? []
+  const myRoutines: MyPostsRoutine[] = myPosts?.routines ?? []
+
   const { data: unreadCount = 0 } = useQuery({
     queryKey: ['unread-count'],
     queryFn: fetchUnreadCount,
@@ -169,6 +216,32 @@ export default function MyRidesPage({
       void queryClient.invalidateQueries({ queryKey: ['active-rides'] })
     },
   })
+
+  // 2026-05-18 W4 — withdraw mutation for the "Posted, awaiting match"
+  // section. Optimistic invalidate so the row disappears as soon as
+  // the server confirms.
+  const withdrawMutation = useMutation({
+    mutationFn: withdrawSchedule,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['my-posts'] })
+    },
+  })
+
+  /** Schedule pending a "Withdraw this post?" confirm dialog. */
+  const [pendingWithdraw, setPendingWithdraw] = useState<ScheduledRide | null>(null)
+
+  /** Dedup: a posted schedule whose id matches an active ride's
+   *  schedule_id is hidden here so the same trip doesn't render
+   *  twice (Posted AND Active). Mirrors iOS `filteredPostedSchedules`. */
+  const activeScheduleIds = new Set(
+    rides.map((r) => r.schedule_id).filter((id): id is string => id !== null),
+  )
+  const visiblePostedSchedules = myPostedSchedules
+    .filter((s) => !activeScheduleIds.has(s.id))
+    .sort((a, b) => {
+      if (a.trip_date !== b.trip_date) return a.trip_date.localeCompare(b.trip_date)
+      return a.trip_time.localeCompare(b.trip_time)
+    })
 
   // Realtime + visibility: invalidate queries when ride status changes
   useEffect(() => {
@@ -317,7 +390,7 @@ export default function MyRidesPage({
           </div>
         )}
 
-        {!loading && rides.length === 0 && (
+        {!loading && rides.length === 0 && visiblePostedSchedules.length === 0 && myRoutines.length === 0 && (
           <div className="text-center py-16 px-6">
             <div className="flex justify-center mb-3"><div className="h-14 w-14 rounded-full bg-surface flex items-center justify-center"><AppIcon name="car-request" className="h-7 w-7 text-text-secondary" /></div></div>
             <p className="text-text-secondary text-sm font-medium">No active rides</p>
@@ -332,6 +405,117 @@ export default function MyRidesPage({
               Browse upcoming rides
             </button>
           </div>
+        )}
+
+        {/* 2026-05-18 W4 — Posted, awaiting match. Shows the user's own
+            pending ride-board posts. Edit routes through SchedulePage's
+            existing prefill plumbing; withdraw confirms via dialog
+            then calls DELETE /api/schedule/:id. */}
+        {!loading && visiblePostedSchedules.length > 0 && (
+          <section className="mt-4">
+            <h2 className="px-1 pb-2 text-xs font-bold tracking-wider text-text-secondary">
+              POSTED, AWAITING MATCH
+            </h2>
+            <ul className="flex flex-col gap-2">
+              {visiblePostedSchedules.map((s) => (
+                <li
+                  key={s.id}
+                  className="rounded-2xl bg-white p-3 border border-border shadow-sm"
+                  data-testid="my-posts-schedule"
+                >
+                  <div className="text-xs font-bold text-textSecondary uppercase tracking-wider">
+                    {s.mode === 'driver' ? 'Offering' : 'Requesting'}
+                  </div>
+                  <div className="mt-1 flex items-start gap-2 text-sm">
+                    <span className="mt-1 h-2 w-2 flex-shrink-0 rounded-full bg-success" />
+                    <span className="text-textPrimary">{s.origin_address}</span>
+                  </div>
+                  <div className="flex items-start gap-2 text-sm">
+                    <span className="mt-1 h-2 w-2 flex-shrink-0 rounded-full bg-primary" />
+                    <span className="text-textPrimary">{s.dest_address}</span>
+                  </div>
+                  <div className="mt-1 text-xs text-textSecondary">
+                    {formatDate(s.trip_date)} · {s.time_flexible ? 'Anytime' : formatTime(s.trip_time)}
+                  </div>
+                  <div className="mt-2 flex gap-2">
+                    {/* 2026-05-18 — web's SchedulePage doesn't have an
+                        UPDATE branch yet (only INSERT). The browse page's
+                        detail sheet already exposes the own-post Edit
+                        + Withdraw actions, so route there with the
+                        `openRideId` state hint to auto-open the sheet
+                        for this schedule. iOS has a richer in-place
+                        edit flow; web parity for that lands as its
+                        own slice. */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigate('/rides/board/browse', {
+                          state: { openRideId: s.id },
+                        })
+                      }}
+                      className="flex-1 rounded-full bg-surface px-3 py-1.5 text-xs font-semibold text-textPrimary border border-border"
+                      data-testid="my-posts-edit"
+                    >
+                      Open
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setPendingWithdraw(s) }}
+                      className="flex-1 rounded-full bg-danger/10 px-3 py-1.5 text-xs font-semibold text-danger border border-danger/20"
+                      data-testid="my-posts-withdraw"
+                    >
+                      Withdraw
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {/* 2026-05-18 W4 — Routines summary. Tapping a row navigates
+            to the existing RideBoard routines sheet for full
+            edit/pause/resume/delete UX. */}
+        {!loading && myRoutines.length > 0 && (
+          <section className="mt-6">
+            <h2 className="px-1 pb-2 text-xs font-bold tracking-wider text-text-secondary">
+              ROUTINES
+            </h2>
+            <ul className="flex flex-col gap-2">
+              {myRoutines.map((r) => {
+                const time = r.departure_time
+                  ? `Departs ${r.departure_time.slice(0, 5)}`
+                  : r.arrival_time ? `Arrives ${r.arrival_time.slice(0, 5)}` : null
+                const days = (r.day_of_week ?? []).sort().map((idx) =>
+                  ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][idx]
+                ).filter(Boolean).join(' ')
+                return (
+                  <li
+                    key={r.id}
+                    className="rounded-2xl bg-white p-3 border border-border shadow-sm"
+                    data-testid="my-posts-routine"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => { navigate('/rides/board/browse') }}
+                      className="flex w-full items-center justify-between"
+                    >
+                      <div className="text-left">
+                        <div className="text-sm font-bold text-textPrimary">
+                          {r.is_active ? '🔁 ' : '⏸ '}
+                          {r.route_name}
+                        </div>
+                        <div className="text-xs text-textSecondary">
+                          {days}{time ? ` · ${time}` : ''}
+                        </div>
+                      </div>
+                      <span className="text-textSecondary">›</span>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </section>
         )}
 
         {!loading && rides.length > 0 && (
@@ -565,6 +749,46 @@ export default function MyRidesPage({
       </div>
 
       <BottomNav activeTab="rides" />
+
+      {/* Withdraw confirm dialog — same destructive-action pattern as iOS. */}
+      {pendingWithdraw && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 px-4 pb-6 sm:items-center sm:pb-0"
+          data-testid="withdraw-confirm-backdrop"
+          onClick={() => { setPendingWithdraw(null) }}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-lg"
+            onClick={(e) => { e.stopPropagation() }}
+          >
+            <h3 className="text-base font-bold text-textPrimary">Withdraw this post?</h3>
+            <p className="mt-2 text-sm text-textSecondary">
+              Anyone with a pending offer on this post will be released. This can&apos;t be undone.
+            </p>
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => { setPendingWithdraw(null) }}
+                className="flex-1 rounded-full bg-surface px-3 py-2 text-sm font-semibold text-textPrimary border border-border"
+              >
+                Keep it posted
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const id = pendingWithdraw.id
+                  setPendingWithdraw(null)
+                  withdrawMutation.mutate(id)
+                }}
+                className="flex-1 rounded-full bg-danger px-3 py-2 text-sm font-bold text-white"
+                data-testid="withdraw-confirm"
+              >
+                Withdraw
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

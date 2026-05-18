@@ -159,6 +159,16 @@ export default function NotificationsPage({
       return
     }
 
+    // 2026-05-18 web parity W6 — board_offer carries `schedule_id`,
+    // not `ride_id` (the offer doesn't materialize a ride row until
+    // the rider accepts). Route to the new BoardOfferAcceptPage so
+    // the rider sees pending offers + can accept/decline.
+    if (notif.type === 'board_offer') {
+      const scheduleId = notif.data['schedule_id'] as string | undefined
+      if (scheduleId) navigate(`/ride/board-offer/${scheduleId}`)
+      return
+    }
+
     const rideId = notif.data['ride_id'] as string | undefined
     if (!rideId) return
 
@@ -188,6 +198,7 @@ export default function NotificationsPage({
     switch (type) {
       case 'board_request':
       case 'board_request_actioned': return { name: 'clipboard', color: 'text-primary' }
+      case 'board_offer':            return { name: 'clipboard', color: 'text-primary' }
       case 'board_accepted':         return { name: 'check-circle', color: 'text-success' }
       case 'board_declined':         return { name: 'x-circle', color: 'text-danger' }
       case 'ride_reminder':          return { name: 'bell', color: 'text-warning' }

@@ -651,16 +651,15 @@ describe('SchedulePage', () => {
       expect(screen.getByText('Ride Scheduled!')).toBeInTheDocument()
     })
 
-    it('redirects rider-mode submit to /payment/add when poster has no card', async () => {
-      // Card precondition: rider posts charge a card after the ride completes,
-      // so submitting without one would leave a dead-end post on the board.
-      // Simulate "Stripe says no methods" and verify we redirect instead of
-      // calling supabase insert.
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ methods: [], default_method_id: null }),
-      })
-
+    it('rider-mode submit succeeds without a card on file (migration 073)', async () => {
+      // 2026-05-18 — Previously this test asserted that rider-mode
+      // posts would redirect to /payment/add when no card was on file.
+      // Server migration 073 dropped the `enforce_rider_post_has_card`
+      // trigger as part of Phase A of the Ride Board redesign — payment
+      // is now captured later when the rider accepts a driver's offer,
+      // via the new `/api/schedule/board/offers/:id/accept` flow. Web
+      // matches the new behavior: rider posts proceed regardless of
+      // whether a card is on file.
       const user = await goToScheduleStep()
 
       const dateInput = screen.getByTestId('trip-date-input')
@@ -677,12 +676,15 @@ describe('SchedulePage', () => {
 
       await user.click(screen.getByTestId('submit-schedule-button'))
 
+      // Insert must fire — pre-check is gone.
       await waitFor(() => {
-        expect(mockNavigate).toHaveBeenCalledWith('/payment/add', expect.objectContaining({
-          state: expect.objectContaining({ returnTo: '/schedule/rider' }),
-        }))
+        expect(mockInsert).toHaveBeenCalled()
       })
-      expect(mockInsert).not.toHaveBeenCalled()
+      // And we must NOT have bounced the user out to add a card.
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        '/payment/add',
+        expect.anything(),
+      )
     })
 
     it('shows submit error when supabase insert fails', async () => {

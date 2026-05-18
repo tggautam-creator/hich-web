@@ -16,6 +16,7 @@ import {
 } from '@/lib/places'
 import { calculateBearing } from '@/lib/geo'
 import { getDirectionsByLatLng } from '@/lib/directions'
+import { rememberLastSeats } from '@/lib/lastSeats'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -55,6 +56,26 @@ interface ScheduleLocationState {
   prefillTo?: PlaceSuggestion
   /** When 'routine', SchedulePage opens directly in recurring-routine mode. */
   tripType?: TripType
+  // 2026-05-18 web parity W3 — Ride Board "Post this search" CTA
+  // pre-fills these so the user just confirms on this page. Time
+  // fields are accepted as `YYYY-MM-DD` + `HH:mm` (matching the
+  // native input formats this page binds to).
+  prefillTripDate?: string
+  prefillTripTime?: string
+  prefillAnytime?: boolean
+  prefillAvailableSeats?: number
+  /** Pre-select driver/rider mode (only honored when the user is
+   * a driver — non-drivers always get rider mode). */
+  prefillMode?: 'driver' | 'rider'
+  /** When set, success bypasses the in-page confirmation screen and
+   * navigates back to this route with `state.flashToast` so the
+   * receiving page can show a toast. Used by the Ride Board CTA so
+   * the user lands back on the search surface with a "Posted!"
+   * confirmation instead of an interstitial screen. */
+  returnTo?: string
+  /** Optional override for the flash message — defaults to a
+   * generic "Posted!" if not provided. */
+  returnFlashMessage?: string
 }
 
 export default function SchedulePage({ mode: initialMode, 'data-testid': testId }: SchedulePageProps) {
@@ -67,24 +88,33 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
   const [showConfirmation, setShowConfirmation] = useState(false)
 
   // Driver/rider toggle state
-  const [activeMode, setActiveMode] = useState<'driver' | 'rider'>(initialMode)
+  const [activeMode, setActiveMode] = useState<'driver' | 'rider'>(
+    prefill?.prefillMode ?? initialMode,
+  )
 
   // Form state
   const [routeName, setRouteName] = useState('')
   const [fromLocation, setFromLocation] = useState<PlaceSuggestion | null>(prefill?.prefillFrom ?? null)
   const [toLocation, setToLocation] = useState<PlaceSuggestion | null>(prefill?.prefillTo ?? null)
   const [tripType, setTripType] = useState<TripType>(prefill?.tripType ?? 'one-time')
-  const [availableSeats, setAvailableSeats] = useState(1)
+  const [availableSeats, setAvailableSeats] = useState(
+    prefill?.prefillAvailableSeats ?? 1,
+  )
   const [note, setNote] = useState('')
 
   // One-time schedule state
-  const [tripDate, setTripDate] = useState('')
+  const [tripDate, setTripDate] = useState(prefill?.prefillTripDate ?? '')
   const [timeType, setTimeType] = useState<TimeType>('departure')
-  const [tripTime, setTripTime] = useState('')
+  // `prefillTripTime` is `HH:mm` — matches the native time input.
+  // When prefillAnytime is true the time field stays blank under the
+  // Anytime toggle (noon placeholder is submitted at insert time).
+  const [tripTime, setTripTime] = useState(
+    prefill?.prefillAnytime ? '' : prefill?.prefillTripTime ?? '',
+  )
   // When true, the poster doesn't care about the hour — only the date.
   // We still submit a noon placeholder for trip_time to satisfy the NOT NULL
   // constraint and keep legacy sort-by-time stable; UI renders "Anytime".
-  const [timeFlexible, setTimeFlexible] = useState(false)
+  const [timeFlexible, setTimeFlexible] = useState(prefill?.prefillAnytime ?? false)
   const [isSubmitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
@@ -262,64 +292,16 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
     setSubmitError(null)
   }
 
-  /**
-   * Send the user to /payment/add with state to bring them back to this
-   * mode of the schedule flow. Mirrors the redirect used by RideBoard's
-   * "Request This Ride" → NO_PAYMENT_METHOD flow, so both card-required
-   * paths land in the same place.
-   */
-  function redirectToAddPayment() {
-    navigate('/payment/add', { state: { returnTo: `/schedule/${activeMode}` } })
-  }
-
-  /**
-   * Detect the migration-051 trigger error coming back from a direct
-   * Supabase insert. The DB raises a CHECK violation with this exact
-   * message; we match on a stable substring rather than the full text.
-   */
-  function isMissingPaymentMethodDbError(message: string | undefined | null): boolean {
-    if (!message) return false
-    return /saved payment method/i.test(message)
-  }
-
-  /**
-   * Rider-mode posts charge a card after the ride completes, so refuse to
-   * create the schedule if the poster has no card on file. We hit
-   * /api/payment/methods (Stripe-backed) rather than reading
-   * users.default_payment_method_id directly — the cached column can go
-   * stale when a card is detached out-of-band, and trusting it has let
-   * card-less users post in the past. The endpoint also self-heals the
-   * column on read, so the migration-051 trigger sees fresh data on the
-   * next attempt. Returns true if the submit can proceed.
-   */
-  async function ensureCardOnFileForRiderMode(): Promise<boolean> {
-    if (activeMode !== 'rider' || !user) return true
-
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session) {
-      setSubmitError('Please sign in again.')
-      return false
-    }
-
-    const res = await fetch('/api/payment/methods', {
-      headers: { Authorization: `Bearer ${session.access_token}` },
-    })
-    if (!res.ok) {
-      setSubmitError('Could not verify your payment method. Please try again.')
-      return false
-    }
-    const body = (await res.json()) as {
-      methods: Array<unknown>
-      default_method_id: string | null
-    }
-
-    if (!body.default_method_id || body.methods.length === 0) {
-      redirectToAddPayment()
-      return false
-    }
-
-    return true
-  }
+  // 2026-05-18 — `redirectToAddPayment` + `isMissingPaymentMethodDbError`
+  // + `ensureCardOnFileForRiderMode` were all removed. Server migration
+  // 073 dropped the `enforce_rider_post_has_card` trigger as part of
+  // the Phase A board redesign: riders no longer need a card on file
+  // to post a request. Payment is captured later — when the rider
+  // accepts a driver's offer via the new `/api/schedule/board/offers/
+  // :id/accept` flow, which surfaces an inline add-card sheet on
+  // `NO_PAYMENT_METHOD`. Pre-checking here would now block riders for
+  // a constraint that no longer exists. iOS made the same cut at the
+  // same time; this keeps web aligned.
 
   async function handleSubmitSchedule() {
     if (!validateSchedule()) return
@@ -327,11 +309,6 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
 
     setSubmitting(true)
     setSubmitError(null)
-
-    if (!(await ensureCardOnFileForRiderMode())) {
-      setSubmitting(false)
-      return
-    }
 
     // When the poster is flexible on time we still need a legal trip_time
     // value (the column is NOT NULL); store noon so anything sorting by time
@@ -349,34 +326,62 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
       fromSessionTokenRef.current = crypto.randomUUID()
       toSessionTokenRef.current = crypto.randomUUID()
 
-      const { error } = await supabase.from('ride_schedules').insert({
-        user_id:          user.id,
-        mode:             activeMode,
-        route_name:       routeName.trim(),
-        origin_place_id:  fromLocation.placeId,
-        origin_address:   fromLocation.fullAddress,
-        dest_place_id:    toLocation.placeId,
-        dest_address:     toLocation.fullAddress,
-        direction_type:   'one_way',
-        trip_date:        tripDate,
-        time_type:        timeType,
-        trip_time:        submittedTripTime,
-        time_flexible:    timeFlexible,
-        available_seats:  activeMode === 'driver' ? availableSeats : null,
-        note:             note.trim() || null,
-        origin_lat:       fromCoords?.lat ?? null,
-        origin_lng:       fromCoords?.lng ?? null,
-        dest_lat:         toCoords?.lat ?? null,
-        dest_lng:         toCoords?.lng ?? null,
-      }).select('id')
+      // 2026-05-18 — capture the inserted row's id so we can fire the
+      // `/api/schedule/:id/compute-route` enrichment endpoint right
+      // after. Without that call the row never gets a polyline +
+      // cached coords → it can't be matched by smart-search's
+      // route-corridor / transit-handoff logic. iOS already does
+      // this; web was silently missing it.
+      const { data: inserted, error } = await supabase
+        .from('ride_schedules')
+        .insert({
+          user_id:          user.id,
+          mode:             activeMode,
+          route_name:       routeName.trim(),
+          origin_place_id:  fromLocation.placeId,
+          origin_address:   fromLocation.fullAddress,
+          dest_place_id:    toLocation.placeId,
+          dest_address:     toLocation.fullAddress,
+          direction_type:   'one_way',
+          trip_date:        tripDate,
+          time_type:        timeType,
+          trip_time:        submittedTripTime,
+          time_flexible:    timeFlexible,
+          available_seats:  activeMode === 'driver' ? availableSeats : null,
+          note:             note.trim() || null,
+          origin_lat:       fromCoords?.lat ?? null,
+          origin_lng:       fromCoords?.lng ?? null,
+          dest_lat:         toCoords?.lat ?? null,
+          dest_lng:         toCoords?.lng ?? null,
+        })
+        .select('id')
+        .single()
 
       if (error) {
-        if (isMissingPaymentMethodDbError(error.message)) {
-          redirectToAddPayment()
-          return
-        }
         setSubmitError(error.message)
         return
+      }
+
+      // Fire-and-forget compute-route. The server resolves the
+      // post's origin/dest place IDs via Google Routes API and
+      // stores the encoded polyline + cached coords on the row.
+      // Failure is non-fatal — the schedule still appears in the
+      // standard board list; it just won't surface in smart-search
+      // results until the next compute attempt. Logged but not
+      // surfaced to the user.
+      const insertedScheduleId = inserted?.id as string | undefined
+      if (insertedScheduleId) {
+        void (async () => {
+          try {
+            const { data: { session } } = await supabase.auth.getSession()
+            await fetch(`/api/schedule/${insertedScheduleId}/compute-route`, {
+              method: 'POST',
+              headers: session ? { Authorization: `Bearer ${session.access_token}` } : {},
+            })
+          } catch {
+            // Non-fatal — see comment above.
+          }
+        })()
       }
 
       // Notify matched drivers (fire-and-forget)
@@ -405,7 +410,26 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
       }
 
       trackEvent('schedule_saved', { mode: activeMode, trip_type: 'one-time' })
-      setShowConfirmation(true)
+      // 2026-05-18 — remember the seat count so the Ride Board
+      // "Post this search" CTA can pre-fill it next time.
+      if (activeMode === 'driver') {
+        rememberLastSeats(availableSeats)
+      }
+      // 2026-05-18 — when invoked via the Ride Board CTA, the prefill
+      // payload carries a `returnTo` route + a `returnFlashMessage`.
+      // Skip the in-page confirmation screen and bounce the user back
+      // with a flash toast — matches the iOS behaviour.
+      if (prefill?.returnTo) {
+        navigate(prefill.returnTo, {
+          replace: true,
+          state: {
+            flashToast: prefill.returnFlashMessage
+              ?? 'Posted! Drivers along your route will see it shortly.',
+          },
+        })
+      } else {
+        setShowConfirmation(true)
+      }
     } catch {
       setSubmitError('Something went wrong. Please try again.')
     } finally {
@@ -470,11 +494,6 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
 
     setSubmitting(true)
     setSubmitError(null)
-
-    if (!(await ensureCardOnFileForRiderMode())) {
-      setSubmitting(false)
-      return
-    }
 
     try {
       // Geocode both places

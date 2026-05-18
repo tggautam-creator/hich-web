@@ -401,10 +401,15 @@ describe('RideBoard', () => {
     })
   })
 
-  it('shows inline error and does NOT redirect when poster of rider-post has no card', async () => {
-    // Driver clicks "Offer this ride" on a rider-post whose poster has no
-    // card. The missing card belongs to the poster, so /payment/add wouldn't
-    // help — surface the message inline and stay on the board.
+  it('driver offer on rider-post succeeds via /board/offers and does NOT redirect anywhere (W6 migration)', async () => {
+    // 2026-05-18 — pre-migration this asserted RIDER_NO_PAYMENT_METHOD
+    // surfaced inline (the rider lacked a card; the driver shouldn't
+    // be bounced to add their own). Phase A's `/board/offers` flow
+    // makes that scenario unreachable: rider payment is captured on
+    // ACCEPT, not on offer-create. So the new assertion is simpler —
+    // the driver's offer should POST to /api/schedule/board/offers
+    // (NOT /api/schedule/request), succeed, and the driver should
+    // stay on the board with a success toast.
     const user = userEvent.setup()
     setupBoardFetch()
     render(<RideBoard />)
@@ -415,17 +420,23 @@ describe('RideBoard', () => {
 
     await user.click(screen.getByText('Offer to Drive'))
 
+    let offerEndpointHit = false
+    let legacyRequestEndpointHit = false
     mockFetch.mockImplementation((url: string, init?: RequestInit) => {
-      if (typeof url === 'string' && url === '/api/schedule/request' && init?.method === 'POST') {
+      if (typeof url === 'string' && url === '/api/schedule/board/offers' && init?.method === 'POST') {
+        offerEndpointHit = true
         return Promise.resolve({
-          ok: false,
+          ok: true,
           json: () => Promise.resolve({
-            error: {
-              code: 'RIDER_NO_PAYMENT_METHOD',
-              message: 'This rider hasn’t set up payment yet — try a different post.',
-            },
+            offer_id: 'offer-1',
+            status: 'pending',
+            created_at: new Date().toISOString(),
           }),
         })
+      }
+      if (typeof url === 'string' && url === '/api/schedule/request' && init?.method === 'POST') {
+        legacyRequestEndpointHit = true
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
       }
       if (typeof url === 'string' && url.startsWith('/api/schedule/board')) {
         return Promise.resolve({
@@ -439,10 +450,11 @@ describe('RideBoard', () => {
     await user.click(screen.getByTestId('confirm-send-button'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('request-error')).toHaveTextContent(/rider/i)
+      expect(offerEndpointHit).toBe(true)
     })
-    // Critical: do NOT push to /payment/add — adding the driver's own card
-    // can't unblock the rider.
+    // Must NOT call the legacy endpoint for a rider-post offer.
+    expect(legacyRequestEndpointHit).toBe(false)
+    // Must NOT redirect anywhere — driver stays on the board.
     expect(mockNavigate).not.toHaveBeenCalledWith('/payment/add', expect.anything())
   })
 

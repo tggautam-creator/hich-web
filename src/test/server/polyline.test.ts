@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { decodePolyline, samplePolyline, haversineMetres } from '../../../server/lib/polyline'
+import { decodePolyline, samplePolyline, haversineMetres, projectPointOntoPolyline } from '../../../server/lib/polyline'
 
 describe('decodePolyline', () => {
   it('decodes a known Google encoded polyline', () => {
@@ -73,5 +73,74 @@ describe('samplePolyline', () => {
     // Sample every 2km should give ~6 points (start + 4 intervals + end)
     const sampled = samplePolyline(points, 2000)
     expect(sampled.length).toBeGreaterThanOrEqual(2) // at minimum first + last
+  })
+})
+
+describe('projectPointOntoPolyline', () => {
+  // A simple 3-segment "L" shape we can reason about by eye:
+  // start at (37.7, -122.4), go north ~5.5km, then east ~5.5km.
+  const lShape = [
+    { lat: 37.7, lng: -122.4 },
+    { lat: 37.75, lng: -122.4 },
+    { lat: 37.75, lng: -122.34 },
+  ]
+
+  it('returns distance ≈ 0 for a point that lies on the polyline', () => {
+    // Halfway up the first segment.
+    const result = projectPointOntoPolyline({ lat: 37.725, lng: -122.4 }, lShape)
+    expect(result.distanceM).toBeLessThan(50)
+    expect(result.fractionAlong).toBeGreaterThan(0.2)
+    expect(result.fractionAlong).toBeLessThan(0.4)
+  })
+
+  it('returns fractionAlong = 0 for the polyline start', () => {
+    const result = projectPointOntoPolyline({ lat: 37.7, lng: -122.4 }, lShape)
+    expect(result.distanceM).toBeLessThan(10)
+    expect(result.fractionAlong).toBeCloseTo(0, 2)
+  })
+
+  it('returns fractionAlong = 1 for the polyline end', () => {
+    const result = projectPointOntoPolyline({ lat: 37.75, lng: -122.34 }, lShape)
+    expect(result.distanceM).toBeLessThan(10)
+    expect(result.fractionAlong).toBeCloseTo(1, 2)
+  })
+
+  it('returns the perpendicular distance for a point off the route', () => {
+    // ~3km east of the first segment's midpoint — should be ~3km off
+    // route. Mirrors the Axis-Davis-vs-UCD→Pier 39 case that surfaced
+    // the pickup-radius relaxation requirement (rider was ~3.7km off
+    // the polyline corridor; this confirms our projection math
+    // returns that order of magnitude rather than a near-zero false
+    // positive).
+    const result = projectPointOntoPolyline({ lat: 37.725, lng: -122.366 }, lShape)
+    expect(result.distanceM).toBeGreaterThan(2500)
+    expect(result.distanceM).toBeLessThan(3500)
+  })
+
+  it('preserves point ordering for two points along the route', () => {
+    // Smart search's direct-match guard requires
+    // origin.fractionAlong < dest.fractionAlong — otherwise the
+    // route goes through the drop BEFORE the pickup which makes no
+    // sense as a carpool. Guard against a regression that swaps
+    // the ordering.
+    const upstream = projectPointOntoPolyline({ lat: 37.72, lng: -122.4 }, lShape)
+    const downstream = projectPointOntoPolyline({ lat: 37.75, lng: -122.37 }, lShape)
+    expect(upstream.fractionAlong).toBeLessThan(downstream.fractionAlong)
+  })
+
+  it('handles an empty polyline by returning Infinity', () => {
+    const result = projectPointOntoPolyline({ lat: 37.7, lng: -122.4 }, [])
+    expect(result.distanceM).toBe(Infinity)
+    expect(result.fractionAlong).toBe(0)
+  })
+
+  it('treats a single-point polyline as a haversine fallback', () => {
+    const result = projectPointOntoPolyline(
+      { lat: 37.7749, lng: -122.4194 },
+      [{ lat: 37.8044, lng: -122.2712 }],
+    )
+    expect(result.distanceM).toBeGreaterThan(12000)
+    expect(result.distanceM).toBeLessThan(15000)
+    expect(result.fractionAlong).toBe(0)
   })
 })

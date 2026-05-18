@@ -714,10 +714,14 @@ export type Database = {
       }
 
       // ── ride_offers ─────────────────────────────────────────────────────────
+      // Columns added by migrations 072 (board fields), 083 (transit
+      // hand-off + estimated_fare_cents). `ride_id` is nullable on
+      // rows that originated from `ride_schedules` (board-offer flow)
+      // because the ride row only materializes on rider-accept.
       ride_offers: {
         Row: {
           id: string
-          ride_id: string
+          ride_id: string | null
           driver_id: string
           vehicle_id: string | null
           status: 'pending' | 'selected' | 'standby' | 'released'
@@ -726,10 +730,22 @@ export type Database = {
           driver_destination_name: string | null
           driver_route_polyline: string | null
           overlap_pct: number | null
+          schedule_id: string | null
+          proposed_pickup_point: GeoPoint | null
+          proposed_dropoff_point: GeoPoint | null
+          proposed_pickup_name: string | null
+          proposed_dropoff_name: string | null
+          proposed_fare_cents: number | null
+          proposed_eta_minutes: number | null
+          estimated_fare_cents: number | null
+          proposed_transit_line_name: string | null
+          proposed_transit_walk_minutes: number | null
+          proposed_transit_to_dest_minutes: number | null
+          proposed_transit_total_minutes: number | null
         }
         Insert: {
           id?: string
-          ride_id: string
+          ride_id?: string | null
           driver_id: string
           vehicle_id?: string | null
           status?: 'pending' | 'selected' | 'standby' | 'released'
@@ -738,10 +754,22 @@ export type Database = {
           driver_destination_name?: string | null
           driver_route_polyline?: string | null
           overlap_pct?: number | null
+          schedule_id?: string | null
+          proposed_pickup_point?: GeoPoint | null
+          proposed_dropoff_point?: GeoPoint | null
+          proposed_pickup_name?: string | null
+          proposed_dropoff_name?: string | null
+          proposed_fare_cents?: number | null
+          proposed_eta_minutes?: number | null
+          estimated_fare_cents?: number | null
+          proposed_transit_line_name?: string | null
+          proposed_transit_walk_minutes?: number | null
+          proposed_transit_to_dest_minutes?: number | null
+          proposed_transit_total_minutes?: number | null
         }
         Update: {
           id?: string
-          ride_id?: string
+          ride_id?: string | null
           driver_id?: string
           vehicle_id?: string | null
           status?: 'pending' | 'selected' | 'standby' | 'released'
@@ -750,6 +778,18 @@ export type Database = {
           driver_destination_name?: string | null
           driver_route_polyline?: string | null
           overlap_pct?: number | null
+          schedule_id?: string | null
+          proposed_pickup_point?: GeoPoint | null
+          proposed_dropoff_point?: GeoPoint | null
+          proposed_pickup_name?: string | null
+          proposed_dropoff_name?: string | null
+          proposed_fare_cents?: number | null
+          proposed_eta_minutes?: number | null
+          estimated_fare_cents?: number | null
+          proposed_transit_line_name?: string | null
+          proposed_transit_walk_minutes?: number | null
+          proposed_transit_to_dest_minutes?: number | null
+          proposed_transit_total_minutes?: number | null
         }
         Relationships: never[]
       }

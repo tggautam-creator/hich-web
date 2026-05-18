@@ -1,6 +1,6 @@
 import { app } from './app.ts'
 import { getServerEnv, validateStripeEnv } from './env.ts'
-import { checkUpcomingRides, clearExpiredSnoozes, clearStaleOnlineFlags, expireMissedRides, expireStaleRequests, syncAllRoutines } from './lib/scheduledReminders.ts'
+import { checkUpcomingRides, clearExpiredSnoozes, clearStaleOnlineFlags, expireMissedRides, expirePendingBoardOffers, expireStaleRequests, syncAllRoutines } from './lib/scheduledReminders.ts'
 import { checkActiveRides } from './lib/rideSafetyNet.ts'
 import { startRideEtaTick } from './lib/rideEtaTick.ts'
 import { sendPendingPaymentNudges } from './jobs/paymentDunning.ts'
@@ -86,7 +86,7 @@ async function runReminderSweep(reason: string): Promise<void> {
 
   try {
     console.log(`[cron/fallback] Starting reminder sweep (${reason})`)
-    const [reminders, expiry, missed, safetyNet, sync, dunning, snooze, staleOnline] = await Promise.all([
+    const [reminders, expiry, missed, safetyNet, sync, dunning, snooze, staleOnline, offerExpiry] = await Promise.all([
       checkUpcomingRides(),
       expireStaleRequests(),
       expireMissedRides(),
@@ -123,8 +123,17 @@ async function runReminderSweep(reason: string): Promise<void> {
         console.error(`[cron/fallback] stale-online sweep failed: ${msg}`)
         return { cleared: 0, notified: 0 }
       }),
+      // 2026-05-17 — mirror the rider-request expiry behaviour for
+      // driver-on-rider-post offers. Defensive .catch() so a query
+      // error here doesn't tank the rest of the sweep via the
+      // Promise.all rejection path.
+      expirePendingBoardOffers().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[cron/fallback] offer-expiry sweep failed: ${msg}`)
+        return { checked: 0, expired: 0 }
+      }),
     ])
-    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, sync: users=${sync.users} inserted=${sync.inserted}, dunning: scanned=${dunning.scanned} nudged=${dunning.nudged}, snooze: cleared=${snooze.cleared} notified=${snooze.notified}, staleOnline: cleared=${staleOnline.cleared} notified=${staleOnline.notified}`)
+    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, sync: users=${sync.users} inserted=${sync.inserted}, dunning: scanned=${dunning.scanned} nudged=${dunning.nudged}, snooze: cleared=${snooze.cleared} notified=${snooze.notified}, staleOnline: cleared=${staleOnline.cleared} notified=${staleOnline.notified}, offerExpiry: checked=${offerExpiry.checked} expired=${offerExpiry.expired}`)
   } catch (err) {
     console.error('[cron/fallback] Failed reminder sweep:', err)
   } finally {

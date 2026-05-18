@@ -156,6 +156,52 @@ notificationsRouter.get(
       }
     }
 
+    // 2026-05-18 — same read-time downgrade pattern for `board_offer`
+    // rows. When a driver's offer flips out of `pending` (rider
+    // accepted it, declined it, a sibling was accepted → released,
+    // or the auto-expiry cron expired it), the matching inbox row
+    // gets retyped to `board_offer_actioned`. This keeps the inbox
+    // from accumulating stale "Test Rider wants to drive you"
+    // entries that all collapse onto the same dead offer when
+    // tapped (Tarun's 2026-05-17 complaint that ran the inbox up
+    // to 6 stacked entries per offer).
+    //
+    // Same trade-off as board_request: no DB mutation, history
+    // preserved, every state-change path stays free of "remember
+    // to update the notification" boilerplate.
+    const offerIDsToCheck = new Set<string>()
+    for (const row of rows) {
+      if (row['type'] !== 'board_offer') continue
+      const dataField = row['data'] as Record<string, unknown> | null
+      const offerID = dataField?.['offer_id']
+      if (typeof offerID === 'string') offerIDsToCheck.add(offerID)
+    }
+
+    if (offerIDsToCheck.size > 0) {
+      const { data: offerRows } = await supabaseAdmin
+        .from('ride_offers')
+        .select('id, status' as never)
+        .in('id', Array.from(offerIDsToCheck))
+      const statusByOfferID = new Map<string, string>()
+      for (const o of (offerRows ?? []) as unknown as Array<{ id: string; status: string }>) {
+        statusByOfferID.set(o.id, o.status)
+      }
+      for (const row of rows) {
+        if (row['type'] !== 'board_offer') continue
+        const dataField = row['data'] as Record<string, unknown> | null
+        const offerID = dataField?.['offer_id']
+        if (typeof offerID !== 'string') continue
+        const status = statusByOfferID.get(offerID)
+        // Missing offer row (CASCADE-deleted when schedule went away)
+        // or any non-pending status (selected / released / standby)
+        // → downgrade to actioned so iOS renders the "no longer
+        // active" treatment.
+        if (!status || status !== 'pending') {
+          row['type'] = 'board_offer_actioned'
+        }
+      }
+    }
+
     res.status(200).json({ notifications: rows })
   },
 )

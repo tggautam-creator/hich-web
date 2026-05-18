@@ -173,7 +173,7 @@ async function computeRideFare(
 /// to corrected haversine + an average-speed duration estimate so
 /// the message ALWAYS gets a fare. Returns a positive integer cents
 /// value clamped at the min fare.
-async function estimateFareCentsBetween(
+export async function estimateFareCentsBetween(
   pickupLat: number, pickupLng: number,
   dropoffLat: number, dropoffLng: number,
 ): Promise<number> {
@@ -3052,28 +3052,69 @@ ridesRouter.post(
       return
     }
 
-    // Update the confirmation flag
-    const updateFields: Record<string, unknown> = {}
-    if (location_type === 'pickup') {
-      updateFields.pickup_confirmed = true
-    } else {
-      updateFields.dropoff_confirmed = true
+    // 2026-05-18 — race-safe flag flip with compare-and-set (CAS).
+    //
+    // Old code:
+    //   UPDATE rides SET dropoff_confirmed=true WHERE id=?
+    //   if !ride.pickup_confirmed → INSERT pickup_suggestion
+    //   INSERT location_accepted
+    //
+    // Double-tap problem (Tarun's 2026-05-18 audit): two concurrent
+    // taps both SELECT the original row with dropoff_confirmed=false,
+    // both run the unconditional UPDATE (idempotent), both check
+    // !ride.pickup_confirmed (still false on both reads), both INSERT
+    // pickup_suggestion AND location_accepted. Result: duplicate
+    // cards in chat.
+    //
+    // Fix: scope the UPDATE with `.eq(flipField, false)` so it ONLY
+    // matches when the flag is still false. The losing concurrent
+    // call gets `data: null` from the UPDATE → we early-return with
+    // the already-current state, skipping the chat-message inserts.
+    //
+    // The same CAS protects pickup AND dropoff because each one's
+    // gate is the field's own prior state.
+    const flipField: 'pickup_confirmed' | 'dropoff_confirmed' =
+      location_type === 'pickup' ? 'pickup_confirmed' : 'dropoff_confirmed'
+
+    const { data: flipResult, error: updateErr } = await supabaseAdmin
+      .from('rides')
+      .update({ [flipField]: true })
+      .eq('id', rideId)
+      .eq(flipField, false)
+      .select('id')
+      .maybeSingle()
+
+    if (updateErr) { next(updateErr); return }
+
+    if (!flipResult) {
+      // CAS missed — the flag was already true. Either the rider
+      // double-tapped Accept faster than the first call returned,
+      // or a separate device flipped it. Either way, no chat-side
+      // effects should fire. Return the already-current state so
+      // the client UI converges without inserting duplicate cards.
+      res.status(200).json({
+        ride_id: rideId,
+        location_type,
+        pickup_confirmed: ride.pickup_confirmed || location_type === 'pickup',
+        dropoff_confirmed: ride.dropoff_confirmed || location_type === 'dropoff',
+        already_accepted: true,
+      })
+      return
     }
 
-    // Check if both are now confirmed
+    // Check if both are now confirmed → flip status to 'coordinating'
     const pickupDone = location_type === 'pickup' ? true : ride.pickup_confirmed
     const dropoffDone = location_type === 'dropoff' ? true : ride.dropoff_confirmed
 
     if (pickupDone && dropoffDone && ride.status === 'accepted') {
-      updateFields.status = 'coordinating'
+      // Same CAS pattern on status — only flip if still 'accepted'
+      // to avoid clobbering a concurrent transition.
+      await supabaseAdmin
+        .from('rides')
+        .update({ status: 'coordinating' })
+        .eq('id', rideId)
+        .eq('status', 'accepted')
     }
-
-    const { error: updateErr } = await supabaseAdmin
-      .from('rides')
-      .update(updateFields)
-      .eq('id', rideId)
-
-    if (updateErr) { next(updateErr); return }
 
     // 2026-05-06 — when the dropoff is being confirmed AND the
     // pickup is still un-confirmed (rider has a custom pickup),
@@ -3084,10 +3125,22 @@ ridesRouter.post(
     // Gated on `ride.origin` existing — when rider chose driver's
     // start at request time, pickup is already pre-confirmed and
     // we skip this branch entirely.
+    //
+    // 2026-05-18 — board-originated rides (those with a
+    // `schedule_id`) come from a driver-proposed offer, so the
+    // pickup_suggestion should be attributed to the DRIVER not the
+    // rider — otherwise the rider sees their own avatar on the card
+    // with no Accept button (isProposedByMe = true → action row
+    // hidden). For instant-ride rows (`schedule_id IS NULL`) the
+    // existing rider-proposed semantics still apply.
     if (location_type === 'dropoff' && !ride.pickup_confirmed && ride.origin) {
-      const proposerId = ride.rider_id
+      const isBoardOriginated = ride.schedule_id != null
+      const proposerId: string = isBoardOriginated
+        ? (ride.driver_id ?? ride.rider_id)
+        : ride.rider_id
       const pickupCoords = (ride.origin as { coordinates: [number, number] }).coordinates
-      const pickupName = ride.origin_name ?? 'the rider\'s requested pickup'
+      const pickupName = ride.origin_name
+        ?? (isBoardOriginated ? 'your pickup' : 'the rider\'s requested pickup')
       const { data: pickupMsg, error: pmErr } = await supabaseAdmin
         .from('messages')
         .insert({

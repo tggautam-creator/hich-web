@@ -211,27 +211,65 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       // covers the worst-case fare.
       const fareEst = estimateScheduleFare(confirmRide)
       const estimatedFareCents = fareEst?.high_cents ?? null
-      const resp = await fetch('/api/schedule/request', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          schedule_id: confirmRide.id,
-          ...(originLat != null && originLng != null ? { origin_lat: originLat, origin_lng: originLng } : {}),
-          origin_name: enrichment?.pickup_name ?? null,
-          ...(estimatedFareCents != null ? { estimated_fare_cents: estimatedFareCents } : {}),
-          ...(enrichment ? {
-            destination_lat: enrichment.destination_lat,
-            destination_lng: enrichment.destination_lng,
-            destination_name: enrichment.destination_name,
-            destination_flexible: enrichment.destination_flexible,
-            note: enrichment.note,
-            dropoff_at_driver_destination: enrichment.dropoff_at_driver_destination,
-          } : {}),
-        }),
-      })
+      // 2026-05-18 W6 — endpoint branches by post type:
+      //   * Driver-posted seats (rider booking) keep the legacy
+      //     `/api/schedule/request` flow — they create the ride row
+      //     immediately and require the rider's card upfront.
+      //   * Rider-posted requests (driver offering) move to the new
+      //     `/api/schedule/board/offers` flow — same surface iOS
+      //     uses; the rider sees + accepts/declines on
+      //     `BoardOfferAcceptPage`. Payment is captured later on
+      //     accept, not at offer-create time.
+      const isDriverPost = confirmRide.mode === 'driver'
+      const resp = isDriverPost
+        ? await fetch('/api/schedule/request', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify({
+              schedule_id: confirmRide.id,
+              ...(originLat != null && originLng != null ? { origin_lat: originLat, origin_lng: originLng } : {}),
+              origin_name: enrichment?.pickup_name ?? null,
+              ...(estimatedFareCents != null ? { estimated_fare_cents: estimatedFareCents } : {}),
+              ...(enrichment ? {
+                destination_lat: enrichment.destination_lat,
+                destination_lng: enrichment.destination_lng,
+                destination_name: enrichment.destination_name,
+                destination_flexible: enrichment.destination_flexible,
+                note: enrichment.note,
+                dropoff_at_driver_destination: enrichment.dropoff_at_driver_destination,
+              } : {}),
+            }),
+          })
+        : await fetch('/api/schedule/board/offers', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            // Driver offering on a rider's post. Server defaults the
+            // pickup + dropoff names to the schedule's posted
+            // addresses when we don't override them. When the driver
+            // came from a smart-search handoff result, `enrichment`
+            // carries the proposed transit station as
+            // destination_lat/lng/name — wire it through to
+            // `proposed_dropoff_*` so the rider sees the actual
+            // proposal on their BoardOfferAcceptPage card.
+            body: JSON.stringify({
+              schedule_id: confirmRide.id,
+              ...(enrichment?.destination_lat != null && enrichment?.destination_lng != null
+                ? {
+                    proposed_dropoff_lat: enrichment.destination_lat,
+                    proposed_dropoff_lng: enrichment.destination_lng,
+                  }
+                : {}),
+              ...(enrichment?.destination_name
+                ? { proposed_dropoff_name: enrichment.destination_name }
+                : {}),
+            }),
+          })
 
       if (!resp.ok) {
         const body = (await resp.json()) as { error?: { code?: string; message?: string } }
@@ -265,7 +303,8 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
         return
       }
 
-      const isDriverPost = confirmRide.mode === 'driver'
+      // `isDriverPost` already declared above (line ~223 — the
+      // endpoint-branch switch) so reuse, don't redeclare.
       setRides((prev) => prev.map((r) => r.id === confirmRide.id ? { ...r, already_requested: true } : r))
       setSuccessMessage(isDriverPost ? 'Request sent! They\'ll see it in their notifications.' : 'Offer sent! They\'ll see it in their notifications.')
       setConfirmRide(null)
@@ -290,6 +329,54 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
     setConfirmInitialEnrichment(pendingRequestState.enrichment)
     setRestoredPendingRequest(true)
   }, [pendingRequestState, loading, rides, navigate, restoredPendingRequest])
+
+  // 2026-05-18 W5/W6 — when the user taps a result on `RideBoardHome`,
+  // the home page navigates here with `state.openRideId`. Once the
+  // rides finish loading we auto-open the detail sheet for that
+  // ride so the request/offer surface is one tap away. When the
+  // search result was a transit-handoff match the home page also
+  // attaches `state.proposedHandoff` carrying the suggested drop
+  // station — we pre-fill `confirmInitialEnrichment` and bypass the
+  // detail sheet so the driver lands directly on the confirm sheet
+  // with the handoff already represented in the offer-to-be (and
+  // the eventual POST to /board/offers carries proposed_dropoff_*).
+  //
+  // Guard keys off `location.key` (the routing identity that bumps
+  // every navigation) rather than the ride id — otherwise re-
+  // opening the same ride from a fresh search would silently no-op
+  // because the previous ride id is still in component state.
+  const [lastAutoOpenKey, setLastAutoOpenKey] = useState<string | null>(null)
+  useEffect(() => {
+    if (loading) return
+    if (lastAutoOpenKey === location.key) return
+    interface AutoOpenState {
+      openRideId?: string
+      proposedHandoff?: {
+        station_name: string
+        station_lat: number
+        station_lng: number
+      } | null
+    }
+    const incoming = (location.state as AutoOpenState | null) ?? null
+    const openId = incoming?.openRideId
+    if (!openId) return
+    const matched = rides.find((r) => r.id === openId)
+    if (!matched) return
+    const handoff = incoming?.proposedHandoff ?? null
+    if (handoff && matched.mode === 'rider') {
+      setConfirmRide(matched)
+      setConfirmInitialEnrichment({
+        destination_lat: handoff.station_lat,
+        destination_lng: handoff.station_lng,
+        destination_name: handoff.station_name,
+        destination_flexible: false,
+      })
+    } else {
+      setDetailRide(matched)
+    }
+    setLastAutoOpenKey(location.key)
+    navigate(location.pathname, { replace: true, state: null })
+  }, [loading, rides, location.state, location.pathname, location.key, navigate, lastAutoOpenKey])
 
   // ── Delete own schedule ─────────────────────────────────────────────────────
   const handleDeleteSchedule = useCallback(async (scheduleId: string) => {

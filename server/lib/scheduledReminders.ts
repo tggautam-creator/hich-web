@@ -327,6 +327,133 @@ export async function expireStaleRequests(): Promise<{ checked: number; expired:
 }
 
 /**
+ * 2026-05-17 — Closes the lifetime asymmetry between rider requests
+ * (auto-expire via `expireStaleRequests`) and driver-on-rider-post
+ * offers (previously: indefinite). Pending offers whose parent
+ * schedule's trip_date+trip_time is in the past get flipped to
+ * `released`; the driver gets a `board_offer_expired` push so they
+ * know their offer aged out and won't be acted on.
+ *
+ * Mirrors the same date/time gating as `expireStaleRequests` so a
+ * single trip-time threshold drives both sides.
+ *
+ * Why: a driver offers on a Tuesday rider post. Rider doesn't open
+ * the push until Friday. Without this cron the offer is still
+ * `pending` and the rider can "accept" — the accept endpoint would
+ * then materialise a `rides` row dated last Tuesday, which is now
+ * a dead ride neither side can act on. Force-released offers can't
+ * be accepted, so the rider's empty state correctly says "expired"
+ * via `computeNoOffersReason` instead of pretending the driver
+ * withdrew.
+ */
+export async function expirePendingBoardOffers(): Promise<{ checked: number; expired: number }> {
+  const { realtimeBroadcast } = await import('./realtimeBroadcast.ts')
+  const now = new Date()
+  const todayDate = getLocalDateString(now)
+  const nowTime = getLocalTimeString(now)
+
+  // Find pending board offers whose parent schedule's trip is past.
+  // We need the schedule's trip_date/trip_time/time_flexible to apply
+  // the same gating as `expireStaleRequests`, so use a join via
+  // PostgREST's foreign-key shorthand. Cast `as never` because the
+  // generated Database types haven't been regenerated since mig 072
+  // added `schedule_id`.
+  type OfferRow = {
+    id: string
+    driver_id: string
+    schedule_id: string
+    schedule: {
+      trip_date: string | null
+      trip_time: string | null
+      time_flexible: boolean | null
+      origin_address: string | null
+      dest_address: string | null
+    } | null
+  }
+  const { data: rawOffers, error } = await supabaseAdmin
+    .from('ride_offers')
+    .select('id, driver_id, schedule_id, schedule:schedule_id (trip_date, trip_time, time_flexible, origin_address, dest_address)' as never)
+    .eq('status', 'pending')
+    .not('schedule_id', 'is', null)
+
+  if (error) {
+    console.error('[expiry:offers] query failed:', error.message)
+    return { checked: 0, expired: 0 }
+  }
+
+  const offers = (rawOffers as unknown) as OfferRow[] | null
+  if (!offers || offers.length === 0) {
+    return { checked: 0, expired: 0 }
+  }
+
+  let expired = 0
+
+  for (const offer of offers) {
+    const s = offer.schedule
+    if (!s?.trip_date || !s.trip_time) continue
+
+    // Same gating shape as expireStaleRequests:
+    if (s.trip_date > todayDate) continue
+    if (s.time_flexible === true && s.trip_date === todayDate) continue
+    if (s.time_flexible !== true && s.trip_date === todayDate && s.trip_time > nowTime) continue
+
+    const { error: updateErr } = await supabaseAdmin
+      .from('ride_offers')
+      .update({ status: 'released' } as never)
+      .eq('id', offer.id)
+
+    if (updateErr) {
+      console.error(`[expiry:offers] failed to expire offer ${offer.id}:`, updateErr.message)
+      continue
+    }
+
+    const destName = s.dest_address ?? 'their posted ride'
+
+    // Tell the driver their offer aged out. Best-effort.
+    const { data: tokenRows } = await supabaseAdmin
+      .from('push_tokens')
+      .select('token')
+      .eq('user_id', offer.driver_id)
+    const tokens = (tokenRows ?? []).map((t: { token: string }) => t.token)
+    if (tokens.length > 0) {
+      await sendFcmPush(tokens, {
+        title: 'Your offer expired',
+        body: `The rider didn't accept your offer for ${destName} before the trip time.`,
+        data: {
+          type: 'board_offer_expired',
+          offer_id: offer.id,
+          schedule_id: offer.schedule_id,
+        },
+      })
+    }
+
+    void supabaseAdmin.from('notifications').insert({
+      user_id: offer.driver_id,
+      type: 'board_offer_expired',
+      title: 'Your offer expired',
+      body: `Your offer for ${destName} expired — the trip time has passed.`,
+      data: {
+        type: 'board_offer_expired',
+        offer_id: offer.id,
+        schedule_id: offer.schedule_id,
+      },
+    }).then(({ error: notifErr }) => {
+      if (notifErr) console.error('[expiry:offers] notif insert failed:', notifErr.message)
+    })
+
+    void realtimeBroadcast(`board:${offer.driver_id}`, 'offer_expired', {
+      offer_id: offer.id,
+      schedule_id: offer.schedule_id,
+    })
+
+    expired++
+  }
+
+  console.log(`[expiry:offers] Checked ${offers.length} pending offers, expired ${expired}`)
+  return { checked: offers.length, expired }
+}
+
+/**
  * Expires confirmed rides (accepted/coordinating) that were never started
  * and are more than 2 hours past their scheduled trip time.
  * Notifies both rider and driver.
@@ -473,8 +600,15 @@ export async function syncAllRoutines(): Promise<{ users: number; inserted: numb
   // still cron-projects every 5 minutes long after summer ended.
   const todayDateStringForFilter = getLocalDateString(new Date())
   const { data: routines, error } = await supabaseAdmin
+    // 2026-05-17 (Phase C smart-search fix): also pull `origin`,
+    // `destination`, `route_polyline` so the projected
+    // `ride_schedules` rows are immediately searchable by
+    // `/board/search` without needing a backfill pass. Before this,
+    // every cron-projected row had NULL coords + polyline → smart
+    // search couldn't match them at all, falling back to
+    // endpoint-distance (and rejecting cross-region trips).
     .from('driver_routines')
-    .select('id, user_id, route_name, direction_type, day_of_week, departure_time, arrival_time, origin_address, dest_address, skip_dates, end_date')
+    .select('id, user_id, route_name, direction_type, day_of_week, departure_time, arrival_time, origin_address, dest_address, skip_dates, end_date, origin, destination, route_polyline')
     .eq('is_active', true)
     .or(`end_date.is.null,end_date.gte.${todayDateStringForFilter}`)
 
@@ -540,6 +674,10 @@ export async function syncAllRoutines(): Promise<{ users: number; inserted: numb
       dest_place_id: string; dest_address: string;
       direction_type: 'one_way' | 'roundtrip'; trip_date: string;
       time_type: 'departure' | 'arrival'; trip_time: string;
+      origin_lat: number | null; origin_lng: number | null;
+      dest_lat: number | null; dest_lng: number | null;
+      route_polyline: string | null;
+      route_origin_geo: string | null; route_destination_geo: string | null;
     }> = []
 
     for (const r of userRoutines as Array<Record<string, unknown>>) {
@@ -554,6 +692,22 @@ export async function syncAllRoutines(): Promise<{ users: number; inserted: numb
       const destAddr = (r['dest_address'] as string | null) ?? routeName
       const dows = (r['day_of_week'] as number[] | null) ?? []
       const routineID = r['id'] as string
+
+      // Pull route geometry from the parent routine so projected
+      // ride_schedules rows are immediately smart-search-ready. WKT
+      // POINT strings are PostGIS-friendly (the implicit
+      // ST_GeomFromText handles SRID 4326 via the column type).
+      const originGeoJson = r['origin'] as { coordinates?: [number, number] } | null
+      const destGeoJson = r['destination'] as { coordinates?: [number, number] } | null
+      const originLng = originGeoJson?.coordinates?.[0] ?? null
+      const originLat = originGeoJson?.coordinates?.[1] ?? null
+      const destLng = destGeoJson?.coordinates?.[0] ?? null
+      const destLat = destGeoJson?.coordinates?.[1] ?? null
+      const routinePolyline = (r['route_polyline'] as string | null) ?? null
+      const originWkt = originLat != null && originLng != null
+        ? `POINT(${originLng} ${originLat})` : null
+      const destWkt = destLat != null && destLng != null
+        ? `POINT(${destLng} ${destLat})` : null
 
       for (const dow of dows) {
         let daysUntil = dow - todayDow
@@ -582,6 +736,13 @@ export async function syncAllRoutines(): Promise<{ users: number; inserted: numb
           trip_date: dateStr,
           time_type: timeType,
           trip_time: timeStr,
+          origin_lat: originLat,
+          origin_lng: originLng,
+          dest_lat: destLat,
+          dest_lng: destLng,
+          route_polyline: routinePolyline,
+          route_origin_geo: originWkt,
+          route_destination_geo: destWkt,
         })
       }
     }

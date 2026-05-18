@@ -109,6 +109,12 @@ self.addEventListener('notificationclick', (event) => {
     url = '/ride/suggestion/' + data.ride_id
   } else if (inferredType === 'board_accepted' && data.ride_id) {
     url = '/ride/messaging/' + data.ride_id
+  } else if (inferredType === 'board_offer' && data.schedule_id) {
+    // 2026-05-18 web parity W6 — rider taps a board_offer push.
+    // Lands on BoardOfferAcceptPage for the schedule they posted,
+    // where they accept/decline driver offers. Mirrors iOS'
+    // `PushManager.onBoardOfferTap` routing.
+    url = '/ride/board-offer/' + data.schedule_id
   } else if (inferredType === 'board_declined') {
     url = '/notifications'
   } else if (inferredType === 'ride_reminder' && data.ride_id) {
