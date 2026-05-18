@@ -15,6 +15,11 @@ import { AdminApiException } from '@/lib/admin/api'
 import { trackEvent } from '@/lib/analytics'
 import { supabase } from '@/lib/supabase'
 import InfoTooltip from './InfoTooltip'
+import {
+  RECIPIENT_TOKENS,
+  substitute,
+  type PersonalizationRecipient,
+} from '@/lib/personalize'
 
 /**
  * Slice 1.4 — broadcast push composer at /admin/campaigns.
@@ -69,6 +74,11 @@ export default function CampaignsPage() {
   const [subject, setSubject] = useState('')
   const [bodyHtml, setBodyHtml] = useState('')
   const [emailFrom, setEmailFrom] = useState<string>('')
+  // 2026-05-18 — preview a recipient from the audience sample. id of
+  // the selected sample user; null = first sample user (or fallback
+  // recipient if no audience yet). Resolves to a `PersonalizationRecipient`
+  // for the live preview pane.
+  const [previewRecipientId, setPreviewRecipientId] = useState<string | null>(null)
   // Shared
   const [reason, setReason] = useState('')
   const [showConfirm, setShowConfirm] = useState(false)
@@ -244,23 +254,31 @@ export default function CampaignsPage() {
                   ))}
                 </select>
               </label>
+
+              {/* 2026-05-18 — personalization tokens. Click a chip to
+                   copy `{{token}}` to the clipboard; admin pastes it
+                   into the Subject or Body. (Click-to-insert at cursor
+                   isn't trivial across an <input> + RichTextEditor, so
+                   we chose copy + paste for v1.) */}
+              <PersonalizationChips />
+
               <label className="block">
                 <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
-                  Subject <span className="text-text-secondary">(≤ 200 chars)</span>
+                  Subject <span className="text-text-secondary">(≤ 200 chars · tokens like {`{{name}}`} resolve per recipient)</span>
                 </div>
                 <input
                   data-testid="campaign-email-subject"
                   type="text"
                   value={subject}
                   onChange={(e) => setSubject(e.target.value)}
-                  placeholder="Your Tago weekly digest"
+                  placeholder="e.g. Hi {{first_name}}, your weekly Tago digest"
                   maxLength={200}
                   className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
                 />
               </label>
               <label className="block">
                 <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
-                  Body
+                  Body <span className="text-text-secondary">· tokens like {`{{name}}`} resolve per recipient</span>
                 </div>
                 <RichTextEditor
                   value={bodyHtml}
@@ -268,6 +286,17 @@ export default function CampaignsPage() {
                   placeholder="Write the email — bold, lists, links, headings…"
                 />
               </label>
+
+              {/* Live preview — picks a sample audience user, applies
+                   substitution client-side using the same logic the
+                   server runs at send time (src/lib/personalize.ts). */}
+              <EmailPreviewPane
+                subject={subject}
+                bodyHtml={bodyHtml}
+                sampleUsers={preview.data?.sample_users ?? []}
+                previewRecipientId={previewRecipientId}
+                onPickRecipient={setPreviewRecipientId}
+              />
             </>
           )}
 
@@ -1200,6 +1229,152 @@ function RecallCampaignDialog({
                   ? 'Recall + send correction'
                   : 'Confirm recall'}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Personalization chips + live preview (2026-05-18) ──────────────────────
+
+/**
+ * Clickable token chips. Click → copy `{{token}}` to clipboard for
+ * the admin to paste into Subject or Body. (True click-to-insert at
+ * cursor across a plain `<input>` + a contenteditable RichTextEditor
+ * is non-trivial; copy-paste is good enough for v1.)
+ */
+function PersonalizationChips() {
+  const [copied, setCopied] = useState<string | null>(null)
+  return (
+    <div className="rounded-md border border-border bg-surface p-3">
+      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
+        Personalization tokens
+        <span className="ml-2 font-normal normal-case text-text-secondary">
+          Click to copy, then paste into Subject or Body.
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {RECIPIENT_TOKENS.map((token) => (
+          <button
+            key={token}
+            type="button"
+            data-testid={`personalization-token-${token}`}
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(token)
+                setCopied(token)
+                window.setTimeout(() => setCopied((cur) => (cur === token ? null : cur)), 1500)
+              } catch {
+                // Some browsers block clipboard without user gesture in
+                // certain frames; leave a visible hint instead.
+                window.prompt('Copy this token:', token)
+              }
+            }}
+            className="rounded-md border border-border bg-white px-2 py-1 font-mono text-xs text-primary hover:bg-primary/5"
+          >
+            {token}
+            {copied === token && <span className="ml-1 text-success">✓</span>}
+          </button>
+        ))}
+      </div>
+      <div className="mt-2 text-[11px] text-text-secondary">
+        At send time the server replaces each token per recipient using their
+        profile. <code className="font-mono">{`{{name}}`}</code> uses their full name (falls
+        back to email username), <code className="font-mono">{`{{first_name}}`}</code> uses
+        just the first word.
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Live preview pane. Renders the current Subject + Body with tokens
+ * substituted for the selected sample recipient. Reuses the client
+ * mirror of the server's `substitute` function so the preview matches
+ * the actual delivery exactly.
+ */
+function EmailPreviewPane({
+  subject,
+  bodyHtml,
+  sampleUsers,
+  previewRecipientId,
+  onPickRecipient,
+}: {
+  subject: string
+  bodyHtml: string
+  sampleUsers: { id: string; email: string; full_name: string | null }[]
+  previewRecipientId: string | null
+  onPickRecipient: (id: string | null) => void
+}) {
+  // If the admin hasn't picked one, default to the first sample user
+  // so the preview pane is never blank when an audience is loaded.
+  const effective = previewRecipientId
+    ? sampleUsers.find((u) => u.id === previewRecipientId) ?? sampleUsers[0] ?? null
+    : sampleUsers[0] ?? null
+
+  // Fallback recipient used when no audience preview has run yet.
+  const previewRecipient: PersonalizationRecipient = effective ?? {
+    email: 'sample@example.edu',
+    full_name: 'Sample User',
+  }
+
+  const renderedSubject = substitute(subject, previewRecipient)
+  const renderedBody = substitute(bodyHtml, previewRecipient)
+
+  return (
+    <div className="rounded-md border border-border bg-surface p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
+          Live preview
+        </div>
+        {sampleUsers.length > 0 ? (
+          <label className="flex items-center gap-2 text-[11px] text-text-secondary">
+            <span>Preview as</span>
+            <select
+              data-testid="campaign-preview-as"
+              value={previewRecipientId ?? sampleUsers[0]?.id ?? ''}
+              onChange={(e) => onPickRecipient(e.target.value || null)}
+              className="rounded-md border border-border bg-white px-2 py-1 text-[11px] text-text-primary focus:border-primary focus:outline-none"
+            >
+              {sampleUsers.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.full_name ?? '(no name)'} · {u.email}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <div className="text-[11px] italic text-text-secondary">
+            Select an audience to preview as a real recipient.
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-md border border-border bg-white p-3 text-sm">
+        <div className="border-b border-border pb-2">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
+            Subject
+          </div>
+          <div className="mt-1 font-medium text-text-primary">
+            {renderedSubject || <span className="italic text-text-secondary">(empty)</span>}
+          </div>
+        </div>
+        <div className="mt-2">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
+            Body preview
+          </div>
+          {renderedBody ? (
+            <div
+              data-testid="campaign-preview-body"
+              className="prose prose-sm mt-1 max-w-none text-text-primary"
+              // Rendered HTML from the admin's own composer — trusted
+              // input (admin-authored, server-validated length). Inline
+              // styles preserved so the preview matches the actual email.
+              dangerouslySetInnerHTML={{ __html: renderedBody }}
+            />
+          ) : (
+            <div className="mt-1 italic text-text-secondary">(empty)</div>
+          )}
         </div>
       </div>
     </div>

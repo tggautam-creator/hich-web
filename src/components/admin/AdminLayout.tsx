@@ -30,6 +30,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { to: '/admin',             label: 'Dashboard',  testId: 'admin-nav-dashboard' },
   { to: '/admin/funnel',      label: 'Funnel',     testId: 'admin-nav-funnel' },
   { to: '/admin/users',       label: 'Users',      testId: 'admin-nav-users' },
+  { to: '/admin/ride-board',  label: 'Ride Board', testId: 'admin-nav-ride-board' },
   { to: '/admin/campaigns',   label: 'Campaigns',  testId: 'admin-nav-campaigns' },
   { to: '/admin/live',        label: 'Live',       testId: 'admin-nav-live' },
   { to: '/admin/alerts',      label: 'Alerts',     testId: 'admin-nav-alerts' },

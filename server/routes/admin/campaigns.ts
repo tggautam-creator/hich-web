@@ -34,7 +34,11 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
 import { writeAuditLog } from '../../lib/adminAudit.ts'
 import { sendFcmPush } from '../../lib/fcm.ts'
-import { sendEmailToMany, isAllowedFromAddress, FROM_ADDRESS_ALLOWLIST } from '../../lib/resend.ts'
+import {
+  sendPersonalizedEmailToMany,
+  isAllowedFromAddress,
+  FROM_ADDRESS_ALLOWLIST,
+} from '../../lib/resend.ts'
 import { computeFunnelData, STEP_ORDER, type FunnelStep } from './funnel.ts'
 
 export const adminCampaignsRouter = Router()
@@ -923,15 +927,19 @@ adminCampaignsRouter.post(
         return
       }
 
-      // 4. Look up email addresses for the recipients.
+      // 4. Look up email + name for the recipients. `full_name` is
+      //    needed for per-recipient `{{name}}` / `{{first_name}}`
+      //    substitution at send time (mail merge).
       const { data: emailRows, error: emailErr } = await supabaseAdmin
         .from('users')
-        .select('id, email')
+        .select('id, email, full_name')
         .in('id', cohortUserIds)
       if (emailErr) throw emailErr
-      const emails = (emailRows ?? [])
-        .map((u) => u.email)
-        .filter((e): e is string => typeof e === 'string' && e.length > 0)
+      const recipients = (emailRows ?? [])
+        .filter((u): u is { id: string; email: string; full_name: string | null } =>
+          typeof u.email === 'string' && u.email.length > 0,
+        )
+        .map((u) => ({ email: u.email, full_name: u.full_name }))
 
       // 5. Fire the batch send via Resend. Hero image (if any) is
       //    prepended as a centered <img> with sane mobile-friendly
@@ -954,11 +962,16 @@ adminCampaignsRouter.post(
         : ''
       const finalHtml = heroBlock + html + EMAIL_FOOTER_HTML
 
-      const sendResult = await sendEmailToMany({
+      // 2026-05-18 — personalize per recipient. `subject` + `finalHtml`
+      // are templates with optional `{{name}}` / `{{first_name}}`
+      // tokens; the sender resolves them per recipient using their
+      // `full_name`. Recipients with no full_name see their email
+      // username as the fallback (see lib/personalize.ts).
+      const sendResult = await sendPersonalizedEmailToMany({
         from: fromRaw,
-        subject,
-        html: finalHtml,
-        recipients: emails,
+        subjectTemplate: subject,
+        htmlTemplate: finalHtml,
+        recipients,
       })
 
       // 6. Update the campaign row with delivered count (reusing

@@ -166,6 +166,138 @@ adminActionsRouter.post(
   },
 )
 
+// ── POST /:id/actions/notify ────────────────────────────────────────────────
+//
+// 2026-05-18 — single-user in-app notification. Where `/push` tries to
+// reach the user via FCM, this endpoint writes the in-app row directly,
+// which works even when the user has zero `push_tokens` registered
+// (a real bug we hit: a rider on an older app build with permission
+// denied → admin had no way to message them). The iOS app's inbox
+// renders `admin_broadcast` rows and a tap opens the campaign detail
+// sheet — so we mint a campaign row first so the slug resolves, then
+// insert the notification row pointing at that slug.
+
+interface NotifyBody {
+  title?: unknown
+  body?: unknown
+  reason?: unknown
+}
+
+/** Same 10-char base36 recipe campaigns.ts uses for its slugs. */
+function generateNotifySlug(): string {
+  let s = ''
+  for (let i = 0; i < 10; i++) {
+    s += Math.floor(Math.random() * 36).toString(36)
+  }
+  return s
+}
+
+adminActionsRouter.post(
+  '/:id/actions/notify',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = targetUserId(req, res)
+      if (!id) return
+
+      const b = req.body as NotifyBody
+      const title = typeof b.title === 'string' ? b.title.trim() : ''
+      const body = typeof b.body === 'string' ? b.body.trim() : ''
+      const reason = typeof b.reason === 'string' ? b.reason.trim() : ''
+      if (!title || !body) {
+        res.status(400).json({
+          error: { code: 'INVALID_BODY', message: 'title and body are required' },
+        })
+        return
+      }
+      if (title.length > 120 || body.length > 500) {
+        res.status(400).json({
+          error: { code: 'TOO_LONG', message: 'title ≤ 120 chars, body ≤ 500 chars' },
+        })
+        return
+      }
+
+      if (!(await assertTargetExists(id, res))) return
+
+      // Step 1 — mint a campaign row so the iOS tap-to-open flow can
+      // resolve the slug. `audience` is JSONB; we stamp it with a
+      // sentinel so future queries can distinguish targeted notifies
+      // from broadcast campaigns.
+      const adminUid = adminId(res)
+      let slug = generateNotifySlug()
+      let campaignId: string | null = null
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const { data: created, error: createErr } = await supabaseAdmin
+          .from('campaigns')
+          .insert({
+            slug,
+            audience: { type: 'by_user_id', user_id: id } as unknown as Record<
+              string,
+              unknown
+            >,
+            title,
+            body,
+            poster_url: null,
+            poster_link_url: null,
+            recipient_count: 1,
+            push_sent_count: 0,
+            sent_by: adminUid,
+          })
+          .select('id, slug')
+          .single()
+        if (createErr) {
+          // 23505 = unique_violation on the slug — vanishingly unlikely
+          // but cheap to retry.
+          if ((createErr as { code?: string }).code === '23505') {
+            slug = generateNotifySlug()
+            continue
+          }
+          throw createErr
+        }
+        campaignId = created.id
+        slug = created.slug
+        break
+      }
+      if (!campaignId) {
+        res.status(500).json({
+          error: {
+            code: 'CAMPAIGN_INSERT_FAILED',
+            message: 'could not create campaign row after slug retries',
+          },
+        })
+        return
+      }
+
+      // Step 2 — write the in-app notification row pointing at the slug.
+      const { error: notifErr } = await supabaseAdmin.from('notifications').insert({
+        user_id: id,
+        type: 'admin_broadcast',
+        title,
+        body,
+        data: { slug },
+        is_read: false,
+      })
+      if (notifErr) throw notifErr
+
+      await writeAuditLog({
+        adminId: adminUid,
+        targetUserId: id,
+        action: 'send_notify',
+        payload: {
+          campaign_id: campaignId,
+          slug,
+          title,
+          body,
+          reason: reason || null,
+        },
+      })
+
+      res.status(200).json({ ok: true, campaign_id: campaignId, slug })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
 // ── POST /:id/actions/credit ────────────────────────────────────────────────
 
 interface CreditBody {

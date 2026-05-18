@@ -62,6 +62,67 @@ export function isAllowedFromAddress(addr: string): boolean {
  * Returns success / failure counts so the campaign row can record
  * how many actually went out vs. how many were attempted.
  */
+/**
+ * 2026-05-18 — personalized variant of `sendEmailToMany`. Same per-
+ * recipient loop, but each send first runs `substitute()` over the
+ * subject + html using that recipient's `full_name` / `email`. Lets
+ * the admin write copy like `Hi {{name}},` and have every recipient
+ * see their own name. Returns the same shape as `sendEmailToMany`.
+ *
+ * Substitution is applied to BOTH subject and html so an admin can
+ * write `{{name}}, your ride is confirmed` in either field.
+ *
+ * Implementation note: a true Resend batch endpoint can't be used
+ * here (it requires identical content per call). We're already 1-per-
+ * recipient anyway because Resend's `batch.send` caps at 100 and
+ * doesn't accept per-recipient bodies.
+ */
+import { substitute, type PersonalizationRecipient } from './personalize.ts'
+
+export async function sendPersonalizedEmailToMany(args: {
+  from: string
+  subjectTemplate: string
+  htmlTemplate: string
+  recipients: (PersonalizationRecipient & { email: string })[]
+}): Promise<{ sent: number; failed: number; failures: string[] }> {
+  const { from, subjectTemplate, htmlTemplate, recipients } = args
+  if (recipients.length === 0) return { sent: 0, failed: 0, failures: [] }
+
+  const client = getResendClient()
+  let sent = 0
+  let failed = 0
+  const failures: string[] = []
+
+  const concurrency = 10
+  for (let i = 0; i < recipients.length; i += concurrency) {
+    const slice = recipients.slice(i, i + concurrency)
+    const results = await Promise.allSettled(
+      slice.map((r) =>
+        client.emails.send({
+          from,
+          to: r.email,
+          subject: substitute(subjectTemplate, r),
+          html: substitute(htmlTemplate, r),
+        }),
+      ),
+    )
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value?.data?.id) {
+        sent += 1
+      } else {
+        failed += 1
+        if (r.status === 'rejected') {
+          failures.push(r.reason instanceof Error ? r.reason.message : String(r.reason))
+        } else if (r.status === 'fulfilled' && r.value?.error) {
+          failures.push(r.value.error.message ?? 'unknown')
+        }
+      }
+    }
+  }
+
+  return { sent, failed, failures }
+}
+
 export async function sendEmailToMany(args: {
   from: string
   subject: string

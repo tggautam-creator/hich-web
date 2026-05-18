@@ -26,6 +26,10 @@ vi.mock('../../../server/lib/fcm.ts', () => ({
 }))
 vi.mock('../../../server/lib/resend.ts', () => ({
   sendEmailToMany: mockSendEmail,
+  // 2026-05-18 — admin/campaigns email send was switched to the
+  // personalized variant for `{{name}}` mail-merge. Same mock fn —
+  // the return shape is identical to `sendEmailToMany`.
+  sendPersonalizedEmailToMany: mockSendEmail,
   isAllowedFromAddress: (addr: string) =>
     ['marketing@tagorides.com', 'hello@tagorides.com', 'support@tagorides.com', 'admin@tagorides.com']
       .includes(addr.toLowerCase()),
@@ -567,15 +571,21 @@ describe('POST /api/admin/campaigns/email', () => {
     expect(res.body.slug).toBeDefined()
 
     // html now carries an auto-appended footer (Slice 1.6) so we
-    // assert the substring rather than exact match.
+    // assert the substring rather than exact match. Personalized
+    // sender (Slice 2026-05-18) takes `subjectTemplate` / `htmlTemplate`
+    // and `recipients: { email, full_name }[]` — assertion shape
+    // updated to match.
     const call = mockSendEmail.mock.calls[0]?.[0] as {
-      from: string; subject: string; html: string; recipients: string[]
+      from: string
+      subjectTemplate: string
+      htmlTemplate: string
+      recipients: { email: string; full_name: string | null }[]
     }
     expect(call.from).toBe('marketing@tagorides.com')
-    expect(call.subject).toBe('Weekly digest')
-    expect(call.recipients).toEqual(['a@x.edu', 'b@x.edu'])
-    expect(call.html).toContain('<h1>Hi</h1><p>Welcome to Tago.</p>')
-    expect(call.html).toContain('Terms of Use')
+    expect(call.subjectTemplate).toBe('Weekly digest')
+    expect(call.recipients.map((r) => r.email)).toEqual(['a@x.edu', 'b@x.edu'])
+    expect(call.htmlTemplate).toContain('<h1>Hi</h1><p>Welcome to Tago.</p>')
+    expect(call.htmlTemplate).toContain('Terms of Use')
 
     expect(auditInserts.length).toBe(1)
     expect(auditInserts[0]).toMatchObject({
@@ -613,7 +623,7 @@ describe('POST /api/admin/campaigns/email', () => {
       })
 
     expect(res.status).toBe(200)
-    const lastCallHtml = (mockSendEmail.mock.calls[0]?.[0] as { html: string }).html
+    const lastCallHtml = (mockSendEmail.mock.calls[0]?.[0] as { htmlTemplate: string }).htmlTemplate
     // Hero image is centered + capped at 600px + appears BEFORE the
     // author's body (so it renders as a hero, not a footer).
     expect(lastCallHtml).toContain('<img src="https://example.com/spring.png"')
@@ -656,7 +666,7 @@ describe('POST /api/admin/campaigns/email', () => {
       })
 
     expect(res.status).toBe(200)
-    const lastCallHtml = (mockSendEmail.mock.calls[0]?.[0] as { html: string }).html
+    const lastCallHtml = (mockSendEmail.mock.calls[0]?.[0] as { htmlTemplate: string }).htmlTemplate
     expect(lastCallHtml).toContain('<a href="https://www.tagorides.com/c/spring-promo"')
     expect(lastCallHtml).toContain('target="_blank"')
     expect(lastCallHtml).toContain('rel="noopener noreferrer"')

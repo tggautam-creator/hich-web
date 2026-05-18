@@ -37,6 +37,7 @@ const AdminCampaignsPage = lazy(() => import('@/components/admin/CampaignsPage')
 const AdminLiveOpsPage = lazy(() => import('@/components/admin/LiveOpsPage'))
 const AdminAuditLogPage = lazy(() => import('@/components/admin/AuditLogPage'))
 const AdminAlertsPage = lazy(() => import('@/components/admin/AlertsPage'))
+const AdminRideBoardPage = lazy(() => import('@/components/admin/RideBoardPage'))
 const CampaignDetailPage = lazy(() => import('@/components/campaign/CampaignDetailPage'))
 
 // ── Onboarding ───────────────────────────────────────────────────────────────
@@ -86,8 +87,10 @@ const DriverPayoutsPage = lazy(() => import('@/components/driver/DriverPayoutsPa
 
 // ── Schedule & Board ─────────────────────────────────────────────────────────
 const SchedulePage = lazy(() => import('@/components/schedule/SchedulePage'))
+const RideBoardHome = lazy(() => import('@/components/schedule/RideBoardHome'))
 const RideBoard = lazy(() => import('@/components/schedule/RideBoard'))
 const BoardRequestReview = lazy(() => import('@/components/ride/BoardRequestReview'))
+const BoardOfferAcceptPage = lazy(() => import('@/components/ride/BoardOfferAcceptPage'))
 const NotificationsPage = lazy(() => import('@/components/ride/NotificationsPage'))
 const MyRidesPage = lazy(() => import('@/components/ride/MyRidesPage'))
 const BecomeDriverPage = lazy(() => import('@/components/ride/BecomeDriverPage'))
@@ -162,8 +165,17 @@ createRoot(rootEl).render(
               <Route path="/schedule" element={<Suspense fallback={<FormPageSkeleton />}><SchedulePage mode="rider" /></Suspense>} />
               <Route path="/schedule/rider" element={<Suspense fallback={<FormPageSkeleton />}><SchedulePage mode="rider" /></Suspense>} />
               <Route path="/schedule/driver" element={<Suspense fallback={<FormPageSkeleton />}><SchedulePage mode="driver" /></Suspense>} />
-              <Route path="/rides/board" element={<Suspense fallback={<ListPageSkeleton />}><RideBoard /></Suspense>} />
+              {/* 2026-05-18 web parity W2 — search-first home replaces the legacy
+                  wall-of-posts as the primary `/rides/board` surface. The
+                  wall-of-posts moves to `/rides/board/browse` so the "Browse all
+                  rides" link below the search button has somewhere to land. */}
+              <Route path="/rides/board" element={<Suspense fallback={<ListPageSkeleton />}><RideBoardHome /></Suspense>} />
+              <Route path="/rides/board/browse" element={<Suspense fallback={<ListPageSkeleton />}><RideBoard /></Suspense>} />
               <Route path="/ride/board-review/:rideId" element={<Suspense fallback={<MapPageSkeleton />}><BoardRequestReview /></Suspense>} />
+              {/* 2026-05-18 web parity W6 — rider lands here when a driver
+                  posts an offer on their board entry (push or inbox tap).
+                  Mirrors iOS `BoardOfferAcceptPage`. */}
+              <Route path="/ride/board-offer/:scheduleId" element={<Suspense fallback={<MapPageSkeleton />}><BoardOfferAcceptPage /></Suspense>} />
               <Route path="/ride/messaging/:rideId" element={<Suspense fallback={<MapPageSkeleton />}><MessagingWindow /></Suspense>} />
               <Route path="/ride/multi-driver/:rideId" element={<Suspense fallback={<MapPageSkeleton />}><MultiDriverMap /></Suspense>} />
 
@@ -208,6 +220,7 @@ createRoot(rootEl).render(
                   <Route path="/admin/users"      element={<Suspense fallback={<FormPageSkeleton />}><AdminUsersPage /></Suspense>} />
                   <Route path="/admin/users/:id"  element={<Suspense fallback={<FormPageSkeleton />}><AdminUserDetailPage /></Suspense>} />
                   <Route path="/admin/campaigns"  element={<Suspense fallback={<FormPageSkeleton />}><AdminCampaignsPage /></Suspense>} />
+                  <Route path="/admin/ride-board" element={<Suspense fallback={<ListPageSkeleton />}><AdminRideBoardPage /></Suspense>} />
                   <Route path="/admin/live"       element={<Suspense fallback={<MapPageSkeleton />}><AdminLiveOpsPage /></Suspense>} />
                   <Route path="/admin/audit-log"  element={<Suspense fallback={<ListPageSkeleton />}><AdminAuditLogPage /></Suspense>} />
                   <Route path="/admin/alerts"     element={<Suspense fallback={<ListPageSkeleton />}><AdminAlertsPage /></Suspense>} />
