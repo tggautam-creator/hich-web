@@ -72,6 +72,18 @@ export interface OnlineDriver {
   ping_age_ms: number
 }
 
+export interface RecentUser {
+  user_id: string
+  name: string | null
+  email: string | null
+  is_driver: boolean
+  lat: number
+  lng: number
+  last_known_at: string
+  /** "fresh" = within 1h, "stale" = within 24h but outside fresh. */
+  freshness: 'fresh' | 'stale'
+}
+
 export interface LiveSnapshotResponse {
   ok: true
   active_rides: LiveActiveRide[]
@@ -79,6 +91,10 @@ export interface LiveSnapshotResponse {
   online_drivers: OnlineDriver[]
   available_driver_count: number
   snoozed_driver_count: number
+  /** Slice 1.11 — every signed-in user with a foreground GPS ping in
+   * the last 24h. UI filters/colors by `is_driver` + `freshness`. */
+  recent_users: RecentUser[]
+  recent_users_truncated: boolean
   events_since: string
   generated_at: string
   active_truncated: boolean

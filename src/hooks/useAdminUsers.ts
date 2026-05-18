@@ -45,6 +45,10 @@ export interface AdminUserOverview {
     rating_count: number
     date_of_birth: string | null
     last_active_at: string | null
+    /** Slice 1.11 — most recent GPS upload via POST /api/users/me/location. */
+    last_known_lat: number | null
+    last_known_lng: number | null
+    last_known_at: string | null
     suspended_at: string | null
     suspended_reason: string | null
     created_at: string

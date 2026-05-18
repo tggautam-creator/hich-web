@@ -7,6 +7,7 @@ import { env } from '@/lib/env'
 import { isAdminEmail } from '@/lib/validation'
 import RideRequestNotification from '@/components/ride/RideRequestNotification'
 import ForegroundPushToast from '@/components/ui/ForegroundPushToast'
+import LocationPinger from '@/components/auth/LocationPinger'
 import IntroCarousel from '@/components/onboarding/IntroCarousel'
 
 const SessionDebugPanel = lazy(() => import('@/components/auth/SessionDebugPanel'))
@@ -146,6 +147,7 @@ export default function AuthGuard({ 'data-testid': testId }: AuthGuardProps) {
       <Outlet />
       <RideRequestNotification />
       <ForegroundPushToast />
+      <LocationPinger />
       {showDebug && (
         <Suspense fallback={null}>
           <SessionDebugPanel />

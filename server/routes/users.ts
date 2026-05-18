@@ -222,3 +222,58 @@ usersRouter.put(
     }
   },
 )
+
+// ── POST /api/users/me/location (Slice 1.11) ─────────────────────────────
+//
+// Per-user GPS ping. iOS + web call this on app foreground (and after
+// a notification tap, since tapping brings the app to foreground).
+// Client-side throttled to ~1/5 min so the row's write rate stays
+// sane even for chatty users.
+//
+// Privacy note: continuous foreground GPS collection — Tarun's
+// product call 2026-05-18. Disclose in /privacy before rolling
+// out to real users (build guard added separately).
+interface LocationPingBody {
+  lat?: unknown
+  lng?: unknown
+}
+
+usersRouter.post(
+  '/me/location',
+  validateJwt,
+  async (req: Request, res: Response) => {
+    const userId = res.locals['userId'] as string
+    const b = req.body as LocationPingBody
+    const lat = typeof b.lat === 'number' ? b.lat : NaN
+    const lng = typeof b.lng === 'number' ? b.lng : NaN
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      res.status(400).json({
+        error: { code: 'INVALID_COORDS', message: 'lat + lng must be finite numbers' },
+      })
+      return
+    }
+    // Sanity-check the coord is on Earth — a buggy client sending
+    // (0, 0) or out-of-range values shouldn't pollute the data.
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      res.status(400).json({
+        error: { code: 'COORDS_OUT_OF_RANGE', message: 'lat in [-90, 90], lng in [-180, 180]' },
+      })
+      return
+    }
+    try {
+      const { error } = await supabaseAdmin
+        .from('users')
+        .update({
+          last_known_lat: lat,
+          last_known_lng: lng,
+          last_known_at: new Date().toISOString(),
+        })
+        .eq('id', userId)
+      if (error) throw error
+      res.status(204).end()
+    } catch (err) {
+      console.error('[users/me/location POST] update failed:', err)
+      res.status(500).json({ error: { code: 'INTERNAL', message: 'Location save failed' } })
+    }
+  },
+)

@@ -190,6 +190,26 @@ function Header({ data }: { data: AdminUserOverview }) {
                 <span>Last active {fmtDate(u.last_active_at)}</span>
               </>
             )}
+            {/* Slice 1.11 — last-known GPS ping (foreground or notif-tap). */}
+            {u.last_known_at && u.last_known_lat != null && u.last_known_lng != null && (
+              <>
+                <span>·</span>
+                <span>
+                  Last seen at{' '}
+                  <a
+                    href={`https://www.google.com/maps/search/?api=1&query=${u.last_known_lat},${u.last_known_lng}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary hover:underline"
+                    title={`${u.last_known_lat.toFixed(5)}, ${u.last_known_lng.toFixed(5)}`}
+                  >
+                    {u.last_known_lat.toFixed(4)}, {u.last_known_lng.toFixed(4)}
+                  </a>
+                  {' · '}
+                  {fmtDate(u.last_known_at)}
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>

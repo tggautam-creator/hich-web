@@ -70,12 +70,24 @@ interface DriverUserRow {
   email: string | null
 }
 
+interface RecentUserRow {
+  id: string
+  full_name: string | null
+  email: string | null
+  is_driver: boolean
+  last_known_lat: number | null
+  last_known_lng: number | null
+  last_known_at: string | null
+  suspended_at: string | null
+}
+
 interface Fixture {
   activeRides: RideRow[]
   eventsRides: RideRow[]
   users: UserRow[]
   driverLocations?: DriverLocationRow[]
   driverUsers?: DriverUserRow[]
+  recentUserRows?: RecentUserRow[]
   isAdmin?: boolean
 }
 
@@ -104,9 +116,21 @@ function setupFixture(f: Fixture) {
               }),
             }
           }
-          // Disambiguate the two .in('id', ...) lookups by the cols string.
-          // Slice 1.7d added a driver-info lookup that asks for is_driver +
-          // suspended_at; the original name lookup only asks for full_name.
+          // Disambiguate by cols string:
+          //   - includes 'last_known_lat' → Slice 1.11 recent_users
+          //     query (.select().gte().is().order().limit())
+          //   - includes 'is_driver' (no last_known) → Slice 1.7d
+          //     driver-info lookup (.select().in())
+          //   - otherwise the original name lookup (.in())
+          if (cols.includes('last_known_lat')) {
+            const chain: Record<string, unknown> = {
+              gte: () => chain,
+              is: () => chain,
+              order: () => chain,
+              limit: () => Promise.resolve({ data: f.recentUserRows ?? [], error: null }),
+            }
+            return chain
+          }
           if (cols.includes('is_driver')) {
             return {
               in: () => Promise.resolve({ data: f.driverUsers ?? [], error: null }),

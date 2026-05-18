@@ -104,6 +104,20 @@ export default function PrivacyPage() {
                 so the matcher can route nearby ride requests to you. Stops
                 broadcasting the moment you toggle Offline or Snooze.
               </li>
+              <li>
+                <strong>Your last-known location (updated 2026-05-18):</strong>{' '}
+                When the Tago app is foregrounded — and when you tap a Tago
+                notification — we record your current coordinates against your
+                account. This is used <em>specifically</em> to determine who is
+                actively reachable so we don&apos;t send ride requests to a
+                rider or driver who has deleted the app or hasn&apos;t opened
+                it in days (otherwise the other party would wait on a request
+                that will never be answered). The update is throttled to at
+                most once every 5 minutes per user and only fires while you
+                are signed in. You can stop it at any time by signing out, by
+                revoking the app&apos;s location permission in your phone
+                settings, or by deleting your account.
+              </li>
             </ul>
 
             <h3 className="mt-3 font-medium">Payment &amp; Wallet</h3>
@@ -300,10 +314,18 @@ export default function PrivacyPage() {
               We collect location data only when necessary for providing the
               Service: while you have an active ride, while a driver is
               toggled &quot;Online&quot; (so we can route nearby requests to
-              them), and when you actively pick a pickup or drop-off point.
-              We do not continuously track your location when you are not
-              using the Service. iOS users can revoke location permission at
-              any time in Settings → TAGO RIDES → Location.
+              them), when you actively pick a pickup or drop-off point, and
+              — as of 2026-05-18 — when the app is foregrounded or you tap a
+              Tago notification, to maintain a last-known location used solely
+              to determine reachability for ride matching. The reachability
+              update is throttled to at most once every 5 minutes per user
+              and is only used to avoid sending requests to a rider or driver
+              whose phone hasn&apos;t opened the app in days (the request
+              would otherwise sit unanswered, blocking the other party). We
+              do not continuously track or share your location with third
+              parties beyond what is necessary to operate the Service. iOS
+              users can revoke location permission at any time in Settings →
+              TAGO RIDES → Location, and signing out stops all collection.
             </p>
           </section>
 

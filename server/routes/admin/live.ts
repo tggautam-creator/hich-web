@@ -28,6 +28,15 @@ const EVENT_WINDOW_MIN = 60
 const MAX_ACTIVE_RIDES = 200
 const MAX_EVENTS = 100
 
+// Slice 1.11 — per-user "last known location" pings, populated by the
+// iOS + web app's foreground GPS upload (POST /api/users/me/location).
+// "Recent users" = anyone with last_known_at within the last hour;
+// "stale users" = anyone with last_known_at in the last day but
+// outside the active window. Beyond 24h, surfaced as "inactive."
+const RECENT_USER_WINDOW_MIN = 60
+const STALE_USER_WINDOW_HOURS = 24
+const MAX_RECENT_USERS = 500
+
 // Slice 1.7d / fix 2026-05-17 — "online driver" = will receive a ride
 // notification right now. Per Tarun's design (preserved in
 // server/lib/scheduledReminders.ts clearStaleOnlineFlags →
@@ -116,6 +125,20 @@ interface OnlineDriver {
   ping_age_ms: number
 }
 
+interface RecentUser {
+  user_id: string
+  name: string | null
+  email: string | null
+  is_driver: boolean
+  lat: number
+  lng: number
+  last_known_at: string
+  /** "fresh" = within RECENT_USER_WINDOW_MIN (1h), "stale" = within
+   * STALE_USER_WINDOW_HOURS (24h) but outside fresh. Useful for the
+   * UI to age-fade dots without re-doing the time math client-side. */
+  freshness: 'fresh' | 'stale'
+}
+
 interface LiveSnapshotResponse {
   ok: true
   active_rides: ActiveRide[]
@@ -125,6 +148,10 @@ interface LiveSnapshotResponse {
   available_driver_count: number
   /** Drivers willing-but-snoozed; surfaced as a counter for ops awareness. */
   snoozed_driver_count: number
+  /** Slice 1.11 — every user with a foreground GPS ping in the last
+   * 24h, regardless of role. UI buckets by `freshness`. */
+  recent_users: RecentUser[]
+  recent_users_truncated: boolean
   /** Inclusive ISO timestamp the events window started at. */
   events_since: string
   generated_at: string
@@ -533,6 +560,57 @@ adminLiveRouter.get('/snapshot', async (_req: Request, res: Response, next: Next
 
     const availableDriverCount = onlineDrivers.filter((d) => !d.on_active_ride).length
 
+    // ── Recent users (Slice 1.11) ────────────────────────────────────
+    // Per-user foreground GPS pings, regardless of role. Distinct from
+    // driver_locations (matcher-specific). Pulled in a single query
+    // capped at MAX_RECENT_USERS, then bucketed into fresh / stale by
+    // age.
+    const staleCutoffIso = new Date(
+      nowMs - STALE_USER_WINDOW_HOURS * 60 * 60 * 1000,
+    ).toISOString()
+    const freshWindowMs = RECENT_USER_WINDOW_MIN * 60 * 1000
+
+    const recentUsersQ = await supabaseAdmin
+      .from('users')
+      .select('id, full_name, email, is_driver, last_known_lat, last_known_lng, last_known_at, suspended_at')
+      .gte('last_known_at', staleCutoffIso)
+      .is('suspended_at', null)
+      .order('last_known_at', { ascending: false })
+      .limit(MAX_RECENT_USERS + 1)
+    if (recentUsersQ.error) throw recentUsersQ.error
+
+    type RecentUserRow = {
+      id: string
+      full_name: string | null
+      email: string | null
+      is_driver: boolean
+      last_known_lat: number | null
+      last_known_lng: number | null
+      last_known_at: string | null
+      suspended_at: string | null
+    }
+    const recentRows = (recentUsersQ.data ?? []) as unknown as RecentUserRow[]
+    const recentUsersTruncated = recentRows.length > MAX_RECENT_USERS
+    const trimmedRecentRows = recentUsersTruncated
+      ? recentRows.slice(0, MAX_RECENT_USERS)
+      : recentRows
+
+    const recentUsers: RecentUser[] = []
+    for (const r of trimmedRecentRows) {
+      if (r.last_known_lat == null || r.last_known_lng == null || !r.last_known_at) continue
+      const ageMs = nowMs - new Date(r.last_known_at).getTime()
+      recentUsers.push({
+        user_id: r.id,
+        name: r.full_name,
+        email: r.email,
+        is_driver: r.is_driver,
+        lat: r.last_known_lat,
+        lng: r.last_known_lng,
+        last_known_at: r.last_known_at,
+        freshness: ageMs <= freshWindowMs ? 'fresh' : 'stale',
+      })
+    }
+
     const body: LiveSnapshotResponse = {
       ok: true,
       active_rides: activeRides,
@@ -540,6 +618,8 @@ adminLiveRouter.get('/snapshot', async (_req: Request, res: Response, next: Next
       online_drivers: onlineDrivers,
       available_driver_count: availableDriverCount,
       snoozed_driver_count: snoozedCount,
+      recent_users: recentUsers,
+      recent_users_truncated: recentUsersTruncated,
       events_since: sinceIso,
       generated_at: now.toISOString(),
       active_truncated: activeTruncated,

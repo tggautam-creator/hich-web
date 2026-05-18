@@ -12,6 +12,7 @@ import {
   type StuckReason,
   type ActiveRideStatus,
   type OnlineDriver,
+  type RecentUser,
 } from '@/hooks/useAdminLive'
 import { useAdminSendPush } from '@/hooks/useAdminUsers'
 import InfoTooltip from './InfoTooltip'
@@ -56,6 +57,15 @@ export default function LiveOpsPage() {
   const allActive = useMemo(() => snapshot?.active_rides ?? [], [snapshot])
   const events = useMemo(() => snapshot?.events ?? [], [snapshot])
   const onlineDrivers = useMemo(() => snapshot?.online_drivers ?? [], [snapshot])
+  const recentUsers = useMemo(() => snapshot?.recent_users ?? [], [snapshot])
+  const activeUsers = useMemo(
+    () => recentUsers.filter((u) => u.freshness === 'fresh'),
+    [recentUsers],
+  )
+  const staleUsers = useMemo(
+    () => recentUsers.filter((u) => u.freshness === 'stale'),
+    [recentUsers],
+  )
   const availableCount = snapshot?.available_driver_count ?? 0
   const snoozedCount = snapshot?.snoozed_driver_count ?? 0
 
@@ -63,6 +73,10 @@ export default function LiveOpsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedDriverId, setSelectedDriverId] = useState<string | null>(null)
   const [showOnlineDrivers, setShowOnlineDrivers] = useState(true)
+  // Slice 1.11 — overlay toggles for the new last_known_at user pings.
+  // Independent of the online_drivers toggle so ops can pick any combo.
+  const [showActiveUsers, setShowActiveUsers] = useState(true)
+  const [showStaleUsers, setShowStaleUsers] = useState(false)
   const [search, setSearch] = useState('')
 
   const filteredActive = useMemo(() => {
@@ -279,6 +293,15 @@ export default function LiveOpsPage() {
                       onClick={() => setSelectedDriverId(d.user_id)}
                     />
                   ))}
+                {/* Slice 1.11 — last_known_at user pings. Renders BENEATH the
+                    online-driver dots conceptually (smaller, fainter) so the
+                    map stays scannable. */}
+                {showActiveUsers && activeUsers.map((u) => (
+                  <RecentUserMarker key={`user-fresh-${u.user_id}`} user={u} />
+                ))}
+                {showStaleUsers && staleUsers.map((u) => (
+                  <RecentUserMarker key={`user-stale-${u.user_id}`} user={u} />
+                ))}
               </Map>
             </APIProvider>
           ) : (
@@ -287,19 +310,38 @@ export default function LiveOpsPage() {
             </div>
           )}
 
-          {/* Show/hide online drivers — small toggle in top-right of map */}
-          <div className="absolute top-3 right-3 rounded-lg border border-border bg-white/95 px-3 py-1.5 text-xs shadow-sm flex items-center gap-2">
-            <input
-              data-testid="toggle-online-drivers"
-              type="checkbox"
+          {/* Show/hide toggles — top-right of map */}
+          <div className="absolute top-3 right-3 rounded-lg border border-border bg-white/95 px-3 py-2 text-xs shadow-sm flex flex-col gap-1 min-w-[200px]">
+            <div className="font-semibold uppercase tracking-wide text-text-tertiary text-[10px] mb-0.5">
+              Show on map
+            </div>
+            <ToggleRow
               id="toggle-online-drivers"
+              testid="toggle-online-drivers"
               checked={showOnlineDrivers}
-              onChange={(e) => setShowOnlineDrivers(e.target.checked)}
-              className="cursor-pointer"
+              onChange={setShowOnlineDrivers}
+              label="Online drivers"
+              count={availableCount}
+              tone="success"
             />
-            <label htmlFor="toggle-online-drivers" className="cursor-pointer text-text-secondary">
-              Show online drivers ({availableCount})
-            </label>
+            <ToggleRow
+              id="toggle-active-users"
+              testid="toggle-active-users"
+              checked={showActiveUsers}
+              onChange={setShowActiveUsers}
+              label="Active users (1h)"
+              count={activeUsers.length}
+              tone="primary"
+            />
+            <ToggleRow
+              id="toggle-stale-users"
+              testid="toggle-stale-users"
+              checked={showStaleUsers}
+              onChange={setShowStaleUsers}
+              label="Stale users (1–24h)"
+              count={staleUsers.length}
+              tone="neutral"
+            />
           </div>
 
           {/* Legend */}
@@ -516,6 +558,69 @@ function RideMarkers({
         </AdvancedMarker>
       )}
     </>
+  )
+}
+
+function RecentUserMarker({ user }: { user: RecentUser }) {
+  // Smaller + fainter than online-driver dots so the map remains
+  // scannable when 100+ users are pinging. Color encodes role
+  // (driver = blue, rider = gray) + freshness (fresh = saturated,
+  // stale = pale).
+  const isFresh = user.freshness === 'fresh'
+  const colorClass = user.is_driver
+    ? (isFresh ? 'bg-primary' : 'bg-primary/40')
+    : (isFresh ? 'bg-text-secondary' : 'bg-text-tertiary/60')
+  const ageLabel = relativeAge(user.last_known_at)
+  return (
+    <AdvancedMarker
+      position={{ lat: user.lat, lng: user.lng }}
+      title={`${user.name ?? user.email ?? user.user_id.slice(0, 8)} · ${user.is_driver ? 'driver' : 'rider'} · last seen ${ageLabel} ago`}
+    >
+      <div className={`h-2 w-2 rounded-full ${colorClass} border border-white shadow-sm`} />
+    </AdvancedMarker>
+  )
+}
+
+function relativeAge(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`
+  if (ms < 60 * 60_000) return `${Math.floor(ms / 60_000)}m`
+  if (ms < 24 * 60 * 60_000) return `${Math.floor(ms / 3_600_000)}h`
+  return `${Math.floor(ms / 86_400_000)}d`
+}
+
+function ToggleRow({
+  id,
+  testid,
+  checked,
+  onChange,
+  label,
+  count,
+  tone,
+}: {
+  id: string
+  testid: string
+  checked: boolean
+  onChange: (v: boolean) => void
+  label: string
+  count: number
+  tone: 'success' | 'primary' | 'neutral'
+}) {
+  const dotClass = tone === 'success' ? 'bg-success' : tone === 'primary' ? 'bg-primary' : 'bg-text-tertiary'
+  return (
+    <label htmlFor={id} className="flex items-center gap-2 cursor-pointer text-text-secondary">
+      <input
+        data-testid={testid}
+        id={id}
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="cursor-pointer"
+      />
+      <span className={`h-2 w-2 rounded-full ${dotClass}`} />
+      <span className="flex-1">{label}</span>
+      <span className="text-text-tertiary">{count}</span>
+    </label>
   )
 }
 

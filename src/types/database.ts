@@ -58,6 +58,10 @@ export type Database = {
           onboarding_completed: boolean
           is_admin: boolean
           last_active_at: string | null
+          /** Slice 1.11 — most recent GPS upload from POST /api/users/me/location. Throttled 1/5min. NULL until first foreground ping. */
+          last_known_lat: number | null
+          last_known_lng: number | null
+          last_known_at: string | null
           suspended_at: string | null
           suspended_reason: string | null
           created_at: string
@@ -82,6 +86,9 @@ export type Database = {
           onboarding_completed?: boolean
           is_admin?: boolean
           last_active_at?: string | null
+          last_known_lat?: number | null
+          last_known_lng?: number | null
+          last_known_at?: string | null
           suspended_at?: string | null
           suspended_reason?: string | null
           created_at?: string
@@ -106,6 +113,9 @@ export type Database = {
           onboarding_completed?: boolean
           is_admin?: boolean
           last_active_at?: string | null
+          last_known_lat?: number | null
+          last_known_lng?: number | null
+          last_known_at?: string | null
           suspended_at?: string | null
           suspended_reason?: string | null
           created_at?: string
