@@ -12,6 +12,7 @@
  */
 
 import { decodePolyline, haversineMetres, type LatLng } from './polyline.ts'
+import { recordApiCall } from './apiUsage.ts'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -253,6 +254,7 @@ export async function fetchDrivingRoute(
     computeAlternativeRoutes: false,
   }
 
+  void recordApiCall('gmaps_routes')
   const resp = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
     method: 'POST',
     headers: {
@@ -305,6 +307,7 @@ async function searchNearbyStations(
     },
   }
 
+  void recordApiCall('gmaps_places')
   const resp = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
     method: 'POST',
     headers: {
@@ -356,6 +359,7 @@ async function fetchTransitFromStation(
   url.searchParams.set('key', apiKey)
   url.searchParams.set('departure_time', String(Math.floor(Date.now() / 1000)))
 
+  void recordApiCall('gmaps_directions')
   const resp = await fetch(url.toString())
   if (!resp.ok) return { options: [], transitPolyline: null }
 

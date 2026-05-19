@@ -56,8 +56,41 @@ export default function LiveOpsPage() {
   const snapshot = live.data
   const allActive = useMemo(() => snapshot?.active_rides ?? [], [snapshot])
   const events = useMemo(() => snapshot?.events ?? [], [snapshot])
-  const onlineDrivers = useMemo(() => snapshot?.online_drivers ?? [], [snapshot])
-  const recentUsers = useMemo(() => snapshot?.recent_users ?? [], [snapshot])
+  const rawOnlineDrivers = useMemo(() => snapshot?.online_drivers ?? [], [snapshot])
+  const rawRecentUsers = useMemo(() => snapshot?.recent_users ?? [], [snapshot])
+
+  // 2026-05-19 — granular filters layered on top of the existing
+  // toggles. The toggles control WHICH overlay shows; these refine
+  // which dots WITHIN that overlay are visible.
+  const [recentRoleFilter, setRecentRoleFilter] = useState<'all' | 'rider' | 'driver'>('all')
+  const [universityFilter, setUniversityFilter] = useState('')
+
+  const universityFilterLc = universityFilter.trim().toLowerCase()
+
+  const onlineDrivers = useMemo(
+    () =>
+      rawOnlineDrivers.filter((d) => {
+        if (!universityFilterLc) return true
+        if (!d.email) return false
+        const e = d.email.toLowerCase()
+        return e.includes(`@${universityFilterLc}`) || e.endsWith(universityFilterLc)
+      }),
+    [rawOnlineDrivers, universityFilterLc],
+  )
+  const recentUsers = useMemo(() => {
+    let users = rawRecentUsers
+    if (recentRoleFilter === 'rider') users = users.filter((u) => !u.is_driver)
+    else if (recentRoleFilter === 'driver') users = users.filter((u) => u.is_driver)
+    if (universityFilterLc) {
+      users = users.filter((u) => {
+        if (!u.email) return false
+        const e = u.email.toLowerCase()
+        return e.includes(`@${universityFilterLc}`) || e.endsWith(universityFilterLc)
+      })
+    }
+    return users
+  }, [rawRecentUsers, recentRoleFilter, universityFilterLc])
+
   const activeUsers = useMemo(
     () => recentUsers.filter((u) => u.freshness === 'fresh'),
     [recentUsers],
@@ -359,6 +392,52 @@ export default function LiveOpsPage() {
               count={staleUsers.length}
               tone="neutral"
             />
+
+            {/* 2026-05-19 — granular filters on top of the show/hide
+                 toggles. Role narrows which recent users surface;
+                 university filter narrows everything by email domain. */}
+            <div className="mt-2 border-t border-border pt-2">
+              <div className="font-semibold uppercase tracking-wide text-text-tertiary text-[10px] mb-1">
+                Filter
+              </div>
+              <label className="flex items-center justify-between gap-2 text-[11px]">
+                <span className="text-text-secondary">Role</span>
+                <select
+                  data-testid="live-filter-role"
+                  value={recentRoleFilter}
+                  onChange={(e) => setRecentRoleFilter(e.target.value as typeof recentRoleFilter)}
+                  className="rounded border border-border bg-white px-1.5 py-0.5 text-[11px] focus:border-primary focus:outline-none"
+                >
+                  <option value="all">All</option>
+                  <option value="rider">Riders only</option>
+                  <option value="driver">Drivers only</option>
+                </select>
+              </label>
+              <label className="mt-1 flex items-center justify-between gap-2 text-[11px]">
+                <span className="text-text-secondary">University</span>
+                <input
+                  data-testid="live-filter-university"
+                  type="text"
+                  value={universityFilter}
+                  onChange={(e) => setUniversityFilter(e.target.value)}
+                  placeholder="ucdavis.edu"
+                  className="w-32 rounded border border-border bg-white px-1.5 py-0.5 text-[11px] focus:border-primary focus:outline-none"
+                />
+              </label>
+              {(recentRoleFilter !== 'all' || universityFilter) && (
+                <button
+                  type="button"
+                  data-testid="live-filter-clear"
+                  onClick={() => {
+                    setRecentRoleFilter('all')
+                    setUniversityFilter('')
+                  }}
+                  className="mt-1 text-[10px] text-primary hover:underline"
+                >
+                  Clear filters
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Legend */}

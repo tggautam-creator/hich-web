@@ -78,6 +78,7 @@ export function isAllowedFromAddress(addr: string): boolean {
  * doesn't accept per-recipient bodies.
  */
 import { substitute, type PersonalizationRecipient } from './personalize.ts'
+import { recordApiCall } from './apiUsage.ts'
 
 export interface FailedRecipient {
   email: string
@@ -127,6 +128,9 @@ export async function sendPersonalizedEmailToMany(args: {
 
   for (let i = 0; i < recipients.length; i += RATE_LIMIT_CONCURRENCY) {
     const slice = recipients.slice(i, i + RATE_LIMIT_CONCURRENCY)
+    // Tracked even when the call fails — Resend still counts a
+    // request against our daily quota regardless of outcome.
+    void recordApiCall('resend', slice.length)
     const results = await Promise.allSettled(
       slice.map((r) =>
         client.emails.send({
@@ -193,6 +197,7 @@ export async function sendEmailToMany(args: {
   const concurrency = 10
   for (let i = 0; i < recipients.length; i += concurrency) {
     const slice = recipients.slice(i, i + concurrency)
+    void recordApiCall('resend', slice.length)
     const results = await Promise.allSettled(
       slice.map((to) =>
         client.emails.send({ from, to, subject, html }),

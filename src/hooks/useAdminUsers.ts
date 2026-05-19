@@ -71,23 +71,57 @@ export interface AdminUserOverview {
 const ONE_MIN_MS = 60 * 1000
 const FIVE_MIN_MS = 5 * ONE_MIN_MS
 
+/**
+ * 2026-05-19 — filter & sort additions.
+ *   role / active / has_push / platform / university   filter chips
+ *   sort                                                sort dropdown
+ */
+export type AdminUserRole = 'rider' | 'driver' | 'both'
+export type AdminUserActive = '' | '1h' | '24h' | '7d' | 'dormant'
+export type AdminUserHasPush = '' | 'yes' | 'no'
+export type AdminUserPlatform = '' | 'ios' | 'web' | 'android'
+export type AdminUserSort = 'newest' | 'oldest' | 'last_active' | 'name'
+
 export function useAdminUserSearch(args: {
   q: string
   limit?: number
   offset?: number
+  role?: AdminUserRole
+  active?: AdminUserActive
+  has_push?: AdminUserHasPush
+  platform?: AdminUserPlatform
+  university?: string
+  sort?: AdminUserSort
 }) {
-  const { q, limit = 25, offset = 0 } = args
+  const {
+    q,
+    limit = 25,
+    offset = 0,
+    role = 'both',
+    active = '',
+    has_push = '',
+    platform = '',
+    university = '',
+    sort = 'newest',
+  } = args
+
+  const params = new URLSearchParams()
+  if (q) params.set('q', q)
+  if (role !== 'both') params.set('role', role)
+  if (active) params.set('active', active)
+  if (has_push) params.set('has_push', has_push)
+  if (platform) params.set('platform', platform)
+  if (university) params.set('university', university)
+  if (sort !== 'newest') params.set('sort', sort)
+  params.set('limit', String(limit))
+  params.set('offset', String(offset))
+
   return useQuery<AdminUserSearch>({
-    queryKey: ['admin', 'users', 'search', q, limit, offset],
-    queryFn: () =>
-      adminGet<AdminUserSearch>(
-        `/users/search?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`,
-      ),
-    // keepPreviousData → the result list doesn't flicker between
-    // keystrokes while the next search resolves.
+    queryKey: [
+      'admin', 'users', 'search', q, limit, offset, role, active, has_push, platform, university, sort,
+    ],
+    queryFn: () => adminGet<AdminUserSearch>(`/users/search?${params.toString()}`),
     placeholderData: keepPreviousData,
-    // 1-min freshness: marketing tweaks the query a lot; we don't
-    // want to re-hit the server on every back-tab.
     staleTime: ONE_MIN_MS,
   })
 }

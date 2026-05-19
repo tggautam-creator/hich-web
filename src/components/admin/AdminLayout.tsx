@@ -35,6 +35,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { to: '/admin/live',        label: 'Live',       testId: 'admin-nav-live' },
   { to: '/admin/alerts',      label: 'Alerts',     testId: 'admin-nav-alerts' },
   { to: '/admin/audit-log',   label: 'Audit Log',  testId: 'admin-nav-audit' },
+  { to: '/admin/api-usage',   label: 'API Usage',  testId: 'admin-nav-api-usage' },
   { to: '/admin/settings',    label: 'Settings',   testId: 'admin-nav-settings' },
 ] as const
 

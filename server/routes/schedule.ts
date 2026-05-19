@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import type { Request, Response, NextFunction } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
+import { recordApiCall } from '../lib/apiUsage.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { adminAuth } from '../middleware/adminAuth.ts'
@@ -153,6 +154,7 @@ async function reverseGeocode(lat: number, lng: number): Promise<string> {
   const key = process.env['GOOGLE_MAPS_KEY']
   if (!key) return 'Unknown'
   try {
+    void recordApiCall('gmaps_geocoding')
     const resp = await fetch(
       `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${encodeURIComponent(key)}`,
     )
@@ -170,6 +172,7 @@ async function forwardGeocode(address: string): Promise<{ lat: number; lng: numb
   const key = process.env['GOOGLE_MAPS_KEY']
   if (!key) return null
   try {
+    void recordApiCall('gmaps_geocoding')
     const resp = await fetch(
       `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${encodeURIComponent(key)}`,
     )
@@ -651,6 +654,7 @@ async function computeAndPersistRouteFor(
       languageCode: 'en-US',
     }
 
+    void recordApiCall('gmaps_routes')
     const resp = await fetch(
       'https://routes.googleapis.com/directions/v2:computeRoutes',
       {

@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import type { Request, Response, NextFunction } from 'express'
 import { validateJwt } from '../middleware/auth.ts'
+import { recordApiCall } from '../lib/apiUsage.ts'
 import { computeTransitDropoffSuggestions } from '../lib/transitSuggestions.ts'
 
 export const transitRouter = Router()
@@ -182,6 +183,7 @@ transitRouter.get(
     url.searchParams.set('mode', 'transit')
     url.searchParams.set('key', apiKey)
 
+    void recordApiCall('gmaps_directions')
     try {
       const response = await fetch(url.toString())
       const data = (await response.json()) as GoogleDirectionsResponse

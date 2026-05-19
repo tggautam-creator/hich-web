@@ -149,6 +149,17 @@ export default function AdminHomePage() {
           info="Of users whose push_tokens.platform is set (ios / android / web), what fraction is 'ios'. NULL-platform tokens (registered before migration 071) are excluded from BOTH numerator and denominator. Will be 0% until the iOS client ships its platform-write update — every existing iOS user currently shows as 'unknown platform'."
         />
         <KpiCard
+          testid="kpi-push-coverage"
+          title="Push registered"
+          value={fmtPercent(k.push_coverage_rate)}
+          subtitle={
+            k.users_without_push > 0
+              ? `${k.users_without_push.toLocaleString()} without push`
+              : 'every user has push'
+          }
+          info="Fraction of total users with at least one push_tokens row. Surfaces silent permission-denial bugs (e.g. iOS app crashes the FCM init, or rider denies the permission prompt). When this drops, use the Users → Push filter (Not registered) to email/notify the affected users."
+        />
+        <KpiCard
           testid="kpi-driver-activation-rate"
           title="Driver activation"
           value={fmtPercent(k.driver_activation_rate)}

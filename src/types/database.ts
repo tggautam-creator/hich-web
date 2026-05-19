@@ -1155,6 +1155,26 @@ export type Database = {
         Relationships: never[]
       }
 
+      // ── api_usage_daily (migration 085, 2026-05-19) ─────────────────────────
+      api_usage_daily: {
+        Row: {
+          service: string
+          date: string
+          count: number
+        }
+        Insert: {
+          service: string
+          date: string
+          count?: number
+        }
+        Update: {
+          service?: string
+          date?: string
+          count?: number
+        }
+        Relationships: never[]
+      }
+
       // ── request_idempotency ─────────────────────────────────────────────────
       request_idempotency: {
         Row: {

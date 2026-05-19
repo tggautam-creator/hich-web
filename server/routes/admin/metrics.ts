@@ -24,6 +24,13 @@ interface OverviewKpis {
   rides_completed_today: number
   revenue_this_week_cents: number
   ios_install_rate: number | null // 0..1, null when no users have a known platform yet
+  /** 2026-05-19 — fraction of total users with at least one push_tokens row.
+   * Drives the "Push registered" stat card on the admin dashboard. */
+  push_coverage_rate: number | null
+  /** Users with zero push_tokens rows. Companion to push_coverage_rate
+   * — surfaces the absolute count for "email this many people to
+   * enable notifications" follow-ups. */
+  users_without_push: number
   driver_activation_rate: number | null
   rider_activation_rate: number | null
   retention_7d: number | null
@@ -192,6 +199,17 @@ adminMetricsRouter.get(
       }
       const iosInstallRate = safeRate(iosCount, knownPlatformCount)
 
+      // ── KPI 7b: push coverage ──────────────────────────────────────────
+      // Distinct user_ids that have at least one push_tokens row, divided
+      // by total users. Surfaces "X% of users have push enabled" so we
+      // can spot churn / permission-deny regressions at a glance.
+      const userIdsWithPush = new Set<string>()
+      for (const t of tokens) {
+        if (t.user_id) userIdsWithPush.add(t.user_id)
+      }
+      const pushCoverageRate = safeRate(userIdsWithPush.size, totalUsers)
+      const usersWithoutPush = Math.max(0, totalUsers - userIdsWithPush.size)
+
       // ── KPI 8 & 9: driver / rider activation rates ─────────────────────
       // Activation = has at least one completed ride in that role.
       const driverIdsWithCompleted = new Set<string>()
@@ -279,6 +297,8 @@ adminMetricsRouter.get(
           rides_completed_today: completedToday,
           revenue_this_week_cents: revenueThisWeekCents,
           ios_install_rate: iosInstallRate,
+          push_coverage_rate: pushCoverageRate,
+          users_without_push: usersWithoutPush,
           driver_activation_rate: driverActivationRate,
           rider_activation_rate: riderActivationRate,
           retention_7d: retention7d,

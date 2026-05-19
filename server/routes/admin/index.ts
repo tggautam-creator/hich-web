@@ -90,3 +90,14 @@ adminRouter.use('/audit-log', adminAuditRouter)
 adminRouter.use('/alerts', adminAlertsRouter)
 // 2026-05-18 — ride-board monitoring (posts, offers, force-cancel).
 adminRouter.use('/ride-board', adminRideBoardRouter)
+
+// 2026-05-19 — API usage gauges (Resend, FCM, Google Maps family).
+adminRouter.get('/api-usage', async (_req, res, next) => {
+  try {
+    const { getUsageSnapshot } = await import('../../lib/apiUsage.ts')
+    const snap = await getUsageSnapshot()
+    res.status(200).json(snap)
+  } catch (err) {
+    next(err)
+  }
+})

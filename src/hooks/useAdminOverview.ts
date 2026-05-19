@@ -17,6 +17,10 @@ export interface AdminOverview {
     rides_completed_today: number
     revenue_this_week_cents: number
     ios_install_rate: number | null
+    /** 2026-05-19 — fraction of users with at least one push_tokens row. */
+    push_coverage_rate: number | null
+    /** Companion: absolute count of users with zero push tokens. */
+    users_without_push: number
     driver_activation_rate: number | null
     rider_activation_rate: number | null
     retention_7d: number | null

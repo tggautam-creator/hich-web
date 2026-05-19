@@ -131,6 +131,20 @@ function universityFromEmail(email: string): string {
 
 // ── GET /search ─────────────────────────────────────────────────────────────
 
+/**
+ * 2026-05-19 — filterable search.
+ *
+ * Query params (all optional, AND-composed):
+ *   q              free text — email/name/phone substring or full UUID
+ *   role           'rider' | 'driver' | 'both' (matches is_driver / both
+ *                                                 stays unconstrained)
+ *   active         '1h' | '24h' | '7d' | 'dormant' (filters last_active_at)
+ *   has_push       'yes' | 'no' (filters by presence of push_tokens row)
+ *   platform       'ios' | 'web' | 'android' (filters by push_tokens.platform)
+ *   university     email-domain substring (e.g. 'davis.edu')
+ *   sort           'newest' (default) | 'oldest' | 'last_active' | 'name'
+ *   limit, offset  pagination
+ */
 adminUsersRouter.get(
   '/search',
   async (req: Request, res: Response, next: NextFunction) => {
@@ -142,45 +156,25 @@ adminUsersRouter.get(
       )
       const offset = Math.max(parseInt(String(req.query['offset'] ?? '0'), 10) || 0, 0)
 
-      // Empty query: return newest signups (acts as a "browse" view —
-      // marketing's first visit to /admin/users shouldn't be blank).
-      if (qRaw.length === 0) {
-        const { data, count, error } = await supabaseAdmin
-          .from('users')
-          .select(
-            'id, email, full_name, is_driver, created_at, last_active_at',
-            { count: 'exact' },
-          )
-          .order('created_at', { ascending: false })
-          .range(offset, offset + limit - 1)
-        if (error) throw error
-        const response: SearchResponse = {
-          ok: true,
-          q: '',
-          total: count ?? data?.length ?? 0,
-          users: (data ?? []) as SearchHit[],
-          limit,
-          offset,
-        }
-        res.status(200).json(response)
-        return
-      }
+      const role = typeof req.query['role'] === 'string' ? req.query['role'] : null
+      const activeWindow = typeof req.query['active'] === 'string' ? req.query['active'] : null
+      const hasPush = typeof req.query['has_push'] === 'string' ? req.query['has_push'] : null
+      const platform = typeof req.query['platform'] === 'string' ? req.query['platform'] : null
+      const university = typeof req.query['university'] === 'string'
+        ? req.query['university'].trim().toLowerCase()
+        : null
+      const sortRaw = typeof req.query['sort'] === 'string' ? req.query['sort'] : 'newest'
 
-      // Full UUID → exact id lookup. Otherwise text match across
-      // email / full_name / phone via PostgREST .or() with ILIKE.
-      // Partial UUID prefix search is a known follow-up — would need
-      // a SQL function with id::text ILIKE because PostgREST can't
-      // cast UUID → text in ad-hoc filters.
-      const q = qRaw
-      if (isFullUuid(q)) {
+      // Full UUID short-circuits all other filters.
+      if (qRaw.length > 0 && isFullUuid(qRaw)) {
         const { data, error } = await supabaseAdmin
           .from('users')
           .select('id, email, full_name, is_driver, created_at, last_active_at')
-          .eq('id', q)
+          .eq('id', qRaw)
         if (error) throw error
         const response: SearchResponse = {
           ok: true,
-          q,
+          q: qRaw,
           total: data?.length ?? 0,
           users: (data ?? []) as SearchHit[],
           limit,
@@ -190,27 +184,112 @@ adminUsersRouter.get(
         return
       }
 
-      // Escape PostgREST `,` and `)` in the query to avoid breaking
-      // the .or() syntax — neither is meaningful in an email/name/
-      // phone anyway, so stripping them is harmless.
-      const safe = q.replace(/[,()]/g, '')
-      const pattern = `%${safe}%`
-      const { data, count, error } = await supabaseAdmin
+      // Resolve push-token-derived filters into a user_id allow/deny
+      // list before the main query (PostgREST doesn't expose EXISTS).
+      let userIdAllowlist: string[] | null = null
+      let userIdDenylist: string[] | null = null
+      if (hasPush === 'yes' || hasPush === 'no' || platform) {
+        let tokenQuery = supabaseAdmin.from('push_tokens').select('user_id, platform')
+        if (platform === 'ios' || platform === 'web' || platform === 'android') {
+          tokenQuery = tokenQuery.eq('platform', platform)
+        }
+        const { data: tokenRows, error: tokenErr } = await tokenQuery
+        if (tokenErr) throw tokenErr
+        const idsWithMatchingTokens = Array.from(
+          new Set((tokenRows ?? []).map((r) => r.user_id).filter((id): id is string => !!id)),
+        )
+        if (hasPush === 'no') {
+          userIdDenylist = idsWithMatchingTokens
+        } else {
+          userIdAllowlist = idsWithMatchingTokens
+        }
+      }
+
+      let query = supabaseAdmin
         .from('users')
         .select(
           'id, email, full_name, is_driver, created_at, last_active_at',
           { count: 'exact' },
         )
-        .or(
+
+      // Text search across email/name/phone (skipped when q is empty
+      // — empty query = browse all users).
+      if (qRaw.length > 0) {
+        const safe = qRaw.replace(/[,()]/g, '')
+        const pattern = `%${safe}%`
+        query = query.or(
           `email.ilike.${pattern},full_name.ilike.${pattern},phone.ilike.${pattern}`,
         )
-        .order('created_at', { ascending: false })
+      }
+
+      // Role filter
+      if (role === 'driver') {
+        query = query.eq('is_driver', true)
+      } else if (role === 'rider') {
+        query = query.eq('is_driver', false)
+      }
+
+      // Active window filter
+      if (activeWindow === '1h') {
+        query = query.gte('last_active_at', isoMinusHours(1))
+      } else if (activeWindow === '24h') {
+        query = query.gte('last_active_at', isoMinusHours(24))
+      } else if (activeWindow === '7d') {
+        query = query.gte('last_active_at', isoMinusDays(7))
+      } else if (activeWindow === 'dormant') {
+        query = query.lt('last_active_at', isoMinusDays(30))
+      }
+
+      // University filter (email domain substring)
+      if (university) {
+        query = query.ilike('email', `%@${university}%`)
+      }
+
+      // Push / platform allow / deny
+      if (userIdAllowlist) {
+        if (userIdAllowlist.length === 0) {
+          // No matching tokens → zero users qualify. Return empty.
+          res.status(200).json({
+            ok: true,
+            q: qRaw,
+            total: 0,
+            users: [],
+            limit,
+            offset,
+          })
+          return
+        }
+        query = query.in('id', userIdAllowlist)
+      }
+      if (userIdDenylist && userIdDenylist.length > 0) {
+        // PostgREST `not.in.(...)` is the deny path.
+        query = query.not('id', 'in', `(${userIdDenylist.join(',')})`)
+      }
+
+      // Sort
+      const sort = (() => {
+        switch (sortRaw) {
+          case 'oldest':
+            return { column: 'created_at' as const, ascending: true }
+          case 'last_active':
+            return { column: 'last_active_at' as const, ascending: false }
+          case 'name':
+            return { column: 'full_name' as const, ascending: true }
+          case 'newest':
+          default:
+            return { column: 'created_at' as const, ascending: false }
+        }
+      })()
+      query = query
+        .order(sort.column, { ascending: sort.ascending, nullsFirst: false })
         .range(offset, offset + limit - 1)
+
+      const { data, count, error } = await query
       if (error) throw error
 
       const response: SearchResponse = {
         ok: true,
-        q,
+        q: qRaw,
         total: count ?? data?.length ?? 0,
         users: (data ?? []) as SearchHit[],
         limit,
@@ -222,6 +301,18 @@ adminUsersRouter.get(
     }
   },
 )
+
+function isoMinusHours(hours: number): string {
+  const d = new Date()
+  d.setUTCHours(d.getUTCHours() - hours)
+  return d.toISOString()
+}
+
+function isoMinusDays(days: number): string {
+  const d = new Date()
+  d.setUTCDate(d.getUTCDate() - days)
+  return d.toISOString()
+}
 
 // ── GET /:id ────────────────────────────────────────────────────────────────
 

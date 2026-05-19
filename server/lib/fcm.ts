@@ -2,6 +2,7 @@ import admin from 'firebase-admin'
 import { readFileSync } from 'fs'
 import { getServerEnv } from '../env.ts'
 import { supabaseAdmin } from './supabaseAdmin.ts'
+import { recordApiCall } from './apiUsage.ts'
 
 interface FcmPayload {
   title: string
@@ -92,6 +93,13 @@ export async function sendFcmPush(
     const raw = rideId ? `${type}_${rideId}` : type
     return raw.length > 64 ? raw.slice(0, 64) : raw
   })()
+
+  // 2026-05-19 — record one API call per token-fanout. Tracked even
+  // when individual tokens are stale (the multicast itself is one
+  // billable FCM call no matter how many tokens are in it... actually
+  // FCM charges per-message, so we count tokens). Fire-and-forget;
+  // never blocks the actual send.
+  void recordApiCall('fcm', filteredTokens.length)
 
   // Web: the service worker reads `data` and calls `showNotification`
   // itself, so we MUST keep the data-only payload for browsers (adding
@@ -262,6 +270,7 @@ export async function sendSilentFcmPush(
   if (tokens.length === 0) return 0
   const messaging = getMessaging()
 
+  void recordApiCall('fcm', tokens.length)
   const response = await messaging.sendEachForMulticast({
     tokens,
     data: {
