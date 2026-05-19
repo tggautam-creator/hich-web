@@ -83,6 +83,10 @@ export interface CampaignHistoryRow {
   recalled_by_email: string | null
   channel: 'push' | 'email'
   email_from: string | null
+  /** 2026-05-19 (migration 084) — recipients whose Resend send failed
+   * during the original campaign. Drives the "Retry failed (N)" CTA.
+   * Empty for legacy campaigns sent before the migration. */
+  failed_emails: string[]
 }
 
 export interface CampaignHistoryResponse {
@@ -117,6 +121,33 @@ export function useAdminRecallCampaign(campaignId: string) {
       void qc.invalidateQueries({ queryKey: ['admin', 'campaigns', 'history'] })
       void qc.invalidateQueries({ queryKey: ['admin', 'users', 'audit'] })
       void qc.invalidateQueries({ queryKey: ['admin', 'users', 'notifications'] })
+    },
+  })
+}
+
+// ── 2026-05-19 — Retry failed recipients for an email campaign ──────────────
+
+export interface RetryFailedResult {
+  ok: true
+  campaign_id: string
+  attempted: number
+  sent: number
+  failed: number
+  failed_emails: string[]
+  note?: string
+}
+
+export function useAdminRetryFailedCampaign(campaignId: string) {
+  const qc = useQueryClient()
+  return useMutation<RetryFailedResult, Error, void>({
+    mutationFn: () =>
+      adminPost<RetryFailedResult>(`/campaigns/${campaignId}/retry-failed`, {}),
+    onSuccess: () => {
+      // History row's failed_emails + push_sent_count both moved —
+      // invalidate so the UI re-renders the updated counts. Audit
+      // log also gained a retry_campaign_email row.
+      void qc.invalidateQueries({ queryKey: ['admin', 'campaigns', 'history'] })
+      void qc.invalidateQueries({ queryKey: ['admin', 'audit-log'] })
     },
   })
 }

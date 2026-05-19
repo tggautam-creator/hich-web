@@ -560,7 +560,7 @@ adminCampaignsRouter.get(
       const { data, count, error } = await supabaseAdmin
         .from('campaigns')
         .select(
-          'id, slug, audience, title, body, poster_url, poster_link_url, recipient_count, push_sent_count, sent_by, sent_at, recalled_at, recalled_reason, recalled_by, channel, email_from',
+          'id, slug, audience, title, body, poster_url, poster_link_url, recipient_count, push_sent_count, sent_by, sent_at, recalled_at, recalled_reason, recalled_by, channel, email_from, failed_emails',
           { count: 'exact' },
         )
         .order('sent_at', { ascending: false })
@@ -977,10 +977,16 @@ adminCampaignsRouter.post(
       // 6. Update the campaign row with delivered count (reusing
       //    push_sent_count as a generic "delivered count" across
       //    channels — fine for now; if we grow channel-specific
-      //    counters, rename in a follow-up migration).
+      //    counters, rename in a follow-up migration). Also persist
+      //    the failed recipient list so the Retry button on past
+      //    campaigns can target only those addresses.
+      const failedEmailsToStore = sendResult.failedRecipients.map((f) => f.email)
       await supabaseAdmin
         .from('campaigns')
-        .update({ push_sent_count: sendResult.sent })
+        .update({
+          push_sent_count: sendResult.sent,
+          failed_emails: failedEmailsToStore,
+        })
         .eq('id', campaignId)
 
       // 7. Audit.
@@ -1001,6 +1007,7 @@ adminCampaignsRouter.post(
           recipient_count: cohortUserIds.length,
           sent: sendResult.sent,
           failed: sendResult.failed,
+          failed_emails_count: failedEmailsToStore.length,
         },
       })
 
@@ -1011,6 +1018,170 @@ adminCampaignsRouter.post(
         recipient_count: cohortUserIds.length,
         sent: sendResult.sent,
         failed: sendResult.failed,
+        failed_emails: failedEmailsToStore,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// ── POST /campaigns/:id/retry-failed ────────────────────────────────────────
+//
+// Re-send an email campaign to only the recipients whose original send
+// failed (Resend rate-limit, transient bounce, etc). The original
+// campaign row holds the subject in `title`, the body template in
+// `body`, and the failed addresses in `failed_emails`. We re-resolve
+// `full_name` for those emails so `{{name}}` substitution still works,
+// run the throttled per-recipient send, then REWRITE `failed_emails`
+// with the still-failed set so a clean retry is a no-op next time.
+//
+// Constraints:
+//   - Only `channel='email'` campaigns are retryable through this path.
+//   - The campaign must not have been recalled.
+//   - Empty `failed_emails` returns 200 with sent=0 (clean no-op).
+
+adminCampaignsRouter.post(
+  '/:id/retry-failed',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = req.params['id']
+      if (typeof id !== 'string' || id.length === 0) {
+        res.status(400).json({
+          error: { code: 'INVALID_ID', message: 'campaign id is required' },
+        })
+        return
+      }
+      const adminId = res.locals['userId'] as string
+
+      // Load the campaign so we have subject/body + the failed list.
+      const { data: campaign, error: lookupErr } = await supabaseAdmin
+        .from('campaigns')
+        .select(
+          'id, slug, channel, email_from, title, body, poster_url, poster_link_url, failed_emails, push_sent_count, recalled_at',
+        )
+        .eq('id', id)
+        .maybeSingle()
+      if (lookupErr) throw lookupErr
+      if (!campaign) {
+        res.status(404).json({
+          error: { code: 'CAMPAIGN_NOT_FOUND', message: 'campaign does not exist' },
+        })
+        return
+      }
+      if (campaign.channel !== 'email') {
+        res.status(400).json({
+          error: {
+            code: 'WRONG_CHANNEL',
+            message: 'retry-failed only supports email campaigns',
+          },
+        })
+        return
+      }
+      if (campaign.recalled_at) {
+        res.status(409).json({
+          error: {
+            code: 'CAMPAIGN_RECALLED',
+            message: 'cannot retry a recalled campaign',
+          },
+        })
+        return
+      }
+      const failedEmails = (campaign.failed_emails ?? []) as string[]
+      if (failedEmails.length === 0) {
+        res.status(200).json({
+          ok: true,
+          campaign_id: id,
+          sent: 0,
+          failed: 0,
+          failed_emails: [],
+          note: 'no failed recipients to retry',
+        })
+        return
+      }
+      if (!campaign.email_from || !isAllowedFromAddress(campaign.email_from)) {
+        res.status(400).json({
+          error: {
+            code: 'INVALID_FROM',
+            message: 'the campaign was sent from a non-allowlisted address',
+          },
+        })
+        return
+      }
+
+      // Hydrate full_name for substitution. Missing users (e.g. they
+      // deleted their account) still get the retry — the substitution
+      // falls back to email username automatically.
+      const { data: userRows, error: userErr } = await supabaseAdmin
+        .from('users')
+        .select('email, full_name')
+        .in('email', failedEmails)
+      if (userErr) throw userErr
+      const nameByEmail = new Map<string, string | null>()
+      for (const u of userRows ?? []) {
+        if (u.email) nameByEmail.set(u.email, u.full_name)
+      }
+      const recipients = failedEmails.map((email) => ({
+        email,
+        full_name: nameByEmail.get(email) ?? null,
+      }))
+
+      // Reconstruct hero + footer the same way the original send did.
+      const imgTag = campaign.poster_url
+        ? `<img src="${campaign.poster_url}" alt="" ` +
+          `style="display:block;width:100%;max-width:600px;height:auto;` +
+            `border-radius:8px;margin:0 auto;border:0;" />`
+        : ''
+      const heroBlock = campaign.poster_url
+        ? `<div style="text-align:center;margin-bottom:16px;">` +
+            (campaign.poster_link_url
+              ? `<a href="${campaign.poster_link_url}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">${imgTag}</a>`
+              : imgTag) +
+          `</div>`
+        : ''
+      const finalHtml = heroBlock + campaign.body + EMAIL_FOOTER_HTML
+
+      const sendResult = await sendPersonalizedEmailToMany({
+        from: campaign.email_from,
+        subjectTemplate: campaign.title,
+        htmlTemplate: finalHtml,
+        recipients,
+      })
+
+      // Update campaign: bump delivered count, rewrite failed_emails
+      // with the still-failed set so subsequent retries shrink it down
+      // to zero or stop being offered.
+      const newFailedEmails = sendResult.failedRecipients.map((f) => f.email)
+      const newDeliveredCount = (campaign.push_sent_count ?? 0) + sendResult.sent
+      const { error: updateErr } = await supabaseAdmin
+        .from('campaigns')
+        .update({
+          push_sent_count: newDeliveredCount,
+          failed_emails: newFailedEmails,
+        })
+        .eq('id', id)
+      if (updateErr) throw updateErr
+
+      await writeAuditLog({
+        adminId,
+        targetUserId: null,
+        action: 'retry_campaign_email',
+        payload: {
+          campaign_id: id,
+          slug: campaign.slug,
+          attempted: failedEmails.length,
+          sent: sendResult.sent,
+          still_failed: newFailedEmails.length,
+        },
+      })
+
+      res.status(200).json({
+        ok: true,
+        campaign_id: id,
+        attempted: failedEmails.length,
+        sent: sendResult.sent,
+        failed: sendResult.failed,
+        failed_emails: newFailedEmails,
       })
     } catch (err) {
       next(err)

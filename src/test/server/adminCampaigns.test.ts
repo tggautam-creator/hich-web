@@ -61,7 +61,15 @@ interface SetupOpts {
   /** Slice 1.4d — count of notifications row IDs deleted by the recall. */
   recallDeletedCount?: number
   /** Slice 1.5 — Resend result for sendEmailToMany. */
-  emailSendResult?: { sent: number; failed: number; failures: string[] }
+  emailSendResult?: {
+    sent: number
+    failed: number
+    failures: string[]
+    /** Slice 2026-05-19 — sender now also returns per-recipient
+     * failures. Optional here; the setup() helper defaults to []
+     * so existing test cases that only set sent/failed still work. */
+    failedRecipients?: { email: string; error: string }[]
+  }
 }
 
 function setup(opts: SetupOpts = {}): void {
@@ -74,7 +82,13 @@ function setup(opts: SetupOpts = {}): void {
     error: null,
   })
   mockSendFcm.mockResolvedValue(opts.fcmSentCount ?? (opts.pushTokens?.length ?? 0))
-  mockSendEmail.mockResolvedValue(opts.emailSendResult ?? { sent: 0, failed: 0, failures: [] })
+  // Ensure failedRecipients defaults to [] even when a test overrides
+  // emailSendResult without specifying it (Slice 2026-05-19).
+  const emailRes = opts.emailSendResult ?? { sent: 0, failed: 0, failures: [] }
+  mockSendEmail.mockResolvedValue({
+    ...emailRes,
+    failedRecipients: emailRes.failedRecipients ?? [],
+  })
 
   mockFrom.mockImplementation((table: string) => {
     if (table === 'users') {

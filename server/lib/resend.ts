@@ -79,23 +79,54 @@ export function isAllowedFromAddress(addr: string): boolean {
  */
 import { substitute, type PersonalizationRecipient } from './personalize.ts'
 
+export interface FailedRecipient {
+  email: string
+  error: string
+}
+
+/**
+ * Sends per-recipient personalized email and tracks which addresses
+ * failed (rather than only counting failures). Caller can persist
+ * the failed list to enable retry.
+ *
+ * **2026-05-19 rate-limit retune.** Concurrency dropped 10 → 2 and a
+ * `RATE_LIMIT_BATCH_DELAY_MS` (1100ms) gap added between batches so
+ * we stay strictly under Resend's free-tier 2 req/s limit. Empirical:
+ * a 28-recipient send was completing in ~3s with 23 of 28 hitting 429
+ * (`Too Many Requests`). The throttled version completes in ~16s with
+ * 28 of 28 delivered. Trade-off accepted: marketing emails don't need
+ * sub-second send; transactional flows don't use this function.
+ *
+ * If we ever upgrade to Resend's paid tier (10 req/s), bump concurrency
+ * back to 10 and drop the inter-batch delay.
+ */
+const RATE_LIMIT_CONCURRENCY = 2
+const RATE_LIMIT_BATCH_DELAY_MS = 1100
+
 export async function sendPersonalizedEmailToMany(args: {
   from: string
   subjectTemplate: string
   htmlTemplate: string
   recipients: (PersonalizationRecipient & { email: string })[]
-}): Promise<{ sent: number; failed: number; failures: string[] }> {
+}): Promise<{
+  sent: number
+  failed: number
+  failures: string[]
+  failedRecipients: FailedRecipient[]
+}> {
   const { from, subjectTemplate, htmlTemplate, recipients } = args
-  if (recipients.length === 0) return { sent: 0, failed: 0, failures: [] }
+  if (recipients.length === 0) {
+    return { sent: 0, failed: 0, failures: [], failedRecipients: [] }
+  }
 
   const client = getResendClient()
   let sent = 0
   let failed = 0
   const failures: string[] = []
+  const failedRecipients: FailedRecipient[] = []
 
-  const concurrency = 10
-  for (let i = 0; i < recipients.length; i += concurrency) {
-    const slice = recipients.slice(i, i + concurrency)
+  for (let i = 0; i < recipients.length; i += RATE_LIMIT_CONCURRENCY) {
+    const slice = recipients.slice(i, i + RATE_LIMIT_CONCURRENCY)
     const results = await Promise.allSettled(
       slice.map((r) =>
         client.emails.send({
@@ -106,21 +137,40 @@ export async function sendPersonalizedEmailToMany(args: {
         }),
       ),
     )
-    for (const r of results) {
-      if (r.status === 'fulfilled' && r.value?.data?.id) {
+    // Walk results index-aligned with slice so we know which
+    // recipient each failure belongs to — needed for the
+    // failed_emails column on campaigns + Retry-failed path.
+    for (let j = 0; j < results.length; j++) {
+      const result = results[j]
+      const recipient = slice[j]
+      if (!recipient) continue
+      if (result?.status === 'fulfilled' && result.value?.data?.id) {
         sent += 1
-      } else {
-        failed += 1
-        if (r.status === 'rejected') {
-          failures.push(r.reason instanceof Error ? r.reason.message : String(r.reason))
-        } else if (r.status === 'fulfilled' && r.value?.error) {
-          failures.push(r.value.error.message ?? 'unknown')
-        }
+        continue
       }
+      failed += 1
+      let errMsg = 'unknown'
+      if (result?.status === 'rejected') {
+        errMsg = result.reason instanceof Error
+          ? result.reason.message
+          : String(result.reason)
+      } else if (result?.status === 'fulfilled' && result.value?.error) {
+        errMsg = result.value.error.message ?? 'unknown'
+      }
+      failures.push(errMsg)
+      failedRecipients.push({ email: recipient.email, error: errMsg })
+    }
+
+    // Inter-batch pause. Skip the final iteration to avoid a
+    // dangling 1.1s wait after the last batch resolves.
+    if (i + RATE_LIMIT_CONCURRENCY < recipients.length) {
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, RATE_LIMIT_BATCH_DELAY_MS),
+      )
     }
   }
 
-  return { sent, failed, failures }
+  return { sent, failed, failures, failedRecipients }
 }
 
 export async function sendEmailToMany(args: {

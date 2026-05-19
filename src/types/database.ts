@@ -1076,6 +1076,11 @@ export type Database = {
           recalled_by: string | null
           channel: 'push' | 'email'
           email_from: string | null
+          /** Slice 2026-05-19 (migration 084) — emails that failed
+           * during the original send (Resend rate-limit, bounce, etc).
+           * Drives the "Retry failed (N)" button. Rewritten after every
+           * retry with the still-failed set. */
+          failed_emails: string[]
           created_at: string
         }
         Insert: {
@@ -1095,6 +1100,7 @@ export type Database = {
           recalled_by?: string | null
           channel?: 'push' | 'email'
           email_from?: string | null
+          failed_emails?: string[]
           created_at?: string
         }
         Update: {
@@ -1114,6 +1120,7 @@ export type Database = {
           recalled_by?: string | null
           channel?: 'push' | 'email'
           email_from?: string | null
+          failed_emails?: string[]
           created_at?: string
         }
         Relationships: never[]

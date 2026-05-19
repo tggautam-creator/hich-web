@@ -6,6 +6,7 @@ import {
   useAdminFromAddresses,
   useAdminCampaignHistory,
   useAdminRecallCampaign,
+  useAdminRetryFailedCampaign,
   type Audience,
   type AudienceType,
   type CampaignHistoryRow,
@@ -981,6 +982,15 @@ function CampaignHistorySection({
                     )}
                   </div>
                   <div className="shrink-0 flex items-center gap-2">
+                    {/* 2026-05-19 — Retry only the recipients whose
+                         original send failed. Email campaigns only;
+                         skipped when the campaign was recalled. */}
+                    {row.channel === 'email' &&
+                      !row.recalled_at &&
+                      row.failed_emails &&
+                      row.failed_emails.length > 0 && (
+                        <RetryFailedButton row={row} />
+                      )}
                     <button
                       type="button"
                       data-testid={`history-duplicate-${row.id}`}
@@ -1015,6 +1025,58 @@ function CampaignHistorySection({
         />
       )}
     </div>
+  )
+}
+
+/**
+ * 2026-05-19 — re-send an email campaign to the recipients whose
+ * original send failed. Single-button (no dialog) since the surface
+ * area is small + the body is reconstructed server-side from the
+ * campaign row. Confirms inline with a `window.confirm` so a stray
+ * click doesn't re-blast addresses unintentionally.
+ *
+ * After success the button vanishes because `failed_emails` either
+ * empties out (everyone got through this time) or shrinks (we leave
+ * the still-failed set on the row for another retry). React Query
+ * invalidation in `useAdminRetryFailedCampaign` re-fetches history
+ * so the count updates without a refresh.
+ */
+function RetryFailedButton({ row }: { row: CampaignHistoryRow }) {
+  const m = useAdminRetryFailedCampaign(row.id)
+  const count = row.failed_emails?.length ?? 0
+  return (
+    <button
+      type="button"
+      data-testid={`history-retry-failed-${row.id}`}
+      disabled={m.isPending}
+      onClick={() => {
+        if (
+          !window.confirm(
+            `Retry sending this campaign to ${count} recipient${count === 1 ? '' : 's'} whose original send failed?\n\nSubject: ${row.title}\n\nThe email already-delivered to other recipients will NOT receive a duplicate.`,
+          )
+        )
+          return
+        m.mutate(undefined, {
+          onSuccess: (result) => {
+            const remaining = result.failed_emails.length
+            if (remaining === 0) {
+              window.alert(`Sent ${result.sent} of ${result.attempted} retries successfully. All caught up.`)
+            } else {
+              window.alert(
+                `Sent ${result.sent} of ${result.attempted} retries. ${remaining} still failed — try Retry again in a moment.`,
+              )
+            }
+          },
+          onError: (err) => window.alert(err.message || 'Retry failed.'),
+        })
+      }}
+      className={[
+        'rounded-md border border-warning bg-white px-2.5 py-1 text-xs font-medium text-warning hover:bg-warning/5',
+        m.isPending ? 'cursor-not-allowed opacity-50' : '',
+      ].join(' ')}
+    >
+      {m.isPending ? 'Retrying…' : `Retry failed (${count})`}
+    </button>
   )
 }
 
