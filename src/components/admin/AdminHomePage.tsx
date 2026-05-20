@@ -15,6 +15,7 @@ import { AdminApiException } from '@/lib/admin/api'
 import { trackEvent } from '@/lib/analytics'
 import { colors } from '@/lib/tokens'
 import InfoTooltip from './InfoTooltip'
+import UserLocationsMap from './UserLocationsMap'
 
 /**
  * Admin Overview dashboard (Slice 1.1).
@@ -221,6 +222,24 @@ export default function AdminHomePage() {
         >
           <TopDomainsChart data={data.charts.top_email_domains} />
         </ChartCard>
+      </div>
+
+      {/* 2026-05-20 — dashboard map of every user's last known location
+           in the last 30 days. Distinct from /admin/live (real-time
+           ops): this is the wider "where do we have users overall"
+           view. Click a pin → user detail page. */}
+      <div>
+        <div className="mb-2 flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-text-secondary">
+            User locations (last 30 days)
+          </h2>
+          <InfoTooltip
+            testid="user-locations-info"
+            text="Every user whose last_known_at falls within the past 30 days, with their most recent GPS coords (server-side instrumented via POST /api/users/me/location). Green dots = drivers, blue dots = riders. Click a pin to open the user detail page. Capped at 1000 pins (warning chip surfaces if hit). For real-time ops use /admin/live which has tighter 1h / 24h windows + filters."
+            align="left"
+          />
+        </div>
+        <UserLocationsMap />
       </div>
     </div>
   )

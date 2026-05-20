@@ -341,3 +341,79 @@ function buildDailySeries(
   }
   return out
 }
+
+// ── GET /metrics/user-locations (2026-05-20) ────────────────────────────────
+//
+// Every user with a `last_known_at` within the configured window
+// (default 30 days). Drives the dashboard map. Distinct from
+// `/admin/live`'s `recent_users` which uses a tighter 1h / 24h fresh /
+// stale window for real-time ops — this is the longer-tail "where are
+// our users overall" view.
+//
+// Capped at 1000 rows so a dense market doesn't OOM the page. If we
+// ever cross that, the right move is server-side clustering, not
+// pagination — markers >1000 are unreadable anyway.
+
+interface UserLocation {
+  user_id: string
+  name: string | null
+  email: string | null
+  is_driver: boolean
+  lat: number
+  lng: number
+  last_known_at: string
+}
+
+adminMetricsRouter.get(
+  '/user-locations',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const windowDays = Math.min(
+        Math.max(parseInt(String(req.query['window_days'] ?? '30'), 10) || 30, 1),
+        365,
+      )
+      const cutoff = new Date()
+      cutoff.setUTCDate(cutoff.getUTCDate() - windowDays)
+      const cutoffIso = cutoff.toISOString()
+
+      const { data, error } = await supabaseAdmin
+        .from('users')
+        .select('id, full_name, email, is_driver, last_known_lat, last_known_lng, last_known_at')
+        .gte('last_known_at', cutoffIso)
+        .not('last_known_lat', 'is', null)
+        .not('last_known_lng', 'is', null)
+        .order('last_known_at', { ascending: false })
+        .limit(1000)
+      if (error) throw error
+
+      const locations: UserLocation[] = (data ?? [])
+        .filter(
+          (u): u is typeof u & {
+            last_known_lat: number
+            last_known_lng: number
+            last_known_at: string
+          } =>
+            u.last_known_lat != null && u.last_known_lng != null && u.last_known_at != null,
+        )
+        .map((u) => ({
+          user_id: u.id,
+          name: u.full_name,
+          email: u.email,
+          is_driver: u.is_driver,
+          lat: u.last_known_lat,
+          lng: u.last_known_lng,
+          last_known_at: u.last_known_at,
+        }))
+
+      res.status(200).json({
+        ok: true,
+        window_days: windowDays,
+        locations,
+        truncated: locations.length === 1000,
+        as_of: new Date().toISOString(),
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
