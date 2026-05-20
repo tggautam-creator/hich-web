@@ -54,28 +54,13 @@ export function isAllowedFromAddress(addr: string): boolean {
 
 /**
  * Batch-send the same email to N recipients via Resend's
- * `emails.send` per recipient. Resend has a true batch endpoint
- * (`batch.send`) but it has a 100-recipient cap per call; for the
- * first cut we loop with a small concurrency to stay simple. Larger
- * audiences will need the batch endpoint with chunking.
+ * `batch.send` endpoint. Each call carries up to 100 per-recipient
+ * payloads with their own substituted `to` / `subject` / `html`, so
+ * `{{first_name}}` / `{{name}}` personalization is preserved while
+ * 100 emails collapse into a single Resend API call.
  *
  * Returns success / failure counts so the campaign row can record
  * how many actually went out vs. how many were attempted.
- */
-/**
- * 2026-05-18 — personalized variant of `sendEmailToMany`. Same per-
- * recipient loop, but each send first runs `substitute()` over the
- * subject + html using that recipient's `full_name` / `email`. Lets
- * the admin write copy like `Hi {{name}},` and have every recipient
- * see their own name. Returns the same shape as `sendEmailToMany`.
- *
- * Substitution is applied to BOTH subject and html so an admin can
- * write `{{name}}, your ride is confirmed` in either field.
- *
- * Implementation note: a true Resend batch endpoint can't be used
- * here (it requires identical content per call). We're already 1-per-
- * recipient anyway because Resend's `batch.send` caps at 100 and
- * doesn't accept per-recipient bodies.
  */
 import { substitute, type PersonalizationRecipient } from './personalize.ts'
 import { recordApiCall } from './apiUsage.ts'
@@ -86,22 +71,18 @@ export interface FailedRecipient {
 }
 
 /**
- * Sends per-recipient personalized email and tracks which addresses
- * failed (rather than only counting failures). Caller can persist
- * the failed list to enable retry.
+ * 2026-05-19 — switched from per-recipient `emails.send` (28 calls for
+ * a 28-person campaign, throttled to ~16s to dodge the 2 req/s limit)
+ * to `batch.send` (1 call for ≤100 recipients). Each batch entry still
+ * carries its own substituted subject + html, so `{{first_name}}`-style
+ * personalization is preserved. `batchValidation: 'permissive'` lets
+ * the batch partially succeed and returns per-index errors we map back
+ * to recipient emails for the Retry-failed path.
  *
- * **2026-05-19 rate-limit retune.** Concurrency dropped 10 → 2 and a
- * `RATE_LIMIT_BATCH_DELAY_MS` (1100ms) gap added between batches so
- * we stay strictly under Resend's free-tier 2 req/s limit. Empirical:
- * a 28-recipient send was completing in ~3s with 23 of 28 hitting 429
- * (`Too Many Requests`). The throttled version completes in ~16s with
- * 28 of 28 delivered. Trade-off accepted: marketing emails don't need
- * sub-second send; transactional flows don't use this function.
- *
- * If we ever upgrade to Resend's paid tier (10 req/s), bump concurrency
- * back to 10 and drop the inter-batch delay.
+ * Inter-batch 1.1s pause kept so the per-call rate limit (still 2 req/s
+ * on free tier) is respected when an audience exceeds 100.
  */
-const RATE_LIMIT_CONCURRENCY = 2
+const RESEND_BATCH_MAX = 100
 const RATE_LIMIT_BATCH_DELAY_MS = 1100
 
 export async function sendPersonalizedEmailToMany(args: {
@@ -126,48 +107,63 @@ export async function sendPersonalizedEmailToMany(args: {
   const failures: string[] = []
   const failedRecipients: FailedRecipient[] = []
 
-  for (let i = 0; i < recipients.length; i += RATE_LIMIT_CONCURRENCY) {
-    const slice = recipients.slice(i, i + RATE_LIMIT_CONCURRENCY)
-    // Tracked even when the call fails — Resend still counts a
-    // request against our daily quota regardless of outcome.
-    void recordApiCall('resend', slice.length)
-    const results = await Promise.allSettled(
-      slice.map((r) =>
-        client.emails.send({
-          from,
-          to: r.email,
-          subject: substitute(subjectTemplate, r),
-          html: substitute(htmlTemplate, r),
-        }),
-      ),
-    )
-    // Walk results index-aligned with slice so we know which
-    // recipient each failure belongs to — needed for the
-    // failed_emails column on campaigns + Retry-failed path.
-    for (let j = 0; j < results.length; j++) {
-      const result = results[j]
-      const recipient = slice[j]
-      if (!recipient) continue
-      if (result?.status === 'fulfilled' && result.value?.data?.id) {
-        sent += 1
-        continue
+  for (let i = 0; i < recipients.length; i += RESEND_BATCH_MAX) {
+    const chunk = recipients.slice(i, i + RESEND_BATCH_MAX)
+    const payload = chunk.map((r) => ({
+      from,
+      to: r.email,
+      subject: substitute(subjectTemplate, r),
+      html: substitute(htmlTemplate, r),
+    }))
+    // Tracked once per batch.send call — Resend bills the request
+    // against quota regardless of how many entries it carries.
+    void recordApiCall('resend', 1)
+
+    try {
+      const response = await client.batch.send(payload, {
+        batchValidation: 'permissive',
+      })
+      if (response.error || !response.data) {
+        const errMsg = response.error?.message ?? 'batch send failed'
+        for (const r of chunk) {
+          failed += 1
+          failures.push(errMsg)
+          failedRecipients.push({ email: r.email, error: errMsg })
+        }
+      } else {
+        const responseData = response.data as {
+          data?: { id: string }[]
+          errors?: { index: number; message?: string }[]
+        }
+        const errorByIndex = new Map<number, string>()
+        for (const e of responseData.errors ?? []) {
+          errorByIndex.set(e.index, e.message ?? 'unknown')
+        }
+        for (let j = 0; j < chunk.length; j++) {
+          const recipient = chunk[j]
+          if (!recipient) continue
+          const err = errorByIndex.get(j)
+          if (err) {
+            failed += 1
+            failures.push(err)
+            failedRecipients.push({ email: recipient.email, error: err })
+          } else {
+            sent += 1
+          }
+        }
       }
-      failed += 1
-      let errMsg = 'unknown'
-      if (result?.status === 'rejected') {
-        errMsg = result.reason instanceof Error
-          ? result.reason.message
-          : String(result.reason)
-      } else if (result?.status === 'fulfilled' && result.value?.error) {
-        errMsg = result.value.error.message ?? 'unknown'
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      for (const r of chunk) {
+        failed += 1
+        failures.push(errMsg)
+        failedRecipients.push({ email: r.email, error: errMsg })
       }
-      failures.push(errMsg)
-      failedRecipients.push({ email: recipient.email, error: errMsg })
     }
 
-    // Inter-batch pause. Skip the final iteration to avoid a
-    // dangling 1.1s wait after the last batch resolves.
-    if (i + RATE_LIMIT_CONCURRENCY < recipients.length) {
+    // Inter-batch pause when another chunk follows — stays under
+    // Resend's 2 req/s rate limit on batch.send.
+    if (i + RESEND_BATCH_MAX < recipients.length) {
       await new Promise<void>((resolve) =>
         setTimeout(resolve, RATE_LIMIT_BATCH_DELAY_MS),
       )
