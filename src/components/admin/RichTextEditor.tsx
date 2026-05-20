@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
@@ -49,6 +50,28 @@ export default function RichTextEditor({
       },
     },
   })
+
+  // 2026-05-19 — sync external `value` changes back into the editor.
+  // TipTap's `useEditor` reads `content` only once on mount, so without
+  // this hook, parent state changes (e.g. clicking Duplicate on a past
+  // campaign which fires setBodyHtml(row.body)) NEVER propagate into
+  // the editor surface — admin sees the body field stay empty even
+  // though state is correct.
+  //
+  // Loop-safety: the `getHTML() !== value` guard means we only call
+  // setContent when the external value DIFFERS from what the editor
+  // already shows. After a user keystroke, `onUpdate` calls
+  // `onChange(html)`, parent sets state to that exact html, this
+  // effect re-runs but the guard says they're equal → no-op. So
+  // typing doesn't trigger a setContent loop.
+  //
+  // `{ emitUpdate: false }` suppresses the `update` event that would
+  // otherwise re-fire onUpdate → setBodyHtml → infinite loop.
+  useEffect(() => {
+    if (!editor) return
+    if (editor.getHTML() === value) return
+    editor.commands.setContent(value, { emitUpdate: false })
+  }, [editor, value])
 
   if (!editor) return null
 

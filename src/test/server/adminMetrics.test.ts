@@ -8,7 +8,7 @@
  *   - returns the documented response shape (so the React Query hook
  *     + AdminHomePage can rely on it without a TypeScript guard)
  */
-import { vi, describe, it, expect, beforeEach } from 'vitest'
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest'
 import request from 'supertest'
 
 const { mockAuth, mockFrom } = vi.hoisted(() => ({
@@ -133,6 +133,17 @@ describe('GET /api/admin/metrics/overview — KPI math', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     authAsUser()
+    // 2026-05-19 — freeze time at a fixed UTC noon to eliminate
+    // time-of-day flake. The KPI math uses `startOfDayUTC(now)`;
+    // running the test ~17:00 PDT lands "1 hour ago" in the previous
+    // UTC day, breaking `new_signups_today` and `rides_completed_today`
+    // assertions. Noon UTC is safely mid-day, so isoMinusHours(N) for
+    // any reasonable N still falls on the same UTC date.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-05-19T12:00:00.000Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it('returns documented response shape with an empty dataset', async () => {
