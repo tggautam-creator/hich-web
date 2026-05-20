@@ -15,7 +15,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 2026-05-20 — bumped 20 → 22 (LTS). Node 20 will be removed
+          # from GitHub Actions runners on 2026-09-16; Node 24 becomes
+          # the default 2026-06-02. Staying on LTS 22 keeps CI stable
+          # until we hit a forcing function to move to 24.
+          node-version: 22
           cache: npm
 
       - run: npm ci
@@ -24,7 +28,11 @@ jobs:
 
       - run: npm test -- --run
 
-      - run: npm run build
+      # 2026-05-20 — `build:ci` runs `vite build --mode dev` so the
+      # `assertProdEnv()` guard in vite.config.ts doesn't trip on CI's
+      # placeholder env values. Production builds (Vercel) still use
+      # `npm run build` which enforces real prod Supabase/Firebase IDs.
+      - run: npm run build:ci
         env:
           VITE_SUPABASE_URL: https://placeholder.supabase.co
           VITE_SUPABASE_ANON_KEY: placeholder-key
