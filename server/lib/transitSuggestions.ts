@@ -87,7 +87,11 @@ interface RoutesApiResponse {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const SEARCH_RADIUS_M = 1500         // radius around divergence point
+// 2026-05-21 v1.2.1 S1 — bumped 1500 → 4000. 1.5km only reaches stations
+// that abut the freeway exit; many Bay Area BART stations sit 1-2km off
+// the highway and were getting missed even when the divergence point
+// landed near them. 4km reliably catches freeway-adjacent stations.
+const SEARCH_RADIUS_M = 4000         // radius around divergence point
 const MAX_STATIONS = 5               // max results per nearby search
 const MAX_SUGGESTIONS = 3            // top N suggestions returned
 const MAX_CANDIDATES = 8             // cap station candidates before per-station API calls
@@ -179,10 +183,48 @@ const MAJOR_TRANSIT_HUBS: TransitHub[] = [
   { name: 'Concord BART', lat: 37.9737, lng: -122.0291, placeId: 'ChIJ-UBDQJJWhYAROaKjVCzHYNc', address: 'Concord, CA' },
   { name: 'Pittsburg/Bay Point BART', lat: 38.0189, lng: -121.9453, placeId: 'ChIJu0nLqH9ahYARy_vNmbU-DY4', address: 'Pittsburg, CA' },
   { name: 'SFO Airport BART', lat: 37.6161, lng: -122.3920, placeId: 'ChIJuxyJyHh0j4ARxYNaohkydM0', address: 'San Francisco, CA' },
+  // 2026-05-21 v1.2.1 S1 — I-680 mid-corridor BART stations.
+  // Missing from the original 14-hub list. Pleasant Hill, Lafayette,
+  // Orinda, Rockridge, North Concord are the natural drop points
+  // for any East-Bay-bound driver heading to SF via BART; coverage
+  // gap caused the Davis→SF / Davis→San Jose handoff failure
+  // reported 2026-05-21 (see docs/SMART_SEARCH_AUDIT.md).
+  //
+  // Coords from BART's public station list. The `synthetic:` placeId
+  // prefix is REQUIRED as a unique dedup key in `uniqueStations` Map
+  // (line ~530). Empty strings would collide — only the last
+  // empty-placeId hub would survive. Code paths that need a real
+  // Google place_id (e.g. deep-link a station detail view) should
+  // detect the `synthetic:` prefix and fall back to a coord-based
+  // Places lookup. None of the v1.2 search-result UI uses placeId
+  // today, so synthetic ids are functionally safe.
+  { name: 'North Concord/Martinez BART', lat: 38.0036, lng: -122.0245, placeId: 'synthetic:north-concord-martinez-bart', address: 'Concord, CA' },
+  { name: 'Pleasant Hill/Contra Costa Centre BART', lat: 37.9281, lng: -122.0560, placeId: 'synthetic:pleasant-hill-contra-costa-centre-bart', address: 'Walnut Creek, CA' },
+  { name: 'Lafayette BART', lat: 37.8929, lng: -122.1238, placeId: 'synthetic:lafayette-bart', address: 'Lafayette, CA' },
+  { name: 'Orinda BART', lat: 37.8784, lng: -122.1837, placeId: 'synthetic:orinda-bart', address: 'Orinda, CA' },
+  { name: 'Rockridge BART', lat: 37.8444, lng: -122.2517, placeId: 'synthetic:rockridge-bart', address: 'Oakland, CA' },
+  // 2026-05-21 v1.2.1 S1 — Bay Area Ferries. SF Ferry Building is
+  // the rider-side terminus; the four origin terminals are common
+  // handoff points for drivers heading anywhere not in SF.
+  { name: 'San Francisco Ferry Building', lat: 37.7956, lng: -122.3933, placeId: 'synthetic:sf-ferry-building', address: 'San Francisco, CA' },
+  { name: 'Vallejo Ferry Terminal', lat: 38.1077, lng: -122.2685, placeId: 'synthetic:vallejo-ferry', address: 'Vallejo, CA' },
+  { name: 'Larkspur Ferry Terminal', lat: 37.9468, lng: -122.5089, placeId: 'synthetic:larkspur-ferry', address: 'Larkspur, CA' },
+  { name: 'Sausalito Ferry Terminal', lat: 37.8589, lng: -122.4787, placeId: 'synthetic:sausalito-ferry', address: 'Sausalito, CA' },
+  // 2026-05-21 v1.2.1 S1 — Salesforce Transit Center: the canonical
+  // SF intercity bus hub (FlixBus, Greyhound, AC Transit, Muni).
+  { name: 'Salesforce Transit Center', lat: 37.7896, lng: -122.3947, placeId: 'synthetic:salesforce-transit-center', address: 'San Francisco, CA' },
   // Caltrain — Peninsula
   { name: 'San Francisco Caltrain', lat: 37.7764, lng: -122.3942, placeId: 'ChIJ_zM6LDSAhYAR-bOaInEG_sk', address: 'San Francisco, CA' },
   { name: 'Palo Alto Caltrain', lat: 37.4433, lng: -122.1647, placeId: 'ChIJKTeyzOywj4ARMz2hKvRZ1E4', address: 'Palo Alto, CA' },
   { name: 'San Jose Diridon Caltrain', lat: 37.3297, lng: -121.9020, placeId: 'ChIJq_zGJvPLj4AR0YiiKoQ2MbU', address: 'San Jose, CA' },
+  // 2026-05-21 v1.2.1 S1 — mid-Peninsula Caltrain stations. Cover
+  // the gap between SF and Palo Alto so a driver heading south on
+  // 101 can drop riders bound for Redwood City / San Mateo / etc.
+  { name: 'Millbrae Caltrain', lat: 37.5999, lng: -122.3867, placeId: 'synthetic:millbrae-caltrain', address: 'Millbrae, CA' },
+  { name: 'San Mateo Caltrain', lat: 37.5680, lng: -122.3243, placeId: 'synthetic:san-mateo-caltrain', address: 'San Mateo, CA' },
+  { name: 'Redwood City Caltrain', lat: 37.4858, lng: -122.2319, placeId: 'synthetic:redwood-city-caltrain', address: 'Redwood City, CA' },
+  { name: 'Mountain View Caltrain', lat: 37.3942, lng: -122.0762, placeId: 'synthetic:mountain-view-caltrain', address: 'Mountain View, CA' },
+  { name: 'Sunnyvale Caltrain', lat: 37.3787, lng: -122.0312, placeId: 'synthetic:sunnyvale-caltrain', address: 'Sunnyvale, CA' },
   // Amtrak Capitol Corridor — Davis to Bay Area
   { name: 'Davis Amtrak', lat: 38.5445, lng: -121.7405, placeId: 'ChIJnULaRpbNmoARjx_0PNHXAiA', address: 'Davis, CA' },
   { name: 'Sacramento Valley Amtrak', lat: 38.5853, lng: -121.5007, placeId: 'ChIJKQjTLBPRmoARi5nKxU4v6FE', address: 'Sacramento, CA' },
@@ -410,9 +452,15 @@ function findDivergencePoint(
  *
  * Samples route every ~500m for efficiency on long routes.
  */
+// 2026-05-21 v1.2.1 S1 — default radius bumped 1000 → 2500. 1km
+// missed freeway-adjacent hubs because the route polyline runs along
+// the highway centerline but BART/Caltrain stations sit at exits
+// 1-2km off-axis (Walnut Creek BART is ~1.5km from I-680). 2.5km
+// catches the staging-area hubs without false-positive matches
+// for stations on completely unrelated lines.
 function findHubsAlongRoute(
   routePoints: LatLng[],
-  maxDistanceM: number = 1000,
+  maxDistanceM: number = 2500,
 ): Array<{ id: string; name: string; address: string; lat: number; lng: number }> {
   const matches: Array<{ id: string; name: string; address: string; lat: number; lng: number }> = []
 

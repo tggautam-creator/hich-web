@@ -1009,6 +1009,13 @@ scheduleRouter.post(
     //   the expensive transit-suggestion API call. If rider's dest
     //   is more than this far from the polyline's closest approach,
     //   no transit handoff is viable and we skip the API call.
+    //   2026-05-21 v1.2.1 S1 — bumped from 30km → 75km. 30km was
+    //   tuned for early Davis-area tests and silently dropped
+    //   legitimate Bay Area cross-corridor matches (e.g. Davis→SF
+    //   rider × Davis→San Jose driver where the I-680 polyline
+    //   sits ~30km from SF). 75km is the actual ceiling for
+    //   reasonable transit legs (BART end-to-end ~70km, Caltrain
+    //   SF↔San Jose ~80km). MAX_HANDOFF_CANDIDATES caps cost.
     // TIME_WINDOW_MINUTES — hard exclusion when the rider provides a
     //   trip_time.
     // PICKUP_RADIUS_METRES / DROPOFF_RADIUS_METRES — accept rider
@@ -1019,7 +1026,7 @@ scheduleRouter.post(
     //   invoke the (expensive) transit-suggestion engine for. Keeps
     //   per-search Google API spend predictable.
     const ROUTE_CORRIDOR_METRES = 2_000
-    const HANDOFF_MAX_PRECHECK_METRES = 30_000
+    const HANDOFF_MAX_PRECHECK_METRES = 75_000
     const TIME_WINDOW_MINUTES = 120
     const PICKUP_RADIUS_METRES = 10_000
     const DROPOFF_RADIUS_METRES = 10_000
@@ -1392,6 +1399,29 @@ scheduleRouter.post(
 
           // Polyline available but neither direct nor handoff
           // plausible — polyline is authoritative; no fallback.
+          // 2026-05-21 v1.2.1 S1 — log the WHY so future debugging
+          // doesn't require manually re-tracing the algorithm.
+          // The Davis→SF / Davis→San Jose handoff failure that
+          // motivated this patch was invisible because this branch
+          // silently `continue`d with no record of which gate
+          // (corridor / handoff-precheck / boards-too-late) fired.
+          {
+            const reasons: string[] = []
+            if (!originOnCorridor && !originNearStart) {
+              reasons.push(`origin ${Math.round(origProj.distanceM)}m off route (corridor ${ROUTE_CORRIDOR_METRES}m, near-start ${PICKUP_RADIUS_METRES}m, dist-to-start ${Math.round(originToDriverOriginM)}m)`)
+            }
+            if (!destOnCorridor && !destNearEnd) {
+              if (destProj.distanceM > HANDOFF_MAX_PRECHECK_METRES) {
+                reasons.push(`dest ${Math.round(destProj.distanceM)}m off route, exceeds handoff cap ${HANDOFF_MAX_PRECHECK_METRES}m`)
+              } else {
+                reasons.push(`dest ${Math.round(destProj.distanceM)}m off route (within handoff cap but other gate blocked)`)
+              }
+            }
+            if (effectivePickupFrac > BOARDS_TOO_LATE_FRACTION) {
+              reasons.push(`pickup_frac ${effectivePickupFrac.toFixed(2)} > ${BOARDS_TOO_LATE_FRACTION} (boards too late)`)
+            }
+            console.log(`[board/search] rider-side rejected schedule ${(s['id'] as string).slice(0, 8)}…: ${reasons.join('; ')}`)
+          }
           continue
         }
       }
@@ -1652,8 +1682,10 @@ async function runDriverSideSearch(args: {
 
   // Same tuning constants as the rider-side path. Kept in sync so
   // both directions match the same UX guarantees.
+  // 2026-05-21 v1.2.1 S1 — HANDOFF_MAX_PRECHECK_METRES bumped 30km → 75km;
+  // see comment on rider-side path for full rationale.
   const ROUTE_CORRIDOR_METRES = 2_000
-  const HANDOFF_MAX_PRECHECK_METRES = 30_000
+  const HANDOFF_MAX_PRECHECK_METRES = 75_000
   const TIME_WINDOW_MINUTES = 120
   const PICKUP_RADIUS_METRES = 10_000
   const DROPOFF_RADIUS_METRES = 10_000
@@ -1844,12 +1876,12 @@ async function runDriverSideSearch(args: {
     // Also reject when the rider boards so late that no downstream
     // station could possibly help (see `BOARDS_TOO_LATE_FRACTION`
     // on the rider-side path; same logic mirrored here).
-    if (
+    const handoffEligible =
       (originOnCorridor || originNearStart) &&
       !destOnCorridor && !destNearEnd &&
       dropProj.distanceM <= HANDOFF_MAX_PRECHECK_METRES &&
       effectivePickupFrac <= 0.85
-    ) {
+    if (handoffEligible) {
       const pickupFit = originOnCorridor
         ? Math.max(0, 1 - pickupProj.distanceM / ROUTE_CORRIDOR_METRES)
         : Math.max(0, 1 - pickupToDriverOriginM / PICKUP_RADIUS_METRES)
@@ -1875,6 +1907,27 @@ async function runDriverSideSearch(args: {
         createdAt,
         plausibilityScore,
       })
+    } else {
+      // 2026-05-21 v1.2.1 S1 — log silent rejections for driver-side
+      // path symmetry (rider-side already logs at line ~1444).
+      // Without this, the Davis→SF rider × Davis→San Jose driver
+      // case (and its 4 sibling cross-corridor cases) disappear
+      // with no trace.
+      const reasons: string[] = []
+      if (!originOnCorridor && !originNearStart) {
+        reasons.push(`rider pickup ${Math.round(pickupProj.distanceM)}m off route (corridor ${ROUTE_CORRIDOR_METRES}m, near-start ${PICKUP_RADIUS_METRES}m, dist-to-start ${Math.round(pickupToDriverOriginM)}m)`)
+      }
+      if (!destOnCorridor && !destNearEnd) {
+        if (dropProj.distanceM > HANDOFF_MAX_PRECHECK_METRES) {
+          reasons.push(`rider drop ${Math.round(dropProj.distanceM)}m off route, exceeds handoff cap ${HANDOFF_MAX_PRECHECK_METRES}m`)
+        } else {
+          reasons.push(`rider drop ${Math.round(dropProj.distanceM)}m off route (within handoff cap; other gate blocked)`)
+        }
+      }
+      if (effectivePickupFrac > 0.85) {
+        reasons.push(`pickup_frac ${effectivePickupFrac.toFixed(2)} > 0.85 (rider boards too late for any downstream station)`)
+      }
+      console.log(`[board/search:driver] rejected rider schedule ${(s['id'] as string).slice(0, 8)}…: ${reasons.join('; ')}`)
     }
   }
 
