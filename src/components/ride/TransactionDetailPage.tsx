@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { formatCents } from '@/lib/fare'
+import ReportFlowSheet from '@/components/reports/ReportFlowSheet'
 import type { Transaction } from '@/types/database'
 
 interface TransactionDetailPageProps {
@@ -66,6 +67,10 @@ export default function TransactionDetailPage({
   const [error, setError] = useState<string | null>(null)
   const [counterparty, setCounterparty] = useState<Counterparty | null>(null)
   const [copiedField, setCopiedField] = useState<string | null>(null)
+  // Phase 2 — "Issue with this charge?" surface. Opens the shared
+  // report flow pre-filled to the wallet context (so the user sees
+  // only fare/payment categories) with the ride id attached when known.
+  const [reportSheetOpen, setReportSheetOpen] = useState(false)
 
   // Fetch the transaction (RLS enforces user-owns-row).
   useEffect(() => {
@@ -361,7 +366,29 @@ export default function TransactionDetailPage({
             value={formatCents(tx.balance_after_cents)}
           />
         </div>
+
+        {/* Issue with this charge? — Phase 2 of REPORTS_PLAN */}
+        <button
+          type="button"
+          data-testid="report-transaction-button"
+          onClick={() => setReportSheetOpen(true)}
+          className="mt-2 w-full rounded-2xl border border-border bg-white py-3 text-sm font-medium text-text-primary"
+        >
+          Issue with this charge?
+        </button>
       </div>
+
+      {/* Render only when opened — keeps the React Query hook off the
+          mount path for tests that don't wrap with QueryClientProvider. */}
+      {reportSheetOpen && (
+        <ReportFlowSheet
+          isOpen={reportSheetOpen}
+          onClose={() => setReportSheetOpen(false)}
+          context="wallet"
+          rideId={tx.ride_id ?? null}
+          data-testid="transaction-report-sheet"
+        />
+      )}
 
       {/* Copy toast */}
       {copiedField && (

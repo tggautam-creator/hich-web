@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
+import ReportFlowSheet from '@/components/reports/ReportFlowSheet'
 
 /// Server-side keys (snake_case to match the API). The local-state
 /// React names map onto these in `handleToggle`. Tracking the same
@@ -71,6 +72,10 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
   // Delete account state
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleting, setDeleting] = useState(false)
+
+  // Reports & issue tracking (Phase 2). Opening the sheet from the
+  // Support section drops the user straight into the category picker.
+  const [reportSheetOpen, setReportSheetOpen] = useState(false)
 
   const handleToggle = (
     cacheKey: string,
@@ -365,10 +370,18 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
           <div className="bg-white rounded-2xl border border-border divide-y divide-border">
             <button
               data-testid="report-issue-button"
-              onClick={() => navigate('/report-issue')}
+              onClick={() => setReportSheetOpen(true)}
               className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-text-primary"
             >
-              Report an issue
+              Report a problem
+              <span className="text-text-secondary">&rsaquo;</span>
+            </button>
+            <button
+              data-testid="my-reports-link"
+              onClick={() => navigate('/reports')}
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-text-primary"
+            >
+              My reports
               <span className="text-text-secondary">&rsaquo;</span>
             </button>
             <a
@@ -412,6 +425,17 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
           </div>
         </section>
       </div>
+
+      {/* Render only when opened — keeps the React Query hook off the
+          mount path for tests that don't wrap with QueryClientProvider. */}
+      {reportSheetOpen && (
+        <ReportFlowSheet
+          isOpen={reportSheetOpen}
+          onClose={() => setReportSheetOpen(false)}
+          context="general"
+          data-testid="settings-report-sheet"
+        />
+      )}
     </div>
   )
 }

@@ -1,6 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import SettingsPage from '@/components/ride/SettingsPage'
+
+// Phase 2 (2026-05-20): the Support → "Report a problem" button now
+// opens the shared ReportFlowSheet (uses React Query). Tests that
+// click it must render under a QueryClientProvider. We also ensure
+// portal-root exists for the sheet's portal mount.
+function renderSettings() {
+  if (!document.getElementById('portal-root')) {
+    const el = document.createElement('div')
+    el.id = 'portal-root'
+    document.body.appendChild(el)
+  }
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={qc}>
+      <SettingsPage />
+    </QueryClientProvider>,
+  )
+}
 
 const mockNavigate = vi.fn()
 vi.mock('react-router-dom', () => ({
@@ -104,16 +123,27 @@ describe('SettingsPage', () => {
     expect(screen.getByTestId('delete-account-button')).toBeDefined()
   })
 
-  it('shows report issue button', () => {
-    render(<SettingsPage />)
+  it('shows report problem button (Phase 2 label "Report a problem")', () => {
+    renderSettings()
     expect(screen.getByTestId('report-issue-button')).toBeDefined()
-    expect(screen.getByText('Report an issue')).toBeDefined()
+    expect(screen.getByText('Report a problem')).toBeDefined()
+    expect(screen.getByTestId('my-reports-link')).toBeDefined()
   })
 
-  it('navigates to report issue page', () => {
-    render(<SettingsPage />)
+  it('opens the Phase 2 report sheet inline (no navigation)', async () => {
+    renderSettings()
     fireEvent.click(screen.getByTestId('report-issue-button'))
-    expect(mockNavigate).toHaveBeenCalledWith('/report-issue')
+    await waitFor(() => {
+      expect(screen.getByTestId('settings-report-sheet')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('report-step-category')).toBeInTheDocument()
+    expect(mockNavigate).not.toHaveBeenCalledWith('/report-issue')
+  })
+
+  it('My reports link navigates to /reports', () => {
+    renderSettings()
+    fireEvent.click(screen.getByTestId('my-reports-link'))
+    expect(mockNavigate).toHaveBeenCalledWith('/reports')
   })
 
   it('shows about section', () => {

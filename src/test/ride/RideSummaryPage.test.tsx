@@ -20,6 +20,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import RideSummaryPage from '@/components/ride/RideSummaryPage'
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
@@ -154,16 +155,28 @@ const vehicle = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function renderWithRouter(rideId = 'ride-001') {
+  // Phase 2 (2026-05-20): the "Report an issue" link now renders the
+  // shared ReportFlowSheet, which uses React Query internally. Wrap
+  // every test render with a fresh QueryClient + ensure portal-root
+  // exists so the sheet can mount when triggered.
+  if (!document.getElementById('portal-root')) {
+    const el = document.createElement('div')
+    el.id = 'portal-root'
+    document.body.appendChild(el)
+  }
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <MemoryRouter initialEntries={[`/ride/summary/${rideId}`]}>
-      <Routes>
-        <Route path="/ride/summary/:rideId" element={<RideSummaryPage />} />
-        <Route path="/ride/rate/:rideId" element={<div data-testid="rate-page">Rate</div>} />
-        <Route path="/home/rider" element={<div data-testid="rider-home">Rider Home</div>} />
-        <Route path="/home/driver" element={<div data-testid="driver-home">Driver Home</div>} />
-        <Route path="/report/:rideId" element={<div data-testid="report-page">Report</div>} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[`/ride/summary/${rideId}`]}>
+        <Routes>
+          <Route path="/ride/summary/:rideId" element={<RideSummaryPage />} />
+          <Route path="/ride/rate/:rideId" element={<div data-testid="rate-page">Rate</div>} />
+          <Route path="/home/rider" element={<div data-testid="rider-home">Rider Home</div>} />
+          <Route path="/home/driver" element={<div data-testid="driver-home">Driver Home</div>} />
+          <Route path="/report/:rideId" element={<div data-testid="report-page">Report</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
@@ -654,14 +667,22 @@ describe('RideSummaryPage', () => {
       })
     })
 
-    it('Report link navigates to report page', async () => {
+    it('Report link opens the in-place report sheet (Phase 2 wiring)', async () => {
+      // Phase 2 (2026-05-20) — the "Report an issue" link now opens
+      // the shared ReportFlowSheet inline instead of navigating to
+      // /report/:rideId. The sheet uses React Query internally so we
+      // wrap the test render with QueryClientProvider before clicking.
+      // The legacy /report/:rideId route still exists for deep-links.
       renderWithRouter()
       await waitFor(() => screen.getByTestId('report-link'))
 
       fireEvent.click(screen.getByTestId('report-link'))
+      // The sheet renders in a portal — wait for the bottom-sheet wrapper
+      // and the category step inside it.
       await waitFor(() => {
-        expect(screen.getByTestId('report-page')).toBeInTheDocument()
+        expect(screen.getByTestId('ride-summary-report-sheet')).toBeInTheDocument()
       })
+      expect(screen.getByTestId('report-step-category')).toBeInTheDocument()
     })
   })
 

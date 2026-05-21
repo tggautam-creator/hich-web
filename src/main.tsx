@@ -80,6 +80,9 @@ const VehicleEditPage = lazy(() => import('@/components/ride/VehicleEditPage'))
 const SettingsPage = lazy(() => import('@/components/ride/SettingsPage'))
 const ReportIssuePage = lazy(() => import('@/components/ride/ReportIssuePage'))
 const RideReportPage = lazy(() => import('@/components/ride/RideReportPage'))
+// Reports & issue tracking — Phase 2 of docs/REPORTS_PLAN.md.
+const MyReportsPage = lazy(() => import('@/components/reports/MyReportsPage'))
+const MyReportDetailPage = lazy(() => import('@/components/reports/MyReportDetailPage'))
 
 // ── Stripe Connect (Driver) ─────────────────────────────────────────────────
 const StripeOnboardingPage = lazy(() => import('@/components/driver/StripeOnboardingPage'))
@@ -212,6 +215,9 @@ createRoot(rootEl).render(
               <Route path="/settings" element={<Suspense fallback={<FormPageSkeleton />}><SettingsPage /></Suspense>} />
               <Route path="/report-issue" element={<Suspense fallback={<FormPageSkeleton />}><ReportIssuePage /></Suspense>} />
               <Route path="/report/:rideId" element={<Suspense fallback={<FormPageSkeleton />}><RideReportPage /></Suspense>} />
+              {/* My reports (Phase 2 of docs/REPORTS_PLAN.md). */}
+              <Route path="/reports" element={<Suspense fallback={<ListPageSkeleton />}><MyReportsPage /></Suspense>} />
+              <Route path="/reports/:id" element={<Suspense fallback={<FormPageSkeleton />}><MyReportDetailPage /></Suspense>} />
 
               {/* ── Admin panel (Phase 0 shell — gated by AdminGuard) ── */}
               <Route element={<Suspense fallback={<FormPageSkeleton />}><AdminGuard /></Suspense>}>

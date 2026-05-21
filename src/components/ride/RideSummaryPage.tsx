@@ -6,6 +6,7 @@ import { formatCents, calculateFare, estimateStripeFee } from '@/lib/fare'
 import { colors as tokenColors } from '@/lib/tokens'
 import { haversineMetres } from '@/lib/geo'
 import PrimaryButton from '@/components/ui/PrimaryButton'
+import ReportFlowSheet from '@/components/reports/ReportFlowSheet'
 import type { Ride, User, Vehicle } from '@/types/database'
 
 // ── Rating tag options (mirrors RateRidePage before consolidation) ────────────
@@ -258,6 +259,10 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
   const [revealed, setRevealed] = useState(false)
   const [otherRating, setOtherRating] = useState<{ stars: number; tags: string[] } | null>(null)
   const [rateError, setRateError] = useState<string | null>(null)
+
+  // Phase 2 report flow — shared bottom-sheet opens in-place instead
+  // of navigating to the legacy `/report/:rideId` page.
+  const [reportSheetOpen, setReportSheetOpen] = useState(false)
 
   // Tip state — rider-only, optional.
   // `selectedTipCents` is the chip value: a positive cents number, -1 for
@@ -1311,13 +1316,27 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
         </button>
 
         <button
-          onClick={() => navigate(`/report/${rideId}`)}
+          onClick={() => setReportSheetOpen(true)}
           className="w-full text-center text-xs text-text-secondary underline"
           data-testid="report-link"
         >
           Report an issue
         </button>
       </div>
+
+      {/* Gate the render so existing tests without QueryClientProvider
+          (RideSummaryPage.test.tsx, …) don't pay the React Query mount
+          cost. The sheet is purely on-demand. */}
+      {reportSheetOpen && (
+        <ReportFlowSheet
+          isOpen={reportSheetOpen}
+          onClose={() => setReportSheetOpen(false)}
+          context="post_ride"
+          rideId={rideId ?? null}
+          subjectUserId={otherUser?.id ?? null}
+          data-testid="ride-summary-report-sheet"
+        />
+      )}
     </div>
   )
 }
