@@ -420,4 +420,116 @@ describe('MessagingWindow', () => {
 
     expect(screen.queryByTestId('back-to-rides-button')).not.toBeInTheDocument()
   })
+
+  // ── Sprint 4 W-T1-M1 — optimistic outgoing bubbles ─────────────────────
+
+  it('renders an optimistic bubble immediately on Send before the POST resolves', async () => {
+    setupMocks()
+    const user = userEvent.setup()
+    let resolvePost: (v: unknown) => void = () => {}
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ messages: [] }) })
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolvePost = resolve as (v: unknown) => void }),
+      )
+    globalThis.fetch = mockFetch
+
+    renderPage()
+    await waitFor(() => screen.getByTestId('chat-input'))
+    await user.type(screen.getByTestId('chat-input'), 'Optimistic hello')
+    await user.click(screen.getByTestId('send-button'))
+
+    // The optimistic bubble should appear before the server response lands.
+    await waitFor(() => {
+      expect(screen.getByTestId('optimistic-bubble').textContent).toContain('Optimistic hello')
+    })
+    // Sending state — timestamp slot shows "Sending…" while in flight.
+    expect(screen.getByTestId('optimistic-bubble').textContent).toContain('Sending…')
+
+    resolvePost({
+      ok: true,
+      json: () => Promise.resolve({
+        message: { id: 'srv-1', ride_id: RIDE_ID, sender_id: RIDER_ID, content: 'Optimistic hello', type: 'text', meta: null, created_at: '2025-01-01T00:00:01Z' },
+      }),
+    })
+
+    // After the POST settles, the optimistic-bubble testid is gone
+    // because the row was swapped for the authoritative one (which
+    // doesn't carry the optimistic-only data-testid).
+    await waitFor(() => {
+      expect(screen.queryByTestId('optimistic-bubble')).not.toBeInTheDocument()
+    })
+  })
+
+  it('marks an optimistic bubble as failed + shows Retry when /messages POST 500s', async () => {
+    setupMocks()
+    const user = userEvent.setup()
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ messages: [] }) })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: { message: 'Server exploded' } }),
+      })
+    globalThis.fetch = mockFetch
+
+    renderPage()
+    await waitFor(() => screen.getByTestId('chat-input'))
+    await user.type(screen.getByTestId('chat-input'), 'Wont land')
+    await user.click(screen.getByTestId('send-button'))
+
+    // Retry button appears once the failure lands.
+    await waitFor(() => {
+      const retryButtons = screen.getAllByText('Retry')
+      expect(retryButtons.length).toBeGreaterThan(0)
+    })
+    // "Not sent" indicator is on screen.
+    expect(screen.getAllByText('Not sent').length).toBeGreaterThan(0)
+  })
+
+  // ── Sprint 4 W-T1-M3 — day-divider + sender-run grouping ───────────────
+
+  it('inserts a "Today" day-divider above today\'s messages', async () => {
+    setupMocks()
+    const todayIso = new Date().toISOString()
+    const mockFetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({
+        messages: [
+          { id: 'm-today', ride_id: RIDE_ID, sender_id: DRIVER_ID, content: 'Hey there', type: 'text', meta: null, created_at: todayIso },
+        ],
+      }),
+    })
+    globalThis.fetch = mockFetch
+
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('day-divider-today')).toBeInTheDocument()
+    })
+  })
+
+  it('inserts a date-label day-divider when crossing a calendar day', async () => {
+    setupMocks()
+    // Two messages: one from "yesterday" (24h ago), one from now.
+    const yesterdayIso = new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString()
+    const todayIso = new Date().toISOString()
+    const mockFetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({
+        messages: [
+          { id: 'm-y', ride_id: RIDE_ID, sender_id: DRIVER_ID, content: 'older', type: 'text', meta: null, created_at: yesterdayIso },
+          { id: 'm-t', ride_id: RIDE_ID, sender_id: DRIVER_ID, content: 'newer', type: 'text', meta: null, created_at: todayIso },
+        ],
+      }),
+    })
+    globalThis.fetch = mockFetch
+
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('day-divider-today')).toBeInTheDocument()
+    })
+    // At least one non-Today divider — proves the boundary was inserted.
+    const dividers = screen.getAllByText(/Yesterday|\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\b/)
+    expect(dividers.length).toBeGreaterThan(0)
+  })
 })

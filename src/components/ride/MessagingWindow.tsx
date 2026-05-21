@@ -45,6 +45,136 @@ interface ChatMessage {
   type: string
   meta: Record<string, unknown> | null
   created_at: string
+  // Sprint 4 W-T1-M1 — optimistic-send tracking. `_optimistic` flags
+  // a locally-rendered bubble we inserted before the HTTP round-trip
+  // landed; it's swapped out for the authoritative row on success or
+  // marked `_failed` on error (which surfaces a retry CTA). Server
+  // rows never carry these fields, so the dedup logic in the realtime
+  // echo handler uses (sender_id + content + timestamp window) to
+  // recognize the authoritative replacement.
+  _optimistic?: boolean
+  _failed?: boolean
+}
+
+/**
+ * Generate a client-side message id for optimistic bubbles. Prefixed
+ * with `optimistic-` so the realtime echo + render code can tell
+ * temp rows apart from authoritative ones.
+ */
+function generateOptimisticId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `optimistic-${crypto.randomUUID()}`
+  }
+  return `optimistic-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/**
+ * True when `authoritative` matches an optimistic row already in the
+ * list: same sender, same content, within a 30s window. Used by the
+ * realtime echo handler (and the send-success path) to avoid
+ * double-rendering when the server-sent row arrives just after the
+ * local bubble. Mirrors iOS `hasRecentLocalMatch`.
+ */
+function findOptimisticMatch(
+  list: ChatMessage[],
+  authoritative: ChatMessage,
+): ChatMessage | undefined {
+  if (!authoritative.sender_id || !authoritative.content) return undefined
+  const targetTime = new Date(authoritative.created_at).getTime()
+  return list.find((m) => {
+    if (!m._optimistic) return false
+    if (m.sender_id !== authoritative.sender_id) return false
+    if (m.content !== authoritative.content) return false
+    const dt = Math.abs(targetTime - new Date(m.created_at).getTime())
+    return dt < 30_000
+  })
+}
+
+// ── Day-divider + sender-run grouping (W-T1-M3) ─────────────────────────
+//
+// iOS `MessagingPage.swift:1136-1188` groups consecutive messages from
+// the same sender into a "run" — only the last message in the run
+// shows its timestamp (Messages.app pattern) and a calendar-day
+// divider is inserted whenever the day changes between consecutive
+// messages. Web mirrors that here.
+
+type ChatRow =
+  | { kind: 'day'; key: string; label: string }
+  | { kind: 'message'; key: string; msg: ChatMessage; isRunStart: boolean; isRunEnd: boolean }
+
+const DAY_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  weekday: 'long',
+  month: 'long',
+  day: 'numeric',
+})
+
+function isSameCalendarDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear()
+    && a.getMonth() === b.getMonth()
+    && a.getDate() === b.getDate()
+  )
+}
+
+/** Format a day-divider label — "Today", "Yesterday", or the long-form date. */
+function formatDayDividerLabel(date: Date, now: Date = new Date()): string {
+  if (isSameCalendarDay(date, now)) return 'Today'
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+  if (isSameCalendarDay(date, yesterday)) return 'Yesterday'
+  return DAY_FORMATTER.format(date)
+}
+
+/**
+ * Walk the message list and emit interleaved day-divider rows + tagged
+ * message rows. A text message is `isRunEnd` when the NEXT message is
+ * from a different sender, is on a different day, or doesn't exist.
+ * Special-type messages (pickup_suggestion / dropoff_suggestion /
+ * etc.) are NOT grouped — each renders standalone so the rich cards
+ * always have their own breathing room.
+ */
+function buildChatRows(messages: ChatMessage[]): ChatRow[] {
+  if (messages.length === 0) return []
+  const rows: ChatRow[] = []
+  let lastDate: Date | null = null
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]!
+    const msgDate = new Date(msg.created_at)
+    if (!lastDate || !isSameCalendarDay(lastDate, msgDate)) {
+      rows.push({
+        kind: 'day',
+        key: `day-${msgDate.toISOString().slice(0, 10)}-${msg.id}`,
+        label: formatDayDividerLabel(msgDate),
+      })
+    }
+    lastDate = msgDate
+
+    const prev = messages[i - 1]
+    const next = messages[i + 1]
+    const isText = msg.type === 'text'
+    const prevIsText = prev?.type === 'text'
+    const nextIsText = next?.type === 'text'
+    const prevSameSender =
+      !!prev
+      && prevIsText
+      && isText
+      && prev.sender_id === msg.sender_id
+      && isSameCalendarDay(new Date(prev.created_at), msgDate)
+    const nextSameSender =
+      !!next
+      && nextIsText
+      && isText
+      && next.sender_id === msg.sender_id
+      && isSameCalendarDay(new Date(next.created_at), msgDate)
+    rows.push({
+      kind: 'message',
+      key: msg.id,
+      msg,
+      isRunStart: !prevSameSender,
+      isRunEnd: !nextSameSender,
+    })
+  }
+  return rows
 }
 
 type PinMode = 'pickup' | 'dropoff'
@@ -551,6 +681,13 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         const newMsg = msg.payload as ChatMessage
         setMessages((prev) => {
           if (prev.some((m) => m.id === newMsg.id)) return prev
+          // Sprint 4 W-T1-M1 — swap a matching optimistic bubble
+          // (same sender + content + recent) for the authoritative
+          // row so the bubble doesn't briefly render twice.
+          const localMatch = findOptimisticMatch(prev, newMsg)
+          if (localMatch) {
+            return prev.map((m) => (m.id === localMatch.id ? newMsg : m))
+          }
           return [...prev, newMsg]
         })
         // Refresh ride data when a location proposal arrives (updates pickup_point/dropoff_point)
@@ -673,8 +810,19 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             const body = (await resp.json()) as { messages: ChatMessage[] }
             const fresh = body.messages ?? []
             setMessages((prev) => {
-              if (fresh.length > prev.length) return fresh
-              return prev
+              // Preserve optimistic-only rows when the poll lands —
+              // otherwise an in-flight send would briefly disappear
+              // until the realtime broadcast hits.
+              const optimisticOnly = prev.filter(
+                (m) => m._optimistic && !fresh.some((f) => findOptimisticMatch([m], f)),
+              )
+              const merged = [...fresh, ...optimisticOnly]
+              // Only swap if we actually have new info — avoids a
+              // useless re-render every 12s.
+              const sameLength = merged.length === prev.length
+              const sameIds = sameLength && merged.every((m, i) => m.id === prev[i]?.id)
+              if (sameIds) return prev
+              return merged
             })
           }
         } catch {
@@ -687,48 +835,94 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   }, [rideId, isRider, navigate, state?.destination, state?.destinationLat, state?.destinationLng])
 
   // ── Send text message ──────────────────────────────────────────────────
+  // Sprint 4 W-T1-M1 — optimistic outgoing bubbles. Insert a temp
+  // row immediately (at 55% opacity, with a `_optimistic` tag) so the
+  // bubble appears the instant the user taps Send, clear the input,
+  // then POST. On success, swap the temp row for the authoritative
+  // server row. On failure, mark the temp row `_failed` and surface a
+  // retry CTA. The realtime echo handler de-dupes via
+  // `findOptimisticMatch` so the bubble doesn't render twice when
+  // the broadcast lands.
+  const sendMessageNetwork = useCallback(
+    async (optimisticId: string, content: string) => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) {
+          setMessages((prev) => prev.map((m) => (m.id === optimisticId ? { ...m, _failed: true } : m)))
+          setSendError('Not authenticated')
+          return
+        }
+        const resp = await fetch(`/api/messages/${rideId}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ content }),
+        })
+        if (resp.ok) {
+          const body = (await resp.json()) as { message: ChatMessage }
+          setMessages((prev) => {
+            // If the realtime echo already replaced the optimistic
+            // row, do nothing. Otherwise swap by optimistic id.
+            if (prev.some((m) => m.id === body.message.id)) {
+              return prev.filter((m) => m.id !== optimisticId)
+            }
+            return prev.map((m) => (m.id === optimisticId ? body.message : m))
+          })
+          setSendError(null)
+        } else {
+          const body = (await resp.json().catch(() => ({}))) as { error?: { message?: string } }
+          setMessages((prev) => prev.map((m) => (m.id === optimisticId ? { ...m, _failed: true } : m)))
+          setSendError(body.error?.message ?? `Failed to send message (HTTP ${resp.status})`)
+        }
+      } catch {
+        setMessages((prev) => prev.map((m) => (m.id === optimisticId ? { ...m, _failed: true } : m)))
+        setSendError('Network error — message not sent')
+      }
+    },
+    [rideId],
+  )
+
   const handleSend = useCallback(async () => {
-    if (!inputText.trim() || !rideId || sending) return
+    if (!inputText.trim() || !rideId || !currentUserId || sending) return
+    const content = inputText.trim()
     setSending(true)
     setSendError(null)
-
+    const optimisticId = generateOptimisticId()
+    const optimistic: ChatMessage = {
+      id: optimisticId,
+      ride_id: rideId,
+      sender_id: currentUserId,
+      content,
+      type: 'text',
+      meta: null,
+      created_at: new Date().toISOString(),
+      _optimistic: true,
+    }
+    setMessages((prev) => [...prev, optimistic])
+    setInputText('')
+    inputRef.current?.focus()
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) {
-        setSendError('Not authenticated')
-        return
-      }
-
-      const resp = await fetch(`/api/messages/${rideId}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({ content: inputText.trim() }),
-      })
-
-      if (resp.ok) {
-        const body = (await resp.json()) as { message: ChatMessage }
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === body.message.id)) return prev
-          return [...prev, body.message]
-        })
-        setInputText('')
-        inputRef.current?.focus()
-      } else {
-        // Show the server's actual error message rather than a generic
-        // "Failed to send message" — otherwise it's impossible to tell
-        // a 403 from a 500 from a stale-token 401 in the field.
-        const body = (await resp.json().catch(() => ({}))) as { error?: { message?: string } }
-        setSendError(body.error?.message ?? `Failed to send message (HTTP ${resp.status})`)
-      }
-    } catch {
-      setSendError('Network error — message not sent')
+      await sendMessageNetwork(optimisticId, content)
     } finally {
       setSending(false)
     }
-  }, [inputText, rideId, sending])
+  }, [inputText, rideId, currentUserId, sending, sendMessageNetwork])
+
+  /** Retry a previously-failed optimistic bubble. */
+  const handleRetrySend = useCallback(
+    async (msg: ChatMessage) => {
+      if (!msg._optimistic) return
+      // Clear the failed flag, mark in flight again.
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, _failed: false } : m)),
+      )
+      setSendError(null)
+      await sendMessageNetwork(msg.id, msg.content)
+    },
+    [sendMessageNetwork],
+  )
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1670,8 +1864,33 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           </div>
         )}
 
-        {messages.map((msg) => {
+        {buildChatRows(messages).map((row) => {
+          if (row.kind === 'day') {
+            return (
+              <div
+                key={row.key}
+                className="my-2 flex items-center gap-3"
+                data-testid={`day-divider-${row.label.replace(/\s+/g, '-').toLowerCase()}`}
+              >
+                <div className="h-px flex-1 bg-border" />
+                <span className="text-[10px] font-bold uppercase tracking-wider text-text-secondary">
+                  {row.label}
+                </span>
+                <div className="h-px flex-1 bg-border" />
+              </div>
+            )
+          }
+          const msg = row.msg
           const isMine = msg.sender_id === currentUserId
+          // W-T1-M3 — only the LAST message in a sender-run shows the
+          // timestamp; intermediate bubbles are stacked tight for the
+          // Messages.app feel.
+          const showTimestamp = row.isRunEnd
+          const runSpacing = row.isRunEnd ? '' : 'mb-0.5'
+          // W-T1-M1 — optimistic bubbles render at 55% opacity until
+          // the authoritative row swaps in; failed ones get a danger
+          // tint + tappable retry CTA.
+          const bubbleOpacity = msg._optimistic && !msg._failed ? 'opacity-55' : ''
 
           // ── Special message: pickup_suggestion — rich card with map + route info ──
           if (msg.type === 'pickup_suggestion') {
@@ -1982,23 +2201,61 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           }
 
           // ── Regular text message ──
+          // Bubble tail is rounded square on the SENDER's side only
+          // for the LAST message of a run — visual cue for "this is
+          // the end of what I'm saying right now" (Messages.app).
+          // Mid-run bubbles get fully-rounded corners on the sender
+          // side so the run reads as one continuous block.
+          const tailClass = !row.isRunEnd
+            ? (isMine ? '' : '')
+            : isMine
+              ? 'rounded-br-md'
+              : 'rounded-bl-md'
+          const failedClass = msg._failed
+            ? (isMine ? 'bg-danger text-white' : 'bg-danger/10 text-danger')
+            : isMine
+              ? 'bg-primary text-white'
+              : 'bg-surface text-text-primary'
           return (
             <div
-              key={msg.id}
+              key={row.key}
               data-testid={`message-${msg.id}`}
-              className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}
+              className={`flex ${isMine ? 'justify-end' : 'justify-start'} ${runSpacing}`}
             >
-              <div
-                className={`max-w-[75%] rounded-2xl px-4 py-2.5 ${
-                  isMine
-                    ? 'bg-primary text-white rounded-br-md'
-                    : 'bg-surface text-text-primary rounded-bl-md'
-                }`}
-              >
-                <p className="text-sm whitespace-pre-wrap break-words">{msg.content}</p>
-                <p className={`text-[10px] mt-1 ${isMine ? 'text-white/70' : 'text-text-secondary'}`}>
-                  {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </p>
+              <div className="flex max-w-[75%] flex-col items-end">
+                <div
+                  className={`rounded-2xl px-4 py-2.5 ${failedClass} ${tailClass} ${bubbleOpacity}`}
+                  data-testid={msg._optimistic ? 'optimistic-bubble' : undefined}
+                >
+                  <p className="text-sm whitespace-pre-wrap break-words">{msg.content}</p>
+                  {/* W-T1-M3 — only the last message of a sender-run
+                      shows its timestamp; intermediate bubbles stay
+                      compact for the iOS Messages-app rhythm. */}
+                  {showTimestamp && !msg._failed && (
+                    <p className={`text-[10px] mt-1 ${isMine ? 'text-white/70' : 'text-text-secondary'}`}>
+                      {msg._optimistic
+                        ? 'Sending…'
+                        : new Date(msg.created_at).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                    </p>
+                  )}
+                </div>
+                {/* W-T1-M1 — failed-send retry CTA. */}
+                {msg._failed && (
+                  <div className="mt-1 flex items-center gap-2 text-[11px]">
+                    <span className="text-danger">Not sent</span>
+                    <button
+                      type="button"
+                      onClick={() => { void handleRetrySend(msg) }}
+                      className="font-bold text-primary underline"
+                      data-testid={`retry-send-${msg.id}`}
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )

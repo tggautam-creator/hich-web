@@ -2,6 +2,44 @@
 
 > Companion to [WEB_PARITY_REPORT_2026-05-12.md](WEB_PARITY_REPORT_2026-05-12.md). This file is the **live scoreboard** for the web-side parity work. It is read at the start of every Claude session — keep it up to date.
 
+## Sprint 4 — Messaging / Chat + Emergency parity
+
+**Goal:** close every remaining Tier-1 chat gap vs iOS plus the Emergency Sheet trusted-contacts row. Ride Board work is being driven by the parallel admin session (migration 072 + `BoardOfferAcceptPage`) — Sprint 4 deliberately stays out of that namespace.
+
+**Scope:** W-T1-M1, M2, M3, M4 + W-T1-E1 (5 items). M5 is already shipped on web (flagged as an iOS gap in the report).
+
+**Status:** ⏳ In progress — Slice 1 shipped 2026-05-17.
+
+### Sprint 4 slice plan
+
+#### Slice 1 — Chat rendering polish (M1 + M3) ✅ shipped 2026-05-17
+- [x] **M1** Optimistic outgoing bubbles render at 55% opacity with `Sending…` label on send; swap to authoritative row on POST success; mark `_failed` + show inline Retry CTA on error. Realtime echo handler de-dupes via `findOptimisticMatch` (same sender + content + 30s window) so the bubble doesn't render twice. Polling fallback preserves optimistic rows during refresh.
+- [x] **M3** Day-divider headers (Today / Yesterday / long-form date) inserted whenever the calendar day changes between consecutive messages; sender-run grouping shows the timestamp only on the LAST message of a run (Messages.app pattern). Special-type messages (pickup_suggestion / dropoff_suggestion / etc.) always render standalone.
+
+#### Slice 2 — Phase machine (M2)
+- [ ] **M2** Negotiation-phase state machine (`.dropoff → .pickup → .complete`) gating which proposal banners can render. Today a stale `pickup_suggestion` can still show an Accept button during dropoff phase; the phase machine kills that.
+
+#### Slice 3 — Keyboard dismiss + Emergency Sheet trusted contacts (M4 + E1)
+- [ ] **M4** Tap-outside-the-input on the chat scroll container blurs the textarea so the on-screen keyboard collapses (mobile web parity with iOS `.dismissKeyboardOnTap`).
+- [ ] **E1** Emergency Sheet: trusted-contacts row + "Stop sharing location" toggle + revoke flow. Adds the missing pieces beyond the current Call 911 / Share location / Report unsafe buttons.
+
+### Sprint 4 summary
+
+| Status | Count |
+|---|---|
+| Not started | 3 |
+| In progress | 0 |
+| Done (awaiting QA) | 2 |
+| Done (verified + pushed) | 0 |
+
+### Current focus
+Slice 2 (phase machine).
+
+### Next action
+Implement Slice 2 → run gates → commit + push.
+
+---
+
 ## Sprint 3 — Wallet / Payments / Profile parity
 
 **Goal:** close every remaining Tier-1 wallet/payment/profile gap vs iOS so the money side of the web app feels identical to iOS. Tago is a live production project — every drift gets closed, no "polish later" framing.
