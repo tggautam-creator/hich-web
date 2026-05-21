@@ -7,6 +7,8 @@ import {
   useAdminUserNotifications,
   useAdminUserDevices,
   useAdminUserAudit,
+  useAdminUserSchedules,
+  useAdminUserRoutines,
   useAdminSendPush,
   useAdminGrantCredit,
   useAdminOverrideOnboarding,
@@ -17,6 +19,12 @@ import {
   type AdminUserOverview,
   type AdminAuditRow,
   type AdminUserRide,
+  type AdminUserSchedule,
+  type AdminUserRoutine,
+  type AdminScheduleStatus,
+  type AdminScheduleSort,
+  type AdminRoutineStatus,
+  type AdminRoutineSort,
 } from '@/hooks/useAdminUsers'
 import { AdminApiException } from '@/lib/admin/api'
 import { trackEvent } from '@/lib/analytics'
@@ -33,6 +41,8 @@ import InfoTooltip from './InfoTooltip'
 type TabKey =
   | 'overview'
   | 'rides'
+  | 'board'
+  | 'routines'
   | 'wallet'
   | 'notifications'
   | 'devices'
@@ -41,6 +51,8 @@ type TabKey =
 const TABS: Array<{ key: TabKey; label: string; comingSoon?: boolean }> = [
   { key: 'overview', label: 'Overview' },
   { key: 'rides', label: 'Rides' },
+  { key: 'board', label: 'Board posts' },
+  { key: 'routines', label: 'Routines' },
   { key: 'wallet', label: 'Wallet' },
   { key: 'notifications', label: 'Notifications' },
   { key: 'devices', label: 'Devices' },
@@ -134,6 +146,8 @@ export default function UserDetailPage() {
       {/* ── Tab body ────────────────────────────────────────────────── */}
       {tab === 'overview' && <OverviewTab data={data} />}
       {tab === 'rides' && id && <RidesTab userId={id} active={tab === 'rides'} />}
+      {tab === 'board' && id && <BoardTab userId={id} active={tab === 'board'} />}
+      {tab === 'routines' && id && <RoutinesTab userId={id} active={tab === 'routines'} />}
       {tab === 'wallet' && id && <WalletTab userId={id} active={tab === 'wallet'} />}
       {tab === 'notifications' && id && (
         <NotificationsTab userId={id} active={tab === 'notifications'} />
@@ -1578,6 +1592,374 @@ function RefundRideDialog({
 }
 
 
+// ── Board posts tab ──────────────────────────────────────────────────────────
+//
+// 2026-05-20 — surfaces every ride_schedules row this user has posted
+// on the Ride Board (one-time trips, mode='rider' for requests or
+// mode='driver' for advertised seats). Filter chips toggle the
+// upcoming/past/all set; sort toggle flips trip_date order so ops can
+// scan most-recent-first or oldest-first. Counts pull from the
+// server (head:true count queries), not the paginated body, so the
+// chip badges stay correct even on page 5.
+
+function BoardTab({ userId, active }: { userId: string; active: boolean }) {
+  const [status, setStatus] = useState<AdminScheduleStatus>('all')
+  const [sort, setSort] = useState<AdminScheduleSort>('date_desc')
+  const [page, setPage] = useState(0)
+  const limit = 25
+  const { data, error, isLoading } = useAdminUserSchedules({
+    userId,
+    enabled: active,
+    status,
+    sort,
+    limit,
+    offset: page * limit,
+  })
+  if (isLoading && !data) return <TabLoading />
+  if (error) return <TabError error={error} />
+  if (!data) return null
+  return (
+    <div data-testid="tab-board" className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <SegmentedControl
+          testid="board-status"
+          value={status}
+          onChange={(v) => {
+            setStatus(v)
+            setPage(0)
+          }}
+          options={[
+            { value: 'all', label: `All (${data.upcoming_count + data.past_count})` },
+            { value: 'upcoming', label: `Upcoming (${data.upcoming_count})` },
+            { value: 'past', label: `Past (${data.past_count})` },
+          ]}
+        />
+        <SortToggle
+          testid="board-sort"
+          value={sort}
+          onChange={setSort}
+          options={[
+            { value: 'date_desc', label: 'Newest first' },
+            { value: 'date_asc', label: 'Oldest first' },
+          ]}
+        />
+      </div>
+
+      {data.schedules.length === 0 ? (
+        <EmptyState
+          text={
+            status === 'upcoming'
+              ? 'No upcoming board posts.'
+              : status === 'past'
+                ? 'No past board posts.'
+                : 'This user has not posted on the Ride Board.'
+          }
+        />
+      ) : (
+        <>
+          <div className="overflow-hidden rounded-2xl border border-border bg-white">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-surface text-left text-xs font-medium uppercase tracking-wide text-text-secondary">
+                  <th className="px-4 py-2.5">Trip date</th>
+                  <th className="px-4 py-2.5">Mode</th>
+                  <th className="px-4 py-2.5">Route</th>
+                  <th className="px-4 py-2.5">Origin → Destination</th>
+                  <th className="px-4 py-2.5 text-right">Offers</th>
+                  <th className="px-4 py-2.5 text-right">Posted</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {data.schedules.map((s) => (
+                  <BoardRow key={s.id} schedule={s} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pagination
+            page={page}
+            total={data.total}
+            limit={limit}
+            onPrev={() => setPage((p) => Math.max(0, p - 1))}
+            onNext={() => setPage((p) => p + 1)}
+          />
+        </>
+      )}
+    </div>
+  )
+}
+
+function BoardRow({ schedule }: { schedule: AdminUserSchedule }) {
+  const today = new Date().toISOString().slice(0, 10)
+  const isUpcoming = schedule.trip_date >= today
+  const tripDate = fmtTripDate(schedule.trip_date)
+  const timeLabel = `${fmtTime(schedule.trip_time)} ${schedule.time_type === 'arrival' ? '(arr)' : ''}`.trim()
+  return (
+    <tr data-testid={`board-row-${schedule.id}`} className="hover:bg-surface">
+      <td className="px-4 py-3 whitespace-nowrap">
+        <div className={isUpcoming ? 'text-text-primary font-medium' : 'text-text-secondary'}>
+          {tripDate}
+        </div>
+        <div className="text-xs text-text-secondary">{timeLabel}</div>
+      </td>
+      <td className="px-4 py-3">
+        <ModeBadge mode={schedule.mode} />
+        {!isUpcoming && (
+          <span className="ml-1 rounded bg-surface px-1.5 py-0.5 text-[10px] uppercase tracking-wide font-semibold text-text-secondary">
+            past
+          </span>
+        )}
+      </td>
+      <td className="px-4 py-3 text-text-primary">
+        <div className="truncate">{schedule.route_name || '—'}</div>
+        <div className="text-xs text-text-secondary">
+          {schedule.direction_type === 'roundtrip' ? 'Roundtrip' : 'One-way'}
+        </div>
+      </td>
+      <td className="px-4 py-3 text-text-primary">
+        <div className="truncate">{schedule.origin_address}</div>
+        <div className="truncate text-xs text-text-secondary">
+          → {schedule.dest_address}
+        </div>
+      </td>
+      <td className="px-4 py-3 text-right">
+        {schedule.mode === 'rider' ? (
+          <span
+            className={
+              schedule.pending_offers_count > 0
+                ? 'rounded bg-primary-light px-2 py-0.5 text-xs font-semibold text-primary'
+                : 'text-xs text-text-secondary'
+            }
+          >
+            {schedule.pending_offers_count}
+          </span>
+        ) : (
+          <span className="text-xs text-text-secondary">—</span>
+        )}
+      </td>
+      <td className="px-4 py-3 text-right text-xs text-text-secondary whitespace-nowrap">
+        {fmtDateTime(schedule.created_at)}
+      </td>
+    </tr>
+  )
+}
+
+function ModeBadge({ mode }: { mode: 'driver' | 'rider' }) {
+  const tone =
+    mode === 'driver'
+      ? 'bg-success/10 text-success'
+      : 'bg-primary-light text-primary'
+  return (
+    <span
+      className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide font-semibold ${tone}`}
+    >
+      {mode}
+    </span>
+  )
+}
+
+// ── Routines tab ─────────────────────────────────────────────────────────────
+//
+// 2026-05-20 — recurring weekly driver schedules. Distinct from the
+// Board tab (one-time posts). Filter by is_active so ops can quickly
+// see who's currently advertising weekly routes vs paused.
+
+function RoutinesTab({ userId, active }: { userId: string; active: boolean }) {
+  const [status, setStatus] = useState<AdminRoutineStatus>('all')
+  const [sort, setSort] = useState<AdminRoutineSort>('newest')
+  const [page, setPage] = useState(0)
+  const limit = 25
+  const { data, error, isLoading } = useAdminUserRoutines({
+    userId,
+    enabled: active,
+    status,
+    sort,
+    limit,
+    offset: page * limit,
+  })
+  if (isLoading && !data) return <TabLoading />
+  if (error) return <TabError error={error} />
+  if (!data) return null
+  return (
+    <div data-testid="tab-routines" className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <SegmentedControl
+          testid="routines-status"
+          value={status}
+          onChange={(v) => {
+            setStatus(v)
+            setPage(0)
+          }}
+          options={[
+            { value: 'all', label: `All (${data.active_count + data.inactive_count})` },
+            { value: 'active', label: `Active (${data.active_count})` },
+            { value: 'inactive', label: `Paused (${data.inactive_count})` },
+          ]}
+        />
+        <SortToggle
+          testid="routines-sort"
+          value={sort}
+          onChange={setSort}
+          options={[
+            { value: 'newest', label: 'Newest first' },
+            { value: 'oldest', label: 'Oldest first' },
+          ]}
+        />
+      </div>
+
+      {data.routines.length === 0 ? (
+        <EmptyState
+          text={
+            status === 'active'
+              ? 'No active routines.'
+              : status === 'inactive'
+                ? 'No paused routines.'
+                : 'This user has not set up any weekly routines.'
+          }
+        />
+      ) : (
+        <>
+          <div className="overflow-hidden rounded-2xl border border-border bg-white">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-surface text-left text-xs font-medium uppercase tracking-wide text-text-secondary">
+                  <th className="px-4 py-2.5">Route</th>
+                  <th className="px-4 py-2.5">Days</th>
+                  <th className="px-4 py-2.5">Times</th>
+                  <th className="px-4 py-2.5">State</th>
+                  <th className="px-4 py-2.5 text-right">Created</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {data.routines.map((r) => (
+                  <RoutineRow key={r.id} routine={r} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pagination
+            page={page}
+            total={data.total}
+            limit={limit}
+            onPrev={() => setPage((p) => Math.max(0, p - 1))}
+            onNext={() => setPage((p) => p + 1)}
+          />
+        </>
+      )}
+    </div>
+  )
+}
+
+function RoutineRow({ routine }: { routine: AdminUserRoutine }) {
+  return (
+    <tr data-testid={`routine-row-${routine.id}`} className="hover:bg-surface">
+      <td className="px-4 py-3 text-text-primary">
+        <div className="truncate">{routine.route_name || '—'}</div>
+        <div className="text-xs text-text-secondary">
+          {routine.direction_type === 'roundtrip' ? 'Roundtrip' : 'One-way'}
+        </div>
+      </td>
+      <td className="px-4 py-3 text-text-primary">
+        {fmtDaysOfWeek(routine.day_of_week)}
+      </td>
+      <td className="px-4 py-3 text-text-primary">
+        <div>
+          {routine.departure_time && `Dep ${fmtTime(routine.departure_time)}`}
+        </div>
+        <div className="text-xs text-text-secondary">
+          {routine.arrival_time && `Arr ${fmtTime(routine.arrival_time)}`}
+        </div>
+      </td>
+      <td className="px-4 py-3">
+        <span
+          className={[
+            'rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide font-semibold',
+            routine.is_active
+              ? 'bg-success/10 text-success'
+              : 'bg-surface text-text-secondary',
+          ].join(' ')}
+        >
+          {routine.is_active ? 'Active' : 'Paused'}
+        </span>
+      </td>
+      <td className="px-4 py-3 text-right text-xs text-text-secondary whitespace-nowrap">
+        {fmtDateTime(routine.created_at)}
+      </td>
+    </tr>
+  )
+}
+
+// ── Segmented + sort atoms (Board / Routines tabs) ──────────────────────────
+
+function SegmentedControl<T extends string>({
+  testid,
+  value,
+  onChange,
+  options,
+}: {
+  testid: string
+  value: T
+  onChange: (v: T) => void
+  options: { value: T; label: string }[]
+}) {
+  return (
+    <div
+      data-testid={testid}
+      className="inline-flex overflow-hidden rounded-lg border border-border bg-white"
+    >
+      {options.map((o) => {
+        const selected = o.value === value
+        return (
+          <button
+            key={o.value}
+            type="button"
+            data-testid={`${testid}-${o.value}`}
+            onClick={() => onChange(o.value)}
+            className={[
+              'px-3 py-1.5 text-xs font-medium transition-colors',
+              selected
+                ? 'bg-primary text-white'
+                : 'text-text-secondary hover:text-text-primary hover:bg-surface',
+            ].join(' ')}
+          >
+            {o.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function SortToggle<T extends string>({
+  testid,
+  value,
+  onChange,
+  options,
+}: {
+  testid: string
+  value: T
+  onChange: (v: T) => void
+  options: { value: T; label: string }[]
+}) {
+  return (
+    <label className="inline-flex items-center gap-2 text-xs text-text-secondary">
+      Sort
+      <select
+        data-testid={testid}
+        value={value}
+        onChange={(e) => onChange(e.target.value as T)}
+        className="rounded-md border border-border bg-white px-2 py-1 text-xs text-text-primary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 // ── Wallet tab ───────────────────────────────────────────────────────────────
 
 function WalletTab({ userId, active }: { userId: string; active: boolean }) {
@@ -1907,4 +2289,42 @@ function fmtDate(iso: string): string {
 
 function fmtCents(cents: number): string {
   return moneyFmt.format(cents / 100)
+}
+
+// Trip date is a bare YYYY-MM-DD; render as a fixed UTC date to avoid
+// JS turning "2026-05-20" into yesterday/tomorrow based on the
+// admin's local timezone.
+function fmtTripDate(yyyyMmDd: string): string {
+  const [y, m, d] = yyyyMmDd.split('-').map((s) => parseInt(s, 10))
+  if (!y || !m || !d) return yyyyMmDd
+  const dt = new Date(Date.UTC(y, m - 1, d))
+  return dt.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'UTC',
+  })
+}
+
+// trip_time / departure_time / arrival_time come back as "HH:MM:SS"
+// (Postgres TIME). Render "8:30 AM" without depending on a Date.
+function fmtTime(hms: string): string {
+  const [hRaw, mRaw] = hms.split(':')
+  const h = parseInt(hRaw ?? '', 10)
+  const m = parseInt(mRaw ?? '', 10)
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return hms
+  const period = h >= 12 ? 'PM' : 'AM'
+  const h12 = h % 12 === 0 ? 12 : h % 12
+  return `${h12}:${m.toString().padStart(2, '0')} ${period}`
+}
+
+const DOW_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+function fmtDaysOfWeek(days: number[]): string {
+  if (!days || days.length === 0) return '—'
+  return [...days]
+    .sort((a, b) => a - b)
+    .map((d) => DOW_LABELS[d] ?? '?')
+    .join(' · ')
 }

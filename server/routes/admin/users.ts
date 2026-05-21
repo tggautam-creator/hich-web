@@ -13,11 +13,13 @@
  *     → full profile + Overview-tab derived data
  *       (vehicle, routines count, ratings, email_verified, university)
  *
- * Future (Slice 1.3b+):
+ * Per-tab read endpoints (Slice 1.3b+):
  *   GET /:id/rides         → Rides tab
  *   GET /:id/wallet        → Wallet tab
  *   GET /:id/notifications → Notifications tab
  *   GET /:id/devices       → Devices tab
+ *   GET /:id/schedules     → Board posts tab (ride_schedules, 2026-05-20)
+ *   GET /:id/routines      → Routines tab (driver_routines, 2026-05-20)
  *   POST /:id/actions/*    → Admin Actions tab (audit-logged)
  */
 import { Router, type Request, type Response, type NextFunction } from 'express'
@@ -640,6 +642,227 @@ adminUsersRouter.get(
         ok: true,
         devices: rows,
         total: rows.length,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// ── GET /:id/schedules ──────────────────────────────────────────────────────
+//
+// 2026-05-20 — board posts for a user (ride_schedules rows). The Ride
+// Board lives on top of ride_schedules: a rider post (mode='rider') is
+// a request open to driver offers (ride_offers with schedule_id set),
+// and a driver post (mode='driver') is an upcoming trip the driver is
+// advertising. This endpoint returns both, with the count of pending
+// driver offers attached for rider-mode posts so ops can see "rider
+// has 3 offers waiting" at a glance.
+//
+// Query params:
+//   status: 'upcoming' | 'past' | 'all'   (default 'all')
+//   sort:   'date_desc' | 'date_asc'      (default 'date_desc')
+//   limit, offset                          (pagination)
+//
+// `upcoming`/`past` is determined by trip_date >= / < today UTC. Trip
+// times are local to the rider's region — using UTC is rough but it's
+// the only thing the DB stores; the rare edge case (a 2am-PST post
+// looking "upcoming" until 5pm UTC) doesn't matter for an audit view.
+
+interface UserScheduleRow {
+  id: string
+  mode: 'driver' | 'rider'
+  route_name: string
+  origin_address: string
+  dest_address: string
+  direction_type: 'one_way' | 'roundtrip'
+  trip_date: string
+  trip_time: string
+  time_type: 'departure' | 'arrival'
+  created_at: string
+  /** Count of `ride_offers` rows in 'pending' state attached to this schedule. */
+  pending_offers_count: number
+}
+
+adminUsersRouter.get(
+  '/:id/schedules',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = parseUserIdParam(req, res)
+      if (!id) return
+      const { limit, offset } = parsePaging(req)
+
+      const status = typeof req.query['status'] === 'string' ? req.query['status'] : 'all'
+      const sort = typeof req.query['sort'] === 'string' ? req.query['sort'] : 'date_desc'
+      const ascending = sort === 'date_asc'
+      const today = new Date().toISOString().slice(0, 10) // YYYY-MM-DD UTC
+
+      // Build the base list query, applying the upcoming/past filter
+      // and the sort direction. The two count queries below run in
+      // parallel and feed the tab-badge `*_count` fields regardless
+      // of which filter is currently active in the UI.
+      let listQuery = supabaseAdmin
+        .from('ride_schedules')
+        .select(
+          'id, mode, route_name, origin_address, dest_address, direction_type, trip_date, trip_time, time_type, created_at',
+          { count: 'exact' },
+        )
+        .eq('user_id', id)
+      if (status === 'upcoming') listQuery = listQuery.gte('trip_date', today)
+      else if (status === 'past') listQuery = listQuery.lt('trip_date', today)
+
+      const [listRes, upcomingCountRes, pastCountRes] = await Promise.all([
+        listQuery
+          .order('trip_date', { ascending })
+          .order('trip_time', { ascending })
+          .range(offset, offset + limit - 1),
+        supabaseAdmin
+          .from('ride_schedules')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', id)
+          .gte('trip_date', today),
+        supabaseAdmin
+          .from('ride_schedules')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', id)
+          .lt('trip_date', today),
+      ])
+      if (listRes.error) throw listRes.error
+      if (upcomingCountRes.error) throw upcomingCountRes.error
+      if (pastCountRes.error) throw pastCountRes.error
+
+      // Pull pending offer counts for the schedules we're about to
+      // return so the table can show "3 offers waiting" on rider
+      // posts. Only counts pending — selected/released would be a
+      // separate per-offer drilldown.
+      const scheduleIds = (listRes.data ?? []).map((s) => s.id)
+      const offerCounts = new Map<string, number>()
+      if (scheduleIds.length > 0) {
+        const { data: offerRows, error: offerErr } = await supabaseAdmin
+          .from('ride_offers')
+          .select('schedule_id')
+          .in('schedule_id', scheduleIds)
+          .eq('status', 'pending')
+        if (offerErr) throw offerErr
+        for (const o of offerRows ?? []) {
+          if (!o.schedule_id) continue
+          offerCounts.set(o.schedule_id, (offerCounts.get(o.schedule_id) ?? 0) + 1)
+        }
+      }
+
+      const rows: UserScheduleRow[] = (listRes.data ?? []).map((s) => ({
+        id: s.id,
+        mode: s.mode,
+        route_name: s.route_name,
+        origin_address: s.origin_address,
+        dest_address: s.dest_address,
+        direction_type: s.direction_type,
+        trip_date: s.trip_date,
+        trip_time: s.trip_time,
+        time_type: s.time_type,
+        created_at: s.created_at,
+        pending_offers_count: offerCounts.get(s.id) ?? 0,
+      }))
+
+      res.status(200).json({
+        ok: true,
+        schedules: rows,
+        total: listRes.count ?? rows.length,
+        upcoming_count: upcomingCountRes.count ?? 0,
+        past_count: pastCountRes.count ?? 0,
+        limit,
+        offset,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+// ── GET /:id/routines ───────────────────────────────────────────────────────
+//
+// 2026-05-20 — driver routines (recurring weekly schedules) for a user.
+// Distinct from `/schedules` which is one-time posts — this is the
+// "every Tue/Thu 8am" recurring driver route. Drivers toggle is_active
+// to pause without deleting, so the active/inactive filter mirrors what
+// the driver themself sees on Schedule.
+//
+// Query params:
+//   status: 'active' | 'inactive' | 'all'   (default 'all')
+//   sort:   'newest' | 'oldest'             (default 'newest')
+//   limit, offset                            (pagination)
+
+interface UserRoutineRow {
+  id: string
+  route_name: string
+  direction_type: 'one_way' | 'roundtrip'
+  day_of_week: number[]
+  departure_time: string | null
+  arrival_time: string | null
+  is_active: boolean
+  created_at: string
+}
+
+adminUsersRouter.get(
+  '/:id/routines',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = parseUserIdParam(req, res)
+      if (!id) return
+      const { limit, offset } = parsePaging(req)
+
+      const status = typeof req.query['status'] === 'string' ? req.query['status'] : 'all'
+      const sort = typeof req.query['sort'] === 'string' ? req.query['sort'] : 'newest'
+      const ascending = sort === 'oldest'
+
+      let listQuery = supabaseAdmin
+        .from('driver_routines')
+        .select(
+          'id, route_name, direction_type, day_of_week, departure_time, arrival_time, is_active, created_at',
+          { count: 'exact' },
+        )
+        .eq('user_id', id)
+      if (status === 'active') listQuery = listQuery.eq('is_active', true)
+      else if (status === 'inactive') listQuery = listQuery.eq('is_active', false)
+
+      const [listRes, activeCountRes, inactiveCountRes] = await Promise.all([
+        listQuery
+          .order('created_at', { ascending })
+          .range(offset, offset + limit - 1),
+        supabaseAdmin
+          .from('driver_routines')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', id)
+          .eq('is_active', true),
+        supabaseAdmin
+          .from('driver_routines')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', id)
+          .eq('is_active', false),
+      ])
+      if (listRes.error) throw listRes.error
+      if (activeCountRes.error) throw activeCountRes.error
+      if (inactiveCountRes.error) throw inactiveCountRes.error
+
+      const rows: UserRoutineRow[] = (listRes.data ?? []).map((r) => ({
+        id: r.id,
+        route_name: r.route_name,
+        direction_type: r.direction_type,
+        day_of_week: r.day_of_week,
+        departure_time: r.departure_time,
+        arrival_time: r.arrival_time,
+        is_active: r.is_active,
+        created_at: r.created_at,
+      }))
+
+      res.status(200).json({
+        ok: true,
+        routines: rows,
+        total: listRes.count ?? rows.length,
+        active_count: activeCountRes.count ?? 0,
+        inactive_count: inactiveCountRes.count ?? 0,
+        limit,
+        offset,
       })
     } catch (err) {
       next(err)

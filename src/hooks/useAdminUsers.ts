@@ -252,6 +252,115 @@ export function useAdminUserNotifications(args: {
   })
 }
 
+// ── 2026-05-20 — board posts (ride_schedules) ───────────────────────────────
+
+export type AdminScheduleStatus = 'upcoming' | 'past' | 'all'
+export type AdminScheduleSort = 'date_desc' | 'date_asc'
+
+export interface AdminUserSchedule {
+  id: string
+  mode: 'driver' | 'rider'
+  route_name: string
+  origin_address: string
+  dest_address: string
+  direction_type: 'one_way' | 'roundtrip'
+  trip_date: string
+  trip_time: string
+  time_type: 'departure' | 'arrival'
+  created_at: string
+  pending_offers_count: number
+}
+
+export interface AdminUserSchedules {
+  ok: true
+  schedules: AdminUserSchedule[]
+  total: number
+  upcoming_count: number
+  past_count: number
+  limit: number
+  offset: number
+}
+
+export function useAdminUserSchedules(args: {
+  userId: string | undefined
+  enabled: boolean
+  status: AdminScheduleStatus
+  sort: AdminScheduleSort
+  limit?: number
+  offset?: number
+}) {
+  const { userId, enabled, status, sort, limit = 25, offset = 0 } = args
+  const params = new URLSearchParams({
+    status,
+    sort,
+    limit: String(limit),
+    offset: String(offset),
+  })
+  return useQuery<AdminUserSchedules>({
+    queryKey: ['admin', 'users', 'schedules', userId, status, sort, limit, offset],
+    queryFn: () =>
+      adminGet<AdminUserSchedules>(
+        `/users/${userId}/schedules?${params.toString()}`,
+      ),
+    enabled: enabled && typeof userId === 'string' && userId.length > 0,
+    placeholderData: keepPreviousData,
+    staleTime: FIVE_MIN_MS,
+  })
+}
+
+// ── 2026-05-20 — driver routines (recurring weekly schedules) ───────────────
+
+export type AdminRoutineStatus = 'active' | 'inactive' | 'all'
+export type AdminRoutineSort = 'newest' | 'oldest'
+
+export interface AdminUserRoutine {
+  id: string
+  route_name: string
+  direction_type: 'one_way' | 'roundtrip'
+  day_of_week: number[]
+  departure_time: string | null
+  arrival_time: string | null
+  is_active: boolean
+  created_at: string
+}
+
+export interface AdminUserRoutines {
+  ok: true
+  routines: AdminUserRoutine[]
+  total: number
+  active_count: number
+  inactive_count: number
+  limit: number
+  offset: number
+}
+
+export function useAdminUserRoutines(args: {
+  userId: string | undefined
+  enabled: boolean
+  status: AdminRoutineStatus
+  sort: AdminRoutineSort
+  limit?: number
+  offset?: number
+}) {
+  const { userId, enabled, status, sort, limit = 25, offset = 0 } = args
+  const params = new URLSearchParams({
+    status,
+    sort,
+    limit: String(limit),
+    offset: String(offset),
+  })
+  return useQuery<AdminUserRoutines>({
+    queryKey: ['admin', 'users', 'routines', userId, status, sort, limit, offset],
+    queryFn: () =>
+      adminGet<AdminUserRoutines>(
+        `/users/${userId}/routines?${params.toString()}`,
+      ),
+    enabled: enabled && typeof userId === 'string' && userId.length > 0,
+    placeholderData: keepPreviousData,
+    staleTime: FIVE_MIN_MS,
+  })
+}
+
 export interface AdminUserDevice {
   id: string
   token_suffix: string
