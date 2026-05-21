@@ -1871,8 +1871,24 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         />
       )}
 
-      {/* ── Messages area ──────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3" data-testid="messages-list">
+      {/* ── Messages area ────────────────────────────────────────────────────
+          W-T1-M4 — tap-outside-input dismisses the soft keyboard on
+          mobile web. Without this the iOS Safari keyboard sits on top
+          of the input bar with no way to close it (no Done bar, no
+          escape gesture). Pointer-down on a non-interactive area
+          inside the messages list blurs the active element so the
+          keyboard collapses. Buttons / inputs / textareas keep their
+          own focus because `closest()` filters them out. */}
+      <div
+        className="flex-1 overflow-y-auto px-4 py-3 space-y-3"
+        data-testid="messages-list"
+        onPointerDown={(e) => {
+          const target = e.target as HTMLElement
+          if (target.closest('input, textarea, button, label, a, [contenteditable], [role="button"]')) return
+          const active = document.activeElement as HTMLElement | null
+          if (active && typeof active.blur === 'function') active.blur()
+        }}
+      >
         {messages.length === 0 && !driverDestFlowActive && (
           <div className="flex flex-col items-center justify-center h-full text-center py-12">
             <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center mb-4">

@@ -19,24 +19,24 @@
 #### Slice 2 — Phase machine (M2) ✅ shipped 2026-05-17
 - [x] **M2** Negotiation-phase machine derived in `MessagingWindow.tsx` from `(dropoff_confirmed, pickup_confirmed, ride.status)`. Three states: `dropoff` (dropoff not yet confirmed), `pickup` (dropoff done, pickup outstanding), `complete` (both confirmed OR ride active/cancelled/completed). Gates the pickup proposal Accept banner + inline Accept button + dropoff proposal banner + inline Accept + transit-dropoff Accept on the phase — a stale `pickup_suggestion` left from before dropoff confirmed no longer shows Accept during the dropoff phase. Mirrors iOS `MessagesViewModel+Phase.swift::derivePhase`.
 
-#### Slice 3 — Keyboard dismiss + Emergency Sheet trusted contacts (M4 + E1)
-- [ ] **M4** Tap-outside-the-input on the chat scroll container blurs the textarea so the on-screen keyboard collapses (mobile web parity with iOS `.dismissKeyboardOnTap`).
-- [ ] **E1** Emergency Sheet: trusted-contacts row + "Stop sharing location" toggle + revoke flow. Adds the missing pieces beyond the current Call 911 / Share location / Report unsafe buttons.
+#### Slice 3 — Keyboard dismiss + Emergency Sheet trusted contacts (M4 + E1) ✅ shipped 2026-05-17
+- [x] **M4** Chat scroll container has an `onPointerDown` handler that blurs the active element when the pointer lands on a non-interactive area. `closest('input, textarea, button, label, a, [contenteditable], [role="button"]')` filters out actual controls so taps on them still focus normally. Closes the mobile-web keyboard trap (iOS Safari has no Done bar).
+- [x] **E1** EmergencySheet now loads `/api/safety/trusted-contacts` on open. When at least one contact is on file, a new "Text my N trusted contacts" CTA opens the device SMS composer (`sms:<recipients>?&body=<encoded>`) pre-filled with the share-location link (when one exists in the session) or a generic check-in message. Added a "Stop sharing location" row that surfaces only while a share link is active and DELETEs `/api/safety/share-location/:token` to revoke immediately. Mirrors iOS `EmergencySheet+TrustedContacts.swift`. Adds the missing pieces beyond the current Call 911 / Share location / Report unsafe buttons.
 
 ### Sprint 4 summary
 
 | Status | Count |
 |---|---|
-| Not started | 2 |
+| Not started | 0 |
 | In progress | 0 |
-| Done (awaiting QA) | 3 |
+| Done (awaiting QA) | 5 |
 | Done (verified + pushed) | 0 |
 
 ### Current focus
-Slice 3 (keyboard dismiss + emergency-sheet trusted contacts).
+All Sprint 4 messaging + emergency items shipped. Awaiting prod QA.
 
 ### Next action
-Implement Slice 3 → run gates → commit + push.
+User QA on prod, then pick the next sprint area (Auth/Onboarding has 1 remaining item — W-T1-A2 photo gate decision).
 
 ---
 

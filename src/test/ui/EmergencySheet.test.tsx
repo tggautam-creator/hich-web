@@ -114,10 +114,22 @@ describe('EmergencySheet', () => {
 
   it('share location button calls API and shows link', async () => {
     const mockToken = 'abc123def456'
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ token: mockToken }),
-    } as Response)
+    // URL-routed mock so the mount-time GET /trusted-contacts (added
+    // in Sprint 4 W-T1-E1) doesn't consume the one-shot share-location
+    // response that the test is asserting on.
+    globalThis.fetch = vi.fn((input: URL | RequestInfo) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === '/api/safety/share-location') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ token: mockToken }),
+        }) as unknown as Promise<Response>
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ contacts: [] }),
+      }) as unknown as Promise<Response>
+    })
 
     // Mock clipboard
     const writeText = vi.fn().mockResolvedValue(undefined)
@@ -140,10 +152,19 @@ describe('EmergencySheet', () => {
   })
 
   it('shows error state on API failure', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
-      ok: false,
-      json: () => Promise.resolve({ error: { message: 'Server error' } }),
-    } as Response)
+    globalThis.fetch = vi.fn((input: URL | RequestInfo) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === '/api/safety/share-location') {
+        return Promise.resolve({
+          ok: false,
+          json: () => Promise.resolve({ error: { message: 'Server error' } }),
+        }) as unknown as Promise<Response>
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ contacts: [] }),
+      }) as unknown as Promise<Response>
+    })
 
     renderSheet()
 
@@ -157,5 +178,100 @@ describe('EmergencySheet', () => {
   it('renders with custom data-testid', () => {
     renderSheet({ 'data-testid': 'custom-emergency' })
     expect(screen.getByTestId('custom-emergency')).toBeInTheDocument()
+  })
+
+  // ── Sprint 4 W-T1-E1 — trusted contacts + stop sharing ────────────────
+
+  it('renders the Text trusted contacts row when /api/safety/trusted-contacts returns at least one row', async () => {
+    globalThis.fetch = vi.fn((input: URL | RequestInfo) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === '/api/safety/trusted-contacts') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            contacts: [
+              { id: 'c1', name: 'Mom', phone: '+15551112222' },
+              { id: 'c2', name: 'Best friend', phone: '+15552223333' },
+            ],
+          }),
+        }) as unknown as Promise<Response>
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) }) as unknown as Promise<Response>
+    })
+
+    renderSheet()
+    await waitFor(() => {
+      expect(screen.getByTestId('emergency-text-trusted-contacts')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('emergency-text-trusted-contacts').textContent).toContain('2 trusted contacts')
+  })
+
+  it('does NOT render the Text trusted contacts row when the list is empty', async () => {
+    globalThis.fetch = vi.fn((input: URL | RequestInfo) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === '/api/safety/trusted-contacts') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ contacts: [] }),
+        }) as unknown as Promise<Response>
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) }) as unknown as Promise<Response>
+    })
+
+    renderSheet()
+    // Give the fetch a tick to resolve, then assert the row is absent.
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        '/api/safety/trusted-contacts',
+        expect.anything(),
+      )
+    })
+    expect(screen.queryByTestId('emergency-text-trusted-contacts')).not.toBeInTheDocument()
+  })
+
+  it('renders the Stop sharing row only after a share link is created, and DELETEs the token on tap', async () => {
+    let revokeCall: { url: string; method?: string } | null = null
+    globalThis.fetch = vi.fn((input: URL | RequestInfo, opts?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === '/api/safety/trusted-contacts') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ contacts: [] }),
+        }) as unknown as Promise<Response>
+      }
+      if (url === '/api/safety/share-location' && opts?.method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ token: 'a'.repeat(64) }),
+        }) as unknown as Promise<Response>
+      }
+      if (url.startsWith('/api/safety/share-location/') && opts?.method === 'DELETE') {
+        revokeCall = { url, method: 'DELETE' }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ revoked: true }),
+        }) as unknown as Promise<Response>
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) }) as unknown as Promise<Response>
+    })
+
+    renderSheet()
+    // No share link yet — row hidden.
+    expect(screen.queryByTestId('emergency-stop-sharing')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('emergency-share-location'))
+    await waitFor(() => {
+      expect(screen.getByTestId('emergency-stop-sharing')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByTestId('emergency-stop-sharing'))
+    await waitFor(() => {
+      expect(revokeCall).not.toBeNull()
+    })
+    expect(revokeCall!.url).toBe(`/api/safety/share-location/${'a'.repeat(64)}`)
+    // After revoke, the link disappears + Stop row disappears
+    await waitFor(() => {
+      expect(screen.queryByTestId('emergency-stop-sharing')).not.toBeInTheDocument()
+    })
   })
 })

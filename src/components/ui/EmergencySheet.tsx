@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from '@/lib/supabase'
 
@@ -7,6 +7,27 @@ interface EmergencySheetProps {
   onClose: () => void
   rideId: string
   'data-testid'?: string
+}
+
+interface TrustedContact {
+  id: string
+  name: string
+  phone: string
+}
+
+/**
+ * Extract the share token out of an absolute track URL so we can DELETE
+ * `/api/safety/share-location/:token` to revoke. The route mints the
+ * URL as `<origin>/track/<token>`; we split off the last segment.
+ */
+function tokenFromShareLink(link: string): string | null {
+  try {
+    const u = new URL(link)
+    const parts = u.pathname.split('/').filter(Boolean)
+    return parts[parts.length - 1] ?? null
+  } catch {
+    return null
+  }
 }
 
 const REPORT_CATEGORIES = [
@@ -34,11 +55,91 @@ export default function EmergencySheet({
   const [shareStatus, setShareStatus] = useState<'idle' | 'sharing' | 'shared' | 'error'>('idle')
   const [shareLink, setShareLink] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [revokingShare, setRevokingShare] = useState(false)
 
   // Report flow
   const [reportStep, setReportStep] = useState<ReportStep>('idle')
   const [reportCategory, setReportCategory] = useState<ReportCategory | null>(null)
   const [reportDescription, setReportDescription] = useState('')
+
+  // W-T1-E1 — Trusted contacts. Loaded lazily on sheet open from
+  // GET /api/safety/trusted-contacts. The list is small (cap 5) so
+  // we don't paginate.
+  const [trustedContacts, setTrustedContacts] = useState<TrustedContact[]>([])
+  const [trustedContactsLoaded, setTrustedContactsLoaded] = useState(false)
+
+  useEffect(() => {
+    if (!isOpen || trustedContactsLoaded) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) return
+        const resp = await fetch('/api/safety/trusted-contacts', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        })
+        if (!resp.ok) return
+        const body = (await resp.json()) as { contacts?: TrustedContact[] }
+        if (cancelled) return
+        setTrustedContacts(body.contacts ?? [])
+        setTrustedContactsLoaded(true)
+      } catch {
+        // silent — no contacts row just hides the affordance
+        setTrustedContactsLoaded(true)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [isOpen, trustedContactsLoaded])
+
+  /**
+   * Open the device SMS composer pre-filled with every trusted
+   * contact + the share-location link (when one was created in this
+   * session). Mirrors iOS `MFMessageComposeViewController` pre-fill.
+   * The `sms:` URL is built per the iOS-compatible spec
+   * (comma-separated recipients, `?&body=` parameter).
+   */
+  function textTrustedContacts() {
+    if (trustedContacts.length === 0) return
+    const recipients = trustedContacts.map((c) => c.phone).join(',')
+    const trackBody = shareLink
+      ? `I'm on a Tago ride and wanted you to know. Follow my live location: ${shareLink}`
+      : `I'm on a Tago ride and wanted you to know. If something's wrong, please check on me.`
+    const encoded = encodeURIComponent(trackBody)
+    // iOS Safari + Android Chrome accept `sms:<recipients>?body=...`.
+    // Some carriers prefer `&body=`; iOS quirk: include `?&body=`.
+    const href = `sms:${recipients}?&body=${encoded}`
+    window.location.href = href
+  }
+
+  /**
+   * Revoke the active share link (E1). Calls
+   * DELETE /api/safety/share-location/:token so the recipient sees
+   * the share expire immediately instead of waiting for the 4-hour
+   * TTL. Mirrors iOS "Stop sharing" affordance.
+   */
+  async function stopSharingLocation() {
+    if (!shareLink || revokingShare) return
+    const token = tokenFromShareLink(shareLink)
+    if (!token) return
+    setRevokingShare(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) return
+      const resp = await fetch(`/api/safety/share-location/${token}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
+      if (resp.ok) {
+        setShareStatus('idle')
+        setShareLink(null)
+        setCopied(false)
+      }
+    } catch {
+      // best-effort — fail silently; the 4-hour TTL is the backstop
+    } finally {
+      setRevokingShare(false)
+    }
+  }
 
   function resetReport() {
     setReportStep('idle')
@@ -211,6 +312,57 @@ export default function EmergencySheet({
               >
                 {shareLink}
               </div>
+            )}
+
+            {/* W-T1-E1 — Stop sharing — only visible while a share
+                link is live. Revokes the token immediately so the
+                recipient's tracker flips to expired. */}
+            {shareLink && (
+              <button
+                type="button"
+                onClick={() => { void stopSharingLocation() }}
+                disabled={revokingShare}
+                data-testid="emergency-stop-sharing"
+                className="flex items-center gap-4 rounded-2xl border-2 border-warning bg-warning/10 px-5 py-3 text-warning active:bg-warning/15 disabled:opacity-50"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm5 11H7v-2h10v2z" />
+                </svg>
+                <div className="text-left">
+                  <span className="text-sm font-bold">
+                    {revokingShare ? 'Stopping…' : 'Stop sharing location'}
+                  </span>
+                  <p className="text-xs text-warning/80">
+                    Revoke the link now — recipients lose access immediately
+                  </p>
+                </div>
+              </button>
+            )}
+
+            {/* W-T1-E1 — Text trusted contacts — opens the device SMS
+                composer pre-filled with every saved trusted contact +
+                the share-location link (when one was created in this
+                session). Only rendered when the rider has at least
+                one trusted contact on file. */}
+            {trustedContacts.length > 0 && (
+              <button
+                type="button"
+                onClick={textTrustedContacts}
+                data-testid="emergency-text-trusted-contacts"
+                className="flex items-center gap-4 rounded-2xl border-2 border-primary bg-primary/10 px-5 py-3 text-primary active:bg-primary/15"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M20 2H4a2 2 0 00-2 2v18l4-4h14a2 2 0 002-2V4a2 2 0 00-2-2zM7 9h10v2H7zm0 4h7v2H7z" />
+                </svg>
+                <div className="text-left">
+                  <span className="text-sm font-bold">
+                    Text {trustedContacts.length === 1 ? 'my trusted contact' : `my ${trustedContacts.length} trusted contacts`}
+                  </span>
+                  <p className="text-xs text-primary/80">
+                    Opens your messages app with {shareLink ? 'your live track link' : 'a check-in message'} pre-filled
+                  </p>
+                </div>
+              </button>
             )}
 
             {/* Report unsafe situation — inline form, never navigates away */}
