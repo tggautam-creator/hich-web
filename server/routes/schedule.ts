@@ -7,7 +7,7 @@ import { validateJwt } from '../middleware/auth.ts'
 import { adminAuth } from '../middleware/adminAuth.ts'
 import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
 import { haversineMetres, decodePolyline, projectPointOntoPolyline, type LatLng } from '../lib/polyline.ts'
-import { computeTransitDropoffSuggestions, fetchDrivingRoute, type TransitOption } from '../lib/transitSuggestions.ts'
+import { computeTransitDropoffSuggestions, computeTransitPickupSuggestions, fetchDrivingRoute, type TransitOption } from '../lib/transitSuggestions.ts'
 import { checkUpcomingRides, expireMissedRides, expirePendingBoardOffers, expireStaleRequests, syncAllRoutines } from '../lib/scheduledReminders.ts'
 import { resolveAndPersistDefaultPm } from './payment.ts'
 import { estimateFareCentsBetween } from './rides.ts'
@@ -1138,12 +1138,28 @@ scheduleRouter.post(
 
     // Step 4: score + filter — polyline-first, with endpoint-distance
     // as a backwards-compat fallback.
-    type MatchType = 'direct' | 'transit_handoff' | 'endpoint'
+    // 2026-05-21 v1.2.1 S2.1 — added 'reverse_transit_handoff'.
+    // Same response shape as 'transit_handoff' but the rider's
+    // journey is inverted: rider takes transit FROM their pickup
+    // TO a station along the driver's route, meets driver there,
+    // continues to driver's destination together. Used when rider's
+    // pickup is off-route but their destination IS on it (e.g.
+    // SF→Davis rider × San Jose→Davis driver). iOS uses the
+    // `direction` field on `HandoffInfo` to disambiguate copy +
+    // map rendering.
+    type MatchType = 'direct' | 'transit_handoff' | 'reverse_transit_handoff' | 'endpoint'
     /// Real transit-handoff info populated by
     /// `computeTransitDropoffSuggestions` (the same engine that powers
     /// instant-ride dropoff suggestions). Carries actual transit
     /// timing returned by Google Directions API rather than a
     /// guess based on haversine distance.
+    ///
+    /// 2026-05-21 v1.2.1 S2.1 — `direction` discriminates forward
+    /// (driver drops rider at station, rider takes transit to dest)
+    /// from reverse (rider takes transit to station, driver picks
+    /// rider up, continues to dest). The field semantics shift
+    /// slightly per direction (see TransitDropoffSuggestion comments
+    /// in transitSuggestions.ts).
     type HandoffInfo = {
       station_name: string
       station_place_id: string
@@ -1154,6 +1170,7 @@ scheduleRouter.post(
       transit_to_dest_minutes: number
       total_rider_minutes: number
       transit_option: TransitOption | null
+      direction: 'forward' | 'reverse'
     }
     type ScoredSchedule = {
       schedule: Record<string, unknown>
@@ -1201,6 +1218,33 @@ scheduleRouter.post(
       plausibilityScore: number
     }
     const pendingHandoffs: PendingHandoff[] = []
+    // 2026-05-21 v1.2.1 S2.1 — reverse-handoff candidates: rider's
+    // PICKUP is off-route but their DESTINATION is on-route (or
+    // near-end). Resolved into `scored` by a separate pass-3 loop
+    // that invokes `computeTransitPickupSuggestions`.
+    type PendingReverseHandoff = {
+      schedule: Record<string, unknown>
+      driverOriginLat: number
+      driverOriginLng: number
+      driverDestLat: number
+      driverDestLng: number
+      polyline: string
+      // For reverse handoff, drop must be reachable; pickup must NOT
+      // be on the corridor (otherwise we'd take the direct path).
+      // The rider's pickup-to-polyline distance acts as the
+      // plausibility-score signal (closer = shorter transit leg).
+      destOnCorridor: boolean
+      pickupProjMetres: number  // distance from rider pickup to driver polyline (the transit-leg-length proxy)
+      destProjMetres: number
+      destToDriverDestM: number
+      timeMatch: number
+      driverRating: number
+      timeDiff: number
+      bearingDiff: number
+      createdAt: string
+      plausibilityScore: number
+    }
+    const pendingReverseHandoffs: PendingReverseHandoff[] = []
     let polylineHits = 0
 
     for (const s of schedules as Array<Record<string, unknown>>) {
@@ -1397,6 +1441,54 @@ scheduleRouter.post(
             continue
           }
 
+          // ── Reverse-handoff PRE-CHECK (v1.2.1 S2.1) ─────────────
+          // Mirror of forward handoff: rider's DROP is reachable
+          // (on corridor or near-end) but their PICKUP is NOT, AND
+          // the polyline gets close enough to the rider's pickup
+          // that transit could realistically bridge the gap.
+          //
+          // Real-world case: SF→Davis rider × San Jose→Davis driver.
+          // Rider's drop (Davis) = driver's destination (near-end).
+          // Rider's pickup (SF) sits ~30km from the San Jose→Davis
+          // polyline (which passes through Oakland). Rider takes
+          // BART SF→MacArthur → driver picks up at MacArthur →
+          // rides to Davis together.
+          if (
+            (destOnCorridor || destNearEnd) &&
+            !originOnCorridor && !originNearStart &&
+            origProj.distanceM <= HANDOFF_MAX_PRECHECK_METRES
+          ) {
+            const destFit = destOnCorridor
+              ? Math.max(0, 1 - destProj.distanceM / ROUTE_CORRIDOR_METRES)
+              : Math.max(0, 1 - destToDriverDestM / DROPOFF_RADIUS_METRES)
+            // Closer rider pickup to polyline = shorter transit leg
+            // = higher plausibility. Same scoring shape as forward
+            // handoff so both compete fairly for the top-N slots.
+            const pickupProximity = Math.max(0, 1 - origProj.distanceM / HANDOFF_MAX_PRECHECK_METRES)
+            const plausibilityScore =
+              (destFit * 0.4 + pickupProximity * 0.4 + timeMatch * 0.1 + driverRating * 0.1) * 20
+
+            pendingReverseHandoffs.push({
+              schedule: s,
+              driverOriginLat: dOriginLat,
+              driverOriginLng: dOriginLng,
+              driverDestLat: dDestLat,
+              driverDestLng: dDestLng,
+              polyline: encoded,
+              destOnCorridor,
+              pickupProjMetres: origProj.distanceM,
+              destProjMetres: destProj.distanceM,
+              destToDriverDestM,
+              timeMatch,
+              driverRating,
+              timeDiff,
+              bearingDiff,
+              createdAt,
+              plausibilityScore,
+            })
+            continue
+          }
+
           // Polyline available but neither direct nor handoff
           // plausible — polyline is authoritative; no fallback.
           // 2026-05-21 v1.2.1 S1 — log the WHY so future debugging
@@ -1554,6 +1646,7 @@ scheduleRouter.post(
             transit_to_dest_minutes: handoff.transit_to_dest_minutes,
             total_rider_minutes: handoff.total_rider_minutes,
             transit_option: handoff.transit_options[0] ?? null,
+            direction: 'forward',
           },
           origin_distance_metres: Math.round(
             haversineMetres(oLat, oLng, ph.driverOriginLat, ph.driverOriginLng),
@@ -1567,6 +1660,103 @@ scheduleRouter.post(
       }
     } else if (pendingHandoffs.length > 0 && !apiKey) {
       console.warn(`[board/search] ${pendingHandoffs.length} plausible handoff candidates but GOOGLE_MAPS_KEY not set — skipping transit resolution`)
+    }
+
+    // ── Pass 3 — Reverse-handoff resolution (v1.2.1 S2.1) ───────
+    // Mirror of pass 2. Each pending reverse handoff invokes
+    // `computeTransitPickupSuggestions` to find a station along the
+    // driver's polyline that the rider can reach via transit from
+    // their pickup. Same MAX_HANDOFF_CANDIDATES cap so reverse
+    // handoffs don't crowd out forward ones — both compete for the
+    // same top-N slots after sorting by plausibility.
+    if (pendingReverseHandoffs.length > 0 && apiKey) {
+      pendingReverseHandoffs.sort((a, b) => b.plausibilityScore - a.plausibilityScore)
+      const toResolveRev = pendingReverseHandoffs.slice(0, MAX_HANDOFF_CANDIDATES)
+      const skipped = pendingReverseHandoffs.length - toResolveRev.length
+      if (skipped > 0) {
+        console.log(`[board/search] capped REVERSE handoff resolution: processing ${toResolveRev.length} of ${pendingReverseHandoffs.length} plausible candidates`)
+      }
+
+      const resolvedReverse = await Promise.all(toResolveRev.map(async (ph) => {
+        try {
+          const { suggestions } = await computeTransitPickupSuggestions(
+            ph.driverOriginLat, ph.driverOriginLng,
+            ph.driverDestLat, ph.driverDestLng,
+            oLat, oLng,  // rider's PICKUP — the off-route point we bridge with transit
+            apiKey,
+            ph.polyline,
+          )
+          if (suggestions.length === 0) return null
+          // For reverse handoff, the station must be DOWNSTREAM of
+          // the rider's pickup-projection on the polyline — otherwise
+          // the driver would have to backtrack after picking up the
+          // rider. Also must be BEFORE the rider's destination
+          // (which is at frac ~1 since destOnCorridor || destNearEnd).
+          // Geometrically, valid station frac is roughly [0, 0.95].
+          const line = decodePolyline(ph.polyline)
+          const orderedCandidates = suggestions.filter((sug) => {
+            const proj = projectPointOntoPolyline(
+              { lat: sug.station_lat, lng: sug.station_lng },
+              line,
+            )
+            return proj.fractionAlong <= 0.95
+          })
+          if (orderedCandidates.length === 0) {
+            console.log(`[board/search] REVERSE handoff rejected (no station before rider's destination) for schedule ${(ph.schedule['id'] as string).slice(0, 8)}…`)
+            return null
+          }
+          const best = orderedCandidates[0]
+          return {
+            ph,
+            handoff: best,
+            score: Math.round(ph.plausibilityScore),
+          }
+        } catch (err) {
+          console.error(`[board/search] REVERSE handoff resolution failed for schedule ${(ph.schedule['id'] as string).slice(0, 8)}…:`, err instanceof Error ? err.message : err)
+          return null
+        }
+      }))
+
+      for (const r of resolvedReverse) {
+        if (!r) continue
+        const { ph, handoff, score } = r
+        scored.push({
+          schedule: ph.schedule,
+          driverOriginLat: ph.driverOriginLat,
+          driverOriginLng: ph.driverOriginLng,
+          driverDestLat: ph.driverDestLat,
+          driverDestLng: ph.driverDestLng,
+          match_type: 'reverse_transit_handoff',
+          relevance_score: score,
+          time_diff_minutes: Math.round(ph.timeDiff),
+          corridor_origin_metres: Math.round(ph.pickupProjMetres),
+          corridor_dest_metres: ph.destOnCorridor
+            ? Math.round(ph.destProjMetres)
+            : Math.round(ph.destToDriverDestM),
+          transit_handoff: {
+            station_name: handoff.station_name,
+            station_place_id: handoff.station_place_id,
+            station_address: handoff.station_address,
+            station_lat: handoff.station_lat,
+            station_lng: handoff.station_lng,
+            walk_to_station_minutes: handoff.walk_to_station_minutes,
+            transit_to_dest_minutes: handoff.transit_to_dest_minutes,
+            total_rider_minutes: handoff.total_rider_minutes,
+            transit_option: handoff.transit_options[0] ?? null,
+            direction: 'reverse',
+          },
+          origin_distance_metres: Math.round(
+            haversineMetres(oLat, oLng, handoff.station_lat, handoff.station_lng),
+          ),
+          dest_distance_metres: Math.round(
+            haversineMetres(dLat, dLng, ph.driverDestLat, ph.driverDestLng),
+          ),
+          bearing_diff_degrees: Math.round(ph.bearingDiff),
+          created_at: ph.createdAt,
+        })
+      }
+    } else if (pendingReverseHandoffs.length > 0 && !apiKey) {
+      console.warn(`[board/search] ${pendingReverseHandoffs.length} plausible REVERSE handoff candidates but GOOGLE_MAPS_KEY not set — skipping transit resolution`)
     }
 
     // De-dupe by user_id — keep the highest-scoring entry per
@@ -1743,7 +1933,9 @@ async function runDriverSideSearch(args: {
 
   // 4. Score loop — INVERTED. Project rider candidate's (o, d) onto
   //    the DRIVER'S query polyline.
-  type MatchType = 'direct' | 'transit_handoff'
+  // 2026-05-21 v1.2.1 S2.1 — added 'reverse_transit_handoff'. See
+  // rider-side path for full rationale (line ~1183).
+  type MatchType = 'direct' | 'transit_handoff' | 'reverse_transit_handoff'
   type HandoffInfo = {
     station_name: string
     station_place_id: string
@@ -1754,6 +1946,7 @@ async function runDriverSideSearch(args: {
     transit_to_dest_minutes: number
     total_rider_minutes: number
     transit_option: TransitOption | null
+    direction: 'forward' | 'reverse'
   }
   type ScoredRider = {
     schedule: Record<string, unknown>
@@ -1788,6 +1981,28 @@ async function runDriverSideSearch(args: {
   }
   const scored: ScoredRider[] = []
   const pendingHandoffs: PendingRiderHandoff[] = []
+  // 2026-05-21 v1.2.1 S2.1 — reverse-handoff candidates: rider's
+  // DROP is reachable (on corridor or near-end) but their PICKUP is
+  // off-route. Rider takes transit from their pickup to a station
+  // along the driver's polyline, then rides with driver to dest.
+  type PendingRiderReverseHandoff = {
+    schedule: Record<string, unknown>
+    riderPickupLat: number
+    riderPickupLng: number
+    riderDropLat: number
+    riderDropLng: number
+    destOnCorridor: boolean
+    pickupProjMetres: number
+    destProjMetres: number
+    destToDriverDestM: number
+    timeMatch: number
+    driverRating: number
+    timeDiff: number
+    bearingDiff: number
+    createdAt: string
+    plausibilityScore: number
+  }
+  const pendingReverseHandoffs: PendingRiderReverseHandoff[] = []
 
   for (const s of riderPosts as Array<Record<string, unknown>>) {
     const uid = s['user_id'] as string
@@ -1907,6 +2122,43 @@ async function runDriverSideSearch(args: {
         createdAt,
         plausibilityScore,
       })
+      continue
+    }
+
+    // ── Reverse-handoff pre-check (v1.2.1 S2.1) ─────────────────
+    // Driver-side mirror of the rider-side reverse-handoff branch.
+    // The rider candidate's DROP is reachable but their PICKUP is
+    // off-route. Rider takes transit from pickup → station along
+    // driver's polyline → meets driver, rides together to dest.
+    const reverseHandoffEligible =
+      (destOnCorridor || destNearEnd) &&
+      !originOnCorridor && !originNearStart &&
+      pickupProj.distanceM <= HANDOFF_MAX_PRECHECK_METRES
+    if (reverseHandoffEligible) {
+      const destFit = destOnCorridor
+        ? Math.max(0, 1 - dropProj.distanceM / ROUTE_CORRIDOR_METRES)
+        : Math.max(0, 1 - dropToDriverDestM / DROPOFF_RADIUS_METRES)
+      const pickupProximity = Math.max(0, 1 - pickupProj.distanceM / HANDOFF_MAX_PRECHECK_METRES)
+      const plausibilityScore =
+        (destFit * 0.4 + pickupProximity * 0.4 + timeMatch * 0.1 + driverRating * 0.1) * 20
+
+      pendingReverseHandoffs.push({
+        schedule: s,
+        riderPickupLat,
+        riderPickupLng,
+        riderDropLat,
+        riderDropLng,
+        destOnCorridor,
+        pickupProjMetres: pickupProj.distanceM,
+        destProjMetres: dropProj.distanceM,
+        destToDriverDestM: dropToDriverDestM,
+        timeMatch,
+        driverRating,
+        timeDiff,
+        bearingDiff,
+        createdAt,
+        plausibilityScore,
+      })
     } else {
       // 2026-05-21 v1.2.1 S1 — log silent rejections for driver-side
       // path symmetry (rider-side already logs at line ~1444).
@@ -2001,12 +2253,94 @@ async function runDriverSideSearch(args: {
           transit_to_dest_minutes: handoff.transit_to_dest_minutes,
           total_rider_minutes: handoff.total_rider_minutes,
           transit_option: handoff.transit_options[0] ?? null,
+          direction: 'forward',
         },
         origin_distance_metres: Math.round(
           haversineMetres(ph.riderPickupLat, ph.riderPickupLng, oLat, oLng),
         ),
         dest_distance_metres: Math.round(
           haversineMetres(ph.riderDropLat, ph.riderDropLng, handoff.station_lat, handoff.station_lng),
+        ),
+        bearing_diff_degrees: Math.round(ph.bearingDiff),
+        created_at: ph.createdAt,
+      })
+    }
+  }
+
+  // ── Pass 3 — Reverse-handoff resolution (v1.2.1 S2.1) ─────────
+  // Mirror of pass 2. Rider's PICKUP is the off-route point; transit
+  // engine finds stations on driver's polyline that the rider can
+  // reach from their pickup.
+  if (pendingReverseHandoffs.length > 0) {
+    pendingReverseHandoffs.sort((a, b) => b.plausibilityScore - a.plausibilityScore)
+    const toResolveRev = pendingReverseHandoffs.slice(0, MAX_HANDOFF_CANDIDATES)
+    const skipped = pendingReverseHandoffs.length - toResolveRev.length
+    if (skipped > 0) {
+      console.log(`[board/search:driver] capped REVERSE handoff resolution: processing ${toResolveRev.length} of ${pendingReverseHandoffs.length} plausible candidates`)
+    }
+
+    const resolvedRev = await Promise.all(toResolveRev.map(async (ph) => {
+      try {
+        const { suggestions } = await computeTransitPickupSuggestions(
+          oLat, oLng,
+          dLat, dLng,
+          ph.riderPickupLat, ph.riderPickupLng,
+          apiKey,
+          queryRoute.polyline,
+        )
+        if (suggestions.length === 0) return null
+        // For reverse handoff, station must be BEFORE rider's drop
+        // on the polyline (frac < 1) — otherwise driver would
+        // already be past where the rider needs to get off.
+        const orderedCandidates = suggestions.filter((sug) => {
+          const proj = projectPointOntoPolyline(
+            { lat: sug.station_lat, lng: sug.station_lng },
+            queryLine,
+          )
+          return proj.fractionAlong <= 0.95
+        })
+        if (orderedCandidates.length === 0) {
+          console.log(`[board/search:driver] REVERSE handoff rejected (no station before rider's destination) for schedule ${(ph.schedule['id'] as string).slice(0, 8)}…`)
+          return null
+        }
+        const best = orderedCandidates[0]
+        return { ph, handoff: best, score: Math.round(ph.plausibilityScore) }
+      } catch (err) {
+        console.error(`[board/search:driver] REVERSE handoff resolution failed for schedule ${(ph.schedule['id'] as string).slice(0, 8)}…:`, err instanceof Error ? err.message : err)
+        return null
+      }
+    }))
+
+    for (const r of resolvedRev) {
+      if (!r) continue
+      const { ph, handoff, score } = r
+      scored.push({
+        schedule: ph.schedule,
+        match_type: 'reverse_transit_handoff',
+        relevance_score: score,
+        time_diff_minutes: Math.round(ph.timeDiff),
+        corridor_origin_metres: Math.round(ph.pickupProjMetres),
+        corridor_dest_metres: ph.destOnCorridor
+          ? Math.round(ph.destProjMetres)
+          : Math.round(ph.destToDriverDestM),
+        transit_handoff: {
+          station_name: handoff.station_name,
+          station_place_id: handoff.station_place_id,
+          station_address: handoff.station_address,
+          station_lat: handoff.station_lat,
+          station_lng: handoff.station_lng,
+          walk_to_station_minutes: handoff.walk_to_station_minutes,
+          // For reverse: transit FROM rider's pickup TO station.
+          transit_to_dest_minutes: handoff.transit_to_dest_minutes,
+          total_rider_minutes: handoff.total_rider_minutes,
+          transit_option: handoff.transit_options[0] ?? null,
+          direction: 'reverse',
+        },
+        origin_distance_metres: Math.round(
+          haversineMetres(ph.riderPickupLat, ph.riderPickupLng, handoff.station_lat, handoff.station_lng),
+        ),
+        dest_distance_metres: Math.round(
+          haversineMetres(ph.riderDropLat, ph.riderDropLng, dLat, dLng),
         ),
         bearing_diff_degrees: Math.round(ph.bearingDiff),
         created_at: ph.createdAt,

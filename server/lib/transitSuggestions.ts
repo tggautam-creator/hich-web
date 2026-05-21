@@ -691,6 +691,227 @@ export async function computeTransitDropoffSuggestions(
   }
 }
 
+// ── Reverse-handoff variant (v1.2.1 S2.1, 2026-05-21) ──────────────────────
+//
+// `computeTransitDropoffSuggestions` (above) handles the FORWARD direction:
+// driver picks rider up at start → drops at intermediate station →
+// rider takes transit to final destination.
+//
+// This function handles the REVERSE direction: rider takes transit FROM
+// their pickup TO a station along the driver's route → meets driver at
+// the station → continues with driver to driver's destination (which is
+// the rider's destination too).
+//
+// Used when a rider's pickup is OFF the driver's route but the rider's
+// destination IS on it (or near-end). Example: SF→Davis rider × San Jose
+// →Davis driver. SF isn't on the San Jose→Davis polyline, so rider takes
+// BART to MacArthur BART → meets driver there → rides to Davis together.
+//
+// Algorithm is symmetric to `computeTransitDropoffSuggestions` with two
+// inversions:
+//   1. Divergence point is the polyline node closest to RIDER'S PICKUP
+//      (not rider's dest).
+//   2. Transit query direction is FROM rider's pickup TO each candidate
+//      station (not station → dest).
+//
+// Returns the same `TransitDropoffSuggestion` shape so the caller's
+// response shape doesn't fork. Field semantics shift slightly:
+//   • `transit_to_dest_minutes` = transit FROM rider's pickup TO station
+//   • `ride_with_driver_minutes` = drive from station to driver's dest
+//   • `total_rider_minutes` = transit + walk + drive (still total trip)
+//
+// 80% of the code is copy-pasted from the dropoff variant. The DRY
+// refactor into a shared core (helper that takes a direction param) is
+// scoped as a v1.3 cleanup — kept separate functions in v1.2.1 to keep
+// the forward path bit-for-bit identical and risk-free.
+export async function computeTransitPickupSuggestions(
+  driverLat: number,
+  driverLng: number,
+  driverDestLat: number,
+  driverDestLng: number,
+  riderPickupLat: number,
+  riderPickupLng: number,
+  apiKey: string,
+  existingPolyline?: string,
+): Promise<{ suggestions: TransitDropoffSuggestion[]; polyline: string }> {
+  // 1. Get the driver's route polyline
+  let polyline = existingPolyline ?? ''
+  let driverDirectDurationMin = 0
+
+  if (!polyline) {
+    const route = await fetchDrivingRoute(driverLat, driverLng, driverDestLat, driverDestLng, apiKey)
+    if (!route) return { suggestions: [], polyline: '' }
+    polyline = route.polyline
+    driverDirectDurationMin = route.durationMin
+  }
+
+  const decoded = decodePolyline(polyline)
+  if (decoded.length === 0) return { suggestions: [], polyline }
+
+  if (driverDirectDurationMin === 0) {
+    driverDirectDurationMin = estimateDurationFromPolyline(decoded)
+  }
+
+  // 2. Find divergence — closest polyline node to RIDER'S PICKUP
+  //    (inverted from the dropoff variant which uses rider's dest)
+  const divergence = findDivergencePoint(decoded, riderPickupLat, riderPickupLng)
+
+  // 3. Static hubs along route + nearby search around divergence
+  const hubStations = findHubsAlongRoute(decoded)
+  const divergenceIdx = divergence.index
+  const afterDivergenceIdx = Math.min(decoded.length - 1, Math.floor(divergenceIdx + (decoded.length - divergenceIdx) * 0.3))
+  const afterPoint = decoded[afterDivergenceIdx]
+
+  // Full-transit baseline: how long would the rider take if they took
+  // transit the ENTIRE way (pickup → driver's dest) with no driver?
+  // Used by clients to show savings ("Faster than transit by 25 min").
+  const [nearbyAtDivergence, nearbyAfter, fullTransitMinutes] = await Promise.all([
+    searchNearbyStations(divergence.point.lat, divergence.point.lng, SEARCH_RADIUS_M, apiKey),
+    // Search a second point AFTER divergence so we cover stations the
+    // driver passes shortly after the closest-to-pickup point. (For
+    // forward handoff we searched BEFORE divergence; the geometry is
+    // mirrored here.)
+    haversineMetres(divergence.point.lat, divergence.point.lng, afterPoint.lat, afterPoint.lng) > 2000
+      ? searchNearbyStations(afterPoint.lat, afterPoint.lng, SEARCH_RADIUS_M, apiKey)
+      : Promise.resolve([]),
+    fetchTransitFromStation(riderPickupLat, riderPickupLng, driverDestLat, driverDestLng, apiKey)
+      .then(({ options }) => options.length > 0 ? options[0].total_minutes : 0)
+      .catch(() => 0),
+  ])
+
+  // 4. Merge hub + nearby, dedup by place id
+  const uniqueStations = new Map<string, { id: string; name: string; address: string; lat: number; lng: number }>()
+  for (const station of hubStations) {
+    uniqueStations.set(station.id, station)
+  }
+  for (const station of [...nearbyAtDivergence, ...nearbyAfter]) {
+    if (!uniqueStations.has(station.id)) {
+      uniqueStations.set(station.id, station)
+    }
+  }
+  if (uniqueStations.size === 0) return { suggestions: [], polyline }
+
+  // 5. Per-station resolution: transit FROM pickup TO station + driver
+  //    detour calc. Filter stations that wouldn't get the rider
+  //    meaningfully closer to their destination.
+  const candidates: TransitDropoffSuggestion[] = []
+  const pickupToDestM = haversineMetres(riderPickupLat, riderPickupLng, driverDestLat, driverDestLng)
+
+  const stationEntries = [...uniqueStations.values()]
+    .filter((station) => {
+      // Station must be at least 5% closer to dest than rider's pickup
+      // is. Catches stations IN the rider's neighborhood that wouldn't
+      // help (e.g. suggesting "take BART from SF to Embarcadero" for a
+      // rider already in SF — pointless).
+      const stationToDestM = haversineMetres(station.lat, station.lng, driverDestLat, driverDestLng)
+      return pickupToDestM <= 0 || stationToDestM <= pickupToDestM * 0.95
+    })
+    .slice(0, MAX_CANDIDATES)
+
+  const BATCH_SIZE = 5
+  for (let i = 0; i < stationEntries.length; i += BATCH_SIZE) {
+    const batch = stationEntries.slice(i, i + BATCH_SIZE)
+    const results = await Promise.all(
+      batch.map(async (station) => {
+        // INVERSE direction: transit FROM rider's pickup TO the station
+        const { options: transitOptions, transitPolyline } = await fetchTransitFromStation(
+          riderPickupLat, riderPickupLng,
+          station.lat, station.lng,
+          apiKey,
+        )
+
+        const walkToStationM = haversineMetres(
+          station.lat, station.lng,
+          ...findClosestPointOnRoute(decoded, station.lat, station.lng),
+        )
+        const walkToStationMin = Math.round(walkToStationM / (1.4 * 60))
+
+        // For reverse handoff the "detour" is the time from STATION
+        // (driver picks up there) to driver's destination. Since the
+        // station is along the route, this is part of the driver's
+        // original trip — not an extra detour. We compute it anyway
+        // for the response shape parity.
+        const stationToDestRoute = await fetchDrivingRoute(
+          station.lat, station.lng,
+          driverDestLat, driverDestLng,
+          apiKey,
+        )
+        const rideWithDriverMin = stationToDestRoute
+          ? Math.round(stationToDestRoute.durationMin)
+          : 0
+        // Driver's extra time for going via this station (vs. the
+        // direct route which they were taking anyway). For reverse
+        // handoff this should be ~0 if the station is on the route.
+        const driverFullViaStation = await fetchDrivingRoute(
+          driverLat, driverLng,
+          station.lat, station.lng,
+          apiKey,
+        )
+        const detourMin = driverFullViaStation && stationToDestRoute
+          ? Math.max(
+              0,
+              driverFullViaStation.durationMin + stationToDestRoute.durationMin - driverDirectDurationMin,
+            )
+          : 0
+
+        const transitFromPickupMin = transitOptions.length > 0 ? transitOptions[0].total_minutes : 0
+
+        const stationToDestM = haversineMetres(station.lat, station.lng, driverDestLat, driverDestLng)
+        const progressRatio = pickupToDestM > 0
+          ? Math.max(0, 1 - (stationToDestM / pickupToDestM))
+          : 0
+
+        return {
+          station_name: station.name,
+          station_lat: station.lat,
+          station_lng: station.lng,
+          station_place_id: station.id,
+          station_address: station.address,
+          transit_options: transitOptions,
+          ride_with_driver_minutes: rideWithDriverMin,
+          ride_distance_km: stationToDestRoute ? stationToDestRoute.distanceKm : 0,
+          walk_to_station_minutes: walkToStationMin,
+          driver_detour_minutes: Math.round(detourMin),
+          // Semantic for reverse: transit FROM pickup TO station.
+          // Same field name kept so the response shape doesn't fork
+          // — client can use `direction` (added in schedule.ts) to
+          // disambiguate the meaning when rendering.
+          transit_to_dest_minutes: transitFromPickupMin,
+          total_rider_minutes: transitFromPickupMin + walkToStationMin + rideWithDriverMin,
+          full_transit_minutes: fullTransitMinutes > 0 ? fullTransitMinutes : undefined,
+          rider_progress_pct: Math.round(progressRatio * 100),
+          transit_polyline: transitPolyline,
+        } satisfies TransitDropoffSuggestion
+      }),
+    )
+    for (const r of results) {
+      if (r) candidates.push(r)
+    }
+  }
+
+  // 6. Score and sort — lower is better (same as forward variant)
+  candidates.sort((a, b) => {
+    const progressA = (a.rider_progress_pct ?? 0) / 100
+    const progressB = (b.rider_progress_pct ?? 0) / 100
+    const scoreA =
+      a.total_rider_minutes +
+      a.walk_to_station_minutes * 0.5 +
+      a.driver_detour_minutes * 1 -
+      progressA * 15
+    const scoreB =
+      b.total_rider_minutes +
+      b.walk_to_station_minutes * 0.5 +
+      b.driver_detour_minutes * 1 -
+      progressB * 15
+    return scoreA - scoreB
+  })
+
+  return {
+    suggestions: candidates.slice(0, MAX_SUGGESTIONS),
+    polyline,
+  }
+}
+
 /**
  * Find the closest lat/lng on a route to a given point.
  * Returns [closestLat, closestLng].
