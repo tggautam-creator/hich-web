@@ -963,30 +963,171 @@ export type Database = {
         Relationships: never[]
       }
 
-      // ── reports ────────────────────────────────────────────────────────────
+      // ── reports (extended 2026-05-20, mig 086) ───────────────────────────
+      // Renamed from the migration-039 shape: user_id → reporter_id,
+      // description → body. Added severity / status / metadata / etc.
+      // for the admin triage workflow (docs/REPORTS_PLAN.md).
       reports: {
         Row: {
           id: string
-          user_id: string
+          reporter_id: string
+          subject_user_id: string | null
           ride_id: string | null
+          schedule_id: string | null
           category: string
-          description: string
+          severity: 'emergency' | 'urgent' | 'normal' | 'low'
+          status: 'open' | 'in_progress' | 'awaiting_user' | 'resolved' | 'closed'
+          title: string
+          body: string
+          requested_refund_cents: number | null
+          ride_state_at_report: string | null
+          metadata: Record<string, unknown>
+          assigned_admin_id: string | null
+          resolution_note: string | null
+          resolved_at: string | null
+          resolved_by: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          reporter_id: string
+          subject_user_id?: string | null
+          ride_id?: string | null
+          schedule_id?: string | null
+          category: string
+          severity?: 'emergency' | 'urgent' | 'normal' | 'low'
+          status?: 'open' | 'in_progress' | 'awaiting_user' | 'resolved' | 'closed'
+          title: string
+          body: string
+          requested_refund_cents?: number | null
+          ride_state_at_report?: string | null
+          metadata?: Record<string, unknown>
+          assigned_admin_id?: string | null
+          resolution_note?: string | null
+          resolved_at?: string | null
+          resolved_by?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          reporter_id?: string
+          subject_user_id?: string | null
+          ride_id?: string | null
+          schedule_id?: string | null
+          category?: string
+          severity?: 'emergency' | 'urgent' | 'normal' | 'low'
+          status?: 'open' | 'in_progress' | 'awaiting_user' | 'resolved' | 'closed'
+          title?: string
+          body?: string
+          requested_refund_cents?: number | null
+          ride_state_at_report?: string | null
+          metadata?: Record<string, unknown>
+          assigned_admin_id?: string | null
+          resolution_note?: string | null
+          resolved_at?: string | null
+          resolved_by?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: never[]
+      }
+
+      // ── report_messages (2026-05-20, mig 086) ────────────────────────────
+      report_messages: {
+        Row: {
+          id: string
+          report_id: string
+          author_id: string
+          author_role: 'admin' | 'user'
+          body: string
+          channel: 'admin_panel' | 'email_inbound' | 'email_outbound' | 'in_app'
+          is_internal_note: boolean
+          email_message_id: string | null
           created_at: string
         }
         Insert: {
           id?: string
-          user_id: string
-          ride_id?: string | null
-          category: string
-          description: string
+          report_id: string
+          author_id: string
+          author_role: 'admin' | 'user'
+          body: string
+          channel: 'admin_panel' | 'email_inbound' | 'email_outbound' | 'in_app'
+          is_internal_note?: boolean
+          email_message_id?: string | null
           created_at?: string
         }
         Update: {
           id?: string
-          user_id?: string
-          ride_id?: string | null
-          category?: string
-          description?: string
+          report_id?: string
+          author_id?: string
+          author_role?: 'admin' | 'user'
+          body?: string
+          channel?: 'admin_panel' | 'email_inbound' | 'email_outbound' | 'in_app'
+          is_internal_note?: boolean
+          email_message_id?: string | null
+          created_at?: string
+        }
+        Relationships: never[]
+      }
+
+      // ── report_attachments (2026-05-20, mig 086) ─────────────────────────
+      report_attachments: {
+        Row: {
+          id: string
+          report_id: string
+          storage_path: string
+          mime_type: string | null
+          file_size: number | null
+          uploaded_by: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          report_id: string
+          storage_path: string
+          mime_type?: string | null
+          file_size?: number | null
+          uploaded_by: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          report_id?: string
+          storage_path?: string
+          mime_type?: string | null
+          file_size?: number | null
+          uploaded_by?: string
+          created_at?: string
+        }
+        Relationships: never[]
+      }
+
+      // ── report_audit_log (2026-05-20, mig 086) ───────────────────────────
+      report_audit_log: {
+        Row: {
+          id: string
+          report_id: string
+          admin_id: string
+          action: string
+          payload: Record<string, unknown>
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          report_id: string
+          admin_id: string
+          action: string
+          payload?: Record<string, unknown>
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          report_id?: string
+          admin_id?: string
+          action?: string
+          payload?: Record<string, unknown>
           created_at?: string
         }
         Relationships: never[]
