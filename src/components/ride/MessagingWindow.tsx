@@ -553,6 +553,26 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
   const dropoffConfirmed = ride?.dropoff_confirmed ?? false
   const bothConfirmed = pickupConfirmed && dropoffConfirmed
 
+  // ── W-T1-M2 — Negotiation phase machine ─────────────────────────────
+  // Mirrors iOS `MessagesViewModel+Phase.swift::derivePhase`. The chat
+  // surfaces ONE active decision at a time. Truth table:
+  //   rideStatus active / cancelled / completed → 'complete'
+  //   !dropoffConfirmed                          → 'dropoff'
+  //   dropoffConfirmed && !pickupConfirmed       → 'pickup'
+  //   otherwise                                  → 'complete'
+  // Gates the proposal Accept buttons + sticky banners so a stale
+  // pickup_suggestion cannot show an Accept during the dropoff phase
+  // (and vice versa). Also makes "complete" → no negotiation
+  // affordances whatsoever, matching iOS.
+  const negotiationPhase: 'dropoff' | 'pickup' | 'complete' =
+    ride?.status === 'active' || ride?.status === 'cancelled' || ride?.status === 'completed'
+      ? 'complete'
+      : !dropoffConfirmed
+        ? 'dropoff'
+        : !pickupConfirmed
+          ? 'pickup'
+          : 'complete'
+
   // Driver destination flow is active — hide suggest buttons until it's done
   const driverDestFlowActive = !isRider && !dropoffConfirmed && !state?.driverDestinationSet && (
     !(ride as Record<string, unknown> | null)?.['driver_destination']
@@ -1703,8 +1723,10 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         </div>
       )}
 
-      {/* ── Pending pickup banner — compact: label + buttons only ─── */}
-      {!pickupConfirmed && pickupProposedByOther && latestPickupProposal && (
+      {/* ── Pending pickup banner — compact: label + buttons only ───
+          W-T1-M2 — gated on negotiationPhase so a stale pickup
+          suggestion can't ambush during the dropoff phase. */}
+      {!pickupConfirmed && pickupProposedByOther && latestPickupProposal && negotiationPhase === 'pickup' && (
         <div data-testid="pickup-proposal-banner" className="px-4 py-2.5 bg-success/10 border-b border-success/20 shrink-0">
           <p className="text-xs font-semibold text-success mb-2">
             {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a pickup point
@@ -1729,8 +1751,9 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         </div>
       )}
 
-      {/* ── Pending dropoff banner — compact: label + buttons only ─── */}
-      {!dropoffConfirmed && dropoffProposedByOther && latestDropoffProposal && (() => {
+      {/* ── Pending dropoff banner — compact: label + buttons only ───
+          W-T1-M2 — only renders during the dropoff phase. */}
+      {!dropoffConfirmed && dropoffProposedByOther && latestDropoffProposal && negotiationPhase === 'dropoff' && (() => {
         const meta = latestDropoffProposal.meta as { name?: string } | null
         const dropoffName = meta?.name ? String(meta.name) : null
         return (
@@ -1897,7 +1920,13 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             const meta = msg.meta as { lat?: number; lng?: number; note?: string | null; proposed_by?: string } | null
             const hasLocation = meta?.lat != null && meta?.lng != null
             const isLatestPickup = msg.id === latestPickupProposal?.id
-            const canAccept = isLatestPickup && pickupProposedByOther && !pickupConfirmed
+            // W-T1-M2 — gate Accept on negotiationPhase too: a stale
+            // pickup_suggestion left over from before dropoff confirmed
+            // must not show Accept during the dropoff phase.
+            const canAccept = isLatestPickup
+              && pickupProposedByOther
+              && !pickupConfirmed
+              && negotiationPhase === 'pickup'
             return (
               <div key={msg.id} data-testid={`message-${msg.id}`} className="space-y-2">
                 <div className="flex justify-center">
@@ -1968,7 +1997,12 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             const meta = msg.meta as { lat?: number; lng?: number; name?: string | null; proposed_by?: string } | null
             const hasLocation = meta?.lat != null && meta?.lng != null
             const isLatestDropoff = msg.id === latestDropoffProposal?.id
-            const canAccept = isLatestDropoff && dropoffProposedByOther && !dropoffConfirmed
+            // W-T1-M2 — gate Accept on negotiationPhase so the dropoff
+            // Accept stays hidden once both sides have confirmed.
+            const canAccept = isLatestDropoff
+              && dropoffProposedByOther
+              && !dropoffConfirmed
+              && negotiationPhase === 'dropoff'
             const pLat = ride?.pickup_point?.coordinates?.[1] ?? ride?.origin?.coordinates?.[1]
             const pLng = ride?.pickup_point?.coordinates?.[0] ?? ride?.origin?.coordinates?.[0]
             return (
@@ -2070,7 +2104,10 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
               driver_route_polyline?: string | null
             } | null
             const isLatestDropoff = msg.id === latestDropoffProposal?.id
-            const canAcceptTransit = isLatestDropoff && dropoffProposedByOther && !dropoffConfirmed
+            const canAcceptTransit = isLatestDropoff
+              && dropoffProposedByOther
+              && !dropoffConfirmed
+              && negotiationPhase === 'dropoff'
             const suggestion = meta ? {
               station_name: meta.station_name ?? 'Transit Station',
               station_lat: meta.station_lat ?? 0,

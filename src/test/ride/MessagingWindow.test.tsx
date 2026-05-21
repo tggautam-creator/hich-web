@@ -508,6 +508,155 @@ describe('MessagingWindow', () => {
     })
   })
 
+  // ── Sprint 4 W-T1-M2 — phase machine gates the proposal banners ────────
+
+  it('does NOT show the pickup banner during dropoff phase (dropoff not yet confirmed)', async () => {
+    const stalePickupRide = {
+      ...MOCK_RIDE,
+      pickup_confirmed: false,
+      dropoff_confirmed: false,
+    }
+    mockGetSession.mockResolvedValue({
+      data: { session: { user: { id: RIDER_ID }, access_token: 't' } },
+      error: null,
+    })
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'rides') {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({ data: stalePickupRide, error: null }),
+            }),
+          }),
+        }
+      }
+      if (table === 'users') {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({ data: MOCK_DRIVER, error: null }),
+            }),
+          }),
+        }
+      }
+      if (table === 'vehicles') {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                maybeSingle: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }),
+              }),
+            }),
+          }),
+        }
+      }
+      return { select: vi.fn() }
+    })
+    const channelObj: Record<string, unknown> = {}
+    const mockOn = vi.fn().mockReturnValue(channelObj)
+    channelObj.on = mockOn
+    channelObj.subscribe = vi.fn().mockReturnValue({ id: 'chan-1' })
+    mockChannel.mockReturnValue(channelObj)
+    mockRemoveChannel.mockResolvedValue(undefined)
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        messages: [
+          {
+            id: 'pickup-1',
+            ride_id: RIDE_ID,
+            sender_id: DRIVER_ID,
+            content: '',
+            type: 'pickup_suggestion',
+            meta: { lat: 38.55, lng: -121.74, proposed_by: DRIVER_ID },
+            created_at: '2025-01-01T00:00:05Z',
+          },
+        ],
+      }),
+    })
+
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('messaging-window')).toBeInTheDocument()
+    })
+    // Banner + inline Accept must both stay hidden during dropoff phase
+    expect(screen.queryByTestId('pickup-proposal-banner')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('accept-pickup-button')).not.toBeInTheDocument()
+  })
+
+  it('shows the pickup banner once dropoff is confirmed (phase flips to pickup)', async () => {
+    const pickupPhaseRide = {
+      ...MOCK_RIDE,
+      pickup_confirmed: false,
+      dropoff_confirmed: true,
+    }
+    mockGetSession.mockResolvedValue({
+      data: { session: { user: { id: RIDER_ID }, access_token: 't' } },
+      error: null,
+    })
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'rides') {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({ data: pickupPhaseRide, error: null }),
+            }),
+          }),
+        }
+      }
+      if (table === 'users') {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({ data: MOCK_DRIVER, error: null }),
+            }),
+          }),
+        }
+      }
+      if (table === 'vehicles') {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              eq: vi.fn().mockReturnValue({
+                maybeSingle: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }),
+              }),
+            }),
+          }),
+        }
+      }
+      return { select: vi.fn() }
+    })
+    const channelObj: Record<string, unknown> = {}
+    const mockOn = vi.fn().mockReturnValue(channelObj)
+    channelObj.on = mockOn
+    channelObj.subscribe = vi.fn().mockReturnValue({ id: 'chan-1' })
+    mockChannel.mockReturnValue(channelObj)
+    mockRemoveChannel.mockResolvedValue(undefined)
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        messages: [
+          {
+            id: 'pickup-2',
+            ride_id: RIDE_ID,
+            sender_id: DRIVER_ID,
+            content: '',
+            type: 'pickup_suggestion',
+            meta: { lat: 38.55, lng: -121.74, proposed_by: DRIVER_ID },
+            created_at: '2025-01-01T00:00:05Z',
+          },
+        ],
+      }),
+    })
+
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('pickup-proposal-banner')).toBeInTheDocument()
+    })
+  })
+
   it('inserts a date-label day-divider when crossing a calendar day', async () => {
     setupMocks()
     // Two messages: one from "yesterday" (24h ago), one from now.

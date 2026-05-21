@@ -16,8 +16,8 @@
 - [x] **M1** Optimistic outgoing bubbles render at 55% opacity with `Sending…` label on send; swap to authoritative row on POST success; mark `_failed` + show inline Retry CTA on error. Realtime echo handler de-dupes via `findOptimisticMatch` (same sender + content + 30s window) so the bubble doesn't render twice. Polling fallback preserves optimistic rows during refresh.
 - [x] **M3** Day-divider headers (Today / Yesterday / long-form date) inserted whenever the calendar day changes between consecutive messages; sender-run grouping shows the timestamp only on the LAST message of a run (Messages.app pattern). Special-type messages (pickup_suggestion / dropoff_suggestion / etc.) always render standalone.
 
-#### Slice 2 — Phase machine (M2)
-- [ ] **M2** Negotiation-phase state machine (`.dropoff → .pickup → .complete`) gating which proposal banners can render. Today a stale `pickup_suggestion` can still show an Accept button during dropoff phase; the phase machine kills that.
+#### Slice 2 — Phase machine (M2) ✅ shipped 2026-05-17
+- [x] **M2** Negotiation-phase machine derived in `MessagingWindow.tsx` from `(dropoff_confirmed, pickup_confirmed, ride.status)`. Three states: `dropoff` (dropoff not yet confirmed), `pickup` (dropoff done, pickup outstanding), `complete` (both confirmed OR ride active/cancelled/completed). Gates the pickup proposal Accept banner + inline Accept button + dropoff proposal banner + inline Accept + transit-dropoff Accept on the phase — a stale `pickup_suggestion` left from before dropoff confirmed no longer shows Accept during the dropoff phase. Mirrors iOS `MessagesViewModel+Phase.swift::derivePhase`.
 
 #### Slice 3 — Keyboard dismiss + Emergency Sheet trusted contacts (M4 + E1)
 - [ ] **M4** Tap-outside-the-input on the chat scroll container blurs the textarea so the on-screen keyboard collapses (mobile web parity with iOS `.dismissKeyboardOnTap`).
@@ -27,16 +27,16 @@
 
 | Status | Count |
 |---|---|
-| Not started | 3 |
+| Not started | 2 |
 | In progress | 0 |
-| Done (awaiting QA) | 2 |
+| Done (awaiting QA) | 3 |
 | Done (verified + pushed) | 0 |
 
 ### Current focus
-Slice 2 (phase machine).
+Slice 3 (keyboard dismiss + emergency-sheet trusted contacts).
 
 ### Next action
-Implement Slice 2 → run gates → commit + push.
+Implement Slice 3 → run gates → commit + push.
 
 ---
 
