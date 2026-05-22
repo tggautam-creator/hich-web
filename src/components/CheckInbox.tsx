@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { authRedirectBase } from '@/lib/env'
 import { useAuthStore } from '@/stores/authStore'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import Logo from '@/components/ui/Logo'
@@ -153,7 +154,13 @@ export default function CheckInbox({ 'data-testid': testId }: CheckInboxProps) {
     setResendSuccess(false)
 
     try {
-      const { error } = await supabase.auth.signInWithOtp({ email })
+      // Same canonical-URL pin as the initial Signup / Login OTP
+      // calls (`src/lib/env.ts::authRedirectBase`). A resend from
+      // localhost must still emit a prod link.
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: `${authRedirectBase()}/auth/callback` },
+      })
       if (error) {
         setResendError(error.message)
       } else {

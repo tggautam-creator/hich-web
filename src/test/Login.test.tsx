@@ -277,6 +277,7 @@ describe('Login screen', () => {
     await waitFor(() => {
       expect(mockSignInWithOtp).toHaveBeenCalledWith({
         email: 'maya@ucdavis.edu',
+        options: { emailRedirectTo: expect.stringContaining('/auth/callback') },
       })
     })
     expect(mockNavigate).toHaveBeenCalledWith('/check-inbox', {

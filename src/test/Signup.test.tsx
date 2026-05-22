@@ -162,8 +162,11 @@ describe('Signup screen', () => {
     renderSignup()
     await user.type(screen.getByTestId('email-input'), 'Maya@UCDavis.EDU')
     await user.click(screen.getByTestId('submit-button'))
+    // 2026-05-22 — Signup now passes `emailRedirectTo` so the
+    // confirm link always lands on the canonical prod webapp.
     expect(mockSignInWithOtp).toHaveBeenCalledWith({
       email: 'maya@ucdavis.edu',
+      options: { emailRedirectTo: expect.stringContaining('/auth/callback') },
     })
   })
 

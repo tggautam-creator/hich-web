@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { authRedirectBase } from '@/lib/env'
 import { useAuthStore } from '@/stores/authStore'
 import { isValidEduEmail } from '@/lib/validation'
 import InputField from '@/components/ui/InputField'
@@ -41,8 +42,11 @@ export default function Login({ 'data-testid': testId }: LoginProps) {
     setServerError(null)
 
     try {
+      // `emailRedirectTo` pins the magic-link to the canonical prod
+      // URL — see `src/lib/env.ts::authRedirectBase`.
       const { error } = await supabase.auth.signInWithOtp({
         email: email.trim().toLowerCase(),
+        options: { emailRedirectTo: `${authRedirectBase()}/auth/callback` },
       })
       if (error) {
         setServerError(error.message)

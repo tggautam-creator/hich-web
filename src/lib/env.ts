@@ -35,6 +35,33 @@ export const env = {
   FIREBASE_VAPID_KEY: import.meta.env['VITE_FIREBASE_VAPID_KEY'] as string | undefined,
   // Set to 'true' in .env to bypass phone verification (dev/testing only)
   SKIP_PHONE_VERIFICATION: import.meta.env['VITE_SKIP_PHONE_VERIFICATION'] === 'true',
+  // Canonical public URL of the webapp — used as the base for any
+  // auth email link Supabase sends back to us (`/auth/callback`).
+  // Must be set in production so the reset-password / magic-link /
+  // signup-confirm emails point at `https://www.tagorides.com/...`
+  // regardless of where the user triggered the email (localhost,
+  // dev preview, Vercel branch deploy, etc.). When unset, we fall
+  // back to `window.location.origin` so local dev still works.
+  // Always `www.` not apex — apex 307s to www and Supabase won't
+  // follow the redirect (see CLAUDE.md HARD RULE + memory
+  // `project_webhook_canonical_domain.md`).
+  APP_URL: import.meta.env['VITE_APP_URL'] as string | undefined,
+}
+
+/**
+ * Base URL used in every auth email redirect (`emailRedirectTo` for
+ * magic-link / signup-confirm, `redirectTo` for password reset).
+ *
+ * Returns the explicit `VITE_APP_URL` when set (production builds
+ * MUST set it to `https://www.tagorides.com`). In dev / local
+ * builds where the env var isn't set, falls back to the current
+ * `window.location.origin` so `npm run dev` on
+ * `http://localhost:5173` still receives a callback that loads.
+ */
+export function authRedirectBase(): string {
+  if (env.APP_URL) return env.APP_URL.replace(/\/+$/, '')
+  if (typeof window !== 'undefined') return window.location.origin
+  return ''
 }
 
 // True when the publishable Stripe key starts with `pk_test_`. Used to

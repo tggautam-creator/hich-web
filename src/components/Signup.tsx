@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { authRedirectBase } from '@/lib/env'
 import { isValidEduEmail } from '@/lib/validation'
 import { trackEvent } from '@/lib/analytics'
 import InputField from '@/components/ui/InputField'
@@ -58,8 +59,14 @@ export default function Signup({ 'data-testid': testId }: SignupProps) {
         // Server unreachable — fall through to OTP signup
       }
 
+      // `emailRedirectTo` pins the signup confirm-link to the canonical
+      // prod URL so the email button always lands on the live webapp,
+      // never on whatever origin the user happened to trigger from
+      // (localhost preview / Vercel branch deploy / mobile browser).
+      // See `src/lib/env.ts::authRedirectBase`.
       const { error } = await supabase.auth.signInWithOtp({
         email: trimmedEmail,
+        options: { emailRedirectTo: `${authRedirectBase()}/auth/callback` },
       })
       if (error) {
         setServerError(error.message)

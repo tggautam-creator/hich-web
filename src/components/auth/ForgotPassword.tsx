@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { authRedirectBase } from '@/lib/env'
 import { isValidEduEmail } from '@/lib/validation'
 import InputField from '@/components/ui/InputField'
 import PrimaryButton from '@/components/ui/PrimaryButton'
@@ -31,9 +32,14 @@ export default function ForgotPassword({ 'data-testid': testId }: ForgotPassword
     setServerError(null)
 
     try {
+      // `authRedirectBase()` pins the link to the canonical prod URL
+      // (`https://www.tagorides.com`) so a reset triggered from
+      // localhost / a Vercel preview / a mobile browser still lands
+      // back on the live webapp instead of dropping the user on
+      // `localhost:5173/auth/callback`. See `src/lib/env.ts`.
       const { error } = await supabase.auth.resetPasswordForEmail(
         email.trim().toLowerCase(),
-        { redirectTo: `${window.location.origin}/auth/callback` },
+        { redirectTo: `${authRedirectBase()}/auth/callback` },
       )
 
       if (error) {

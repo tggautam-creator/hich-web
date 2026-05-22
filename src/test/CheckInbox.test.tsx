@@ -239,7 +239,10 @@ describe('CheckInbox OTP screen', () => {
     renderCheckInbox('maya@ucdavis.edu')
     act(() => { vi.advanceTimersByTime(60000) })
     await act(async () => { fireEvent.click(screen.getByTestId('resend-button')) })
-    expect(mockSignInWithOtp).toHaveBeenCalledWith({ email: 'maya@ucdavis.edu' })
+    expect(mockSignInWithOtp).toHaveBeenCalledWith({
+      email: 'maya@ucdavis.edu',
+      options: { emailRedirectTo: expect.stringContaining('/auth/callback') },
+    })
   })
 
   it('resets countdown after successful resend', async () => {
