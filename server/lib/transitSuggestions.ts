@@ -91,7 +91,10 @@ interface RoutesApiResponse {
 // that abut the freeway exit; many Bay Area BART stations sit 1-2km off
 // the highway and were getting missed even when the divergence point
 // landed near them. 4km reliably catches freeway-adjacent stations.
-const SEARCH_RADIUS_M = 4000         // radius around divergence point
+//
+// Exported as of v1.2.1 S3 so a regression test can lock in the
+// calibration. Production callers don't reference it directly.
+export const SEARCH_RADIUS_M = 4000   // radius around divergence point
 const MAX_STATIONS = 5               // max results per nearby search
 const MAX_SUGGESTIONS = 3            // top N suggestions returned
 const MAX_CANDIDATES = 8             // cap station candidates before per-station API calls
@@ -161,7 +164,12 @@ interface TransitHub {
   address: string
 }
 
-const MAJOR_TRANSIT_HUBS: TransitHub[] = [
+// Exported as of v1.2.1 S3 so a regression test can lock in the
+// expanded hub coverage (5 I-680 BART + 4 ferries + Salesforce +
+// 5 mid-Peninsula Caltrain added on 2026-05-21). The list is
+// read by `findHubsAlongRoute` below; tests assert specific
+// stations are present so a future edit can't silently delete them.
+export const MAJOR_TRANSIT_HUBS: TransitHub[] = [
   // BART — San Francisco / East Bay / Peninsula
   { name: 'Richmond BART', lat: 37.9369, lng: -122.3533, placeId: 'ChIJKxeF3glohYARiCclSd8QBXE', address: 'Richmond, CA' },
   { name: 'El Cerrito del Norte BART', lat: 37.9252, lng: -122.3170, placeId: 'ChIJzVQnLRRohYARNxV0jQOGkQg', address: 'El Cerrito, CA' },
@@ -232,7 +240,12 @@ const MAJOR_TRANSIT_HUBS: TransitHub[] = [
   { name: 'Martinez Amtrak', lat: 38.0185, lng: -122.1342, placeId: 'ChIJE4jMGH5ahYARWxN_FGT_nD4', address: 'Martinez, CA' },
   { name: 'Suisun-Fairfield Amtrak', lat: 38.2363, lng: -122.0402, placeId: 'ChIJ_4T8L9zOhIAR30NLlbFk_-Q', address: 'Suisun City, CA' },
   // Sacramento RT Light Rail
-  { name: 'Sacramento Valley RT', lat: 38.5853, lng: -121.5007, placeId: 'ChIJKQjTLBPRmoARi5nKxU4v6FE', address: 'Sacramento, CA' },
+  // 2026-05-21 v1.2.1 S3 — `Sacramento Valley RT` was removed (it
+  // had the same placeId as `Sacramento Valley Amtrak` above —
+  // both are the same physical station). The shared placeId would
+  // have made one silently dedup against the other in the
+  // `uniqueStations` Map (line ~530). Caught by the unique-placeId
+  // regression test in searchEngineCalibration.test.ts.
   { name: '16th St / UCD Med Center RT', lat: 38.5647, lng: -121.4679, placeId: 'ChIJtxzwzpzTmoARH0-4GSIIVHM', address: 'Sacramento, CA' },
 ]
 
