@@ -1,6 +1,9 @@
+import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   useAdminRideDetail,
+  type AdminRideDetailResponse,
   type AdminRideMessage,
   type AdminRidePayment,
   type AdminRideReportLink,
@@ -10,6 +13,7 @@ import {
   type AdminRideVehicle,
 } from '@/hooks/useAdminRides'
 import { AdminApiException } from '@/lib/admin/api'
+import { supabase } from '@/lib/supabase'
 
 /**
  * 2026-05-23 — admin-side ride detail at `/admin/rides/:id`.
@@ -45,9 +49,74 @@ const STATUS_TONE: Record<AdminRideStatus, string> = {
   cancelled: 'bg-danger/10 text-danger border-danger/30',
 }
 
+/**
+ * 2026-05-23 — Ride statuses where new activity is still possible.
+ * Subscribed-to channels are torn down once the ride flips out of
+ * these states so completed/cancelled rides don't keep an idle
+ * realtime connection open.
+ */
+const LIVE_STATUSES: ReadonlySet<AdminRideStatus> = new Set([
+  'requested',
+  'accepted',
+  'coordinating',
+  'active',
+])
+
 export default function RideDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const { data, isLoading, error } = useAdminRideDetail(id)
+  const { data, isLoading, error, refetch } = useAdminRideDetail(id)
+  const qc = useQueryClient()
+  const [lastDriverPing, setLastDriverPing] = useState<Date | null>(null)
+  const status = data?.ride.status as AdminRideStatus | undefined
+  const isLive = !!status && LIVE_STATUSES.has(status)
+
+  // ── Realtime subscriptions (chat + driver GPS) ─────────────────────
+  // Wires the admin detail page into the same broadcast channels iOS
+  // + web ride pages use. New messages stream into the timeline via a
+  // React Query setQueryData patch (no refetch needed). Driver GPS
+  // pings only update a "Driver broadcasting" pulse indicator — we
+  // don't render the actual location on this page (no map yet).
+  //
+  // Also polls the detail every 10s while live so status flips
+  // (accepted → coordinating → active → completed/cancelled) auto-
+  // refresh without the admin reloading. The polling stops when the
+  // ride flips terminal.
+  useEffect(() => {
+    if (!id || !isLive) return
+
+    const chatChannel = supabase
+      .channel(`chat:${id}`)
+      .on('broadcast', { event: 'new_message' }, (payload) => {
+        const msg = payload.payload as AdminRideMessage | null
+        if (!msg?.id) return
+        qc.setQueryData<AdminRideDetailResponse>(
+          ['admin', 'rides', 'detail', id],
+          (prev) => {
+            if (!prev) return prev
+            // De-dupe in case the message already arrived via the
+            // 10s polling refetch racing the broadcast.
+            if (prev.messages.some((m) => m.id === msg.id)) return prev
+            return { ...prev, messages: [...prev.messages, msg] }
+          },
+        )
+      })
+      .subscribe()
+
+    const locChannel = supabase
+      .channel(`ride-location:${id}`)
+      .on('broadcast', { event: 'driver_location' }, () => {
+        setLastDriverPing(new Date())
+      })
+      .subscribe()
+
+    const poll = window.setInterval(() => void refetch(), 10_000)
+
+    return () => {
+      void supabase.removeChannel(chatChannel)
+      void supabase.removeChannel(locChannel)
+      window.clearInterval(poll)
+    }
+  }, [id, isLive, qc, refetch])
 
   if (isLoading) {
     return (
@@ -89,6 +158,8 @@ export default function RideDetailPage() {
         origin={data.ride.origin_name as string | null}
         destination={data.ride.destination_name as string | null}
         createdAt={data.ride.created_at as string}
+        isLive={isLive}
+        lastDriverPing={lastDriverPing}
       />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[320px_1fr_280px]">
@@ -130,13 +201,20 @@ function Header({
   origin,
   destination,
   createdAt,
+  isLive,
+  lastDriverPing,
 }: {
   rideId: string
   status: AdminRideStatus
   origin: string | null
   destination: string | null
   createdAt: string
+  isLive: boolean
+  lastDriverPing: Date | null
 }) {
+  const driverPingFresh =
+    lastDriverPing != null &&
+    Date.now() - lastDriverPing.getTime() < 30_000
   return (
     <div className="rounded-2xl border border-border bg-white p-5">
       <div className="flex flex-wrap items-center gap-3">
@@ -149,6 +227,28 @@ function Header({
         >
           {STATUS_LABEL[status]}
         </span>
+        {isLive && (
+          <span
+            data-testid="ride-detail-live-pill"
+            className="inline-flex items-center gap-1.5 rounded-full bg-success/15 text-success px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide"
+            title="Subscribed to chat + driver GPS broadcasts in realtime"
+          >
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-success" />
+            </span>
+            Live
+          </span>
+        )}
+        {driverPingFresh && (
+          <span
+            data-testid="ride-detail-driver-ping"
+            className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-primary"
+            title={`Driver pinged at ${lastDriverPing?.toLocaleTimeString() ?? ''}`}
+          >
+            📍 Driver broadcasting
+          </span>
+        )}
         <span className="text-xs font-mono text-text-secondary">
           {rideId.slice(0, 8)}…
         </span>
