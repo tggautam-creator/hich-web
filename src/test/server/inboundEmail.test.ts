@@ -17,28 +17,36 @@ import {
 const UUID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 
 describe('parseReportIdFromTo', () => {
-  it('extracts a UUID from a bare reports+<uuid> address on tagorides.com', () => {
+  it('extracts a UUID from the canonical reports.tagorides.com subdomain', () => {
+    expect(parseReportIdFromTo(`reports+${UUID}@reports.tagorides.com`)).toBe(UUID)
+  })
+
+  it('also accepts the legacy tagorides.com apex (transition compat)', () => {
+    // Kept accepted while in-flight emails from the pre-subdomain cutover
+    // are still being replied to. Safe — only addresses with our UUID +tag
+    // get accepted, so the apex still requires Resend MX on the apex to
+    // actually deliver here, which we explicitly chose NOT to set up.
     expect(parseReportIdFromTo(`reports+${UUID}@tagorides.com`)).toBe(UUID)
   })
 
   it('handles display-name wrappers', () => {
-    expect(parseReportIdFromTo(`"Tago Support" <reports+${UUID}@tagorides.com>`)).toBe(UUID)
+    expect(parseReportIdFromTo(`"Tago Support" <reports+${UUID}@reports.tagorides.com>`)).toBe(UUID)
   })
 
   it('is case-insensitive on the address', () => {
-    expect(parseReportIdFromTo(`Reports+${UUID.toUpperCase()}@TagoRides.com`)).toBe(UUID)
+    expect(parseReportIdFromTo(`Reports+${UUID.toUpperCase()}@Reports.TagoRides.com`)).toBe(UUID)
   })
 
-  it('returns null for non-tagorides.com domains (spoofing defense)', () => {
+  it('returns null for non-Tago domains (spoofing defense)', () => {
     expect(parseReportIdFromTo(`reports+${UUID}@evil.com`)).toBeNull()
   })
 
   it('returns null for missing +tag', () => {
-    expect(parseReportIdFromTo('reports@tagorides.com')).toBeNull()
+    expect(parseReportIdFromTo('reports@reports.tagorides.com')).toBeNull()
   })
 
   it('returns null for non-UUID tag', () => {
-    expect(parseReportIdFromTo('reports+not-a-uuid@tagorides.com')).toBeNull()
+    expect(parseReportIdFromTo('reports+not-a-uuid@reports.tagorides.com')).toBeNull()
   })
 
   it('returns null for empty / non-string input', () => {

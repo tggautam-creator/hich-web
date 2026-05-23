@@ -12,12 +12,23 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
- * Extract a report id from a `reports+<uuid>@tagorides.com` address.
+ * Domains we accept inbound from. Primary is the dedicated
+ * `reports.tagorides.com` subdomain — its MX points at Resend.
+ * The apex (`tagorides.com`) is also listed for backwards-
+ * compat with any in-flight emails that were sent before the
+ * subdomain cutover; once those age out, the apex entry can be
+ * removed.
+ */
+const ACCEPTED_DOMAINS = ['reports.tagorides.com', 'tagorides.com']
+
+/**
+ * Extract a report id from a `reports+<uuid>@reports.tagorides.com`
+ * address (or the legacy `@tagorides.com` apex during transition).
  *
  * The +-tag is the load-bearing piece. Outbound emails the admin
- * sends set `Reply-To: reports+<reportId>@tagorides.com` (see
- * `sendSupportReplyEmail` in `adminAlerts.ts`), so when the user
- * hits Reply, their mail client populates the To: with that
+ * sends set `Reply-To: reports+<reportId>@reports.tagorides.com`
+ * (see `sendSupportReplyEmail` in `adminAlerts.ts`), so when the
+ * user hits Reply, their mail client populates the To: with that
  * address. Resend's inbound webhook hands us the To: as-is and we
  * pluck the id back out.
  *
@@ -28,16 +39,18 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  *     that route to our inbox via a forwarding rule we don't own)
  *
  * Defensive against display-name wrapping (`"Tago Support" <reports+...>`)
- * and uppercase locals (gmail.com is case-insensitive).
+ * and uppercase locals (mail.com is case-insensitive).
  */
 export function parseReportIdFromTo(to: string): string | null {
   if (typeof to !== 'string' || to.length === 0) return null
   // Strip a display name wrapper if present: `"Display" <addr@x>`
   const angleMatch = to.match(/<([^>]+)>/)
   const address = (angleMatch?.[1] ?? to).trim().toLowerCase()
-  // Must be on our domain. Accepting other domains opens a path
-  // where a spoofed To: routes through Resend → our handler.
-  if (!address.endsWith('@tagorides.com')) return null
+  // Must be on a domain we own — anything else is spoofing
+  // surface (a forwarding rule we don't control routing through
+  // Resend).
+  const onOurDomain = ACCEPTED_DOMAINS.some((d) => address.endsWith(`@${d}`))
+  if (!onOurDomain) return null
   const local = address.slice(0, address.indexOf('@'))
   if (!local.startsWith('reports+')) return null
   const tag = local.slice('reports+'.length)

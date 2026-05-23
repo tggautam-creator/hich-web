@@ -371,17 +371,19 @@ export async function sendSupportReplyEmail(
   <p style="margin-top: 24px;">— ${escapeHtml(adminLabel)}</p>
   <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
   <p style="font-size: 12px; color: #6b7280;">
-    You can reply to this email to keep the thread going — your reply will land
-    back in your Tago report. Or
-    <a href="${detailUrl}" style="color: #3b82f6;">open it in the app</a>.
+    Need to reply? <a href="${detailUrl}" style="color: #3b82f6; font-weight: 600;">Open this report in Tago</a>
+    and use the thread — email replies aren't picked up yet.
   </p>
   <p style="font-size: 11px; color: #9ca3af;">Report ID: ${escapeHtml(ctx.reportID)}</p>
 </div>`.trim()
 
-    // `reports+<id>@` — the +tag makes Phase 6b inbound matching a
-    // single split on `+` then `@`. Cleaner than parsing References /
-    // In-Reply-To headers across mail clients that mangle them.
-    const replyTo = `reports+${ctx.reportID}@tagorides.com`
+    // `reports+<id>@reports.tagorides.com` — the +tag makes Phase 6b
+    // inbound matching a single split on `+` then `@`. The subdomain
+    // keeps Resend's inbound MX records off the apex so existing
+    // `@tagorides.com` mail (Google Workspace, billing senders, etc.)
+    // keeps routing wherever it does today. Apex inbound stays
+    // untouched; only `reports.tagorides.com` flows through Resend.
+    const replyTo = `reports+${ctx.reportID}@reports.tagorides.com`
     const result = await client.emails.send({
       from: 'Tago Support <support@tagorides.com>',
       to: ctx.reporterEmail,

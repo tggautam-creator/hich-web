@@ -351,20 +351,44 @@ sends via Resend with `Reply-To: reports+<reportId>@tagorides.com`
 so the user's reply lands back on a tagged address we can route
 without parsing email threading headers.
 
-**Phase 6b (shipped 2026-05-22):** Resend inbound webhook handler
-at `POST /api/webhooks/resend-inbound`. Steps:
+**Phase 6b (code shipped 2026-05-22, dormant pending DNS):** the
+inbound webhook handler at `POST /api/webhooks/resend-inbound` is
+deployed + unit-tested but no real emails reach it yet — Resend's
+free plan caps domains at 1 (used by `tagorides.com` outbound),
+and using a separate inbound subdomain requires Pro. Tarun
+deferred the upgrade 2026-05-23. Outbound email footer was
+adjusted in the same session to direct users to reply in-app
+instead of via email, so we're not promising a thread that
+won't pick up.
 
-1. **DNS** — set MX records on `tagorides.com` pointing at Resend's
-   inbound MX hosts. Resend's dashboard generates the exact entries
-   per region; we sit in `us-east-1` so it's typically
-   `feedback-smtp.us-east-1.amazonses.com` priority 10 (Resend
-   relays through SES). DKIM + SPF records also required for
-   deliverability. **One-time manual step.**
-2. **Resend dashboard** — under "Webhooks → Inbound", add a route:
-   - Pattern: `reports+*@tagorides.com`
+When ready to wire inbound (any of: upgrade Resend, switch to a
+different inbound provider like Cloudflare Email Routing or
+SendGrid Inbound Parse, OR accept the risk on the apex), the
+steps are:
+
+1. **Dedicated subdomain — `reports.tagorides.com`** (decision
+   2026-05-23). NEVER apply Resend's MX records to the
+   `tagorides.com` apex — doing so reroutes ALL inbound email for
+   the domain through Resend, breaking any Google Workspace inbox
+   or service notifications already pointed at the apex. Resend's
+   own dialog warns about this. Use a subdomain:
+   - In Resend, **Add Domain** → `reports.tagorides.com`. Resend
+     gives ~4 DNS records (DKIM + verification TXTs). Add them on
+     GoDaddy for the `reports` subdomain.
+   - Once verified, open the subdomain → **Enable Receiving**.
+     Resend writes MX records for the subdomain ONLY (no conflict
+     because the subdomain has no existing MX). Apex stays
+     untouched.
+2. **Resend inbound route** — point inbound at our webhook:
+   - Pattern: `reports+*@reports.tagorides.com`
    - Destination: `https://www.tagorides.com/api/webhooks/resend-inbound`
    - Generate signing secret → copy into `RESEND_WEBHOOK_SECRET`
      env var on EC2 + restart `pm2 reload tago`.
+   - The legacy apex (`reports+*@tagorides.com`) is still ACCEPTED
+     by the parser for backwards-compat with in-flight emails sent
+     before the cutover, but it has no MX so nothing actually
+     delivers there. That branch can be removed once the cutover
+     window passes.
 3. **Endpoint behavior** (already shipped — `server/routes/webhooks/
    resendInbound.ts`):
    - Verifies Svix-style HMAC signature (`svix-signature` /

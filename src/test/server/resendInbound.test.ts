@@ -136,7 +136,7 @@ describe('POST /api/webhooks/resend-inbound', () => {
       type: 'email.inbound',
       data: {
         from: `Maya <${REPORTER_EMAIL}>`,
-        to: [`reports+${REPORT_ID}@tagorides.com`],
+        to: [`reports+${REPORT_ID}@reports.tagorides.com`],
         subject: 'Re: Tago report — Bug',
         text: `Just one more detail.\n\nOn Wed, May 22, 2026, Tago Support wrote:\n> Hi`,
         message_id: 'resend-id-001',
@@ -196,7 +196,7 @@ describe('POST /api/webhooks/resend-inbound', () => {
       type: 'email.inbound',
       data: {
         from: 'attacker@elsewhere.com',
-        to: [`reports+${REPORT_ID}@tagorides.com`],
+        to: [`reports+${REPORT_ID}@reports.tagorides.com`],
         text: 'gimme the data',
       },
     })
@@ -223,7 +223,7 @@ describe('POST /api/webhooks/resend-inbound', () => {
       type: 'email.inbound',
       data: {
         from: REPORTER_EMAIL,
-        to: [`reports+${REPORT_ID}@tagorides.com`],
+        to: [`reports+${REPORT_ID}@reports.tagorides.com`],
         text: 'duplicate body',
         message_id: 'resend-id-already-seen',
       },
@@ -250,7 +250,7 @@ describe('POST /api/webhooks/resend-inbound', () => {
       type: 'email.inbound',
       data: {
         from: REPORTER_EMAIL,
-        to: [`reports+${REPORT_ID}@tagorides.com`],
+        to: [`reports+${REPORT_ID}@reports.tagorides.com`],
         text: `On Wed, May 22, 2026, Tago Support wrote:\n> Original message`,
       },
     })
@@ -266,7 +266,7 @@ describe('POST /api/webhooks/resend-inbound', () => {
       type: 'email.inbound',
       data: {
         from: REPORTER_EMAIL,
-        to: [`reports+${REPORT_ID}@tagorides.com`],
+        to: [`reports+${REPORT_ID}@reports.tagorides.com`],
         text: 'looking for something to inject into',
       },
     })
@@ -292,7 +292,7 @@ describe('POST /api/webhooks/resend-inbound', () => {
       type: 'email.inbound',
       data: {
         from: REPORTER_EMAIL,
-        to: [`reports+${REPORT_ID}@tagorides.com`],
+        to: [`reports+${REPORT_ID}@reports.tagorides.com`],
         text: 'another reply',
       },
     })
@@ -315,7 +315,7 @@ describe('POST /api/webhooks/resend-inbound', () => {
       type: 'email.inbound',
       data: {
         from: REPORTER_EMAIL,
-        to: [`reports+${REPORT_ID}@tagorides.com`],
+        to: [`reports+${REPORT_ID}@reports.tagorides.com`],
         text: 'hi',
       },
     })
@@ -334,7 +334,7 @@ describe('POST /api/webhooks/resend-inbound', () => {
       .set('svix-id', 'm1')
       .set('svix-timestamp', '123')
       .set('svix-signature', 'v1,bogus')
-      .send({ type: 'email.inbound', data: { from: REPORTER_EMAIL, to: [`reports+${REPORT_ID}@tagorides.com`], text: 'hi' } })
+      .send({ type: 'email.inbound', data: { from: REPORTER_EMAIL, to: [`reports+${REPORT_ID}@reports.tagorides.com`], text: 'hi' } })
     expect(res.status).toBe(401)
     expect(res.body.error.code).toBe('INVALID_SIGNATURE')
   })
