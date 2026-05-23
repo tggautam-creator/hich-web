@@ -169,6 +169,22 @@ export interface AdminRideReportLink {
   created_at: string
 }
 
+/**
+ * 2026-05-23 — migration 094 ride_audit_log row. One row per
+ * changed-field-of-interest on a `rides` UPDATE: status, driver_id,
+ * pickup_confirmed, dropoff_confirmed, payment_status, fare_cents.
+ * `changed_by` is the auth.uid() of the actor when JWT'd; NULL for
+ * service-role / system updates.
+ */
+export interface AdminRideAuditRow {
+  id: string
+  field: string
+  old_value: string | null
+  new_value: string | null
+  changed_by: string | null
+  created_at: string
+}
+
 export interface AdminRideDetailResponse {
   ok: true
   ride: AdminRideDetail
@@ -179,6 +195,7 @@ export interface AdminRideDetailResponse {
   messages: AdminRideMessage[]
   payment: AdminRidePayment[]
   reports: AdminRideReportLink[]
+  audit_log: AdminRideAuditRow[]
 }
 
 export function useAdminRideDetail(id: string | undefined) {

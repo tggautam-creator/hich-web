@@ -263,7 +263,7 @@ adminRidesRouter.get(
         return
       }
 
-      const [riderRes, driverRes, vehicleRes, scheduleRes, messagesRes, paymentRes, reportsRes] =
+      const [riderRes, driverRes, vehicleRes, scheduleRes, messagesRes, paymentRes, reportsRes, auditRes] =
         await Promise.all([
           supabaseAdmin
             .from('users')
@@ -306,6 +306,17 @@ adminRidesRouter.get(
             .select('id, reporter_id, severity, status, title, created_at')
             .eq('ride_id', id)
             .order('created_at', { ascending: true }),
+          // 2026-05-23 — migration 094 ride_audit_log. Returns the
+          // chronological list of status / pickup_confirmed /
+          // dropoff_confirmed / driver_id / payment_status /
+          // fare_cents flips. Client interleaves these into the
+          // thread timeline so the admin sees "what happened, in
+          // what order" not just "current state."
+          supabaseAdmin
+            .from('ride_audit_log')
+            .select('id, field, old_value, new_value, changed_by, created_at')
+            .eq('ride_id', id)
+            .order('created_at', { ascending: true }),
         ])
 
       // Audit-trail the view. Non-blocking — if the audit insert fails
@@ -335,6 +346,7 @@ adminRidesRouter.get(
         messages: messagesRes.data ?? [],
         payment: paymentRes.data ?? [],
         reports: reportsRes.data ?? [],
+        audit_log: auditRes.data ?? [],
       })
     } catch (err) {
       next(err)

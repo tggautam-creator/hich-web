@@ -48,6 +48,7 @@ interface DetailOpts {
   messages?: unknown[]
   payment?: unknown[]
   reports?: unknown[]
+  auditLog?: unknown[]
 }
 
 function setupDetailMocks(opts: DetailOpts) {
@@ -131,6 +132,16 @@ function setupDetailMocks(opts: DetailOpts) {
           eq: () => ({
             order: () =>
               Promise.resolve({ data: opts.reports ?? [], error: null }),
+          }),
+        }),
+      }
+    }
+    if (table === 'ride_audit_log') {
+      return {
+        select: () => ({
+          eq: () => ({
+            order: () =>
+              Promise.resolve({ data: opts.auditLog ?? [], error: null }),
           }),
         }),
       }
@@ -330,5 +341,32 @@ describe('GET /api/admin/rides/:id', () => {
     expect(res.body.messages).toHaveLength(2)
     expect(res.body.payment).toHaveLength(1)
     expect(res.body.reports).toHaveLength(1)
+    expect(res.body.audit_log).toEqual([])
+  })
+
+  it('returns audit_log rows when ride_audit_log has entries', async () => {
+    authAsAdmin()
+    setupDetailMocks({
+      ride: {
+        id: RIDE_ID,
+        rider_id: RIDER_ID,
+        driver_id: DRIVER_ID,
+        status: 'completed',
+        created_at: '2026-05-23T10:00:00.000Z',
+      },
+      rider: { id: RIDER_ID, email: 'r@x.com', full_name: 'R', avatar_url: null, is_driver: false, suspended_at: null },
+      driver: { id: DRIVER_ID, email: 'd@x.com', full_name: 'D', avatar_url: null, is_driver: true, suspended_at: null },
+      auditLog: [
+        { id: 'a-1', field: 'status', old_value: 'requested', new_value: 'accepted', changed_by: DRIVER_ID, created_at: '2026-05-23T10:01:00.000Z' },
+        { id: 'a-2', field: 'pickup_confirmed', old_value: 'false', new_value: 'true', changed_by: null, created_at: '2026-05-23T10:05:00.000Z' },
+      ],
+    })
+    const res = await request(app)
+      .get(`/api/admin/rides/${RIDE_ID}`)
+      .set('Authorization', VALID_JWT)
+    expect(res.status).toBe(200)
+    expect(res.body.audit_log).toHaveLength(2)
+    expect(res.body.audit_log[0].field).toBe('status')
+    expect(res.body.audit_log[1].changed_by).toBeNull()
   })
 })

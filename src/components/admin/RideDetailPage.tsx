@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   useAdminRideDetail,
+  type AdminRideAuditRow,
   type AdminRideDetailResponse,
   type AdminRideMessage,
   type AdminRidePayment,
@@ -179,6 +180,7 @@ export default function RideDetailPage() {
         <ThreadColumn
           messages={data.messages}
           payment={data.payment}
+          auditLog={data.audit_log}
           rider={data.rider}
           driver={data.driver}
         />
@@ -384,47 +386,139 @@ function UserMini({ user }: { user: AdminRideUser }) {
 type TimelineItem =
   | { kind: 'message'; row: AdminRideMessage; ts: string }
   | { kind: 'payment'; row: AdminRidePayment; ts: string }
+  | { kind: 'audit'; row: AdminRideAuditRow; ts: string }
 
 function ThreadColumn({
   messages,
   payment,
+  auditLog,
   rider,
   driver,
 }: {
   messages: AdminRideMessage[]
   payment: AdminRidePayment[]
+  auditLog: AdminRideAuditRow[]
   rider: AdminRideUser | null
   driver: AdminRideUser | null
 }) {
   const items: TimelineItem[] = [
     ...messages.map<TimelineItem>((row) => ({ kind: 'message', row, ts: row.created_at })),
     ...payment.map<TimelineItem>((row) => ({ kind: 'payment', row, ts: row.created_at })),
+    ...auditLog.map<TimelineItem>((row) => ({ kind: 'audit', row, ts: row.created_at })),
   ].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
 
   return (
     <div className="space-y-4">
-      <Card title={`Thread (${messages.length} messages · ${payment.length} payment events)`} testid="ride-thread">
+      <Card
+        title={`Thread (${messages.length} messages · ${payment.length} payment · ${auditLog.length} state flips)`}
+        testid="ride-thread"
+      >
         {items.length === 0 ? (
           <NeutralRow text="No messages or payments yet." />
         ) : (
           <ul className="space-y-3">
-            {items.map((item) =>
-              item.kind === 'message' ? (
-                <MessageBubble
-                  key={`msg-${item.row.id}`}
-                  message={item.row}
+            {items.map((item) => {
+              if (item.kind === 'message') {
+                return (
+                  <MessageBubble
+                    key={`msg-${item.row.id}`}
+                    message={item.row}
+                    rider={rider}
+                    driver={driver}
+                  />
+                )
+              }
+              if (item.kind === 'payment') {
+                return <PaymentEntry key={`pay-${item.row.id}`} row={item.row} />
+              }
+              return (
+                <AuditEntry
+                  key={`audit-${item.row.id}`}
+                  row={item.row}
                   rider={rider}
                   driver={driver}
                 />
-              ) : (
-                <PaymentEntry key={`pay-${item.row.id}`} row={item.row} />
-              ),
-            )}
+              )
+            })}
           </ul>
         )}
       </Card>
     </div>
   )
+}
+
+/**
+ * 2026-05-23 — slim, centered, italic line that marks a rides-table
+ * field flip (status, driver_id, pickup_confirmed, dropoff_confirmed,
+ * payment_status, fare_cents). Distinct from message bubbles (which
+ * are conversational) and payment entries (which are dollars) so the
+ * eye triages it as "system event" at a glance.
+ *
+ * Actor resolution: changed_by maps to rider/driver when possible
+ * (lets the admin see "Driver Alex confirmed pickup" vs "System
+ * cancelled ride"). NULL changed_by = service-role update (most
+ * common — the server lifecycle paths run as service role).
+ */
+function AuditEntry({
+  row,
+  rider,
+  driver,
+}: {
+  row: AdminRideAuditRow
+  rider: AdminRideUser | null
+  driver: AdminRideUser | null
+}) {
+  const actorLabel = (() => {
+    if (!row.changed_by) return 'System'
+    if (rider && row.changed_by === rider.id) return rider.full_name ?? 'Rider'
+    if (driver && row.changed_by === driver.id) return driver.full_name ?? 'Driver'
+    return `Admin ${row.changed_by.slice(0, 8)}…`
+  })()
+  const summary = formatAuditSummary(row)
+  return (
+    <li data-testid={`ride-audit-${row.id}`} className="flex justify-center">
+      <div className="flex items-center gap-2 text-[11px] text-text-secondary italic">
+        <span aria-hidden="true">·</span>
+        <span>
+          <span className="font-medium not-italic text-text-primary">{actorLabel}</span>
+          {' '}{summary}{' '}
+          <span className="text-text-secondary/80">· {fmtDateTime(row.created_at)}</span>
+        </span>
+        <span aria-hidden="true">·</span>
+      </div>
+    </li>
+  )
+}
+
+function formatAuditSummary(row: AdminRideAuditRow): string {
+  const from = row.old_value ?? '—'
+  const to = row.new_value ?? '—'
+  switch (row.field) {
+    case 'status':
+      return `flipped ride status ${from} → ${to}`
+    case 'driver_id':
+      if (!row.old_value && row.new_value) return 'assigned a driver'
+      if (row.old_value && !row.new_value) return 'unassigned the driver'
+      return `changed driver ${shortenId(from)} → ${shortenId(to)}`
+    case 'pickup_confirmed':
+      return to === 'true' ? 'confirmed pickup' : 'reverted pickup confirmation'
+    case 'dropoff_confirmed':
+      return to === 'true' ? 'confirmed dropoff' : 'reverted dropoff confirmation'
+    case 'payment_status':
+      return `payment ${from} → ${to}`
+    case 'fare_cents': {
+      const oldD = row.old_value ? `$${(parseInt(row.old_value, 10) / 100).toFixed(2)}` : '—'
+      const newD = row.new_value ? `$${(parseInt(row.new_value, 10) / 100).toFixed(2)}` : '—'
+      return `fare ${oldD} → ${newD}`
+    }
+    default:
+      return `${row.field.replace(/_/g, ' ')} ${from} → ${to}`
+  }
+}
+
+function shortenId(s: string): string {
+  if (s === '—') return s
+  return `${s.slice(0, 8)}…`
 }
 
 function MessageBubble({
