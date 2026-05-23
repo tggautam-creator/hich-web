@@ -133,7 +133,19 @@ function setupMocks(opts?: { rideError?: boolean }) {
     if (table === 'rides') return { select: rideSelect }
     if (table === 'users') return { select: driverSelect }
     if (table === 'vehicles') return { select: vehicleSelect }
-    return { select: vi.fn() }
+    // Catch-all for tables this test doesn't care about (e.g. the
+    // `driver_locations` lookup added in 4f69b78 for the drive-ETA
+    // computation). Returns the canonical select → eq → single
+    // chain so the call resolves with no row instead of throwing
+    // "Cannot read properties of undefined (reading 'eq')".
+    return {
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({ data: null, error: null }),
+          maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        }),
+      }),
+    }
   })
 
   // Realtime channel mock — supports chained .on().on().subscribe()
@@ -336,7 +348,19 @@ describe('MessagingWindow', () => {
       if (table === 'rides') return { select: rideSelect }
       if (table === 'users') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_DRIVER, error: null }) }) }) }
       if (table === 'vehicles') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ maybeSingle: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }) }) }) }) }
-      return { select: vi.fn() }
+      // Catch-all for tables this test doesn't care about (e.g. the
+    // `driver_locations` lookup added in 4f69b78 for the drive-ETA
+    // computation). Returns the canonical select → eq → single
+    // chain so the call resolves with no row instead of throwing
+    // "Cannot read properties of undefined (reading 'eq')".
+    return {
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({ data: null, error: null }),
+          maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        }),
+      }),
+    }
     })
 
     renderPage()
@@ -374,7 +398,19 @@ describe('MessagingWindow', () => {
       if (table === 'rides') return { select: rideSelect }
       if (table === 'users') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_DRIVER, error: null }) }) }) }
       if (table === 'vehicles') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ maybeSingle: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }) }) }) }) }
-      return { select: vi.fn() }
+      // Catch-all for tables this test doesn't care about (e.g. the
+    // `driver_locations` lookup added in 4f69b78 for the drive-ETA
+    // computation). Returns the canonical select → eq → single
+    // chain so the call resolves with no row instead of throwing
+    // "Cannot read properties of undefined (reading 'eq')".
+    return {
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({ data: null, error: null }),
+          maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        }),
+      }),
+    }
     })
 
     renderPage()
@@ -407,7 +443,19 @@ describe('MessagingWindow', () => {
       if (table === 'rides') return { select: rideSelect }
       if (table === 'users') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ single: vi.fn().mockResolvedValue({ data: MOCK_DRIVER, error: null }) }) }) }
       if (table === 'vehicles') return { select: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ eq: vi.fn().mockReturnValue({ maybeSingle: vi.fn().mockResolvedValue({ data: MOCK_VEHICLE, error: null }) }) }) }) }
-      return { select: vi.fn() }
+      // Catch-all for tables this test doesn't care about (e.g. the
+    // `driver_locations` lookup added in 4f69b78 for the drive-ETA
+    // computation). Returns the canonical select → eq → single
+    // chain so the call resolves with no row instead of throwing
+    // "Cannot read properties of undefined (reading 'eq')".
+    return {
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({ data: null, error: null }),
+          maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        }),
+      }),
+    }
     })
 
     renderPage()
@@ -550,7 +598,19 @@ describe('MessagingWindow', () => {
           }),
         }
       }
-      return { select: vi.fn() }
+      // Catch-all for tables this test doesn't care about (e.g. the
+    // `driver_locations` lookup added in 4f69b78 for the drive-ETA
+    // computation). Returns the canonical select → eq → single
+    // chain so the call resolves with no row instead of throwing
+    // "Cannot read properties of undefined (reading 'eq')".
+    return {
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({ data: null, error: null }),
+          maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        }),
+      }),
+    }
     })
     const channelObj: Record<string, unknown> = {}
     const mockOn = vi.fn().mockReturnValue(channelObj)
@@ -625,7 +685,19 @@ describe('MessagingWindow', () => {
           }),
         }
       }
-      return { select: vi.fn() }
+      // Catch-all for tables this test doesn't care about (e.g. the
+    // `driver_locations` lookup added in 4f69b78 for the drive-ETA
+    // computation). Returns the canonical select → eq → single
+    // chain so the call resolves with no row instead of throwing
+    // "Cannot read properties of undefined (reading 'eq')".
+    return {
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({ data: null, error: null }),
+          maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        }),
+      }),
+    }
     })
     const channelObj: Record<string, unknown> = {}
     const mockOn = vi.fn().mockReturnValue(channelObj)

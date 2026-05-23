@@ -339,11 +339,19 @@ describe('E2E Happy Path', () => {
       // Click submit
       await user.click(screen.getByTestId('submit-button'))
 
-      // signInWithOtp is called (after server check-email returns exists: false)
+      // signInWithOtp is called (after server check-email returns exists: false).
+      // `emailRedirectTo` was added in d55fa28 to pin the confirm link to the
+      // canonical prod URL — assert it's threaded through (just match the email
+      // exactly; the redirect URL varies by env so check substring).
       await waitFor(() => {
-        expect(mockSignInWithOtp).toHaveBeenCalledWith({
-          email: 'maya@ucdavis.edu',
-        })
+        expect(mockSignInWithOtp).toHaveBeenCalledWith(
+          expect.objectContaining({
+            email: 'maya@ucdavis.edu',
+            options: expect.objectContaining({
+              emailRedirectTo: expect.stringContaining('/auth/callback'),
+            }),
+          }),
+        )
       })
 
       // Navigates to check-inbox with email in state
