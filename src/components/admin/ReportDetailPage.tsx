@@ -359,16 +359,35 @@ function ThreadColumn({
   reportId: string
   messages: AdminReportMessage[]
 }) {
+  // 2026-05-22 — pull the audit log + interleave it into the
+  // thread chronologically. Without this, status flips + severity
+  // overrides happened invisibly: an admin scrolling the thread
+  // saw only the back-and-forth between user + admin and had to
+  // dig into a separate audit view to learn that someone else
+  // had already acknowledged or escalated the report.
+  //
+  // Hook is keyed on reportId so it shares cache with the
+  // existing severity/status mutations' invalidation calls — every
+  // status_change / severity_change automatically refetches the
+  // audit log alongside the detail view.
+  const auditQuery = useAdminReportAudit(reportId)
+  const auditRows = auditQuery.data?.audit ?? []
+  const items = mergeThreadItems(messages, auditRows)
+
   return (
     <div className="space-y-4">
       <Card title="Thread" testid="report-thread">
-        {messages.length === 0 ? (
+        {items.length === 0 ? (
           <NeutralRow text="No messages yet. Use the compose box to send the first reply." />
         ) : (
           <ul className="space-y-3">
-            {messages.map((m) => (
-              <MessageBubble key={m.id} message={m} />
-            ))}
+            {items.map((item) =>
+              item.kind === 'message' ? (
+                <MessageBubble key={`msg-${item.row.id}`} message={item.row} />
+              ) : (
+                <AuditEntry key={`audit-${item.row.id}`} row={item.row} />
+              ),
+            )}
           </ul>
         )}
       </Card>
@@ -376,6 +395,86 @@ function ThreadColumn({
       <ComposeBox reportId={reportId} />
     </div>
   )
+}
+
+type ThreadItem =
+  | { kind: 'message'; row: AdminReportMessage; createdAt: string }
+  | { kind: 'audit'; row: AdminReportAuditRow; createdAt: string }
+
+function mergeThreadItems(
+  messages: AdminReportMessage[],
+  audit: AdminReportAuditRow[],
+): ThreadItem[] {
+  const items: ThreadItem[] = [
+    ...messages.map<ThreadItem>((row) => ({ kind: 'message', row, createdAt: row.created_at })),
+    ...audit.map<ThreadItem>((row) => ({ kind: 'audit', row, createdAt: row.created_at })),
+  ]
+  // Stable sort by created_at ASC so the timeline reads top-to-
+  // bottom in the order events happened. Ties (rare: same-second
+  // status flip + automated message) keep their original insert
+  // order, which is "messages first, then audit" — fine since
+  // we never write both with the exact same timestamp.
+  items.sort((a, b) => {
+    const ta = new Date(a.createdAt).getTime()
+    const tb = new Date(b.createdAt).getTime()
+    return ta - tb
+  })
+  return items
+}
+
+/**
+ * Slim, system-toned entry that sits inline in the thread to
+ * mark a status flip or severity override. Visually distinct
+ * from message bubbles — narrower, italic, no background fill —
+ * so it reads as metadata rather than dialogue.
+ */
+function AuditEntry({ row }: { row: AdminReportAuditRow }) {
+  const summary = formatAuditAction(row)
+  const adminLabel = row.admin_email ?? `Admin ${row.admin_id.slice(0, 8)}…`
+  return (
+    <li
+      data-testid={`thread-audit-${row.id}`}
+      className="flex justify-center"
+    >
+      <div className="flex items-center gap-2 text-[11px] text-text-secondary italic">
+        <span aria-hidden="true">·</span>
+        <span>
+          <span className="font-medium not-italic text-text-primary">{adminLabel}</span>
+          {' '}{summary}{' '}
+          <span className="text-text-secondary/80">· {fmtDateTime(row.created_at)}</span>
+        </span>
+        <span aria-hidden="true">·</span>
+      </div>
+    </li>
+  )
+}
+
+function formatAuditAction(row: AdminReportAuditRow): string {
+  const from = readString(row.payload, 'from') ?? '—'
+  const to = readString(row.payload, 'to') ?? '—'
+  switch (row.action) {
+    case 'status_change': {
+      const note = readString(row.payload, 'resolution_note')
+      return note
+        ? `flipped status ${from} → ${to} (note: "${truncate(note, 80)}")`
+        : `flipped status ${from} → ${to}`
+    }
+    case 'severity_change':
+      return `overrode severity ${from} → ${to}`
+    default:
+      // Forward-compat: a new action category (assignment, refund,
+      // etc.) shows up readably without a code release here.
+      return `${row.action.replace(/_/g, ' ')} ${from} → ${to}`
+  }
+}
+
+function readString(payload: Record<string, unknown>, key: string): string | null {
+  const v = payload[key]
+  return typeof v === 'string' ? v : null
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1) + '…' : s
 }
 
 function MessageBubble({ message }: { message: AdminReportMessage }) {
