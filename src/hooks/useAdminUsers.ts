@@ -387,6 +387,51 @@ export function useAdminUserDevices(args: {
   })
 }
 
+// ── 2026-05-23 — Contacts + saved addresses ────────────────────────────────
+//
+// Surfaces two tables that had zero admin visibility before today:
+// trusted_contacts (emergency contacts) + saved_addresses (Home/Work/
+// favorite places). One endpoint returns both; UI renders side-by-side
+// on the Overview tab.
+
+export interface AdminTrustedContact {
+  id: string
+  name: string
+  phone: string
+  created_at: string
+}
+
+export interface AdminSavedAddress {
+  id: string
+  label: string
+  main_text: string
+  secondary_text: string | null
+  full_address: string
+  lat: number
+  lng: number
+  is_preset: boolean | null
+  created_at: string
+}
+
+export interface AdminUserContactsResponse {
+  ok: true
+  trusted_contacts: AdminTrustedContact[]
+  saved_addresses: AdminSavedAddress[]
+}
+
+export function useAdminUserContacts(args: {
+  userId: string | undefined
+  enabled: boolean
+}) {
+  const { userId, enabled } = args
+  return useQuery<AdminUserContactsResponse>({
+    queryKey: ['admin', 'users', 'contacts', userId],
+    queryFn: () => adminGet<AdminUserContactsResponse>(`/users/${userId}/contacts`),
+    enabled: enabled && typeof userId === 'string' && userId.length > 0,
+    staleTime: FIVE_MIN_MS,
+  })
+}
+
 // ── Slice 1.3c — Admin Actions tab hooks ────────────────────────────────────
 
 export interface AdminAuditRow {

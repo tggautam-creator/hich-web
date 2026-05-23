@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
+  useAdminUserContacts,
   useAdminUserDetail,
   useAdminUserRides,
   useAdminUserWallet,
@@ -275,6 +276,15 @@ function Badge({
 // ── Overview tab ─────────────────────────────────────────────────────────────
 
 function OverviewTab({ data }: { data: AdminUserOverview }) {
+  return (
+    <div className="space-y-4">
+      <UserOverviewGrid data={data} />
+      <ContactsAndAddressesSection userId={data.user.id} />
+    </div>
+  )
+}
+
+function UserOverviewGrid({ data }: { data: AdminUserOverview }) {
   const u = data.user
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -342,6 +352,196 @@ function OverviewTab({ data }: { data: AdminUserOverview }) {
       />
     </div>
   )
+}
+
+/**
+ * 2026-05-23 — surfaces trusted_contacts + saved_addresses on the
+ * Overview tab. Both tables had zero admin visibility before today,
+ * which made trust+safety triage harder (emergency contacts were
+ * the most-missed gap — when the emergency button fires, admin
+ * couldn't see who to call).
+ *
+ * Side-by-side cards on wide screens, stacked on narrow. Each card
+ * renders an empty state when the user has none on file; we still
+ * render both cards (rather than hiding) so the admin knows the
+ * data was checked + missing, not just hidden.
+ */
+function ContactsAndAddressesSection({ userId }: { userId: string }) {
+  const { data, isLoading, error } = useAdminUserContacts({ userId, enabled: true })
+
+  if (isLoading) {
+    return (
+      <div
+        className="rounded-2xl border border-border bg-white p-5 text-sm text-text-secondary"
+        data-testid="overview-contacts-loading"
+      >
+        Loading contacts + addresses…
+      </div>
+    )
+  }
+  if (error) {
+    return (
+      <div
+        className="rounded-2xl border border-danger/30 bg-danger/5 p-5 text-sm text-danger"
+        data-testid="overview-contacts-error"
+      >
+        Failed to load contacts: {error instanceof Error ? error.message : 'unknown'}
+      </div>
+    )
+  }
+  if (!data) return null
+
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <TrustedContactsCard contacts={data.trusted_contacts} />
+      <SavedAddressesCard addresses={data.saved_addresses} />
+    </div>
+  )
+}
+
+function TrustedContactsCard({
+  contacts,
+}: {
+  contacts: ReadonlyArray<{
+    id: string
+    name: string
+    phone: string
+    created_at: string
+  }>
+}) {
+  return (
+    <div
+      data-testid="overview-trusted-contacts"
+      className="rounded-2xl border border-border bg-white p-5"
+    >
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold text-text-primary">
+          Trusted contacts · {contacts.length}
+        </h2>
+        <InfoTooltip
+          testid="overview-trusted-contacts-info"
+          text="Emergency contacts the user designated in the safety flow. These are who Tago surfaces when the emergency button fires (Share-location SMS recipients)."
+          align="left"
+        />
+      </div>
+      {contacts.length === 0 ? (
+        <p className="mt-4 text-sm text-text-secondary">
+          No trusted contacts on file.
+        </p>
+      ) : (
+        <ul className="mt-4 space-y-2">
+          {contacts.map((c) => (
+            <li
+              key={c.id}
+              data-testid={`overview-trusted-contact-${c.id}`}
+              className="rounded-lg border border-border bg-surface px-3 py-2"
+            >
+              <p className="text-sm font-medium text-text-primary truncate">
+                {c.name}
+              </p>
+              <div className="mt-0.5 flex items-baseline gap-2">
+                <a
+                  href={`tel:${c.phone}`}
+                  className="text-xs font-mono text-primary hover:underline"
+                >
+                  {c.phone}
+                </a>
+                <span className="text-[10px] text-text-secondary">
+                  added {fmtAddedDate(c.created_at)}
+                </span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function SavedAddressesCard({
+  addresses,
+}: {
+  addresses: ReadonlyArray<{
+    id: string
+    label: string
+    main_text: string
+    secondary_text: string | null
+    full_address: string
+    lat: number
+    lng: number
+    is_preset: boolean | null
+    created_at: string
+  }>
+}) {
+  return (
+    <div
+      data-testid="overview-saved-addresses"
+      className="rounded-2xl border border-border bg-white p-5"
+    >
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold text-text-primary">
+          Saved addresses · {addresses.length}
+        </h2>
+        <InfoTooltip
+          testid="overview-saved-addresses-info"
+          text="Home / Work / custom-named locations the user pinned. is_preset=true means it's one of the standard Home/Work slots (the user has explicitly saved it); other rows are user-typed bookmarks."
+          align="left"
+        />
+      </div>
+      {addresses.length === 0 ? (
+        <p className="mt-4 text-sm text-text-secondary">
+          No saved addresses on file.
+        </p>
+      ) : (
+        <ul className="mt-4 space-y-2">
+          {addresses.map((a) => (
+            <li
+              key={a.id}
+              data-testid={`overview-saved-address-${a.id}`}
+              className="rounded-lg border border-border bg-surface px-3 py-2"
+            >
+              <div className="flex items-center gap-2">
+                {a.is_preset ? (
+                  <span className="rounded-full bg-primary/15 text-primary text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5">
+                    {a.label}
+                  </span>
+                ) : (
+                  <span className="text-[10px] uppercase tracking-wide text-text-secondary font-semibold">
+                    {a.label}
+                  </span>
+                )}
+                <a
+                  href={`https://www.google.com/maps?q=${a.lat},${a.lng}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ml-auto text-[11px] text-primary hover:underline"
+                >
+                  Open in Maps →
+                </a>
+              </div>
+              <p className="mt-1 text-sm text-text-primary truncate">{a.main_text}</p>
+              {a.secondary_text && (
+                <p className="text-xs text-text-secondary truncate">
+                  {a.secondary_text}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 2026-05-23 — local to ContactsAndAddressesSection; renamed from
+ * fmtDate to avoid collision with the existing file-level fmtDate
+ * (line 2481+) which has a different output format.
+ */
+function fmtAddedDate(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
 interface CardRow {

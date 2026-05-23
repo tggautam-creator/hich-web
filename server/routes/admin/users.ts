@@ -869,3 +869,69 @@ adminUsersRouter.get(
     }
   },
 )
+
+// ── GET /:id/contacts — trusted contacts + saved addresses ────────────────
+//
+// 2026-05-23 — surface two tables that had zero admin visibility:
+// `trusted_contacts` (emergency contacts users designated) and
+// `saved_addresses` (Home/Work/favorite places). One endpoint so the
+// Overview tab can render both in a single round-trip.
+//
+// Both are user-private under RLS, but the admin endpoint reads via
+// service role for triage. NEVER expose these via a non-admin route.
+
+interface ContactsResponse {
+  ok: true
+  trusted_contacts: Array<{
+    id: string
+    name: string
+    phone: string
+    created_at: string
+  }>
+  saved_addresses: Array<{
+    id: string
+    label: string
+    main_text: string
+    secondary_text: string | null
+    full_address: string
+    lat: number
+    lng: number
+    is_preset: boolean | null
+    created_at: string
+  }>
+}
+
+adminUsersRouter.get(
+  '/:id/contacts',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = parseUserIdParam(req, res)
+      if (!id) return
+
+      const [contactsRes, addressesRes] = await Promise.all([
+        supabaseAdmin
+          .from('trusted_contacts')
+          .select('id, name, phone, created_at')
+          .eq('user_id', id)
+          .order('created_at', { ascending: true }),
+        supabaseAdmin
+          .from('saved_addresses')
+          .select('id, label, main_text, secondary_text, full_address, lat, lng, is_preset, created_at')
+          .eq('user_id', id)
+          .order('created_at', { ascending: true }),
+      ])
+
+      if (contactsRes.error) throw contactsRes.error
+      if (addressesRes.error) throw addressesRes.error
+
+      const payload: ContactsResponse = {
+        ok: true,
+        trusted_contacts: (contactsRes.data ?? []) as ContactsResponse['trusted_contacts'],
+        saved_addresses: (addressesRes.data ?? []) as ContactsResponse['saved_addresses'],
+      }
+      res.status(200).json(payload)
+    } catch (err) {
+      next(err)
+    }
+  },
+)
