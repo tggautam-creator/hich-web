@@ -44,6 +44,14 @@ export function getServerEnv() {
     // without Resend configured (e.g. local dev where ops doesn't
     // care about email tests yet).
     RESEND_API_KEY: process.env['RESEND_API_KEY'] ?? '',
+    // 2026-05-21 — Phase 4 of REPORTS_PLAN.md. Optional. When set,
+    // emergency + urgent severity reports fire a Slack webhook +
+    // email page-out to admin. When empty, alerts are silently
+    // skipped (a `console.warn` is logged once so missing config
+    // surfaces in PM2 logs without crashing the report-create
+    // endpoint).
+    SLACK_ALERTS_WEBHOOK_URL: process.env['SLACK_ALERTS_WEBHOOK_URL'] ?? '',
+    ADMIN_ALERT_EMAILS: process.env['ADMIN_ALERT_EMAILS'] ?? '',
     PORT: process.env['PORT'] ? parseInt(process.env['PORT'], 10) : 3001,
   }
 }

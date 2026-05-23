@@ -33,6 +33,8 @@ const AdminHomePage = lazy(() => import('@/components/admin/AdminHomePage'))
 const AdminFunnelPage = lazy(() => import('@/components/admin/FunnelPage'))
 const AdminUsersPage = lazy(() => import('@/components/admin/UsersPage'))
 const AdminUserDetailPage = lazy(() => import('@/components/admin/UserDetailPage'))
+const AdminReportDetailPage = lazy(() => import('@/components/admin/ReportDetailPage'))
+const AdminReportsInboxPage = lazy(() => import('@/components/admin/ReportsInboxPage'))
 const AdminCampaignsPage = lazy(() => import('@/components/admin/CampaignsPage'))
 const AdminLiveOpsPage = lazy(() => import('@/components/admin/LiveOpsPage'))
 const AdminAuditLogPage = lazy(() => import('@/components/admin/AuditLogPage'))
@@ -226,6 +228,9 @@ createRoot(rootEl).render(
                   <Route path="/admin/funnel"     element={<Suspense fallback={<FormPageSkeleton />}><AdminFunnelPage /></Suspense>} />
                   <Route path="/admin/users"      element={<Suspense fallback={<FormPageSkeleton />}><AdminUsersPage /></Suspense>} />
                   <Route path="/admin/users/:id"  element={<Suspense fallback={<FormPageSkeleton />}><AdminUserDetailPage /></Suspense>} />
+                  {/* Phase 3a + 3b of docs/REPORTS_PLAN.md — admin reports inbox + detail. */}
+                  <Route path="/admin/reports" element={<Suspense fallback={<ListPageSkeleton />}><AdminReportsInboxPage /></Suspense>} />
+                  <Route path="/admin/reports/:id" element={<Suspense fallback={<FormPageSkeleton />}><AdminReportDetailPage /></Suspense>} />
                   <Route path="/admin/campaigns"  element={<Suspense fallback={<FormPageSkeleton />}><AdminCampaignsPage /></Suspense>} />
                   <Route path="/admin/ride-board" element={<Suspense fallback={<ListPageSkeleton />}><AdminRideBoardPage /></Suspense>} />
                   <Route path="/admin/api-usage"  element={<Suspense fallback={<ListPageSkeleton />}><AdminApiUsagePage /></Suspense>} />

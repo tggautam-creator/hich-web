@@ -12,6 +12,7 @@ import { adminLiveRouter } from './live.ts'
 import { adminAuditRouter } from './audit.ts'
 import { adminAlertsRouter } from './alerts.ts'
 import { adminRideBoardRouter } from './rideBoard.ts'
+import { adminReportsRouter } from './reports.ts'
 
 /**
  * `/api/admin/*` — Tago internal admin API.
@@ -90,6 +91,10 @@ adminRouter.use('/audit-log', adminAuditRouter)
 adminRouter.use('/alerts', adminAlertsRouter)
 // 2026-05-18 — ride-board monitoring (posts, offers, force-cancel).
 adminRouter.use('/ride-board', adminRideBoardRouter)
+// Phase 3b of docs/REPORTS_PLAN.md — admin reports inbox + detail
+// + thread compose. Inherits the JWT + adminAuth gate from the
+// router-level middleware above.
+adminRouter.use('/reports', adminReportsRouter)
 
 // 2026-05-19 — API usage gauges (Resend, FCM, Google Maps family).
 adminRouter.get('/api-usage', async (_req, res, next) => {

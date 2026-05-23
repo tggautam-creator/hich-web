@@ -2,6 +2,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { env } from '@/lib/env'
 import { useAdminAlerts } from '@/hooks/useAdminAlerts'
+import { useAdminReportInbox } from '@/hooks/useAdminReports'
 
 /**
  * Two-pane chrome around every admin page: sidebar (nav) + main outlet.
@@ -32,6 +33,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { to: '/admin/users',       label: 'Users',      testId: 'admin-nav-users' },
   { to: '/admin/ride-board',  label: 'Ride Board', testId: 'admin-nav-ride-board' },
   { to: '/admin/campaigns',   label: 'Campaigns',  testId: 'admin-nav-campaigns' },
+  { to: '/admin/reports',     label: 'Reports',    testId: 'admin-nav-reports' },
   { to: '/admin/live',        label: 'Live',       testId: 'admin-nav-live' },
   { to: '/admin/alerts',      label: 'Alerts',     testId: 'admin-nav-alerts' },
   { to: '/admin/audit-log',   label: 'Audit Log',  testId: 'admin-nav-audit' },
@@ -51,11 +53,29 @@ export default function AdminLayout() {
   // refetch when /admin/alerts isn't the current route.
   const alertsQuery = useAdminAlerts()
   const alertCount = alertsQuery.data?.total_count ?? 0
-  const navItems = NAV_ITEMS.map((item) =>
-    item.to === '/admin/alerts'
-      ? { ...item, badge: alertCount > 0 ? alertCount : undefined }
-      : item,
-  )
+
+  // 2026-05-22 — Reports badge. Same 30s polling cadence as alerts.
+  // Shows the sum of emergency + urgent (the loudest two severities)
+  // so the sidebar surfaces "you have triage to do" at a glance.
+  // We page with limit=1 since we only need the counts block, not
+  // the actual rows.
+  const reportsQuery = useAdminReportInbox({ limit: 1 })
+  const reportsBadgeCount =
+    (reportsQuery.data?.counts.emergency ?? 0) +
+    (reportsQuery.data?.counts.urgent ?? 0)
+
+  const navItems = NAV_ITEMS.map((item) => {
+    if (item.to === '/admin/alerts') {
+      return { ...item, badge: alertCount > 0 ? alertCount : undefined }
+    }
+    if (item.to === '/admin/reports') {
+      return {
+        ...item,
+        badge: reportsBadgeCount > 0 ? reportsBadgeCount : undefined,
+      }
+    }
+    return item
+  })
 
   const adminEmail = session?.user?.email ?? 'admin@tagorides.com'
 

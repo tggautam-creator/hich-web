@@ -2,6 +2,7 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { validateJwt } from '../middleware/auth.ts'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
+import { notifyReportSubmitted, notifyAdminOfUserReply } from '../lib/adminAlerts.ts'
 
 /**
  * 2026-05-20 — Phase 1 of the reports & issue-tracking system
@@ -80,6 +81,15 @@ const LEGACY_CATEGORY_MAP: Record<string, Category> = {
   no_show: 'cancellation_dispute',
   bug: 'bug_report',
   other: 'feedback_feature',
+  // 2026-05-21 — driver-perspective categories surfaced when a
+  // driver opens EmergencySheet on their own active ride (iOS
+  // role-aware split). All four collapse to the same admin
+  // taxonomy buckets a rider report would; the body text + the
+  // reporter's `auth.uid` carry the per-role context.
+  rider_aggression: 'safety_during_ride',
+  rider_damage: 'rider_conduct',
+  rider_threat: 'safety_during_ride',
+  rider_no_show: 'cancellation_dispute',
 }
 
 function normaliseCategory(raw: string): Category | null {
@@ -320,6 +330,50 @@ reportRouter.post('/', validateJwt, async (req: Request, res: Response) => {
     return
   }
 
+  // Phase 4 — fire-and-forget Slack + email alert for emergency /
+  // urgent reports. Wrapped in setImmediate so the user-facing 201
+  // returns immediately; the alert pipeline (including the reporter
+  // user lookup) runs after the request completes.
+  //
+  // The IIFE has its own try/catch so the lookup + notify can NEVER
+  // throw an unhandled rejection — that would surface as PM2 log
+  // noise (and test-suite stderr noise) without affecting the
+  // already-sent response. `NODE_ENV === 'test'` short-circuits the
+  // hook entirely so suite stderr stays clean and existing report-
+  // route tests don't need their `users` mock extended.
+  if (process.env['NODE_ENV'] !== 'test') {
+    setImmediate(() => {
+      void (async () => {
+        try {
+          const { data: reporter } = await supabaseAdmin
+            .from('users')
+            .select('email, full_name')
+            .eq('id', userId)
+            .maybeSingle()
+          notifyReportSubmitted({
+            reportID: data.id,
+            category,
+            severity,
+            title: titleText,
+            body: bodyText,
+            rideID: rideId,
+            requestedRefundCents: refundCents,
+            metadata,
+            reporterEmail: reporter?.email ?? null,
+            reporterName: reporter?.full_name ?? null,
+            reporterID: userId,
+            createdAt: new Date().toISOString(),
+          })
+        } catch (err) {
+          console.error(
+            '[report] post-insert alert hook failed:',
+            err instanceof Error ? err.message : String(err),
+          )
+        }
+      })()
+    })
+  }
+
   res.status(201).json({
     ok: true,
     id: data.id,
@@ -462,7 +516,7 @@ reportRouter.post('/:id/messages', validateJwt, async (req: Request, res: Respon
 
   const { data: report, error: ownErr } = await supabaseAdmin
     .from('reports')
-    .select('id, reporter_id, status')
+    .select('id, reporter_id, status, title, severity')
     .eq('id', id)
     .maybeSingle()
   if (ownErr) {
@@ -510,6 +564,45 @@ reportRouter.post('/:id/messages', validateJwt, async (req: Request, res: Respon
       status: report.status === 'awaiting_user' ? 'in_progress' : report.status,
     })
     .eq('id', id)
+
+  // Phase 3c+ — Slack ping to admin when the user replies on an
+  // emergency/urgent report. Lower severities are skipped server-
+  // side so the channel doesn't fill with bug-report banter.
+  // Test-env guard mirrors the report-insert hook so suite stderr
+  // stays clean without the existing route mocks needing extension.
+  if (process.env['NODE_ENV'] !== 'test') {
+    const sev = report.severity as 'emergency' | 'urgent' | 'normal' | 'low'
+    if (sev === 'emergency' || sev === 'urgent') {
+      setImmediate(() => {
+        void (async () => {
+          try {
+            const { data: reporter } = await supabaseAdmin
+              .from('users')
+              .select('email, full_name')
+              .eq('id', userId)
+              .maybeSingle()
+            const trimmed = replyBody.trim()
+            const preview = trimmed.length > 200 ? trimmed.slice(0, 197) + '…' : trimmed
+            notifyAdminOfUserReply({
+              reportID: id,
+              reportTitle: report.title,
+              reportSeverity: sev,
+              replyPreview: preview,
+              reporterEmail: reporter?.email ?? null,
+              reporterName: reporter?.full_name ?? null,
+              reporterID: userId,
+              createdAt: new Date().toISOString(),
+            })
+          } catch (err) {
+            console.error(
+              '[report] user-reply Slack alert failed:',
+              err instanceof Error ? err.message : String(err),
+            )
+          }
+        })()
+      })
+    }
+  }
 
   res.status(201).json({ ok: true, id: data.id, created_at: data.created_at })
 })
