@@ -22,8 +22,6 @@ import { addressesRouter } from './routes/addresses.ts'
 import { adminRouter } from './routes/admin/index.ts'
 import { opsRouter } from './routes/ops.ts'
 import { vehicleRouter } from './routes/vehicle.ts'
-import { vehiclesRouter } from './routes/vehicles.ts'
-import { caregiversRouter } from './routes/caregivers.ts'
 import { reportRouter } from './routes/report.ts'
 import { accountRouter } from './routes/account.ts'
 import { usersRouter } from './routes/users.ts'
@@ -137,11 +135,6 @@ app.use('/api/auth', authRouter)
 app.use('/api/gas-price', gasPriceRouter)
 app.use('/api/addresses', addressesRouter)
 app.use('/api/vehicle', vehicleRouter)
-// v1.2 F13.1 — distinct from `/api/vehicle` (which is plate-lookup-only).
-// Plural path hosts the CRUD endpoints (POST/GET/PATCH/DELETE + /activate).
-app.use('/api/vehicles', vehiclesRouter)
-// v1.2 F3.1 — rider-side caregivers CRUD. Hard-delete model.
-app.use('/api/caregivers', caregiversRouter)
 app.use('/api/report', reportRouter)
 // Operator-only token-gated maintenance endpoints (was `/api/admin/*` pre-2026-05-17).
 app.use('/api/ops', opsRouter)
