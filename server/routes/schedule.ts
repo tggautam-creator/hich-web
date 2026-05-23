@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { recordApiCall } from '../lib/apiUsage.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
+import { sendNoPushFallbackEmail } from '../lib/noPushFallbackEmail.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { adminAuth } from '../middleware/adminAuth.ts'
 import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
@@ -3188,6 +3189,20 @@ scheduleRouter.post(
         // banner. Category id matches `PushManager.boardRequestCategory`.
         category: 'BOARD_REQUEST',
       })
+    } else {
+      // 2026-05-23 — Email fallback for posters without push tokens.
+      // Without this, a driver who posted a trip but doesn't have
+      // the app installed silently misses every rider request and
+      // thinks their post got no traction. Fire-and-forget; helper
+      // handles all failure modes internally.
+      void sendNoPushFallbackEmail({
+        recipientUserId: schedule.user_id as string,
+        eventKind: 'board_request',
+        routeStr: requestRouteStr,
+        tripDate: (schedule.trip_date as string | null) ?? null,
+        tripTime: (schedule.trip_time as string | null) ?? null,
+        actorName: requesterName,
+      })
     }
 
     console.log(JSON.stringify({
@@ -4551,6 +4566,20 @@ scheduleRouter.post(
             // actions; iOS gracefully shows a regular banner with
             // no action buttons in the meantime.
             category: 'BOARD_OFFER',
+          })
+        } else {
+          // 2026-05-23 — Email fallback for posters without push
+          // tokens. Without this, a rider who posted a trip but
+          // doesn't have the app installed silently misses every
+          // driver offer. Fire-and-forget; helper handles all
+          // failure modes internally.
+          void sendNoPushFallbackEmail({
+            recipientUserId: schedule.user_id as string,
+            eventKind: 'board_offer',
+            routeStr,
+            tripDate: (schedule.trip_date as string | null) ?? null,
+            tripTime: (schedule.trip_time as string | null) ?? null,
+            actorName: driverName,
           })
         }
       } catch (pushErr) {
