@@ -403,11 +403,40 @@ adminReportsRouter.get(
       if (subjectRes.error) throw subjectRes.error
       if (rideRes.error) throw rideRes.error
 
+      // 2026-05-22 — Phase 3b polish. Pre-sign each attachment's
+      // private storage path so the admin page can render thumbnails
+      // inline without a per-image round-trip. 1h TTL covers the
+      // longest realistic admin session before they refresh. If
+      // signing fails for a row (rare — usually means the file was
+      // deleted out-of-band), we keep `signed_url=null` and the UI
+      // renders a download placeholder so the admin can still see
+      // metadata and follow up manually.
+      const SIGNED_URL_TTL_SECONDS = 60 * 60
+      const rawAttachments = attachmentsRes.data ?? []
+      const signedAttachments = await Promise.all(
+        rawAttachments.map(async (row) => {
+          try {
+            const { data: signed, error: signErr } = await supabaseAdmin.storage
+              .from('report-attachments')
+              .createSignedUrl(row.storage_path, SIGNED_URL_TTL_SECONDS)
+            if (signErr) throw signErr
+            return { ...row, signed_url: signed?.signedUrl ?? null }
+          } catch (err) {
+            console.error(
+              '[adminReports] sign attachment failed:',
+              row.storage_path,
+              err instanceof Error ? err.message : String(err),
+            )
+            return { ...row, signed_url: null }
+          }
+        }),
+      )
+
       res.status(200).json({
         ok: true,
         report: report as AdminReportDetail,
         messages: (messagesRes.data ?? []) as AdminReportMessageRow[],
-        attachments: attachmentsRes.data ?? [],
+        attachments: signedAttachments,
         reporter: reporterRes.data ?? null,
         subject_user: subjectRes.data ?? null,
         ride: rideRes.data ?? null,

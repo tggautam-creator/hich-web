@@ -56,6 +56,14 @@ export interface AdminReportAttachment {
   file_size: number | null
   uploaded_by: string
   created_at: string
+  /**
+   * 2026-05-22 — pre-signed download URL with a 1h TTL. Server signs
+   * at detail-fetch time so the admin grid can render thumbnails
+   * inline without a per-image round-trip. `null` when signing
+   * failed for that specific row (file deleted out-of-band, etc.) —
+   * the UI shows a fallback placeholder in that case.
+   */
+  signed_url: string | null
 }
 
 export interface AdminReportUser {

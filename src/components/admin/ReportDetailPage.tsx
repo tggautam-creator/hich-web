@@ -7,6 +7,7 @@ import {
   useAdminChangeReportSeverity,
   useAdminReportAudit,
   type AdminReport,
+  type AdminReportAttachment,
   type AdminReportMessage,
   type AdminReportUser,
   type AdminReportRideSnapshot,
@@ -136,7 +137,7 @@ export default function ReportDetailPage() {
           reporter={data.reporter}
           subjectUser={data.subject_user}
           ride={data.ride}
-          attachments={data.attachments.length}
+          attachments={data.attachments}
         />
         <ThreadColumn
           reportId={data.report.id}
@@ -198,7 +199,7 @@ function ContextColumn({
   reporter: AdminReportUser | null
   subjectUser: AdminReportUser | null
   ride: AdminReportRideSnapshot | null
-  attachments: number
+  attachments: AdminReportAttachment[]
 }) {
   return (
     <div className="space-y-4">
@@ -222,17 +223,134 @@ function ContextColumn({
         <ClientContext metadata={report.metadata} />
       </Card>
 
-      <Card title={`Attachments · ${attachments}`} testid="report-attachments">
-        {attachments === 0 ? (
-          <NeutralRow text="No attachments." />
-        ) : (
-          <p className="text-xs text-text-secondary">
-            {attachments} file{attachments === 1 ? '' : 's'} on storage. Inline preview lands in a follow-up.
-          </p>
-        )}
+      <Card
+        title={`Attachments · ${attachments.length}`}
+        testid="report-attachments"
+      >
+        <AttachmentsGrid attachments={attachments} />
       </Card>
     </div>
   )
+}
+
+/**
+ * 2026-05-22 — replaces the "Inline preview lands in a follow-up"
+ * stub with a real grid. Two-column thumb grid for images; a
+ * stacked list with a download link + metadata for non-images.
+ * Each thumb opens in a new tab on click so the admin can pinch-
+ * zoom without losing detail-page state. Signed URLs expire after
+ * 1h server-side; if the admin keeps the page open longer, the
+ * existing 30s React Query stale time refetches on any mutation
+ * or navigation.
+ */
+function AttachmentsGrid({ attachments }: { attachments: AdminReportAttachment[] }) {
+  if (attachments.length === 0) {
+    return <NeutralRow text="No attachments." />
+  }
+  const images = attachments.filter((a) => isImageMime(a.mime_type))
+  const others = attachments.filter((a) => !isImageMime(a.mime_type))
+  return (
+    <div className="space-y-3">
+      {images.length > 0 && (
+        <div
+          data-testid="report-attachments-image-grid"
+          className="grid grid-cols-2 gap-2"
+        >
+          {images.map((att) => (
+            <AttachmentThumb key={att.id} attachment={att} />
+          ))}
+        </div>
+      )}
+      {others.length > 0 && (
+        <ul className="space-y-1.5" data-testid="report-attachments-file-list">
+          {others.map((att) => (
+            <AttachmentFileRow key={att.id} attachment={att} />
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function AttachmentThumb({ attachment }: { attachment: AdminReportAttachment }) {
+  const filename = filenameFromPath(attachment.storage_path)
+  if (!attachment.signed_url) {
+    return (
+      <div
+        data-testid={`report-attachment-${attachment.id}`}
+        className="aspect-square rounded-lg border border-warning/40 bg-warning/5 p-2 text-[10px] text-warning"
+      >
+        <p className="font-semibold">Preview unavailable</p>
+        <p className="mt-1 truncate text-text-secondary">{filename}</p>
+      </div>
+    )
+  }
+  return (
+    <a
+      href={attachment.signed_url}
+      target="_blank"
+      rel="noopener noreferrer"
+      data-testid={`report-attachment-${attachment.id}`}
+      className="block aspect-square overflow-hidden rounded-lg border border-border bg-surface hover:border-primary"
+      title={`${filename} · ${fmtFileSize(attachment.file_size)}`}
+    >
+      <img
+        src={attachment.signed_url}
+        alt={filename}
+        loading="lazy"
+        className="h-full w-full object-cover"
+      />
+    </a>
+  )
+}
+
+function AttachmentFileRow({ attachment }: { attachment: AdminReportAttachment }) {
+  const filename = filenameFromPath(attachment.storage_path)
+  return (
+    <li
+      data-testid={`report-attachment-${attachment.id}`}
+      className="flex items-center justify-between rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs"
+    >
+      <div className="min-w-0 flex-1">
+        <p className="truncate font-medium text-text-primary">{filename}</p>
+        <p className="text-[10px] text-text-secondary">
+          {attachment.mime_type ?? 'unknown type'}
+          {' · '}
+          {fmtFileSize(attachment.file_size)}
+        </p>
+      </div>
+      {attachment.signed_url ? (
+        <a
+          href={attachment.signed_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="ml-2 shrink-0 rounded bg-primary px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-primary-dark"
+        >
+          Download
+        </a>
+      ) : (
+        <span className="ml-2 shrink-0 text-[10px] font-semibold text-warning">
+          Unavailable
+        </span>
+      )}
+    </li>
+  )
+}
+
+function isImageMime(mime: string | null): boolean {
+  return typeof mime === 'string' && mime.startsWith('image/')
+}
+
+function filenameFromPath(path: string): string {
+  const idx = path.lastIndexOf('/')
+  return idx >= 0 ? path.slice(idx + 1) : path
+}
+
+function fmtFileSize(bytes: number | null): string {
+  if (bytes == null || bytes < 0) return 'unknown size'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function UserMiniCard({ user }: { user: AdminReportUser }) {
