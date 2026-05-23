@@ -311,6 +311,24 @@ function ContextColumn({
   const lastRiderLat = ride.last_rider_gps_lat as number | null
   const lastRiderLng = ride.last_rider_gps_lng as number | null
   const lastRiderPingAt = ride.last_rider_ping_at as string | null
+  // Level 1 ride-detail enrichments (2026-05-23) — additional
+  // ride-row columns we already stored but never showed. None of
+  // these need new server work; the detail endpoint's select('*')
+  // already returns them. Cast off the `[key:string]:unknown`
+  // catch-all on AdminRideDetail.
+  const progressPct = ride.progress_pct as number | null
+  const requesterNote = ride.requester_note as string | null
+  const requesterDestinationName = ride.requester_destination_name as string | null
+  const destinationName = ride.destination_name as string | null
+  const destinationFlexible = ride.destination_flexible as boolean | null
+  const timeFlexible = ride.time_flexible as boolean | null
+  const driverDestinationName = ride.driver_destination_name as string | null
+  const reminder30Sent = ride.reminder_30_sent as boolean | null
+  const reminder15Sent = ride.reminder_15_sent as boolean | null
+  const reminderSent = ride.reminder_sent as boolean | null
+  const dropoffReminderSent = ride.dropoff_reminder_sent as boolean | null
+  const caregiverId = ride.caregiver_id as string | null
+  const caregiverFareCents = ride.caregiver_fare_cents as number | null
 
   // Derive tip from existing wallet_transactions list — `tip_debit` row
   // is the rider's outflow (-cents), `tip_credit` is the driver's inflow.
@@ -345,9 +363,23 @@ function ContextColumn({
           <Row
             label="Distance"
             value={fmtDistance(gpsDistanceMetres)}
-            tone={gpsDistanceMetres != null && gpsDistanceMetres > 0 ? '' : 'text-text-secondary'}
+            tone={
+              gpsDistanceMetres != null && gpsDistanceMetres > 0
+                ? undefined
+                : 'text-text-secondary'
+            }
           />
           <Row label="Duration" value={fmtDuration(startedAt, endedAt)} />
+          {progressPct != null && progressPct > 0 && (
+            <Row
+              label="Progress"
+              value={
+                <span className={progressPct >= 100 ? 'text-success font-semibold' : ''}>
+                  {progressPct}%
+                </span>
+              }
+            />
+          )}
           <Row label="Started" value={fmtDateTime(startedAt) ?? '—'} />
           <Row label="Ended" value={fmtDateTime(endedAt) ?? '—'} />
           <Row
@@ -369,6 +401,99 @@ function ContextColumn({
               see migration plan to add `end_reason text`.
             </p>
           )}
+        </dl>
+      </Card>
+
+      {/* Request details — what the rider originally asked for, plus
+          flexibility flags + caregiver attachment. Defensively hides
+          itself when none of the data is present (a back-fill ride with
+          no requester_note, no flexibility flags, no caregiver = nothing
+          to show, no empty card). */}
+      {(requesterNote ||
+        (requesterDestinationName && requesterDestinationName !== destinationName) ||
+        destinationFlexible === true ||
+        timeFlexible === true ||
+        caregiverId != null) && (
+        <Card title="Request details" testid="ride-request-details">
+          <dl className="text-xs text-text-primary space-y-1">
+            {requesterDestinationName && requesterDestinationName !== destinationName && (
+              <Row
+                label="Originally asked for"
+                value={
+                  <span className="text-text-secondary italic">
+                    {requesterDestinationName}
+                  </span>
+                }
+              />
+            )}
+            {destinationFlexible === true && (
+              <Row
+                label="Destination flexible"
+                value={<span className="text-primary font-semibold">Yes</span>}
+              />
+            )}
+            {timeFlexible === true && (
+              <Row
+                label="Anytime ride"
+                value={<span className="text-primary font-semibold">Yes</span>}
+              />
+            )}
+            {caregiverId != null && (
+              <Row
+                label="Caregiver attached"
+                value={
+                  <span className="text-warning font-semibold">
+                    Yes
+                    {caregiverFareCents != null && caregiverFareCents > 0 ? (
+                      <span className="text-text-secondary font-normal">
+                        {' '}
+                        (+{fmtMoneyCents(caregiverFareCents)})
+                      </span>
+                    ) : null}
+                  </span>
+                }
+              />
+            )}
+            {requesterNote && (
+              <div className="pt-1.5">
+                <dt className="text-[10px] uppercase tracking-wide text-text-secondary mb-0.5">
+                  Note from rider
+                </dt>
+                <dd className="text-xs text-text-primary whitespace-pre-wrap break-words italic border-l-2 border-border pl-2">
+                  "{requesterNote}"
+                </dd>
+              </div>
+            )}
+          </dl>
+        </Card>
+      )}
+
+      {/* Driver's intended destination — surfaces only when set (means
+          this ride came from a transit-handoff coordination where the
+          driver was heading somewhere different from the rider). When
+          identical to the rider's dest, this is implied + we hide it
+          to avoid noise. */}
+      {driverDestinationName && driverDestinationName !== destinationName && (
+        <Card title="Driver's destination" testid="ride-driver-destination">
+          <p className="text-xs text-text-primary">{driverDestinationName}</p>
+          <p className="pt-1 text-[10px] italic text-text-secondary">
+            Driver was going somewhere different — this ride was likely a
+            transit handoff (dropoff at a BART / Caltrain / etc.).
+          </p>
+        </Card>
+      )}
+
+      {/* Notifications fired — which reminder pushes the server sent
+          for this ride. Useful when a user complains "I never got a
+          reminder" — admin can confirm whether it fired. All flags
+          default to false, so a back-fill ride (created before each
+          reminder type existed) shows all "Not fired" rows. */}
+      <Card title="Reminders fired" testid="ride-reminders">
+        <dl className="text-xs text-text-primary space-y-1">
+          <Row label="30 min before" value={reminderPill(reminder30Sent)} />
+          <Row label="15 min before" value={reminderPill(reminder15Sent)} />
+          <Row label="Approaching" value={reminderPill(reminderSent)} />
+          <Row label="Dropoff prompt" value={reminderPill(dropoffReminderSent)} />
         </dl>
       </Card>
 
@@ -1217,6 +1342,24 @@ function boolPill(v: boolean | null) {
   ) : (
     <span className="text-text-secondary">No</span>
   )
+}
+
+/**
+ * Slightly different visual treatment from boolPill — the goal here
+ * is to make "fired" pop and "not fired" recede, so the admin can
+ * scan the column and instantly see what's missing. Defaults to
+ * "Not fired" (rather than "—") because every reminder column has
+ * a NOT NULL default of false on the rides table.
+ */
+function reminderPill(v: boolean | null | undefined) {
+  if (v === true) {
+    return (
+      <span className="rounded-full bg-success/15 text-success text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5">
+        ✓ Fired
+      </span>
+    )
+  }
+  return <span className="text-text-secondary text-xs">Not fired</span>
 }
 
 function paymentTone(status: string | null): string {
