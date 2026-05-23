@@ -332,6 +332,77 @@ function labelForCategory(rawValue: string): string {
   }
 }
 
+// ── Phase 6a — Outbound admin reply email ──────────────────────────────────
+//
+// Sends a single email from the support address to the reporter when an
+// admin picks `Reply via: email` (or `both`) on a report. The Reply-To is
+// `reports+<reportId>@tagorides.com` — the `+`-addressing means the
+// Phase 6b inbound webhook can match the user's reply back to the right
+// report ID by just splitting the local part, no header threading
+// required. Returns the Resend message id so the caller can stash it
+// on the `report_messages` row for forensics + future dedup.
+
+export interface SupportReplyEmailContext {
+  reportID: string
+  reportTitle: string
+  reporterEmail: string
+  reporterName: string | null
+  body: string
+  adminName: string | null
+}
+
+export async function sendSupportReplyEmail(
+  ctx: SupportReplyEmailContext,
+): Promise<{ ok: boolean; emailId: string | null; error: string | null }> {
+  const env = getServerEnv()
+  if (!env.RESEND_API_KEY) {
+    return { ok: false, emailId: null, error: 'RESEND_API_KEY not configured' }
+  }
+  try {
+    const client = getResendClient()
+    const subject = `Re: Tago report — ${ctx.reportTitle}`
+    const greeting = ctx.reporterName ? `Hi ${ctx.reporterName.split(' ')[0]},` : 'Hi there,'
+    const adminLabel = ctx.adminName ?? 'Tago support'
+    const detailUrl = `https://www.tagorides.com/reports/${ctx.reportID}`
+    const html = `
+<div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 560px; color: #1f2937;">
+  <p>${escapeHtml(greeting)}</p>
+  <div style="white-space: pre-wrap; line-height: 1.5;">${escapeHtml(ctx.body)}</div>
+  <p style="margin-top: 24px;">— ${escapeHtml(adminLabel)}</p>
+  <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
+  <p style="font-size: 12px; color: #6b7280;">
+    You can reply to this email to keep the thread going — your reply will land
+    back in your Tago report. Or
+    <a href="${detailUrl}" style="color: #3b82f6;">open it in the app</a>.
+  </p>
+  <p style="font-size: 11px; color: #9ca3af;">Report ID: ${escapeHtml(ctx.reportID)}</p>
+</div>`.trim()
+
+    // `reports+<id>@` — the +tag makes Phase 6b inbound matching a
+    // single split on `+` then `@`. Cleaner than parsing References /
+    // In-Reply-To headers across mail clients that mangle them.
+    const replyTo = `reports+${ctx.reportID}@tagorides.com`
+    const result = await client.emails.send({
+      from: 'Tago Support <support@tagorides.com>',
+      to: ctx.reporterEmail,
+      subject,
+      html,
+      replyTo,
+    })
+
+    if (result?.error) {
+      return { ok: false, emailId: null, error: result.error.message ?? 'unknown' }
+    }
+    return { ok: true, emailId: result?.data?.id ?? null, error: null }
+  } catch (err) {
+    return {
+      ok: false,
+      emailId: null,
+      error: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
 function escapeHtml(s: string): string {
   // String.replaceAll is ES2021. Some tsconfig lib targets in this
   // repo are ES2020-ish, so fall back to regex /g for compatibility.

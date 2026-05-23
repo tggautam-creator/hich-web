@@ -473,6 +473,71 @@ describe('POST /api/admin/reports/:id/messages', () => {
     expect(updateCap.payload).toBeNull()
   })
 
+  it('channel="email" persists the message row as channel=email_outbound', async () => {
+    authAsAdmin()
+    const insertCap: { payload: unknown } = { payload: null }
+    setupAdminMocks({
+      reportRow: { id: REPORT_ID, status: 'open' },
+      insertCapture: insertCap,
+    })
+    const res = await request(app)
+      .post(`/api/admin/reports/${REPORT_ID}/messages`)
+      .set('Authorization', VALID_JWT)
+      .send({ body: 'Sent via email.', channel: 'email' })
+    expect(res.status).toBe(201)
+    const inserted = insertCap.payload as { channel: string }
+    expect(inserted.channel).toBe('email_outbound')
+  })
+
+  it('channel="both" also persists as email_outbound (thread row is the source of truth)', async () => {
+    authAsAdmin()
+    const insertCap: { payload: unknown } = { payload: null }
+    setupAdminMocks({
+      reportRow: { id: REPORT_ID, status: 'open' },
+      insertCapture: insertCap,
+    })
+    const res = await request(app)
+      .post(`/api/admin/reports/${REPORT_ID}/messages`)
+      .set('Authorization', VALID_JWT)
+      .send({ body: 'Both ways.', channel: 'both' })
+    expect(res.status).toBe(201)
+    const inserted = insertCap.payload as { channel: string }
+    expect(inserted.channel).toBe('email_outbound')
+  })
+
+  it('internal note ignores channel override (always admin_panel)', async () => {
+    authAsAdmin()
+    const insertCap: { payload: unknown } = { payload: null }
+    setupAdminMocks({
+      reportRow: { id: REPORT_ID, status: 'open' },
+      insertCapture: insertCap,
+    })
+    const res = await request(app)
+      .post(`/api/admin/reports/${REPORT_ID}/messages`)
+      .set('Authorization', VALID_JWT)
+      .send({ body: 'note', is_internal_note: true, channel: 'email' })
+    expect(res.status).toBe(201)
+    const inserted = insertCap.payload as { channel: string; is_internal_note: boolean }
+    expect(inserted.channel).toBe('admin_panel')
+    expect(inserted.is_internal_note).toBe(true)
+  })
+
+  it('unknown channel falls back to in_app (admin_panel)', async () => {
+    authAsAdmin()
+    const insertCap: { payload: unknown } = { payload: null }
+    setupAdminMocks({
+      reportRow: { id: REPORT_ID, status: 'open' },
+      insertCapture: insertCap,
+    })
+    const res = await request(app)
+      .post(`/api/admin/reports/${REPORT_ID}/messages`)
+      .set('Authorization', VALID_JWT)
+      .send({ body: 'mystery', channel: 'sms' })
+    expect(res.status).toBe(201)
+    const inserted = insertCap.payload as { channel: string }
+    expect(inserted.channel).toBe('admin_panel')
+  })
+
   it('resolved reports do not get auto-flipped on admin reply', async () => {
     authAsAdmin()
     const insertCap: { payload: unknown } = { payload: null }

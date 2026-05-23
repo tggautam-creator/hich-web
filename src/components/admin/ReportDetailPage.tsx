@@ -651,9 +651,12 @@ function InternalNoteBubble({ message }: { message: AdminReportMessage }) {
   )
 }
 
+type ReplyChannel = 'in_app' | 'email' | 'both'
+
 function ComposeBox({ reportId }: { reportId: string }) {
   const [draft, setDraft] = useState('')
   const [internalNote, setInternalNote] = useState(false)
+  const [replyVia, setReplyVia] = useState<ReplyChannel>('in_app')
   const m = useAdminPostReportMessage(reportId)
 
   const canSend = draft.trim().length > 0 && !m.isPending
@@ -661,11 +664,19 @@ function ComposeBox({ reportId }: { reportId: string }) {
   function handleSubmit() {
     if (!canSend) return
     m.mutate(
-      { body: draft.trim(), is_internal_note: internalNote },
+      {
+        body: draft.trim(),
+        is_internal_note: internalNote,
+        // Server ignores channel for internal notes anyway, but
+        // sending the explicit value keeps the request shape
+        // honest + lets future audit have the click intent.
+        channel: internalNote ? 'in_app' : replyVia,
+      },
       {
         onSuccess: () => {
           setDraft('')
           setInternalNote(false)
+          setReplyVia('in_app')
         },
       },
     )
@@ -709,6 +720,17 @@ function ComposeBox({ reportId }: { reportId: string }) {
             : m.error.message}
         </p>
       )}
+
+      {/* Phase 6a — Reply via segmented toggle. Hidden when the
+          admin is composing an internal note (notes are admin-only
+          and never sent over email). */}
+      {!internalNote && (
+        <ReplyChannelToggle
+          value={replyVia}
+          onChange={setReplyVia}
+        />
+      )}
+
       <div className="mt-3 flex items-center justify-between">
         <label className="flex items-center gap-2 text-xs text-text-secondary">
           <input
@@ -734,8 +756,65 @@ function ComposeBox({ reportId }: { reportId: string }) {
               : 'bg-border text-text-secondary cursor-not-allowed',
           ].join(' ')}
         >
-          {m.isPending ? 'Sending…' : internalNote ? 'Save note' : 'Send reply'}
+          {m.isPending ? 'Sending…' : internalNote ? 'Save note' : submitLabel(replyVia)}
         </button>
+      </div>
+    </div>
+  )
+}
+
+function submitLabel(replyVia: ReplyChannel): string {
+  switch (replyVia) {
+    case 'email': return 'Send email'
+    case 'both': return 'Send reply + email'
+    default: return 'Send reply'
+  }
+}
+
+function ReplyChannelToggle({
+  value,
+  onChange,
+}: {
+  value: ReplyChannel
+  onChange: (v: ReplyChannel) => void
+}) {
+  const options: { id: ReplyChannel; label: string; hint: string }[] = [
+    { id: 'in_app', label: 'In-app', hint: 'Thread + push' },
+    { id: 'email', label: 'Email', hint: 'Resend email out' },
+    { id: 'both', label: 'Both', hint: 'In-app + email' },
+  ]
+  return (
+    <div className="mt-3" data-testid="report-compose-channel-toggle">
+      <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
+        Reply via
+      </div>
+      <div
+        role="radiogroup"
+        aria-label="Reply channel"
+        className="inline-flex rounded-lg border border-border bg-surface p-0.5 text-xs"
+      >
+        {options.map((opt) => {
+          const active = value === opt.id
+          return (
+            <button
+              key={opt.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              data-testid={`report-compose-channel-${opt.id}`}
+              onClick={() => onChange(opt.id)}
+              title={opt.hint}
+              className={[
+                'rounded-md px-2.5 py-1 font-medium transition-colors',
+                active
+                  ? 'bg-white text-text-primary shadow-sm'
+                  : 'text-text-secondary hover:text-text-primary',
+              ].join(' ')}
+            >
+              {opt.label}
+            </button>
+          )
+        })}
       </div>
     </div>
   )

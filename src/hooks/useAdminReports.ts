@@ -114,6 +114,15 @@ export function useAdminReportDetail(id: string | undefined) {
 export interface AdminPostReportMessageArgs {
   body: string
   is_internal_note?: boolean
+  /**
+   * 2026-05-22 — Phase 6a. `in_app` (default) writes the reply to
+   * the thread + fires the in-app + FCM push. `email` sends a
+   * Resend email to the reporter (Reply-To = `reports+<id>@…`) and
+   * also writes the row so the thread stays the source of truth.
+   * `both` does both. Ignored when `is_internal_note=true` (notes
+   * are never emailed).
+   */
+  channel?: 'in_app' | 'email' | 'both'
 }
 
 export interface AdminPostReportMessageResult {

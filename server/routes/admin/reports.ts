@@ -27,6 +27,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express'
 import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
 import { sendFcmPush } from '../../lib/fcm.ts'
+import { sendSupportReplyEmail } from '../../lib/adminAlerts.ts'
 
 export const adminReportsRouter = Router()
 
@@ -476,12 +477,25 @@ adminReportsRouter.post(
       }
 
       const isInternalNote = is_internal_note === true
-      // Channel defaults: `admin_panel` for visible replies, same for
-      // internal notes (they're admin-typed too). Email-outbound /
-      // email-inbound are reserved for the Phase 6 inbound webhook
-      // ingestion path.
+      // 2026-05-22 — Phase 6a. The compose box now exposes a
+      // Reply via toggle: `in_app` (default — same behavior as
+      // before, stored as `admin_panel`), `email` (Resend email
+      // out, stored as `email_outbound`), or `both` (in-app row
+      // AND email).
+      //
+      // The `email_outbound` literal stays as the persisted channel
+      // for the message row in both `email` and `both` modes — the
+      // reporter sees the message in their My Reports thread either
+      // way; the difference is only whether we also fire an email.
+      //
+      // Internal notes always use `admin_panel` — there's no point
+      // emailing a note that's hidden from the user.
+      const replyVia: 'in_app' | 'email' | 'both' =
+        !isInternalNote && (channel === 'email' || channel === 'both')
+          ? channel
+          : 'in_app'
       const channelValue: 'admin_panel' | 'email_outbound' =
-        channel === 'email_outbound' ? 'email_outbound' : 'admin_panel'
+        replyVia === 'in_app' ? 'admin_panel' : 'email_outbound'
 
       const { data: report, error: reportErr } = await supabaseAdmin
         .from('reports')
@@ -525,21 +539,81 @@ adminReportsRouter.post(
           .update({ status: nextStatus, updated_at: new Date().toISOString() })
           .eq('id', id)
 
-        // Fire-and-forget notification. setImmediate so the response
-        // returns before the push fans out. notifyReporter swallows
-        // its own errors so this can never bubble up.
-        const preview = replyBody.trim().length > 80
-          ? replyBody.trim().slice(0, 77) + '…'
-          : replyBody.trim()
-        setImmediate(() => {
-          void notifyReporter({
-            reporterId: report.reporter_id,
-            type: 'report_reply',
-            title: 'Tago support replied',
-            body: preview,
-            reportId: id,
+        // In-app push fires for `in_app` AND `both`. For `email`-only,
+        // the user already gets the email in their inbox — a duplicate
+        // push would be noise.
+        if (replyVia === 'in_app' || replyVia === 'both') {
+          // Fire-and-forget notification. setImmediate so the response
+          // returns before the push fans out. notifyReporter swallows
+          // its own errors so this can never bubble up.
+          const preview = replyBody.trim().length > 80
+            ? replyBody.trim().slice(0, 77) + '…'
+            : replyBody.trim()
+          setImmediate(() => {
+            void notifyReporter({
+              reporterId: report.reporter_id,
+              type: 'report_reply',
+              title: 'Tago support replied',
+              body: preview,
+              reportId: id,
+            })
           })
-        })
+        }
+
+        // 2026-05-22 — Phase 6a outbound email. Fire-and-forget so the
+        // 201 response never blocks on Resend; the helper swallows its
+        // own failures + logs. On success we patch the message row
+        // with the returned Resend email id so the Phase 6b inbound
+        // webhook can dedup against it (and the audit log has the
+        // trail of which messages went out via email).
+        if (replyVia === 'email' || replyVia === 'both') {
+          const messageId = data.id
+          setImmediate(() => {
+            void (async () => {
+              try {
+                const { data: reporter, error: repErr } = await supabaseAdmin
+                  .from('users')
+                  .select('email, full_name')
+                  .eq('id', report.reporter_id)
+                  .maybeSingle()
+                if (repErr) throw repErr
+                if (!reporter?.email) {
+                  console.warn('[adminReports] email reply skipped — reporter has no email on file', report.reporter_id)
+                  return
+                }
+                const { data: admin } = await supabaseAdmin
+                  .from('users')
+                  .select('full_name')
+                  .eq('id', adminId)
+                  .maybeSingle()
+                const sendResult = await sendSupportReplyEmail({
+                  reportID: id,
+                  reportTitle: report.title,
+                  reporterEmail: reporter.email,
+                  reporterName: reporter.full_name,
+                  body: replyBody.trim(),
+                  adminName: admin?.full_name ?? null,
+                })
+                if (sendResult.ok && sendResult.emailId) {
+                  await supabaseAdmin
+                    .from('report_messages')
+                    .update({ email_message_id: sendResult.emailId })
+                    .eq('id', messageId)
+                } else if (!sendResult.ok) {
+                  console.error(
+                    '[adminReports] email reply send failed:',
+                    sendResult.error,
+                  )
+                }
+              } catch (err) {
+                console.error(
+                  '[adminReports] email reply pipeline crashed:',
+                  err instanceof Error ? err.message : String(err),
+                )
+              }
+            })()
+          })
+        }
       }
 
       res.status(201).json({ ok: true, id: data.id, created_at: data.created_at })
