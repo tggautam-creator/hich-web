@@ -49,6 +49,7 @@ interface DetailOpts {
   payment?: unknown[]
   reports?: unknown[]
   auditLog?: unknown[]
+  ratings?: unknown[]
 }
 
 function setupDetailMocks(opts: DetailOpts) {
@@ -142,6 +143,16 @@ function setupDetailMocks(opts: DetailOpts) {
           eq: () => ({
             order: () =>
               Promise.resolve({ data: opts.auditLog ?? [], error: null }),
+          }),
+        }),
+      }
+    }
+    if (table === 'ride_ratings') {
+      return {
+        select: () => ({
+          eq: () => ({
+            order: () =>
+              Promise.resolve({ data: opts.ratings ?? [], error: null }),
           }),
         }),
       }

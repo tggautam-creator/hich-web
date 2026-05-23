@@ -263,7 +263,7 @@ adminRidesRouter.get(
         return
       }
 
-      const [riderRes, driverRes, vehicleRes, scheduleRes, messagesRes, paymentRes, reportsRes, auditRes] =
+      const [riderRes, driverRes, vehicleRes, scheduleRes, messagesRes, paymentRes, reportsRes, auditRes, ratingsRes] =
         await Promise.all([
           supabaseAdmin
             .from('users')
@@ -317,6 +317,16 @@ adminRidesRouter.get(
             .select('id, field, old_value, new_value, changed_by, created_at')
             .eq('ride_id', id)
             .order('created_at', { ascending: true }),
+          // 2026-05-23 — blind two-sided ratings (migration 014).
+          // Returns at most 2 rows (rider→driver + driver→rider).
+          // The admin sees both regardless of whether each party
+          // submitted — the page renders an "awaiting" stub when
+          // only one side rated.
+          supabaseAdmin
+            .from('ride_ratings')
+            .select('id, rater_id, rated_id, stars, tags, comment, created_at')
+            .eq('ride_id', id)
+            .order('created_at', { ascending: true }),
         ])
 
       // Audit-trail the view. Non-blocking — if the audit insert fails
@@ -347,6 +357,7 @@ adminRidesRouter.get(
         payment: paymentRes.data ?? [],
         reports: reportsRes.data ?? [],
         audit_log: auditRes.data ?? [],
+        ratings: ratingsRes.data ?? [],
       })
     } catch (err) {
       next(err)

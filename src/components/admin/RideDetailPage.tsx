@@ -2,11 +2,15 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
+  useAdminCancelRide,
+  useAdminRefundRideById,
   useAdminRideDetail,
   type AdminRideAuditRow,
+  type AdminRideDetail,
   type AdminRideDetailResponse,
   type AdminRideMessage,
   type AdminRidePayment,
+  type AdminRideRating,
   type AdminRideReportLink,
   type AdminRideSchedule,
   type AdminRideStatus,
@@ -163,33 +167,41 @@ export default function RideDetailPage() {
         lastDriverPing={lastDriverPing}
       />
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[320px_1fr_280px]">
-        <ContextColumn
-          rider={data.rider}
-          driver={data.driver}
-          vehicle={data.vehicle}
-          schedule={data.schedule}
-          fareCents={data.ride.fare_cents as number | null}
-          paymentStatus={data.ride.payment_status as string | null}
-          pickupConfirmed={data.ride.pickup_confirmed as boolean | null}
-          dropoffConfirmed={data.ride.dropoff_confirmed as boolean | null}
-          pickupNote={data.ride.pickup_note as string | null}
-          startedAt={data.ride.started_at as string | null}
-          endedAt={data.ride.ended_at as string | null}
-        />
-        <ThreadColumn
-          messages={data.messages}
-          payment={data.payment}
-          auditLog={data.audit_log}
-          rider={data.rider}
-          driver={data.driver}
-        />
-        <ActionsColumn
-          rideId={data.ride.id}
-          rider={data.rider}
-          driver={data.driver}
-          reports={data.reports}
-        />
+      {/* min-w-0 on every column so they can shrink below their
+          children's intrinsic width — without it a long system-msg
+          JSON pre or an unbroken URL in a chat bubble forces the
+          1fr center cell wider than its track, pushing the 280px
+          right cell past the viewport edge. */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[320px_minmax(0,1fr)_280px]">
+        <div className="min-w-0">
+          <ContextColumn
+            ride={data.ride}
+            rider={data.rider}
+            driver={data.driver}
+            vehicle={data.vehicle}
+            schedule={data.schedule}
+            payment={data.payment}
+            ratings={data.ratings}
+          />
+        </div>
+        <div className="min-w-0">
+          <ThreadColumn
+            messages={data.messages}
+            payment={data.payment}
+            auditLog={data.audit_log}
+            rider={data.rider}
+            driver={data.driver}
+          />
+        </div>
+        <div className="min-w-0">
+          <ActionsColumn
+            rideId={data.ride.id}
+            ride={data.ride}
+            rider={data.rider}
+            driver={data.driver}
+            reports={data.reports}
+          />
+        </div>
       </div>
     </div>
   )
@@ -268,30 +280,44 @@ function Header({
 // ── Context (left) ───────────────────────────────────────────────────
 
 function ContextColumn({
+  ride,
   rider,
   driver,
   vehicle,
   schedule,
-  fareCents,
-  paymentStatus,
-  pickupConfirmed,
-  dropoffConfirmed,
-  pickupNote,
-  startedAt,
-  endedAt,
+  payment,
+  ratings,
 }: {
+  ride: AdminRideDetail
   rider: AdminRideUser | null
   driver: AdminRideUser | null
   vehicle: AdminRideVehicle | null
   schedule: AdminRideSchedule | null
-  fareCents: number | null
-  paymentStatus: string | null
-  pickupConfirmed: boolean | null
-  dropoffConfirmed: boolean | null
-  pickupNote: string | null
-  startedAt: string | null
-  endedAt: string | null
+  payment: AdminRidePayment[]
+  ratings: AdminRideRating[]
 }) {
+  const fareCents = ride.fare_cents as number | null
+  const paymentStatus = ride.payment_status as string | null
+  const pickupConfirmed = ride.pickup_confirmed as boolean | null
+  const dropoffConfirmed = ride.dropoff_confirmed as boolean | null
+  const pickupNote = ride.pickup_note as string | null
+  const startedAt = ride.started_at as string | null
+  const endedAt = ride.ended_at as string | null
+  const gpsDistanceMetres = ride.gps_distance_metres as number | null
+  const autoEnded = ride.auto_ended as boolean | null
+  const lastDriverLat = ride.last_driver_gps_lat as number | null
+  const lastDriverLng = ride.last_driver_gps_lng as number | null
+  const lastDriverPingAt = ride.last_driver_ping_at as string | null
+  const lastRiderLat = ride.last_rider_gps_lat as number | null
+  const lastRiderLng = ride.last_rider_gps_lng as number | null
+  const lastRiderPingAt = ride.last_rider_ping_at as string | null
+
+  // Derive tip from existing wallet_transactions list — `tip_debit` row
+  // is the rider's outflow (-cents), `tip_credit` is the driver's inflow.
+  // We display the absolute tip amount; sign isn't useful in the UI.
+  const tipRow = payment.find((p) => p.kind === 'tip_debit')
+  const tipCents = tipRow != null ? Math.abs(tipRow.amount_cents) : null
+
   return (
     <div className="space-y-4">
       <Card title="Rider" testid="ride-rider">
@@ -313,11 +339,94 @@ function ContextColumn({
         </Card>
       )}
 
+      {/* Trip stats — distance, duration, auto-ended flag, started/ended */}
+      <Card title="Trip stats" testid="ride-trip-stats">
+        <dl className="text-xs text-text-primary space-y-1">
+          <Row
+            label="Distance"
+            value={fmtDistance(gpsDistanceMetres)}
+            tone={gpsDistanceMetres != null && gpsDistanceMetres > 0 ? '' : 'text-text-secondary'}
+          />
+          <Row label="Duration" value={fmtDuration(startedAt, endedAt)} />
+          <Row label="Started" value={fmtDateTime(startedAt) ?? '—'} />
+          <Row label="Ended" value={fmtDateTime(endedAt) ?? '—'} />
+          <Row
+            label="Auto-ended"
+            value={
+              autoEnded === true ? (
+                <span className="text-warning font-semibold">Yes</span>
+              ) : autoEnded === false ? (
+                <span className="text-text-secondary">No</span>
+              ) : (
+                '—'
+              )
+            }
+          />
+          {autoEnded === true && (
+            <p className="pt-1 text-[10px] italic text-text-secondary">
+              Auto-end fires when driver+rider GPS diverge by &gt;500m for 2+ min
+              (forgotten-QR safety net). Exact reason isn&apos;t captured today —
+              see migration plan to add `end_reason text`.
+            </p>
+          )}
+        </dl>
+      </Card>
+
+      {/* Fare + payment — now includes tip line + per-CLAUDE.md note about
+          missing breakdown */}
       <Card title="Fare + payment" testid="ride-payment">
         <dl className="text-xs text-text-primary space-y-1">
-          <Row label="Fare" value={fareCents != null ? `$${(fareCents / 100).toFixed(2)}` : '—'} />
+          <Row label="Fare" value={fmtMoneyCents(fareCents)} />
+          {tipCents != null && (
+            <Row
+              label="Tip"
+              value={<span className="text-success">{fmtMoneyCents(tipCents)}</span>}
+            />
+          )}
           <Row label="Status" value={paymentStatus ?? '—'} tone={paymentTone(paymentStatus)} />
         </dl>
+        <p className="pt-2 text-[10px] italic text-text-secondary">
+          Per-component breakdown (gas cost + time cost + gas price snapshot)
+          isn&apos;t persisted on the ride today. The fare formula is in
+          CLAUDE.md; admin can re-derive from distance + duration but exact
+          numbers used at fare-set time are lost.
+        </p>
+      </Card>
+
+      {/* Ratings — at most 2 rows: rider→driver, driver→rider */}
+      <Card title={`Ratings · ${ratings.length}`} testid="ride-ratings">
+        {ratings.length === 0 ? (
+          <NeutralRow text="No ratings submitted yet." />
+        ) : (
+          <ul className="space-y-2.5">
+            {ratings.map((r) => (
+              <RatingRow key={r.id} rating={r} rider={rider} driver={driver} />
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      {/* GPS — last known per party, with Google Maps links */}
+      <Card title="Last known GPS" testid="ride-gps">
+        <dl className="text-xs text-text-primary space-y-2">
+          <GpsRow
+            label="Driver"
+            lat={lastDriverLat}
+            lng={lastDriverLng}
+            pingAt={lastDriverPingAt}
+          />
+          <GpsRow
+            label="Rider"
+            lat={lastRiderLat}
+            lng={lastRiderLng}
+            pingAt={lastRiderPingAt}
+          />
+        </dl>
+        <p className="pt-2 text-[10px] italic text-text-secondary">
+          These are the most recent GPS pings — usually within seconds of the
+          start/end QR scan but not the scan itself. Exact QR scan locations
+          aren&apos;t captured today.
+        </p>
       </Card>
 
       <Card title="Pickup / dropoff" testid="ride-flags">
@@ -325,8 +434,6 @@ function ContextColumn({
           <Row label="Pickup confirmed" value={boolPill(pickupConfirmed)} />
           <Row label="Dropoff confirmed" value={boolPill(dropoffConfirmed)} />
           {pickupNote && <Row label="Pickup note" value={pickupNote} />}
-          {startedAt && <Row label="Started" value={fmtDateTime(startedAt)} />}
-          {endedAt && <Row label="Ended" value={fmtDateTime(endedAt)} />}
         </dl>
       </Card>
 
@@ -349,6 +456,113 @@ function ContextColumn({
         </Card>
       )}
     </div>
+  )
+}
+
+/**
+ * One row of `Last known GPS`. Renders coords + relative time + a
+ * Google Maps deep-link the admin can open in a new tab to eyeball
+ * where the party physically was. Used for both driver and rider.
+ */
+function GpsRow({
+  label,
+  lat,
+  lng,
+  pingAt,
+}: {
+  label: string
+  lat: number | null
+  lng: number | null
+  pingAt: string | null
+}) {
+  if (lat == null || lng == null) {
+    return (
+      <div>
+        <dt className="text-[10px] uppercase tracking-wide text-text-secondary">
+          {label}
+        </dt>
+        <dd className="text-xs text-text-secondary italic">No ping recorded.</dd>
+      </div>
+    )
+  }
+  const mapsUrl = `https://www.google.com/maps?q=${lat},${lng}`
+  return (
+    <div>
+      <dt className="text-[10px] uppercase tracking-wide text-text-secondary">
+        {label}
+      </dt>
+      <dd className="text-xs text-text-primary font-mono break-all">
+        {lat.toFixed(5)}, {lng.toFixed(5)}
+      </dd>
+      <div className="mt-0.5 flex items-center gap-2 text-[11px]">
+        <a
+          href={mapsUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary hover:underline"
+          data-testid={`ride-gps-${label.toLowerCase()}-link`}
+        >
+          Open in Maps →
+        </a>
+        {pingAt && (
+          <span className="text-text-secondary">
+            · last ping {fmtRelative(pingAt)}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * One row in the Ratings card. Labels each rating as
+ * "Rider rated driver" / "Driver rated rider" by checking which
+ * party the rater_id matches.
+ */
+function RatingRow({
+  rating,
+  rider,
+  driver,
+}: {
+  rating: AdminRideRating
+  rider: AdminRideUser | null
+  driver: AdminRideUser | null
+}) {
+  const direction = (() => {
+    if (rider && rating.rater_id === rider.id) return 'Rider → Driver'
+    if (driver && rating.rater_id === driver.id) return 'Driver → Rider'
+    return 'Unknown direction'
+  })()
+  return (
+    <li data-testid={`ride-rating-${rating.id}`} className="rounded-md border border-border bg-surface p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[10px] uppercase tracking-wide font-semibold text-text-secondary">
+          {direction}
+        </p>
+        <p className="text-sm font-bold text-warning">
+          {'★'.repeat(rating.stars)}
+          <span className="text-text-secondary/30">{'★'.repeat(5 - rating.stars)}</span>
+        </p>
+      </div>
+      {rating.tags.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {rating.tags.map((tag) => (
+            <span
+              key={tag}
+              className="rounded-full bg-white border border-border px-1.5 py-0.5 text-[10px] text-text-secondary"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+      {rating.comment && (
+        <p className="mt-1.5 text-xs text-text-primary whitespace-pre-wrap break-words">
+          "{rating.comment}"
+        </p>
+      )}
+      <p className="mt-1 text-[10px] text-text-secondary">{fmtDateTime(rating.created_at)}</p>
+    </li>
   )
 }
 
@@ -546,19 +760,19 @@ function MessageBubble({
         data-testid={`ride-msg-${message.id}`}
         className="flex justify-center"
       >
-        <div className="max-w-[90%] rounded-xl border border-border bg-surface px-3 py-2">
+        <div className="max-w-[90%] min-w-0 rounded-xl border border-border bg-surface px-3 py-2">
           <div className="flex items-center gap-2 text-[10px] uppercase tracking-wide font-semibold text-text-secondary">
             <span>{message.type.replace(/_/g, ' ')}</span>
             <span>· {senderName}</span>
             <span>· {fmtDateTime(message.created_at)}</span>
           </div>
           {message.content && (
-            <p className="mt-1 text-xs text-text-primary whitespace-pre-wrap">
+            <p className="mt-1 text-xs text-text-primary whitespace-pre-wrap break-words">
               {message.content}
             </p>
           )}
           {message.meta && (
-            <pre className="mt-1.5 text-[10px] text-text-secondary bg-white border border-border rounded px-2 py-1.5 overflow-x-auto">
+            <pre className="mt-1.5 max-w-full text-[10px] text-text-secondary bg-white border border-border rounded px-2 py-1.5 overflow-x-auto whitespace-pre">
               {JSON.stringify(message.meta, null, 2)}
             </pre>
           )}
@@ -574,7 +788,7 @@ function MessageBubble({
     >
       <div
         className={[
-          'max-w-[80%] rounded-2xl px-3.5 py-2 text-sm',
+          'max-w-[80%] min-w-0 rounded-2xl px-3.5 py-2 text-sm',
           isDriver
             ? 'rounded-br-md bg-primary text-white'
             : 'rounded-bl-md bg-surface text-text-primary',
@@ -588,7 +802,7 @@ function MessageBubble({
         >
           {senderName}
         </p>
-        <p className="whitespace-pre-wrap">{message.content}</p>
+        <p className="whitespace-pre-wrap break-words">{message.content}</p>
         <p
           className={[
             'mt-1 text-[10px]',
@@ -633,11 +847,13 @@ function PaymentEntry({ row }: { row: AdminRidePayment }) {
 
 function ActionsColumn({
   rideId,
+  ride,
   rider,
   driver,
   reports,
 }: {
   rideId: string
+  ride: AdminRideDetail
   rider: AdminRideUser | null
   driver: AdminRideUser | null
   reports: AdminRideReportLink[]
@@ -665,10 +881,18 @@ function ActionsColumn({
         </Card>
       )}
 
+      {/* 2026-05-23 — actions on the ride itself. Both endpoints
+          existed already; this just surfaces them where the admin
+          sees the problem so they don't have to bounce to user
+          detail to act. Each action collapses its own reason
+          collector inline (no modal) to keep the keyboard flow
+          tight. */}
+      <RideActionsCard ride={ride} />
+
       <Card title="Cross-links" testid="ride-actions">
         <p className="text-[11px] text-text-secondary mb-2">
-          Refunds + suspensions live on the user detail page. Use the
-          links below to jump straight there with context.
+          Suspend / wallet adjustments / push live on the user
+          detail page. Use the links to jump there with context.
         </p>
         <div className="space-y-2">
           {rider && (
@@ -695,6 +919,248 @@ function ActionsColumn({
       <Card title="Ride id" testid="ride-id-block">
         <p className="text-[10px] font-mono text-text-secondary break-all">{rideId}</p>
       </Card>
+    </div>
+  )
+}
+
+/**
+ * Refund + Force-cancel actions on the ride detail page.
+ *
+ * Refund: gated to `status='completed' AND payment_status='paid'`
+ * server-side. We mirror that gate client-side so the button
+ * only appears (or stays disabled with explanation) when the
+ * action would actually go through.
+ *
+ * Force-cancel: gated to non-terminal status. A completed ride
+ * can't be force-cancelled (refund is the right tool there).
+ *
+ * Both actions collect a free-text reason inline (no modal). The
+ * reason is required by the server (400 REASON_REQUIRED otherwise)
+ * and gets written to the admin audit log so future-you can
+ * reconstruct why the action happened.
+ */
+function RideActionsCard({ ride }: { ride: AdminRideDetail }) {
+  const status = ride.status as AdminRideStatus
+  const paymentStatus = ride.payment_status as string | null
+  const fareCents = ride.fare_cents as number | null
+  const terminal = status === 'completed' || status === 'cancelled'
+  const refundable = status === 'completed' && paymentStatus === 'paid' && (fareCents ?? 0) > 0
+
+  return (
+    <Card title="Actions" testid="ride-actions-card">
+      <div className="space-y-3">
+        <RefundAction
+          rideId={ride.id}
+          enabled={refundable}
+          fareCents={fareCents}
+          status={status}
+          paymentStatus={paymentStatus}
+        />
+        <CancelAction
+          rideId={ride.id}
+          enabled={!terminal}
+          status={status}
+        />
+      </div>
+    </Card>
+  )
+}
+
+function RefundAction({
+  rideId,
+  enabled,
+  fareCents,
+  status,
+  paymentStatus,
+}: {
+  rideId: string
+  enabled: boolean
+  fareCents: number | null
+  status: AdminRideStatus
+  paymentStatus: string | null
+}) {
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState('')
+  const [allowOverdraft, setAllowOverdraft] = useState(false)
+  const m = useAdminRefundRideById(rideId)
+  const fareLabel = fareCents != null ? `$${(fareCents / 100).toFixed(2)}` : '—'
+
+  if (!enabled) {
+    return (
+      <div className="rounded-md border border-border bg-surface px-3 py-2 text-[11px] text-text-secondary">
+        <p className="font-semibold text-text-primary mb-0.5">Refund</p>
+        <p>
+          Unavailable — ride is <span className="font-semibold">{status}</span>
+          {paymentStatus ? ` (payment: ${paymentStatus})` : ''}. Only paid completed rides can be refunded.
+        </p>
+      </div>
+    )
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        data-testid="ride-action-refund-open"
+        className="w-full rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs font-bold text-warning hover:bg-warning/15"
+      >
+        Refund {fareLabel} →
+      </button>
+    )
+  }
+
+  return (
+    <div className="space-y-2 rounded-md border border-warning/40 bg-warning/5 p-3" data-testid="ride-action-refund-form">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-warning">
+        Refund {fareLabel}
+      </p>
+      <textarea
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        rows={2}
+        placeholder="Reason (required) — e.g. driver no-show, double-charged…"
+        data-testid="ride-action-refund-reason"
+        className="w-full rounded-md border border-border bg-white px-2 py-1.5 text-xs text-text-primary placeholder:text-text-secondary/60 focus:border-warning focus:outline-none"
+      />
+      <label className="flex items-center gap-1.5 text-[11px] text-text-secondary">
+        <input
+          type="checkbox"
+          checked={allowOverdraft}
+          onChange={(e) => setAllowOverdraft(e.target.checked)}
+          data-testid="ride-action-refund-overdraft"
+          className="h-3 w-3 rounded border-border accent-warning"
+        />
+        Allow driver overdraft (debits driver even if their balance goes negative)
+      </label>
+      {m.isError && (
+        <p data-testid="ride-action-refund-error" className="text-[11px] text-danger" role="alert">
+          {m.error instanceof AdminApiException
+            ? `${m.error.code}: ${m.error.message}`
+            : m.error.message}
+        </p>
+      )}
+      {m.isSuccess && (
+        <p data-testid="ride-action-refund-success" className="text-[11px] font-semibold text-success">
+          Refunded. Rider balance ${((m.data?.rider_balance_after_cents ?? 0) / 100).toFixed(2)}, driver ${((m.data?.driver_balance_after_cents ?? 0) / 100).toFixed(2)}.
+        </p>
+      )}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false)
+            setReason('')
+            m.reset()
+          }}
+          className="flex-1 rounded-md border border-border bg-white px-3 py-1.5 text-xs font-semibold text-text-secondary hover:bg-surface"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={reason.trim().length === 0 || m.isPending || m.isSuccess}
+          onClick={() => m.mutate({ reason: reason.trim(), allow_driver_overdraft: allowOverdraft })}
+          data-testid="ride-action-refund-submit"
+          className="flex-1 rounded-md bg-warning px-3 py-1.5 text-xs font-bold text-white hover:opacity-90 disabled:opacity-50"
+        >
+          {m.isPending ? 'Refunding…' : m.isSuccess ? 'Done' : `Refund ${fareLabel}`}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function CancelAction({
+  rideId,
+  enabled,
+  status,
+}: {
+  rideId: string
+  enabled: boolean
+  status: AdminRideStatus
+}) {
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState('')
+  const m = useAdminCancelRide(rideId)
+
+  if (!enabled) {
+    return (
+      <div className="rounded-md border border-border bg-surface px-3 py-2 text-[11px] text-text-secondary">
+        <p className="font-semibold text-text-primary mb-0.5">Force cancel</p>
+        <p>
+          Unavailable — ride is already <span className="font-semibold">{status}</span>.
+        </p>
+      </div>
+    )
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        data-testid="ride-action-cancel-open"
+        className="w-full rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-xs font-bold text-danger hover:bg-danger/10"
+      >
+        Force cancel ride →
+      </button>
+    )
+  }
+
+  return (
+    <div className="space-y-2 rounded-md border border-danger/40 bg-danger/5 p-3" data-testid="ride-action-cancel-form">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-danger">
+        Force cancel ride
+      </p>
+      <p className="text-[11px] text-text-secondary">
+        Flips status to <span className="font-semibold">cancelled</span> + notifies
+        both parties. Payment status is NOT touched — refund separately if
+        money already moved.
+      </p>
+      <textarea
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        rows={2}
+        maxLength={500}
+        placeholder="Reason (required) — e.g. driver vanished, rider unresponsive…"
+        data-testid="ride-action-cancel-reason"
+        className="w-full rounded-md border border-border bg-white px-2 py-1.5 text-xs text-text-primary placeholder:text-text-secondary/60 focus:border-danger focus:outline-none"
+      />
+      {m.isError && (
+        <p data-testid="ride-action-cancel-error" className="text-[11px] text-danger" role="alert">
+          {m.error instanceof AdminApiException
+            ? `${m.error.code}: ${m.error.message}`
+            : m.error.message}
+        </p>
+      )}
+      {m.isSuccess && (
+        <p data-testid="ride-action-cancel-success" className="text-[11px] font-semibold text-success">
+          Ride cancelled. Both parties notified.
+        </p>
+      )}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false)
+            setReason('')
+            m.reset()
+          }}
+          className="flex-1 rounded-md border border-border bg-white px-3 py-1.5 text-xs font-semibold text-text-secondary hover:bg-surface"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={reason.trim().length === 0 || m.isPending || m.isSuccess}
+          onClick={() => m.mutate({ reason: reason.trim() })}
+          data-testid="ride-action-cancel-submit"
+          className="flex-1 rounded-md bg-danger px-3 py-1.5 text-xs font-bold text-white hover:opacity-90 disabled:opacity-50"
+        >
+          {m.isPending ? 'Cancelling…' : m.isSuccess ? 'Done' : 'Force cancel'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -770,4 +1236,43 @@ function fmtDateTime(iso: string | null | undefined): string {
     hour: 'numeric',
     minute: '2-digit',
   })
+}
+
+function fmtMoneyCents(cents: number | null | undefined): string {
+  if (cents == null || Number.isNaN(cents)) return '—'
+  return `$${(cents / 100).toFixed(2)}`
+}
+
+function fmtDistance(metres: number | null | undefined): string {
+  if (metres == null || metres <= 0) return '—'
+  const miles = metres / 1609.344
+  if (miles < 0.1) return `${Math.round(metres)} m`
+  return `${miles.toFixed(2)} mi (${(metres / 1000).toFixed(2)} km)`
+}
+
+function fmtDuration(startIso: string | null, endIso: string | null): string {
+  if (!startIso || !endIso) return '—'
+  const start = new Date(startIso).getTime()
+  const end = new Date(endIso).getTime()
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return '—'
+  const seconds = Math.round((end - start) / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes} min`
+  const hours = Math.floor(minutes / 60)
+  const remMin = minutes % 60
+  return `${hours}h ${remMin}m`
+}
+
+function fmtRelative(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  if (Number.isNaN(ms)) return iso
+  const sec = Math.round(ms / 1000)
+  if (sec < 60) return `${sec}s ago`
+  const min = Math.round(sec / 60)
+  if (min < 60) return `${min}m ago`
+  const hr = Math.round(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  const d = Math.round(hr / 24)
+  return `${d}d ago`
 }

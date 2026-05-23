@@ -4,8 +4,8 @@
  * detail queries, 30s stale-time. Read-only — no mutations here
  * (force-cancel / refund still live on the user detail page).
  */
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { adminGet } from '@/lib/admin/api'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { adminGet, adminPost } from '@/lib/admin/api'
 
 const THIRTY_SEC_MS = 30 * 1000
 
@@ -185,6 +185,22 @@ export interface AdminRideAuditRow {
   created_at: string
 }
 
+/**
+ * 2026-05-23 — blind two-sided rating row (migration 014).
+ * Each completed ride can have at most two of these: rider→driver
+ * and driver→rider. Admin sees both regardless of submission
+ * (no blind-mode on the admin surface — admin needs full visibility).
+ */
+export interface AdminRideRating {
+  id: string
+  rater_id: string
+  rated_id: string
+  stars: number
+  tags: string[]
+  comment: string | null
+  created_at: string
+}
+
 export interface AdminRideDetailResponse {
   ok: true
   ride: AdminRideDetail
@@ -196,6 +212,7 @@ export interface AdminRideDetailResponse {
   payment: AdminRidePayment[]
   reports: AdminRideReportLink[]
   audit_log: AdminRideAuditRow[]
+  ratings: AdminRideRating[]
 }
 
 export function useAdminRideDetail(id: string | undefined) {
@@ -204,5 +221,67 @@ export function useAdminRideDetail(id: string | undefined) {
     queryFn: () => adminGet<AdminRideDetailResponse>(`/rides/${id}`),
     enabled: typeof id === 'string' && id.length > 0,
     staleTime: THIRTY_SEC_MS,
+  })
+}
+
+// ── Actions: refund + force-cancel ────────────────────────────────────
+//
+// Both endpoints already exist (server/routes/admin/refunds.ts) — these
+// hooks wrap them with the right cache invalidation so the ride detail
+// page reflects the new state immediately AND any open inbox view
+// updates without a manual refresh.
+//
+// Why thin wrappers instead of reusing useAdminRefundRide from
+// useAdminUsers.ts: that hook invalidates per-user queries
+// (`admin/users/wallet/:userId` etc.) which only matter on the user
+// detail page. On the ride detail page we instead need to invalidate
+// `admin/rides/detail/:id` + the inbox, plus we don't always know
+// "the viewed user id" (could be rider OR driver). Cleaner to have a
+// ride-centric hook.
+
+export interface AdminRefundRideArgs {
+  reason: string
+  allow_driver_overdraft?: boolean
+}
+
+export interface AdminRefundRideResult {
+  ok: true
+  ride_id: string
+  fare_cents: number
+  rider_balance_after_cents: number | null
+  driver_balance_after_cents: number | null
+}
+
+export function useAdminRefundRideById(rideId: string) {
+  const qc = useQueryClient()
+  return useMutation<AdminRefundRideResult, Error, AdminRefundRideArgs>({
+    mutationFn: (body) =>
+      adminPost<AdminRefundRideResult>(`/rides/${rideId}/refund`, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'rides', 'detail', rideId] })
+      void qc.invalidateQueries({ queryKey: ['admin', 'rides', 'inbox'] })
+    },
+  })
+}
+
+export interface AdminCancelRideArgs {
+  reason: string
+}
+
+export interface AdminCancelRideResult {
+  ok: true
+  ride_id: string
+  status: 'cancelled'
+}
+
+export function useAdminCancelRide(rideId: string) {
+  const qc = useQueryClient()
+  return useMutation<AdminCancelRideResult, Error, AdminCancelRideArgs>({
+    mutationFn: (body) =>
+      adminPost<AdminCancelRideResult>(`/rides/${rideId}/cancel`, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'rides', 'detail', rideId] })
+      void qc.invalidateQueries({ queryKey: ['admin', 'rides', 'inbox'] })
+    },
   })
 }
