@@ -142,6 +142,11 @@ export function useAdminChangeReportStatus(reportId: string) {
       void qc.invalidateQueries({ queryKey: ['admin', 'reports', 'detail', reportId] })
       void qc.invalidateQueries({ queryKey: ['admin', 'reports', 'inbox'] })
       void qc.invalidateQueries({ queryKey: ['admin', 'reports', 'audit', reportId] })
+      // Phase 4 — acknowledging an emergency from the sticky banner
+      // is just a status flip to `in_progress`. Invalidate the
+      // banner query so the row falls off immediately instead of
+      // waiting up to 10s for the next poll tick.
+      void qc.invalidateQueries({ queryKey: ['admin', 'reports', 'emergency-banner'] })
     },
   })
 }
@@ -232,6 +237,41 @@ export interface AdminReportInboxArgs {
   sort?: InboxSort
   limit?: number
   offset?: number
+}
+
+// ── Phase 4 — Realtime emergency banner ─────────────────────────────
+//
+// Tight-poll hook that drives the sticky red banner mounted in
+// `AdminLayout`. 10s cadence (vs the inbox's 30s) so an emergency
+// surfaces to whichever admin is online within a span of seconds,
+// not half a minute — matches the docs/REPORTS_PLAN.md "Realtime
+// emergency banner" requirement without needing to enable
+// postgres-changes on the `reports` table or thread a new
+// broadcast through the server.
+//
+// Returns *just* the rows (no count blob, no pagination) — the
+// banner stacks one card per open emergency and dismisses each
+// on acknowledge. Capped at limit=10 — if you have 10 unack'd
+// emergencies on one page you have bigger problems than the
+// banner copy.
+
+const TEN_SEC_MS = 10 * 1000
+
+export function useOpenEmergencyReports() {
+  const params = new URLSearchParams()
+  params.set('status', 'open')
+  params.set('severity', 'emergency')
+  params.set('sort', 'newest')
+  params.set('limit', '10')
+
+  return useQuery<AdminReportInboxResponse>({
+    queryKey: ['admin', 'reports', 'emergency-banner'],
+    queryFn: () =>
+      adminGet<AdminReportInboxResponse>(`/reports?${params.toString()}`),
+    staleTime: TEN_SEC_MS,
+    refetchInterval: TEN_SEC_MS,
+    refetchIntervalInBackground: false,
+  })
 }
 
 export function useAdminReportInbox(args: AdminReportInboxArgs = {}) {

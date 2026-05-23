@@ -3,6 +3,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { env } from '@/lib/env'
 import { useAdminAlerts } from '@/hooks/useAdminAlerts'
 import { useAdminReportInbox } from '@/hooks/useAdminReports'
+import EmergencyBanner from './EmergencyBanner'
 
 /**
  * Two-pane chrome around every admin page: sidebar (nav) + main outlet.
@@ -178,6 +179,12 @@ export default function AdminLayout() {
             </button>
           </div>
         </header>
+
+        {/* Phase 4 of docs/REPORTS_PLAN.md — emergency banner sits
+            between the header and the page body so it's visible on
+            every admin route. Renders nothing when no open
+            emergencies exist. */}
+        <EmergencyBanner />
 
         <main
           data-testid="admin-main"
