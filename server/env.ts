@@ -52,6 +52,14 @@ export function getServerEnv() {
     // endpoint).
     SLACK_ALERTS_WEBHOOK_URL: process.env['SLACK_ALERTS_WEBHOOK_URL'] ?? '',
     ADMIN_ALERT_EMAILS: process.env['ADMIN_ALERT_EMAILS'] ?? '',
+    // 2026-05-22 — Phase 6b of REPORTS_PLAN.md. Optional shared
+    // secret used to verify Resend's inbound webhook calls. When
+    // empty, signature verification is SKIPPED and a warning is
+    // logged once per boot — fine for local dev, never for prod.
+    // Set to the secret string Resend's "Add Webhook" dashboard
+    // gives you when wiring inbound delivery to
+    // /api/webhooks/resend-inbound.
+    RESEND_WEBHOOK_SECRET: process.env['RESEND_WEBHOOK_SECRET'] ?? '',
     PORT: process.env['PORT'] ? parseInt(process.env['PORT'], 10) : 3001,
   }
 }

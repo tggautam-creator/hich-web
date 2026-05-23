@@ -343,13 +343,56 @@ Every phase ships at production polish. No MVPs.
   (memory: `feedback_ios_rebuild_protocol.md`), built in a separate
   session against Tarun's paired iPhone, not the simulator.
 
-### Phase 6 — Email reply ingestion (nice-to-have)
-- Configure Resend inbound parsing for `support@tagorides.com`.
-- Webhook receiver parses the `In-Reply-To` header to find the original
-  `report_messages` row, inserts a new `email_inbound` message on the
-  same report, bumps `updated_at` so the admin inbox surfaces it.
-- Lets Tarun reply from his Gmail inbox and have it thread back into
-  the report. Optional — admin panel reply works without it.
+### Phase 6 — Email reply ingestion
+
+**Phase 6a (shipped 2026-05-22):** outbound admin email reply.
+Compose box exposes `Reply via: in_app | email | both`. Email
+sends via Resend with `Reply-To: reports+<reportId>@tagorides.com`
+so the user's reply lands back on a tagged address we can route
+without parsing email threading headers.
+
+**Phase 6b (shipped 2026-05-22):** Resend inbound webhook handler
+at `POST /api/webhooks/resend-inbound`. Steps:
+
+1. **DNS** — set MX records on `tagorides.com` pointing at Resend's
+   inbound MX hosts. Resend's dashboard generates the exact entries
+   per region; we sit in `us-east-1` so it's typically
+   `feedback-smtp.us-east-1.amazonses.com` priority 10 (Resend
+   relays through SES). DKIM + SPF records also required for
+   deliverability. **One-time manual step.**
+2. **Resend dashboard** — under "Webhooks → Inbound", add a route:
+   - Pattern: `reports+*@tagorides.com`
+   - Destination: `https://www.tagorides.com/api/webhooks/resend-inbound`
+   - Generate signing secret → copy into `RESEND_WEBHOOK_SECRET`
+     env var on EC2 + restart `pm2 reload tago`.
+3. **Endpoint behavior** (already shipped — `server/routes/webhooks/
+   resendInbound.ts`):
+   - Verifies Svix-style HMAC signature (`svix-signature` /
+     `resend-signature` headers, base64-decoded secret, `<msgId>.<ts>.<body>`
+     signing input).
+   - Parses report id from `To: reports+<uuid>@tagorides.com`.
+     Rejects mismatched domains as spoofing defense.
+   - Verifies sender email matches the reporter's email on file
+     (random outsider can't inject into someone else's thread).
+   - Strips quoted reply text + mobile signatures so the thread
+     row stores only the user's new content. Heuristic — handles
+     `On <date>, ... wrote:`, `> `-prefixed lines, Outlook's
+     `-----Original Message-----`, and `Sent from my iPhone` style
+     footers.
+   - Inserts `report_messages` with `channel='email_inbound'`,
+     `author_role='user'`. Dedupes against `email_message_id` so
+     a Resend retry can't double-insert.
+   - Flips status `awaiting_user` → `in_progress` (mirrors the
+     in-app reply path).
+   - Slack-pings admin via the existing `notifyAdminOfUserReply`
+     dispatcher on emergency/urgent severities.
+4. **Local dev** — leave `RESEND_WEBHOOK_SECRET` empty; the
+   endpoint skips signature checks and logs a warning. POST a
+   simulated payload to `localhost:3001/api/webhooks/resend-inbound`
+   with `Content-Type: application/json` to exercise the path.
+
+Lets Tarun reply from his Gmail inbox and have it thread back into
+the report.
 
 Estimated cadence: Phases 1+2+3 each ~one focused session, Phase 4 =
 half session, Phase 5 = half session, Phase 6 = follow-up after the
