@@ -38,6 +38,7 @@ const AdminReportsInboxPage = lazy(() => import('@/components/admin/ReportsInbox
 const AdminRideDetailPage = lazy(() => import('@/components/admin/RideDetailPage'))
 const AdminRidesInboxPage = lazy(() => import('@/components/admin/RidesInboxPage'))
 const AdminGhostRefundsPage = lazy(() => import('@/components/admin/GhostRefundsPage'))
+const AdminDeclineReasonsPage = lazy(() => import('@/components/admin/DeclineReasonsPage'))
 const AdminCampaignsPage = lazy(() => import('@/components/admin/CampaignsPage'))
 const AdminLiveOpsPage = lazy(() => import('@/components/admin/LiveOpsPage'))
 const AdminAuditLogPage = lazy(() => import('@/components/admin/AuditLogPage'))
@@ -239,6 +240,8 @@ createRoot(rootEl).render(
                   <Route path="/admin/rides/:id" element={<Suspense fallback={<FormPageSkeleton />}><AdminRideDetailPage /></Suspense>} />
                   {/* 2026-05-23 — ghost-driver auto-refund queue. */}
                   <Route path="/admin/ghost-refunds" element={<Suspense fallback={<ListPageSkeleton />}><AdminGhostRefundsPage /></Suspense>} />
+                  {/* 2026-05-23 — supply-side decline-reason histogram. */}
+                  <Route path="/admin/decline-reasons" element={<Suspense fallback={<ListPageSkeleton />}><AdminDeclineReasonsPage /></Suspense>} />
                   <Route path="/admin/campaigns"  element={<Suspense fallback={<FormPageSkeleton />}><AdminCampaignsPage /></Suspense>} />
                   <Route path="/admin/ride-board" element={<Suspense fallback={<ListPageSkeleton />}><AdminRideBoardPage /></Suspense>} />
                   <Route path="/admin/api-usage"  element={<Suspense fallback={<ListPageSkeleton />}><AdminApiUsagePage /></Suspense>} />

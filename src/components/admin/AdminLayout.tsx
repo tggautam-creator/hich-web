@@ -1,4 +1,5 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { useState } from 'react'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { env } from '@/lib/env'
 import { useAdminAlerts } from '@/hooks/useAdminAlerts'
@@ -28,13 +29,16 @@ interface NavItem {
   badge?: number
 }
 
+// 2026-05-23 — sidebar reorg per Tarun feedback. The recently-added
+// admin tools (Rides, Ghost refunds, Decline reasons, future Stats)
+// collapse into an expandable "More tools" section so the top-level
+// list stays scannable. Items in MORE_TOOLS still get their own
+// route + page; this is purely a sidebar grouping decision.
 const NAV_ITEMS: readonly NavItem[] = [
   { to: '/admin',             label: 'Dashboard',  testId: 'admin-nav-dashboard' },
   { to: '/admin/funnel',      label: 'Funnel',     testId: 'admin-nav-funnel' },
   { to: '/admin/users',       label: 'Users',      testId: 'admin-nav-users' },
   { to: '/admin/ride-board',  label: 'Ride Board', testId: 'admin-nav-ride-board' },
-  { to: '/admin/rides',       label: 'Rides',      testId: 'admin-nav-rides' },
-  { to: '/admin/ghost-refunds', label: 'Ghost refunds', testId: 'admin-nav-ghost-refunds' },
   { to: '/admin/campaigns',   label: 'Campaigns',  testId: 'admin-nav-campaigns' },
   { to: '/admin/reports',     label: 'Reports',    testId: 'admin-nav-reports' },
   { to: '/admin/live',        label: 'Live',       testId: 'admin-nav-live' },
@@ -44,10 +48,25 @@ const NAV_ITEMS: readonly NavItem[] = [
   { to: '/admin/settings',    label: 'Settings',   testId: 'admin-nav-settings' },
 ] as const
 
+const MORE_TOOLS: readonly NavItem[] = [
+  { to: '/admin/rides',           label: 'Rides',           testId: 'admin-nav-rides' },
+  { to: '/admin/ghost-refunds',   label: 'Ghost refunds',   testId: 'admin-nav-ghost-refunds' },
+  { to: '/admin/decline-reasons', label: 'Decline reasons', testId: 'admin-nav-decline-reasons' },
+] as const
+
 export default function AdminLayout() {
   const session = useAuthStore((s) => s.session)
   const signOut = useAuthStore((s) => s.signOut)
   const navigate = useNavigate()
+  const location = useLocation()
+  // "More tools" expand state. Default OPEN when the current route
+  // is inside one of the More-Tools items (so the admin lands on
+  // their page + sees the active highlight without expanding). Else
+  // default closed to keep the sidebar compact.
+  const isInsideMoreTools = MORE_TOOLS.some((it) =>
+    location.pathname === it.to || location.pathname.startsWith(`${it.to}/`),
+  )
+  const [moreOpen, setMoreOpen] = useState(isInsideMoreTools)
 
   // Slice 1.9 — surface the live alert count as a sidebar badge so an
   // admin sees urgency at a glance without having to click into Alerts.
@@ -109,7 +128,7 @@ export default function AdminLayout() {
             internal team panel
           </div>
         </div>
-        <nav className="flex-1 px-3 py-4 space-y-1">
+        <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
           {navItems.map((item) => (
             <NavLink
               key={item.to}
@@ -133,6 +152,56 @@ export default function AdminLayout() {
               </div>
             </NavLink>
           ))}
+
+          {/* 2026-05-23 — collapsible "More tools" group for newer
+              admin pages so the sidebar stays scannable. */}
+          <button
+            type="button"
+            data-testid="admin-nav-more-tools-toggle"
+            onClick={() => setMoreOpen((v) => !v)}
+            className={[
+              'mt-2 flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+              isInsideMoreTools
+                ? 'text-primary'
+                : 'text-text-secondary hover:bg-surface hover:text-text-primary',
+            ].join(' ')}
+            aria-expanded={moreOpen}
+          >
+            <span className="flex items-center gap-2">
+              <span>More tools</span>
+              <span className="text-[10px] uppercase tracking-wide text-text-secondary/70">
+                {MORE_TOOLS.length}
+              </span>
+            </span>
+            <span
+              aria-hidden="true"
+              className={[
+                'transition-transform text-text-secondary',
+                moreOpen ? 'rotate-90' : '',
+              ].join(' ')}
+            >
+              ›
+            </span>
+          </button>
+          {moreOpen && (
+            <div className="ml-2 border-l border-border pl-2 space-y-1">
+              {MORE_TOOLS.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  data-testid={item.testId}
+                  className={({ isActive }) => [
+                    'block rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                    isActive
+                      ? 'bg-primary-light text-primary'
+                      : 'text-text-primary hover:bg-surface',
+                  ].join(' ')}
+                >
+                  {item.label}
+                </NavLink>
+              ))}
+            </div>
+          )}
         </nav>
         <div className="px-6 py-4 border-t border-border text-xs text-text-secondary">
           Admin Panel · Phase 1
