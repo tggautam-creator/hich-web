@@ -2487,6 +2487,56 @@ ridesRouter.patch(
       .eq('ride_id', rideId)
       .eq('driver_id', selectedDriverId)
 
+    // v1.2 F14.3 / F18.3 — when the matched driver opted out of the
+    // caregiver tier fee AND the ride row has a caregiver attached,
+    // insert a `caregiver_fee_waived` chat system message so the
+    // rider learns about the goodwill (same affordance the board-
+    // offer-accept flow already has via F14.1). Best-effort —
+    // failure logs but doesn't unwind the match. Cherry-picked from
+    // v1.2-wip 2026-05-24.
+    {
+      type SelectDriverCaregiverRow = {
+        caregiver_fare_cents?: number | null
+      }
+      // F18.3 — personalize the goodwill copy with the driver's
+      // first name ("Sarah is waiving…") instead of the generic
+      // "Your driver is waiving…".
+      const [driverInfo, { data: matchedRide }] = await Promise.all([
+        lookupDriverWaiveInfo(selectedDriverId),
+        supabaseAdmin
+          .from('rides')
+          .select('caregiver_fare_cents' as never)
+          .eq('id', rideId)
+          .single(),
+      ])
+      const persistedCaregiver = (matchedRide as unknown as SelectDriverCaregiverRow | null)?.caregiver_fare_cents ?? 0
+      if (driverInfo.waives && persistedCaregiver > 0) {
+        const waivedLabel = `$${(persistedCaregiver / 100).toFixed(2)}`
+        const driverHandle = driverInfo.firstName ?? 'Your driver'
+        const { data: waiveMsg, error: waiveErr } = await supabaseAdmin
+          .from('messages')
+          .insert({
+            ride_id: rideId,
+            sender_id: selectedDriverId,
+            content: `${driverHandle} is waiving the ${waivedLabel} caregiver seat fee for this ride 💛`,
+            type: 'caregiver_fee_waived',
+            meta: {
+              waived_cents: persistedCaregiver,
+              proposed_by: selectedDriverId,
+              waiver_driver_name: driverInfo.firstName ?? '',
+            },
+          } as never)
+          .select('id, ride_id, sender_id, content, type, meta, created_at')
+          .single()
+        if (waiveErr) {
+          console.error('[rides/select-driver] caregiver_fee_waived insert failed:', waiveErr.message)
+        } else if (waiveMsg) {
+          void realtimeBroadcast(`chat:${rideId}`, 'new_message', waiveMsg as unknown as Record<string, unknown>)
+          void realtimeBroadcast(`chat-badge:${rideId}`, 'new_message', waiveMsg as unknown as Record<string, unknown>)
+        }
+      }
+    }
+
     await supabaseAdmin
       .from('ride_offers')
       .update({ status: 'standby' })
