@@ -2890,16 +2890,27 @@ ridesRouter.patch(
       return
     }
 
-    const { data: ride, error: fetchErr } = await supabaseAdmin
+    type PickupRideRow = {
+      id: string
+      driver_id: string | null
+      rider_id: string | null
+      status: string
+      destination: unknown
+      caregiver_fare_cents: number | null
+    }
+    const { data: rideRaw, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, driver_id, rider_id, status, destination')
+      .select(
+        'id, driver_id, rider_id, status, destination, caregiver_fare_cents' as never,
+      )
       .eq('id', rideId)
       .single()
 
-    if (fetchErr ?? !ride) {
+    if (fetchErr ?? !rideRaw) {
       res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
       return
     }
+    const ride = rideRaw as unknown as PickupRideRow
 
     if (ride.driver_id !== driverId && ride.rider_id !== driverId) {
       // Also allow drivers who have a pending/selected offer (before select-driver assigns driver_id)
@@ -2948,16 +2959,31 @@ ridesRouter.patch(
     // between renders.
     const destForFare = ride.destination as unknown as GeoPoint | null
     let fareCentsForProposal: number | null = null
+    // v1.2 F14.3 / F18.3 — pull the matched driver's waive flag so
+    // the proposal card matches what end-of-ride will actually
+    // charge. When the driver waives, fold 0¢ instead of the
+    // persisted tier value AND tag `caregiver_waived` on the meta
+    // so iOS swaps the "Includes $X caregiver seat fee" sub-line
+    // for a goodwill heart line. F18.3 — surface the driver's first
+    // name so the iOS card reads "Caregiver seat fee waived by Sarah".
+    const pickupCaregiverFareCents = (ride as unknown as { caregiver_fare_cents: number | null }).caregiver_fare_cents
+    const driverWaiveInfoPickup = await lookupDriverWaiveInfo(ride.driver_id)
+    const driverWaivesPickup = driverWaiveInfoPickup.waives
     if (destForFare?.coordinates) {
       try {
-        fareCentsForProposal = await estimateFareCentsBetween(
+        const baseFare = await estimateFareCentsBetween(
           lat, lng,
           destForFare.coordinates[1], destForFare.coordinates[0],
         )
+        const { fareCents: foldedFare } = foldCaregiverFare(
+          baseFare, 0, pickupCaregiverFareCents, driverWaivesPickup,
+        )
+        fareCentsForProposal = foldedFare
       } catch (err) {
         console.error('[rides/pickup-point] fare estimate failed:', err)
       }
     }
+    const metaPickupCaregiverFare = driverWaivesPickup ? 0 : pickupCaregiverFareCents
 
     // Insert a pickup_suggestion message so rider sees it in chat
     const { data: suggestionMsg } = await supabaseAdmin
@@ -2973,6 +2999,9 @@ ridesRouter.patch(
           note: note ?? null,
           proposed_by: driverId,
           fare_cents: fareCentsForProposal,
+          caregiver_fare_cents: metaPickupCaregiverFare,
+          caregiver_waived: driverWaivesPickup && (pickupCaregiverFareCents ?? 0) > 0,
+          waiver_driver_name: driverWaivesPickup ? (driverWaiveInfoPickup.firstName ?? '') : '',
         },
       })
       .select('id, ride_id, sender_id, content, type, meta, created_at')
@@ -3034,16 +3063,28 @@ ridesRouter.patch(
       return
     }
 
-    const { data: ride, error: fetchErr } = await supabaseAdmin
+    type DropoffRideRow = {
+      id: string
+      driver_id: string | null
+      rider_id: string | null
+      status: string
+      pickup_point: unknown
+      origin: unknown
+      caregiver_fare_cents: number | null
+    }
+    const { data: rideRaw, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, driver_id, rider_id, status, pickup_point, origin')
+      .select(
+        'id, driver_id, rider_id, status, pickup_point, origin, caregiver_fare_cents' as never,
+      )
       .eq('id', rideId)
       .single()
 
-    if (fetchErr ?? !ride) {
+    if (fetchErr ?? !rideRaw) {
       res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
       return
     }
+    const ride = rideRaw as unknown as DropoffRideRow
 
     if (ride.driver_id !== driverId && ride.rider_id !== driverId) {
       // Also allow drivers who have a pending/selected offer (before select-driver assigns driver_id)
@@ -3089,16 +3130,25 @@ ridesRouter.patch(
     // the same number. See pickup-point above for context.
     const pickupForFare = (ride.pickup_point ?? ride.origin) as unknown as GeoPoint | null
     let fareCentsForProposal: number | null = null
+    // v1.2 F14.3 / F18.3 — same waiver pattern as pickup-point.
+    const dropoffCaregiverFareCents = (ride as unknown as { caregiver_fare_cents: number | null }).caregiver_fare_cents
+    const driverWaiveInfoDropoff = await lookupDriverWaiveInfo(ride.driver_id)
+    const driverWaivesDropoff = driverWaiveInfoDropoff.waives
     if (pickupForFare?.coordinates) {
       try {
-        fareCentsForProposal = await estimateFareCentsBetween(
+        const baseFare = await estimateFareCentsBetween(
           pickupForFare.coordinates[1], pickupForFare.coordinates[0],
           lat, lng,
         )
+        const { fareCents: foldedFare } = foldCaregiverFare(
+          baseFare, 0, dropoffCaregiverFareCents, driverWaivesDropoff,
+        )
+        fareCentsForProposal = foldedFare
       } catch (err) {
         console.error('[rides/dropoff-point] fare estimate failed:', err)
       }
     }
+    const metaDropoffCaregiverFare = driverWaivesDropoff ? 0 : dropoffCaregiverFareCents
 
     // Insert a dropoff_suggestion message
     const { data: suggestionMsg } = await supabaseAdmin
@@ -3114,6 +3164,9 @@ ridesRouter.patch(
           name: name ?? null,
           proposed_by: driverId,
           fare_cents: fareCentsForProposal,
+          caregiver_fare_cents: metaDropoffCaregiverFare,
+          caregiver_waived: driverWaivesDropoff && (dropoffCaregiverFareCents ?? 0) > 0,
+          waiver_driver_name: driverWaivesDropoff ? (driverWaiveInfoDropoff.firstName ?? '') : '',
         },
       })
       .select('id, ride_id, sender_id, content, type, meta, created_at')
@@ -3266,16 +3319,37 @@ ridesRouter.post(
       return
     }
 
-    const { data: ride, error: fetchErr } = await supabaseAdmin
+    type AcceptLocationRideRow = {
+      id: string
+      rider_id: string | null
+      driver_id: string | null
+      status: string
+      pickup_confirmed: boolean | null
+      dropoff_confirmed: boolean | null
+      schedule_id: string | null
+      pickup_point: unknown
+      dropoff_point: unknown
+      destination: unknown
+      destination_name: string | null
+      origin: unknown
+      origin_name: string | null
+      caregiver_fare_cents: number | null
+    }
+    const { data: rideRaw, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, driver_id, status, pickup_confirmed, dropoff_confirmed, schedule_id, pickup_point, dropoff_point, destination, destination_name, origin, origin_name')
+      .select(
+        ('id, rider_id, driver_id, status, pickup_confirmed, dropoff_confirmed, '
+          + 'schedule_id, pickup_point, dropoff_point, destination, destination_name, '
+          + 'origin, origin_name, caregiver_fare_cents') as never,
+      )
       .eq('id', rideId)
       .single()
 
-    if (fetchErr ?? !ride) {
+    if (fetchErr ?? !rideRaw) {
       res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
       return
     }
+    const ride = rideRaw as unknown as AcceptLocationRideRow
 
     if (ride.rider_id !== userId && ride.driver_id !== userId) {
       // Also allow drivers who have a pending/selected offer (before select-driver assigns driver_id)
@@ -3382,12 +3456,45 @@ ridesRouter.post(
     // existing rider-proposed semantics still apply.
     if (location_type === 'dropoff' && !ride.pickup_confirmed && ride.origin) {
       const isBoardOriginated = ride.schedule_id != null
-      const proposerId: string = isBoardOriginated
+      const proposerIdCandidate = isBoardOriginated
         ? (ride.driver_id ?? ride.rider_id)
         : ride.rider_id
+      if (!proposerIdCandidate) {
+        res.status(409).json({ error: { code: 'RIDE_INCOMPLETE', message: 'Ride is missing rider/driver context' } })
+        return
+      }
+      const proposerId: string = proposerIdCandidate
       const pickupCoords = (ride.origin as { coordinates: [number, number] }).coordinates
       const pickupName = ride.origin_name
         ?? (isBoardOriginated ? 'your pickup' : 'the rider\'s requested pickup')
+
+      // v1.2 F8.3 / F14.3 / F18.3 — freeze the fare into meta so
+      // the card doesn't fall back to a local re-compute that
+      // misses the caregiver tier fee. Folded total + caregiver
+      // delta both land in meta; iOS PickupProposalCard renders
+      // the breakdown + waiver line when the driver opts in.
+      type AcceptRideExtras = { dropoff_point: unknown; caregiver_fare_cents: number | null }
+      const rideExtras = ride as unknown as AcceptRideExtras
+      const dropoffCoordsForFare = (rideExtras.dropoff_point ?? ride.destination) as unknown as GeoPoint | null
+      let pickupSuggestionFareCents: number | null = null
+      const driverWaiveInfoAccept = await lookupDriverWaiveInfo(ride.driver_id)
+      const driverWaivesAccept = driverWaiveInfoAccept.waives
+      if (dropoffCoordsForFare?.coordinates) {
+        try {
+          const baseFare = await estimateFareCentsBetween(
+            pickupCoords[1], pickupCoords[0],
+            dropoffCoordsForFare.coordinates[1], dropoffCoordsForFare.coordinates[0],
+          )
+          const { fareCents: foldedFare } = foldCaregiverFare(
+            baseFare, 0, rideExtras.caregiver_fare_cents, driverWaivesAccept,
+          )
+          pickupSuggestionFareCents = foldedFare
+        } catch (err) {
+          console.error('[rides/accept-location] pickup fare estimate failed:', err)
+        }
+      }
+      const metaAcceptCaregiverFare = driverWaivesAccept ? 0 : rideExtras.caregiver_fare_cents
+
       const { data: pickupMsg, error: pmErr } = await supabaseAdmin
         .from('messages')
         .insert({
@@ -3400,6 +3507,10 @@ ridesRouter.post(
             lng: pickupCoords[0],
             name: pickupName,
             proposed_by: proposerId,
+            fare_cents: pickupSuggestionFareCents,
+            caregiver_fare_cents: metaAcceptCaregiverFare,
+            caregiver_waived: driverWaivesAccept && (rideExtras.caregiver_fare_cents ?? 0) > 0,
+            waiver_driver_name: driverWaivesAccept ? (driverWaiveInfoAccept.firstName ?? '') : '',
           },
         })
         .select('id, ride_id, sender_id, content, type, meta, created_at')
@@ -3418,7 +3529,7 @@ ridesRouter.post(
     const accepterRole = userId === ride.rider_id ? 'Rider' : 'Driver'
 
     // Include the accepted location's coordinates and name so the frontend can render a full info card
-    const acceptedPoint = isPickup ? ride.pickup_point : (ride.dropoff_point ?? ride.destination)
+    const acceptedPoint = (isPickup ? ride.pickup_point : (ride.dropoff_point ?? ride.destination)) as { coordinates?: [number, number] } | null
     const acceptedCoords = acceptedPoint?.coordinates as [number, number] | undefined
     const acceptedName = isPickup ? undefined : (ride.destination_name ?? undefined)
 
@@ -5738,16 +5849,35 @@ ridesRouter.post(
     }
 
     // Verify ride and driver
-    const { data: ride, error: fetchErr } = await supabaseAdmin
+    type TransitRideRow = {
+      id: string
+      driver_id: string | null
+      rider_id: string | null
+      status: string
+      origin: unknown
+      destination: unknown
+      destination_name: string | null
+      driver_destination: unknown
+      driver_destination_name: string | null
+      driver_route_polyline: string | null
+      pickup_point: unknown
+      caregiver_fare_cents: number | null
+    }
+    const { data: rideRaw, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, driver_id, rider_id, status, origin, destination, destination_name, driver_destination, driver_destination_name, driver_route_polyline, pickup_point')
+      .select(
+        ('id, driver_id, rider_id, status, origin, destination, destination_name, '
+          + 'driver_destination, driver_destination_name, driver_route_polyline, '
+          + 'pickup_point, caregiver_fare_cents') as never,
+      )
       .eq('id', rideId)
       .single()
 
-    if (fetchErr ?? !ride) {
+    if (fetchErr ?? !rideRaw) {
       res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
       return
     }
+    const ride = rideRaw as unknown as TransitRideRow
 
     if (ride.driver_id !== driverId) {
       const { count: offerCount } = await supabaseAdmin
@@ -5800,16 +5930,26 @@ ridesRouter.post(
     // `meta.fare_cents` instead of recomputing locally.
     const pickupForFare = (ride.pickup_point ?? ride.origin) as unknown as GeoPoint | null
     let fareCentsForProposal: number | null = null
+    // v1.2 F14.3 / F18.3 — same waiver pattern as pickup-point /
+    // dropoff-point / accept-location.
+    const transitCaregiverFareCents = ride.caregiver_fare_cents
+    const driverWaiveInfoTransit = await lookupDriverWaiveInfo(ride.driver_id)
+    const driverWaivesTransit = driverWaiveInfoTransit.waives
     if (pickupForFare?.coordinates) {
       try {
-        fareCentsForProposal = await estimateFareCentsBetween(
+        const baseFare = await estimateFareCentsBetween(
           pickupForFare.coordinates[1], pickupForFare.coordinates[0],
           station_lat, station_lng,
         )
+        const { fareCents: foldedFare } = foldCaregiverFare(
+          baseFare, 0, transitCaregiverFareCents, driverWaivesTransit,
+        )
+        fareCentsForProposal = foldedFare
       } catch (err) {
         console.error('[rides/suggest-transit-dropoff] fare estimate failed:', err)
       }
     }
+    const metaTransitCaregiverFare = driverWaivesTransit ? 0 : transitCaregiverFareCents
 
     // Insert transit_dropoff_suggestion message
     const { data: msg } = await supabaseAdmin
@@ -5839,12 +5979,15 @@ ridesRouter.post(
           pickup_lng: rideOrigin?.coordinates?.[0] ?? null,
           rider_dest_lat: riderDest?.coordinates?.[1] ?? null,
           rider_dest_lng: riderDest?.coordinates?.[0] ?? null,
-          rider_dest_name: (ride as Record<string, unknown>)['destination_name'] ?? null,
+          rider_dest_name: ride.destination_name ?? null,
           driver_dest_lat: driverDest?.coordinates?.[1] ?? null,
           driver_dest_lng: driverDest?.coordinates?.[0] ?? null,
-          driver_dest_name: (ride as Record<string, unknown>)['driver_destination_name'] ?? null,
-          driver_route_polyline: (ride as Record<string, unknown>)['driver_route_polyline'] ?? null,
+          driver_dest_name: ride.driver_destination_name ?? null,
+          driver_route_polyline: ride.driver_route_polyline ?? null,
           fare_cents: fareCentsForProposal,
+          caregiver_fare_cents: metaTransitCaregiverFare,
+          caregiver_waived: driverWaivesTransit && (transitCaregiverFareCents ?? 0) > 0,
+          waiver_driver_name: driverWaivesTransit ? (driverWaiveInfoTransit.firstName ?? '') : '',
         },
       })
       .select('id, ride_id, sender_id, content, type, meta, created_at')
