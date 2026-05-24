@@ -14,7 +14,15 @@ import { chargeTip } from '../lib/tipPayment.ts'
 import { shouldTreatScheduledRideAsExpired } from '../lib/scheduledReminders.ts'
 import { resolveAndPersistDefaultPm } from './payment.ts'
 import { getGasPriceForState } from './gasPrice.ts'
-import { endRideForSafety, type SafetyEndReason } from '../lib/rideSafetyNet.ts'
+import {
+  endRideForSafety,
+  type SafetyEndReason,
+  advanceDivergenceState,
+  fireDivergenceWarning,
+  PICKUP_GRACE_MS,
+  RECENT_PING_WINDOW_MS,
+  type SafetyRideRow,
+} from '../lib/rideSafetyNet.ts'
 import { randomBytes } from 'node:crypto'
 
 export const ridesRouter = Router()
@@ -4426,16 +4434,48 @@ ridesRouter.post(
       return
     }
 
-    const { data: ride, error: fetchErr } = await supabaseAdmin
+    type GpsPingRideRow = {
+      id: string
+      rider_id: string | null
+      driver_id: string | null
+      status: string
+      started_at: string | null
+      gps_distance_metres: number | null
+      last_gps_lat: number | null
+      last_gps_lng: number | null
+      dropoff_point: unknown
+      dropoff_reminder_sent: boolean | null
+      last_driver_gps_lat: number | null
+      last_driver_gps_lng: number | null
+      last_rider_gps_lat: number | null
+      last_rider_gps_lng: number | null
+      last_driver_ping_at: string | null
+      last_rider_ping_at: string | null
+      divergence_state: string | null
+      divergence_first_seen_at: string | null
+      warning_fired_at: string | null
+      warning_push_count: number | null
+      pickup_point: unknown
+      auto_ended: boolean | null
+    }
+    const { data: rideRaw, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, driver_id, status, gps_distance_metres, last_gps_lat, last_gps_lng, dropoff_point, dropoff_reminder_sent')
+      .select(
+        ('id, rider_id, driver_id, status, started_at, gps_distance_metres, '
+          + 'last_gps_lat, last_gps_lng, dropoff_point, dropoff_reminder_sent, '
+          + 'last_driver_gps_lat, last_driver_gps_lng, last_rider_gps_lat, last_rider_gps_lng, '
+          + 'last_driver_ping_at, last_rider_ping_at, '
+          + 'divergence_state, divergence_first_seen_at, warning_fired_at, warning_push_count, '
+          + 'pickup_point, auto_ended') as never,
+      )
       .eq('id', rideId)
       .single()
 
-    if (fetchErr || !ride) {
+    if (fetchErr || !rideRaw) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Ride not found' } })
       return
     }
+    const ride = rideRaw as unknown as GpsPingRideRow
 
     if (ride.driver_id !== userId && ride.rider_id !== userId) {
       res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Not your ride' } })
@@ -4519,6 +4559,128 @@ ridesRouter.post(
       isDriver ? 'driver_location' : 'rider_location',
       { lat, lng },
     )
+
+    // ── v1.2 F12.5 (CTO-fix 2026-05-24) — inline divergence detection ──
+    //
+    // The cron `rideSafetyNet.checkActiveRides` was the only path
+    // that advanced the divergence state machine pre-2026-05-24,
+    // running every 5 min. That meant 5-10 min latency from
+    // separation → warning push, which is too slow for a safety
+    // feature. Now each /gps-ping runs the same state machine
+    // inline so detection lands within one ping cadence (~10s)
+    // when both parties are alive on the wire.
+    //
+    // The cron stays as a backstop for two cases /gps-ping can't
+    // cover:
+    //   (a) 90s warning timeout → auto-end. /gps-ping only runs
+    //       when a party pings; if both go silent after the
+    //       warning, the cron is what actually fires endRideForSafety.
+    //   (b) 8h max-duration → auto-end.
+    //   (c) Radio-loss long-tail: if both parties stay offline for
+    //       hours, the cron's pass still catches it.
+    //
+    // Idempotency / race safety:
+    //   - `flag_watching` UPDATE has no conditions; if two pings
+    //     hit at the same instant both flip null→watching → ok.
+    //   - `fire_warning` is atomic on push_count (see
+    //     `fireDivergenceWarning`); only one ping wins.
+    //   - `reset` clears state; idempotent.
+    //   - `auto_end` is idempotent (endRideForSafety guards on
+    //     status==='active').
+    if (
+      isActive
+      && ride.started_at
+      && (Date.now() - new Date(ride.started_at as string).getTime()) >= PICKUP_GRACE_MS
+      && ride.divergence_state !== 'safety_ended'
+    ) {
+      // Build the "current state" view: row + the per-party GPS
+      // we just wrote. Need this because the cached `ride` object
+      // still has the OTHER party's last GPS but stale own-GPS.
+      const inferredRow: SafetyRideRow = {
+        id: ride.id as string,
+        rider_id: (ride.rider_id as string | null) ?? null,
+        driver_id: (ride.driver_id as string | null) ?? null,
+        status: ride.status as string,
+        started_at: ride.started_at as string | null,
+        gps_distance_metres: (ride.gps_distance_metres as number | null) ?? 0,
+        last_driver_gps_lat: isDriver ? lat : (ride.last_driver_gps_lat as number | null),
+        last_driver_gps_lng: isDriver ? lng : (ride.last_driver_gps_lng as number | null),
+        last_rider_gps_lat: isDriver ? (ride.last_rider_gps_lat as number | null) : lat,
+        last_rider_gps_lng: isDriver ? (ride.last_rider_gps_lng as number | null) : lng,
+        last_driver_ping_at: isDriver ? now : (ride.last_driver_ping_at as string | null),
+        last_rider_ping_at: isDriver ? (ride.last_rider_ping_at as string | null) : now,
+        divergence_state: (ride.divergence_state as string | null) ?? null,
+        divergence_first_seen_at: (ride.divergence_first_seen_at as string | null) ?? null,
+        warning_fired_at: (ride.warning_fired_at as string | null) ?? null,
+        warning_push_count: (ride.warning_push_count as number | null) ?? 0,
+        pickup_point: ride.pickup_point ?? null,
+        dropoff_point: ride.dropoff_point ?? null,
+        auto_ended: (ride.auto_ended as boolean | null) ?? false,
+      }
+
+      // Need BOTH GPS positions to be recent for divergence to mean
+      // anything. If the OTHER party's last ping is stale, skip
+      // detection — matches the cron's "Never auto-end on radio
+      // loss alone" rule.
+      const otherPingAt = isDriver
+        ? inferredRow.last_rider_ping_at
+        : inferredRow.last_driver_ping_at
+      const otherStale = !otherPingAt
+        || (Date.now() - new Date(otherPingAt).getTime()) > RECENT_PING_WINDOW_MS
+      const haveBothCoords =
+        inferredRow.last_driver_gps_lat != null && inferredRow.last_driver_gps_lng != null
+        && inferredRow.last_rider_gps_lat != null && inferredRow.last_rider_gps_lng != null
+
+      if (haveBothCoords && !otherStale) {
+        const separationM = haversineMetres(
+          inferredRow.last_driver_gps_lat as number,
+          inferredRow.last_driver_gps_lng as number,
+          inferredRow.last_rider_gps_lat as number,
+          inferredRow.last_rider_gps_lng as number,
+        )
+
+        const decision = advanceDivergenceState({
+          ride: inferredRow,
+          separationM,
+          now: Date.now(),
+        })
+
+        if (decision.action === 'reset') {
+          // Background — don't block the response. Log errors so a
+          // silent DB failure isn't completely invisible.
+          void supabaseAdmin
+            .from('rides')
+            .update({ divergence_state: null, divergence_first_seen_at: null } as never)
+            .eq('id', rideId)
+            .then(({ error: e }: { error: { message: string } | null }) => {
+              if (e) console.warn(`[gps-ping] divergence reset failed for ${rideId}: ${e.message}`)
+            })
+        } else if (decision.action === 'flag_watching') {
+          // Atomic guard `.is('divergence_state', null)`: if two
+          // pings race, only the first (state-was-null) one wins
+          // the flag transition. The second sees state='watching'
+          // already and matches zero rows. Preserves the correct
+          // `divergence_first_seen_at` timestamp.
+          void supabaseAdmin
+            .from('rides')
+            .update({
+              divergence_state: 'watching',
+              divergence_first_seen_at: new Date().toISOString(),
+            } as never)
+            .eq('id', rideId)
+            .is('divergence_state', null)
+            .then(({ error: e }: { error: { message: string } | null }) => {
+              if (e) console.warn(`[gps-ping] flag_watching failed for ${rideId}: ${e.message}`)
+            })
+        } else if (decision.action === 'fire_warning') {
+          // Fire-and-forget — `fireDivergenceWarning` is atomic on
+          // push_count so concurrent pings can't double-push.
+          void fireDivergenceWarning(inferredRow, Date.now(), decision.nextPushCount)
+        } else if (decision.action === 'auto_end') {
+          void endRideForSafety({ rideId, endReason: 'auto_divergence' })
+        }
+      }
+    }
 
     // ── Approaching-dropoff reminder ──
     // Fires exactly once per ride when either party (whoever pings first) is

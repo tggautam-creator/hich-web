@@ -342,10 +342,15 @@ export async function fireDivergenceWarning(
       .eq('user_id', ride.rider_id)
     const list = (tokens ?? []).map((t: { token: string }) => t.token)
     if (list.length > 0) {
+      // category: 'SAFETY_WARNING' triggers iOS time-sensitive
+      // interruption (Focus / DND bypass) — see fcm.ts. The 90s
+      // response window is too short to wait for the user to next
+      // wake their phone if they're in Sleep mode.
       void sendFcmPush(list, {
         title: 'Safety check',
         body: 'You and your driver appear to have moved apart. Open Tago to confirm.',
         data: { type: 'ride_safety_warning', ride_id: ride.id, role: 'rider' },
+        category: 'SAFETY_WARNING',
       })
     }
   }
@@ -360,6 +365,7 @@ export async function fireDivergenceWarning(
         title: 'Safety check',
         body: 'Your rider is no longer with you. Open Tago to confirm.',
         data: { type: 'ride_safety_warning', ride_id: ride.id, role: 'driver' },
+        category: 'SAFETY_WARNING',
       })
     }
   }

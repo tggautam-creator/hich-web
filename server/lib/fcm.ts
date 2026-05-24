@@ -146,9 +146,16 @@ export async function sendFcmPush(
           // Requires the `com.apple.developer.usernotifications.time-
           // sensitive` entitlement on the iOS app, which we ship in
           // both Tago.entitlements + Tago.Release.entitlements.
+          //  - SAFETY_WARNING (added 2026-05-24, v1.2 Phase 3 CTO
+          //    fix): GPS-divergence warning push needs to break
+          //    through Focus / DND because riders / drivers may
+          //    have their phone in Sleep mode mid-ride and the
+          //    overlay's 90-second response window otherwise lapses
+          //    unnoticed → cron auto-ends without anyone seeing it.
           ...(payload.category === 'RIDE_REQUEST'
             || payload.category === 'BOARD_REQUEST'
             || payload.category === 'BOARD_OFFER'
+            || payload.category === 'SAFETY_WARNING'
             ? { 'interruption-level': 'time-sensitive' as const }
             : {}),
           // Group banners by ride so multiple events for the same
