@@ -4427,6 +4427,30 @@ ridesRouter.post(
       .update(updatePayload)
       .eq('id', rideId)
 
+    // ── v1.2 F12.2 (Phase 2A) — live ride-location broadcast ──
+    // Mirror the per-party GPS onto the `ride-location:{rideID}`
+    // realtime channel so consumers can show a live pin without
+    // polling. Three consumers today:
+    //   1. Admin RideDetailPage — drives the "driver ping pulse"
+    //      live-indicator (subscribes to event `driver_location`).
+    //   2. Pickup-phase iOS / web — already self-broadcasts from the
+    //      client, but a server-side mirror keeps the channel hot
+    //      even if a client's loop hiccups.
+    //   3. Future rider/driver active-page pin — `RiderActiveRidePage`
+    //      has a "tracked as follow-up" TODO that consumes this
+    //      stream when wired.
+    //
+    // Same `ride-location:{rideID}` channel name + `driver_location`
+    // / `rider_location` event names that the pickup-phase listeners
+    // already expect (see DriverPickupPage+Live.swift). Fire-and-
+    // forget — channel publish failures must not break the ping
+    // response.
+    void realtimeBroadcast(
+      `ride-location:${rideId.toLowerCase()}`,
+      isDriver ? 'driver_location' : 'rider_location',
+      { lat, lng },
+    )
+
     // ── Approaching-dropoff reminder ──
     // Fires exactly once per ride when either party (whoever pings first) is
     // within 500m of the confirmed dropoff. Driver and rider get distinct
