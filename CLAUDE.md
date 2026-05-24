@@ -100,7 +100,7 @@ The matching logic has stages. Build in order, do not skip ahead.
 
 ## Critical Constraints
 - **Emergency button** — always in a React portal at the top of the DOM tree. Never inside conditional renders. Never inside a menu.
-- **Rider active ride screen** — has NO End Ride button. Only "Scan QR to End Ride". Enforce in component and test.
+- **Rider active ride screen** — the PRIMARY end-ride path is "Scan QR to End Ride". A gated secondary "End ride without QR" button is allowed for the radio-loss case (Phase 3.4, 2026-05-23) but MUST stay hidden until the ride has been active for both >5 minutes AND >1 km of GPS distance. Without the gate the rider could end early after 100m and pay only the $5 minimum. The driver-side mirror has the same gate. Anything outside that window stays QR-only on both surfaces.
 - **Wallet transactions** — debit + credit always in a single database transaction (`BEGIN / COMMIT`). Never separate queries.
 - **QR tokens** — HMAC-signed. Reject any token without a valid signature.
 - **License photos** — stored in a private Supabase Storage bucket. Never a public URL.

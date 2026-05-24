@@ -14,6 +14,8 @@ import { chargeTip } from '../lib/tipPayment.ts'
 import { shouldTreatScheduledRideAsExpired } from '../lib/scheduledReminders.ts'
 import { resolveAndPersistDefaultPm } from './payment.ts'
 import { getGasPriceForState } from './gasPrice.ts'
+import { endRideForSafety, type SafetyEndReason } from '../lib/rideSafetyNet.ts'
+import { randomBytes } from 'node:crypto'
 
 export const ridesRouter = Router()
 
@@ -4486,6 +4488,240 @@ ridesRouter.post(
       ? (updatePayload.gps_distance_metres as number)
       : (ride.gps_distance_metres ?? 0)
     res.status(200).json({ gps_distance_metres: responseDistance })
+  },
+)
+
+// ── POST /api/rides/:id/safety-warning-response ──────────────────────────────
+//
+// v1.2 Phase 3.2 — the iOS safety overlay (Phase 3.3) calls this when
+// the rider or driver taps one of the 3 buttons. The cron has already
+// fired the warning push + emitted the realtime `warning_fired` event;
+// this endpoint records the tap, updates state, and either:
+//   • 'rider_in_car' / 'driver_in_car' → 'responded' (cron handles
+//                                         5-min cooldown re-fire)
+//   • 'rider_left' / 'driver_left'     → delegate to endRideForSafety
+//   • 'help_requested'                 → mint share token, return
+//                                         caller's trusted_contacts
+//
+// Role gate: rider can ONLY tap rider_* actions; driver driver_*.
+ridesRouter.post(
+  '/:id/safety-warning-response',
+  validateJwt,
+  async (req: Request, res: Response) => {
+    const userId = res.locals['userId'] as string
+    const rideId = req.params['id'] as string
+    const { action } = req.body as { action?: string }
+
+    const VALID_ACTIONS = new Set([
+      'rider_in_car', 'driver_in_car',
+      'rider_left', 'driver_left',
+      'help_requested',
+    ])
+    if (typeof action !== 'string' || !VALID_ACTIONS.has(action)) {
+      res.status(400).json({
+        error: {
+          code: 'INVALID_ACTION',
+          message: 'action must be one of rider_in_car / driver_in_car / rider_left / driver_left / help_requested',
+        },
+      })
+      return
+    }
+
+    const { data: ride, error } = await supabaseAdmin
+      .from('rides')
+      .select(
+        'id, rider_id, driver_id, status, divergence_state, '
+        + 'warning_fired_at, warning_push_count, help_sms_sent_at' as never,
+      )
+      .eq('id', rideId)
+      .single()
+    if (error || !ride) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Ride not found' } })
+      return
+    }
+    type RideRow = {
+      id: string
+      rider_id: string | null
+      driver_id: string | null
+      status: string
+      divergence_state: string | null
+      warning_fired_at: string | null
+      warning_push_count: number | null
+      help_sms_sent_at: string | null
+    }
+    const row = ride as unknown as RideRow
+
+    const isRider = row.rider_id === userId
+    const isDriver = row.driver_id === userId
+    if (!isRider && !isDriver) {
+      res.status(403).json({ error: { code: 'NOT_PARTICIPANT', message: 'Not your ride' } })
+      return
+    }
+
+    // Role gate — rider can't claim driver actions and vice versa.
+    const role: 'rider' | 'driver' = isRider ? 'rider' : 'driver'
+    const expectedPrefix = role + '_'
+    if (action.startsWith('rider_') || action.startsWith('driver_')) {
+      if (!action.startsWith(expectedPrefix)) {
+        res.status(403).json({
+          error: { code: 'WRONG_ROLE', message: `${role}s can't tap ${action}` },
+        })
+        return
+      }
+    }
+
+    // Only accept a response when the ride is mid-warning, except
+    // help_requested which can fire any time during an active ride.
+    if (row.divergence_state !== 'warning' && action !== 'help_requested') {
+      res.status(409).json({
+        error: {
+          code: 'NO_ACTIVE_WARNING',
+          message: 'No active divergence warning to respond to',
+        },
+      })
+      return
+    }
+
+    const now = new Date().toISOString()
+
+    // ── Branch 1: ride-ending actions ──
+    if (action === 'rider_left' || action === 'driver_left') {
+      const endReason: SafetyEndReason = action === 'rider_left'
+        ? 'rider_safety_button'
+        : 'driver_safety_button'
+      await supabaseAdmin
+        .from('rides')
+        .update({
+          warning_responded_by: action,
+          warning_responded_at: now,
+          warning_responded_role: role,
+        } as never)
+        .eq('id', rideId)
+      const result = await endRideForSafety({ rideId, endReason })
+      res.status(200).json({
+        ok: result.ok,
+        action,
+        ride_ended: true,
+        fare_cents: result.fareCents ?? null,
+      })
+      return
+    }
+
+    // ── Branch 2: help_requested — mint share token + return contacts ──
+    if (action === 'help_requested') {
+      const updatePayload: Record<string, unknown> = {
+        warning_responded_by: 'help_requested',
+        warning_responded_at: now,
+        warning_responded_role: role,
+        divergence_state: 'responded',
+      }
+      if (row.help_sms_sent_at == null) {
+        updatePayload.help_sms_sent_at = now
+      }
+      await supabaseAdmin.from('rides').update(updatePayload as never).eq('id', rideId)
+
+      const token = randomBytes(32).toString('hex')
+      const expiresAt = new Date(Date.now() + 4 * 60 * 60_000).toISOString()
+      await supabaseAdmin.from('location_shares').insert({
+        token,
+        ride_id: rideId,
+        user_id: userId,
+        expires_at: expiresAt,
+      } as never)
+
+      const { data: contactsData } = await supabaseAdmin
+        .from('trusted_contacts')
+        .select('id, name, phone')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: true })
+
+      void realtimeBroadcast(
+        `ride-safety:${rideId.toLowerCase()}`,
+        'warning_responded',
+        { ride_id: rideId, action, role },
+      )
+
+      res.status(200).json({
+        ok: true,
+        action,
+        ride_ended: false,
+        share_token: token,
+        share_expires_at: expiresAt,
+        trusted_contacts: contactsData ?? [],
+      })
+      return
+    }
+
+    // ── Branch 3: "still here" — transition to 'responded' ──
+    await supabaseAdmin
+      .from('rides')
+      .update({
+        divergence_state: 'responded',
+        warning_responded_by: action,
+        warning_responded_at: now,
+        warning_responded_role: role,
+      } as never)
+      .eq('id', rideId)
+
+    void realtimeBroadcast(
+      `ride-safety:${rideId.toLowerCase()}`,
+      'warning_responded',
+      { ride_id: rideId, action, role },
+    )
+
+    res.status(200).json({ ok: true, action, ride_ended: false })
+  },
+)
+
+// ── POST /api/rides/:id/safety-end ───────────────────────────────────────────
+//
+// v1.2 Phase 3.2 — manual end-ride affordance (Phase 3.4 button +
+// "I got out" path from the response endpoint). Computes GPS-distance
+// fare, charges rider, credits driver, broadcasts ride_ended.
+ridesRouter.post(
+  '/:id/safety-end',
+  validateJwt,
+  async (req: Request, res: Response) => {
+    const userId = res.locals['userId'] as string
+    const rideId = req.params['id'] as string
+    const { reason } = (req.body ?? {}) as { reason?: string }
+
+    const { data: ride, error } = await supabaseAdmin
+      .from('rides')
+      .select('id, rider_id, driver_id, status')
+      .eq('id', rideId)
+      .single()
+    if (error || !ride) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Ride not found' } })
+      return
+    }
+    const isRider = ride.rider_id === userId
+    const isDriver = ride.driver_id === userId
+    if (!isRider && !isDriver) {
+      res.status(403).json({ error: { code: 'NOT_PARTICIPANT', message: 'Not your ride' } })
+      return
+    }
+    if (ride.status !== 'active') {
+      res.status(409).json({
+        error: { code: 'NOT_ACTIVE', message: `Ride status is '${ride.status}', cannot safety-end` },
+      })
+      return
+    }
+
+    const endReason: SafetyEndReason =
+      reason === 'rider_left'
+        ? 'rider_safety_button'
+        : reason === 'driver_left'
+          ? 'driver_safety_button'
+          : 'manual_end'
+
+    const result = await endRideForSafety({ rideId, endReason })
+    res.status(200).json({
+      ok: result.ok,
+      ride_ended: true,
+      fare_cents: result.fareCents ?? null,
+      end_reason: endReason,
+    })
   },
 )
 
