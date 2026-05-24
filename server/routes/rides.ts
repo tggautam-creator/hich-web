@@ -242,6 +242,100 @@ interface RideRequestBody {
   estimated_fare_cents?: number
   route_polyline?: string
   client_date?: string
+  /** v1.2 F6.1 — optional caregiver attachment. Validated server-side
+   *  against `caregivers.user_id == riderId`. The fare add-on is
+   *  ALWAYS recomputed server-side via `caregiverFareCentsFor` so the
+   *  client can't underbid. */
+  caregiver_id?: string
+}
+
+/** v1.2 F6 tiered caregiver seat fee. Computed server-side; client
+ *  preview lives in `RideConfirmPage` (F6.2). Tier breakpoints
+ *  revised 2026-05-22 per DJC feedback (was 5/20 mi — too tight for
+ *  medical trips like Davis ↔ SF). */
+export function caregiverFareCentsFor(distanceKm: number): number {
+  const mi = distanceKm * 0.621371
+  if (mi < 10) return 300       // $3 — short trip (< 10 mi)
+  if (mi <= 50) return 500      // $5 — medium trip (10–50 mi)
+  return 800                    // $8 — long trip (> 50 mi)
+}
+
+/** v1.2 F6.1 — fold the caregiver tier fee into the rider's final
+ *  charge AND the driver's earnings. Platform fee policy is 0% (driver
+ *  keeps 100%) so adding the same delta to both sides keeps the
+ *  `fare = platform_fee + driver_earns` invariant satisfied. `null` /
+ *  negative caregiver fares are treated as "no caregiver attached" so
+ *  legacy rides written before migration 091 still settle cleanly.
+ *
+ *  v1.2 F14.1 — `driverWaivesFee` is the driver's per-user goodwill
+ *  opt-out from `users.waive_caregiver_fee` (migration 092). When true,
+ *  the helper returns the base fare unchanged AND `addOnCents = 0`,
+ *  regardless of the persisted `caregiver_fare_cents` on the ride row.
+ *  The persisted column is left alone so the audit trail records "this
+ *  ride would have charged $5, driver waived." */
+export function foldCaregiverFare(
+  baseFareCents: number,
+  baseDriverEarnsCents: number,
+  caregiverFareCentsValue: number | null | undefined,
+  driverWaivesFee: boolean = false,
+): { fareCents: number; driverEarnsCents: number; addOnCents: number } {
+  const tier = typeof caregiverFareCentsValue === 'number' && caregiverFareCentsValue > 0
+    ? caregiverFareCentsValue
+    : 0
+  const addOn = driverWaivesFee ? 0 : tier
+  return {
+    fareCents: baseFareCents + addOn,
+    driverEarnsCents: baseDriverEarnsCents + addOn,
+    addOnCents: addOn,
+  }
+}
+
+/**
+ * v1.2 F14.3 — look up a driver's `users.waive_caregiver_fee` flag.
+ * Used by chat-proposal insert paths so the rendered fare matches the
+ * end-of-ride settle. Returns false on lookup miss or null driverId —
+ * the conservative default keeps the existing tier in the chat card
+ * until we know otherwise.
+ */
+export async function lookupDriverWaivesCaregiverFee(
+  driverId: string | null | undefined,
+): Promise<boolean> {
+  if (!driverId) return false
+  const { data } = await supabaseAdmin
+    .from('users')
+    .select('waive_caregiver_fee' as never)
+    .eq('id', driverId)
+    .single()
+  return (data as unknown as { waive_caregiver_fee?: boolean | null } | null)
+    ?.waive_caregiver_fee === true
+}
+
+/**
+ * v1.2 F18.3 — richer companion of `lookupDriverWaivesCaregiverFee`
+ * that also surfaces the driver's first name. Used by chat surfaces
+ * that personalize the goodwill copy ("Sarah is waiving…" vs "Your
+ * driver is waiving…").
+ */
+export async function lookupDriverWaiveInfo(
+  driverId: string | null | undefined,
+): Promise<{ waives: boolean; firstName: string | null; fullName: string | null }> {
+  if (!driverId) return { waives: false, firstName: null, fullName: null }
+  const { data } = await supabaseAdmin
+    .from('users')
+    .select('waive_caregiver_fee, full_name' as never)
+    .eq('id', driverId)
+    .single()
+  const row = data as unknown as {
+    waive_caregiver_fee?: boolean | null
+    full_name?: string | null
+  } | null
+  const fullName = row?.full_name?.trim() || null
+  const firstName = fullName?.split(/\s+/)[0] || null
+  return {
+    waives: row?.waive_caregiver_fee === true,
+    firstName,
+    fullName,
+  }
 }
 
 /**
@@ -496,6 +590,41 @@ ridesRouter.post(
       return
     }
 
+    // v1.2 F6.1 — caregiver attachment. Validate ownership BEFORE
+    // creating the ride row so a malformed payload doesn't leak a
+    // half-built ride. Returns 404 (not 403) to mirror the existing
+    // `assertOwnership` pattern in `routes/caregivers.ts` — hiding
+    // existence prevents id enumeration. The fare itself is recomputed
+    // server-side; the client can pass any caregiver_fare_cents and we
+    // ignore it.
+    let caregiverIdValidated: string | null = null
+    let caregiverFareCents: number | null = null
+    let caregiverName: string | null = null
+    if (typeof body.caregiver_id === 'string' && body.caregiver_id.length > 0) {
+      const { data: caregiverRow } = await supabaseAdmin
+        .from('caregivers')
+        .select('id, user_id, name')
+        .eq('id', body.caregiver_id)
+        .single()
+      const ownedByRider = caregiverRow != null
+        && (caregiverRow as { user_id: string }).user_id === riderId
+      if (!ownedByRider) {
+        res.status(404).json({
+          error: {
+            code: 'CAREGIVER_NOT_FOUND',
+            message: "We couldn't find that caregiver on your profile.",
+          },
+        })
+        return
+      }
+      caregiverIdValidated = (caregiverRow as { id: string }).id
+      caregiverName = (caregiverRow as { name: string }).name
+      const distanceKm = typeof body.distance_km === 'number' && body.distance_km > 0
+        ? body.distance_km
+        : 0
+      caregiverFareCents = caregiverFareCentsFor(distanceKm)
+    }
+
     const destinationGeo = (typeof body.destination_lat === 'number' && typeof body.destination_lng === 'number')
       ? { type: 'Point' as const, coordinates: [body.destination_lng, body.destination_lat] as [number, number] }
       : null
@@ -522,7 +651,11 @@ ridesRouter.post(
         destination_bearing: body.destination_bearing ?? null,
         route_polyline: typeof body.route_polyline === 'string' ? body.route_polyline : null,
         status: 'requested',
-      })
+        // v1.2 F6.1 — caregiver columns. Validated above; nulls when
+        // no caregiver attached.
+        caregiver_id: caregiverIdValidated,
+        caregiver_fare_cents: caregiverFareCents,
+      } as never)
       .select('id')
       .single()
 
@@ -706,6 +839,23 @@ ridesRouter.post(
       destination_lng: typeof body.destination_lng === 'number' ? String(body.destination_lng) : '',
       rider_rating: String(riderProfile.data?.rating_avg ?? ''),
       rider_rating_count: String(riderProfile.data?.rating_count ?? '0'),
+      // v1.2 F6.1 — caregiver context surfaced to the driver. The
+      // headline fare on the lock-screen banner stays the
+      // non-caregiver number; `has_caregiver` lets the foreground
+      // FCM handler decide whether to render the "Riding with
+      // caregiver" badge and the iOS RideRequestPayload to show
+      // the +$X line item.
+      //
+      // F18.5 — DO NOT include caregiver_phone here. The
+      // `ride_request` push fans out to every nearby driver,
+      // including ones who'll decline. Surfacing the caregiver's
+      // phone pre-Accept is a privacy/abuse vector (caregivers are
+      // often elderly family members of disabled riders). Phone is
+      // only released to the matched driver post-Accept via the
+      // authenticated `/api/rides/active` join.
+      has_caregiver: caregiverIdValidated != null ? 'true' : 'false',
+      caregiver_name: caregiverName ?? '',
+      caregiver_fare_cents: caregiverFareCents != null ? String(caregiverFareCents) : '',
     }
 
     // Rich title + body so the long-press preview gives the driver
@@ -5166,14 +5316,40 @@ ridesRouter.get(
       )
     }
 
+    // v1.2 F18.3 — attach caregiver name/phone/avatar for rides that
+    // have a caregiver. The driver-side context row on the
+    // instant-ride surfaces (RideSuggestion / DriverPickup /
+    // DriverActiveRide / RideSummary) reads these to render "Riding
+    // with caregiver: Sarah · 📞 +1 555…". Phone is released
+    // post-Accept only — the FCM/Realtime push during /api/rides/request
+    // intentionally omits it (privacy vector pre-Accept).
+    const caregiverIds = rides
+      .map((r: Record<string, unknown>) => r['caregiver_id'] as string | null)
+      .filter(Boolean) as string[]
+    let caregiverMap = new Map<string, Record<string, unknown>>()
+    if (caregiverIds.length > 0) {
+      const { data: caregiversRows } = await supabaseAdmin
+        .from('caregivers')
+        .select('id, name, phone, avatar_url')
+        .in('id', [...new Set(caregiverIds)])
+      caregiverMap = new Map(
+        (caregiversRows ?? []).map(
+          (c: Record<string, unknown>) => [c['id'] as string, c],
+        ),
+      )
+    }
+
     const enriched = rides.map((r: Record<string, unknown>) => {
       const otherId = r['rider_id'] === userId ? r['driver_id'] as string : r['rider_id'] as string
       const role = r['rider_id'] === userId ? 'rider' : 'driver'
+      const caregiverID = r['caregiver_id'] as string | null
+      const caregiver = caregiverID != null ? caregiverMap.get(caregiverID) ?? null : null
       return {
         ...r,
         my_role: role,
         other_user: userMap.get(otherId) ?? null,
         schedule: r['schedule_id'] ? scheduleMap.get(r['schedule_id'] as string) ?? null : null,
+        caregiver,
       }
     })
 

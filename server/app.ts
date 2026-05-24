@@ -25,6 +25,7 @@ import { vehicleRouter } from './routes/vehicle.ts'
 import { reportRouter } from './routes/report.ts'
 import { accountRouter } from './routes/account.ts'
 import { usersRouter } from './routes/users.ts'
+import { caregiversRouter } from './routes/caregivers.ts'
 import { liveActivityRouter } from './routes/liveActivity.ts'
 import { publicCampaignsRouter } from './routes/publicCampaigns.ts'
 import { errorHandler } from './middleware/errorHandler.ts'
@@ -142,6 +143,11 @@ app.use('/api/ops', opsRouter)
 app.use('/api/admin', adminRouter)
 app.use('/api/account', accountRouter)
 app.use('/api/users', usersRouter)
+// v1.2 F3 — caregivers CRUD for the disabled-rider flow. Cherry-
+// picked from `v1.2-wip` 2026-05-24 to close the gap noted in the
+// caregiver audit (iOS components were ready but server-side was
+// missing the route + the FCM/rides enrichment).
+app.use('/api/caregivers', caregiversRouter)
 app.use('/api/live-activity', liveActivityRouter)
 // Public read of admin-broadcast campaigns by slug. Anonymous —
 // powers the /c/:slug marketing surface that admin pushes deep-link
