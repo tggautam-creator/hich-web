@@ -11,6 +11,16 @@ import { realtimeBroadcast, realtimeBroadcastMany } from '../lib/realtimeBroadca
 import { pushLiveActivityUpdateForRide, endLiveActivitiesForRide } from '../lib/apns.ts'
 import { chargeRideViaWallet, creditDriverEarning } from '../lib/walletPayment.ts'
 import { chargeTip } from '../lib/tipPayment.ts'
+import { getOrCreateTripForRide, updateTripStatus } from '../lib/trips.ts'
+import {
+  addRiderToOpenSegment,
+  removeRiderFromOpenSegment,
+  recordSegmentDistanceDelta,
+  computeRiderBaseShare,
+  computeRiderTotals,
+  upsertRiderShare,
+  markRiderShareCharged,
+} from '../lib/segments.ts'
 import { shouldTreatScheduledRideAsExpired } from '../lib/scheduledReminders.ts'
 import { resolveAndPersistDefaultPm } from './payment.ts'
 import { getGasPriceForState } from './gasPrice.ts'
@@ -3826,6 +3836,25 @@ ridesRouter.post(
       return
     }
 
+    // v1.2 F17 — segment trail. Ensure a trips row exists for this rides
+    // row + open a new segment with this rider added to active_rider_ids.
+    // For single-rider trips this is just the one segment that runs
+    // start→end. For multi-rider board trips, subsequent /start scans
+    // close this segment and open new ones with the additional rider.
+    try {
+      const tripRes = await getOrCreateTripForRide(rideId)
+      if (tripRes.tripId) {
+        const gasPrice = await getGasPriceForState('CA')
+        await addRiderToOpenSegment(tripRes.tripId, riderId, startedAtIso, gasPrice)
+        // Flip trip status pending→active on first /start. Idempotent.
+        await updateTripStatus(tripRes.tripId, 'active', { startedAt: startedAtIso })
+      } else if (tripRes.error) {
+        console.warn(`[rides/start] segment trail not opened for ${rideId}: ${tripRes.error}`)
+      }
+    } catch (err) {
+      console.error(`[rides/start] segment trail error for ${rideId}:`, err)
+    }
+
     // Release standby offers now that the ride has started
     const { data: standbyOffers } = await supabaseAdmin
       .from('ride_offers')
@@ -3978,16 +4007,99 @@ ridesRouter.post(
     }
 
     const endedAt = new Date().toISOString()
-    const {
-      fare_cents: fareCents,
-      platform_fee_cents: platformFeeCents,
-      driver_earns_cents: driverEarnsCents,
-      distance_miles,
-      duration_min,
-      gas_cost_cents: gasCostCents,
-      time_cost_cents: timeCostCents,
-      gas_price_per_gallon_cents: gasPricePerGallonCents,
-    } = await computeRideFare(rideForFare, endedAt)
+    const singleRiderFare = await computeRideFare(rideForFare, endedAt)
+    let fareCents = singleRiderFare.fare_cents
+    let platformFeeCents = singleRiderFare.platform_fee_cents
+    let driverEarnsCents = singleRiderFare.driver_earns_cents
+    const distance_miles = singleRiderFare.distance_miles
+    const duration_min = singleRiderFare.duration_min
+    let gasCostCents = singleRiderFare.gas_cost_cents
+    let timeCostCents = singleRiderFare.time_cost_cents
+    const gasPricePerGallonCents = singleRiderFare.gas_price_per_gallon_cents
+
+    // v1.2 F17 — segmented split fare for multi-rider trips.
+    //
+    // If this rides row's parent trip has ≥2 rider rows, we route this
+    // rider's settlement through the segment trail instead of using the
+    // single-rider computeRideFare result above. Math:
+    //   base_share  = Σ over segments-they-were-in of (cost / active_count)
+    //   total       = max(MIN_FARE, base_share) + caregiver + companion
+    //
+    // Single-rider trips fall through to the existing single-rider path
+    // unchanged — the segment trail still gets closed for forensic value
+    // but the dollar amounts come from computeRideFare.
+    let isMultiRiderTrip = false
+    let tripIdForEnd: string | null = null
+    try {
+      const tripRes = await getOrCreateTripForRide(rideId)
+      if (tripRes.tripId) {
+        tripIdForEnd = tripRes.tripId
+        const gasPriceForEnd = await getGasPriceForState('CA')
+
+        // Always close this rider's segment so the trail captures the
+        // exit even on single-rider trips.
+        const removeRes = await removeRiderFromOpenSegment(
+          tripRes.tripId, ride.rider_id as string, endedAt, gasPriceForEnd,
+        )
+        if (removeRes.error) {
+          console.warn(`[rides/end] segment close failed for ${rideId}: ${removeRes.error}`)
+        }
+
+        // Count rider rows on this trip to detect multi-rider.
+        const { count: tripRideCount } = await supabaseAdmin
+          .from('rides')
+          .select('id', { count: 'exact', head: true })
+          .eq('trip_id', tripRes.tripId)
+        isMultiRiderTrip = (tripRideCount ?? 1) >= 2
+
+        if (isMultiRiderTrip) {
+          // Per-rider split share. Caregiver + companion fold on top.
+          const { baseShareCents, gasShareCents, timeShareCents, segmentsInCount } =
+            await computeRiderBaseShare(tripRes.tripId, ride.rider_id as string)
+
+          const caregiverFareCentsRaw = (ride as unknown as {
+            caregiver_fare_cents: number | null
+          }).caregiver_fare_cents ?? 0
+          const driverWaiveInfo = await lookupDriverWaiveInfo(ride.driver_id as string | null)
+          const caregiverShareCents = driverWaiveInfo.waives ? 0 : Math.max(0, caregiverFareCentsRaw)
+
+          // Companion fee — F16 not yet implemented; default to 0.
+          // When F16 lands, read ride.companion_fare_cents and apply
+          // the same min(0) clamp pattern.
+          const companionShareCents = 0
+
+          const totals = computeRiderTotals({
+            baseShareCents,
+            caregiverFareCents: caregiverShareCents,
+            companionFareCents: companionShareCents,
+            segmentsInCount,
+          })
+
+          await upsertRiderShare({
+            tripId: tripRes.tripId,
+            rideId,
+            riderId: ride.rider_id as string,
+            driverId: ride.driver_id as string,
+            totals,
+            finalizedAtIso: endedAt,
+          })
+
+          // Override the single-rider fare numbers with the F17 totals.
+          // gas + time costs land their per-rider share on the rides
+          // row so admin can read a coherent breakdown without joining
+          // ride_segments. Full segment-by-segment detail lives in
+          // ride_rider_shares for the iOS share modal.
+          fareCents = totals.total_cents
+          driverEarnsCents = totals.total_cents
+          platformFeeCents = 0
+          gasCostCents = gasShareCents
+          timeCostCents = timeShareCents
+        }
+      }
+    } catch (err) {
+      console.error(`[rides/end] F17 settlement error for ${rideId}:`, err)
+      // Fall through — single-rider fare stays in effect.
+    }
 
     // Charge rider's card to TAGO's platform balance BEFORE marking the ride
     // completed. On success, credit the driver's in-app wallet atomically via
@@ -4075,6 +4187,39 @@ ridesRouter.post(
     if (updateErr) {
       next(updateErr)
       return
+    }
+
+    // v1.2 F17 — stamp the rider's share with the resolved payment status
+    // + mark the trip 'completed' if every rider has now exited.
+    if (isMultiRiderTrip && tripIdForEnd) {
+      try {
+        await markRiderShareCharged({
+          rideId,
+          riderId: ride.rider_id as string,
+          paymentStatus: paymentStatus as 'paid' | 'processing' | 'failed' | 'pending',
+          paymentIntentId: paymentIntentId ?? null,
+          chargedAtIso: endedAt,
+        })
+
+        // If no rides on this trip still active, the driver-trip is done.
+        const { count: activeStillOnTrip } = await supabaseAdmin
+          .from('rides')
+          .select('id', { count: 'exact', head: true })
+          .eq('trip_id', tripIdForEnd)
+          .in('status', ['active', 'coordinating'])
+        if ((activeStillOnTrip ?? 0) === 0) {
+          await updateTripStatus(tripIdForEnd, 'completed', { endedAt })
+        }
+      } catch (err) {
+        console.error(`[rides/end] F17 post-charge bookkeeping failed for ${rideId}:`, err)
+      }
+    } else if (tripIdForEnd) {
+      // Single-rider trip: complete the trip too.
+      try {
+        await updateTripStatus(tripIdForEnd, 'completed', { endedAt })
+      } catch (err) {
+        console.warn(`[rides/end] trip completion update failed for ${rideId}:`, err)
+      }
     }
 
     // B2 — rider had no card at end-of-ride. Nudge them to add one now.
@@ -4768,6 +4913,7 @@ ridesRouter.post(
       warning_push_count: number | null
       pickup_point: unknown
       auto_ended: boolean | null
+      trip_id: string | null
     }
     const { data: rideRaw, error: fetchErr } = await supabaseAdmin
       .from('rides')
@@ -4777,7 +4923,7 @@ ridesRouter.post(
           + 'last_driver_gps_lat, last_driver_gps_lng, last_rider_gps_lat, last_rider_gps_lng, '
           + 'last_driver_ping_at, last_rider_ping_at, '
           + 'divergence_state, divergence_first_seen_at, warning_fired_at, warning_push_count, '
-          + 'pickup_point, auto_ended') as never,
+          + 'pickup_point, auto_ended, trip_id') as never,
       )
       .eq('id', rideId)
       .single()
@@ -4828,6 +4974,7 @@ ridesRouter.post(
       updatePayload.last_rider_ping_at = now
     }
 
+    let segmentDeltaM = 0
     if (isActive) {
       // Accumulate distance from last shared ping (active only).
       let deltaM = 0
@@ -4840,12 +4987,26 @@ ridesRouter.post(
       updatePayload.gps_distance_metres = (ride.gps_distance_metres ?? 0) + deltaM
       updatePayload.last_gps_lat = lat
       updatePayload.last_gps_lng = lng
+      // Only the driver ping should advance the segment distance — both
+      // parties already write to rides.gps_distance_metres for redundancy
+      // but the segment trail is authoritative for F17 split math and
+      // tracks the actual driven path, not the rider's gait.
+      if (isDriver) segmentDeltaM = deltaM
     }
 
     await supabaseAdmin
       .from('rides')
       .update(updatePayload)
       .eq('id', rideId)
+
+    // v1.2 F17 — advance the open segment's distance_meters for this
+    // trip. Fire-and-forget: segment-trail bookkeeping should never
+    // break the gps-ping happy path.
+    if (segmentDeltaM > 0 && ride.trip_id) {
+      void recordSegmentDistanceDelta(ride.trip_id, segmentDeltaM).catch((err) => {
+        console.warn(`[gps-ping] segment distance delta failed for trip ${ride.trip_id}:`, err)
+      })
+    }
 
     // ── v1.2 F12.2 (Phase 2A) — live ride-location broadcast ──
     // Mirror the per-party GPS onto the `ride-location:{rideID}`
