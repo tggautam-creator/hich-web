@@ -16,6 +16,7 @@ import { adminReportsRouter } from './reports.ts'
 import { adminRidesRouter } from './rides.ts'
 import { adminGhostRefundsRouter } from './ghostRefunds.ts'
 import { adminDeclineReasonsRouter } from './declineReasons.ts'
+import { adminStatsRouter } from './stats.ts'
 
 /**
  * `/api/admin/*` — Tago internal admin API.
@@ -95,6 +96,10 @@ adminRouter.use('/ghost-refunds', adminGhostRefundsRouter)
 // 2026-05-23 — supply-side decline analytics from
 // driver_decline_reasons. Owns GET /api/admin/decline-reasons.
 adminRouter.use('/decline-reasons', adminDeclineReasonsRouter)
+// 2026-05-23 — network-wide stats dashboard (Slice 5).
+// Owns GET /api/admin/stats. Single fat response: KPIs + 30d
+// daily chart + lifetime totals + funnel snapshot.
+adminRouter.use('/stats', adminStatsRouter)
 // Slice 1.4 — broadcast push composer. Owns GET /audience/preview + POST /push.
 adminRouter.use('/campaigns', adminCampaignsRouter)
 // Slice 1.7 — live ops snapshot.

@@ -11,6 +11,7 @@ import {
   YAxis,
 } from 'recharts'
 import { useAdminOverview } from '@/hooks/useAdminOverview'
+import { useAdminStats } from '@/hooks/useAdminStats'
 import { AdminApiException } from '@/lib/admin/api'
 import { trackEvent } from '@/lib/analytics'
 import { colors } from '@/lib/tokens'
@@ -195,6 +196,15 @@ export default function AdminHomePage() {
         />
       </div>
 
+      {/* 2026-05-24 — Lifetime + impact section. Pulls from
+          /api/admin/stats (separate endpoint from /metrics/overview).
+          Shows data NOT already on the dashboard: online drivers
+          right now, Stripe-onboarded driver count, lifetime totals
+          (miles + $ + gas saved + CO2 + universities), and a quick
+          funnel snapshot. Render-renders self when the stats query
+          is loading so the rest of the dashboard isn't blocked. */}
+      <LifetimeImpactSection />
+
       {/* ── 3 charts ────────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <ChartCard
@@ -254,6 +264,194 @@ interface KpiCardProps {
   subtitle?: string
   accent?: 'success' | 'warning' | 'danger'
   info?: string
+}
+
+/**
+ * 2026-05-24 — Lifetime + impact section on the Overview dashboard.
+ * Replaces the (briefly-shipped, never-pushed) /admin/stats page —
+ * keeps only the data that's NOT already on the dashboard's KPI
+ * grid: online drivers right now (5-min GPS freshness),
+ * Stripe-onboarded driver count, lifetime totals + gas-saved
+ * estimate, signups → 5+ ride funnel.
+ *
+ * Pulls from /api/admin/stats (separate endpoint from
+ * /metrics/overview). Renders nothing on initial load — doesn't
+ * block the rest of the dashboard from painting.
+ */
+function LifetimeImpactSection() {
+  const { data, isLoading, error } = useAdminStats()
+  if (isLoading) {
+    return (
+      <div className="rounded-2xl border border-border bg-white p-5 text-sm text-text-secondary">
+        Loading lifetime + impact…
+      </div>
+    )
+  }
+  if (error || !data) {
+    return (
+      <div
+        data-testid="lifetime-impact-error"
+        className="rounded-2xl border border-border bg-white p-5 text-sm text-danger"
+      >
+        Couldn't load lifetime + impact stats.
+      </div>
+    )
+  }
+
+  const k = data.kpis
+  const l = data.lifetime
+  const f = data.funnel
+  const miles = Math.round((l.total_distance_metres / 1609.344) * 10) / 10
+  const funnelSteps = [
+    { label: 'Signed up', n: f.signups, pct: 100 },
+    { label: 'Completed onboarding', n: f.onboarded, pct: pctOf(f.onboarded, f.signups) },
+    { label: 'Completed ≥ 1 ride', n: f.first_ride_completed, pct: pctOf(f.first_ride_completed, f.signups) },
+    { label: 'Completed ≥ 5 rides', n: f.five_rides_completed, pct: pctOf(f.five_rides_completed, f.signups) },
+  ]
+
+  return (
+    <section
+      data-testid="lifetime-impact"
+      className="rounded-2xl border border-border bg-white p-5 space-y-5"
+    >
+      <header className="flex items-baseline justify-between gap-2">
+        <h2 className="text-sm font-bold text-text-primary">Lifetime + impact</h2>
+        <p className="text-[10px] text-text-secondary">
+          Network-wide totals · refreshes every 60s
+        </p>
+      </header>
+
+      {/* Two small "right now" KPIs not already on the main grid */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <MiniStat
+          testid="impact-online-drivers"
+          label="Drivers online now"
+          value={k.online_drivers.toLocaleString()}
+          subtitle="GPS in last 5 min"
+          accent={k.online_drivers > 0 ? 'success' : undefined}
+        />
+        <MiniStat
+          testid="impact-stripe-onboarded"
+          label="Stripe-onboarded drivers"
+          value={`${l.stripe_onboarded_drivers.toLocaleString()} / ${l.total_drivers.toLocaleString()}`}
+          subtitle="Can receive payouts"
+        />
+        <MiniStat
+          testid="impact-universities"
+          label="Universities"
+          value={l.universities.toLocaleString()}
+          subtitle="Distinct .edu domains"
+        />
+        <MiniStat
+          testid="impact-revenue-today"
+          label="Revenue today"
+          value={fmtCentsCompact(k.revenue_today_cents)}
+          subtitle="Paid completed rides"
+        />
+      </div>
+
+      {/* Lifetime totals row */}
+      <div className="grid grid-cols-2 gap-x-6 gap-y-3 lg:grid-cols-4">
+        <MiniStat
+          testid="impact-miles"
+          label="Miles together"
+          value={miles.toLocaleString()}
+          subtitle="From GPS tracking"
+        />
+        <MiniStat
+          testid="impact-revenue-total"
+          label="Revenue moved"
+          value={fmtCentsCompact(l.total_revenue_cents)}
+          subtitle="Lifetime paid fares"
+        />
+        <MiniStat
+          testid="impact-gas-saved"
+          label="Gas saved (est.)"
+          value={`${l.gallons_saved.toLocaleString()} gal`}
+          subtitle={`${Math.round(l.co2_saved_kg).toLocaleString()} kg CO₂ avoided`}
+          accent="success"
+        />
+        <MiniStat
+          testid="impact-rides-completed"
+          label="Rides completed"
+          value={l.total_completed.toLocaleString()}
+          subtitle={`of ${l.total_rides.toLocaleString()} requested`}
+        />
+      </div>
+      <p className="text-[10px] italic text-text-secondary">
+        Gas + CO₂ estimates: distance ÷ 25 mpg, 8.89 kg CO₂ per gallon (EPA).
+        Marketing signal, not peer-reviewed.
+      </p>
+
+      {/* Funnel snapshot — bars relative to signups */}
+      <div>
+        <h3 className="mb-2 text-[11px] uppercase tracking-wide font-semibold text-text-secondary">
+          Funnel
+        </h3>
+        <ul className="space-y-2">
+          {funnelSteps.map((s) => (
+            <li key={s.label}>
+              <div className="flex items-baseline justify-between text-xs mb-1">
+                <span className="font-medium text-text-primary">{s.label}</span>
+                <span className="font-mono text-text-secondary">
+                  {s.n.toLocaleString()}
+                  <span className="text-text-secondary/70"> ({s.pct.toFixed(1)}%)</span>
+                </span>
+              </div>
+              <div className="h-1.5 rounded-full bg-surface overflow-hidden">
+                <div
+                  className="h-full bg-primary/70 rounded-full"
+                  style={{ width: `${Math.max(1, s.pct)}%` }}
+                  aria-hidden="true"
+                />
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </section>
+  )
+}
+
+function MiniStat({
+  testid,
+  label,
+  value,
+  subtitle,
+  accent,
+}: {
+  testid: string
+  label: string
+  value: string
+  subtitle?: string
+  accent?: 'success'
+}) {
+  return (
+    <div data-testid={testid}>
+      <p className="text-[10px] uppercase tracking-wide text-text-secondary">{label}</p>
+      <p
+        className={[
+          'text-lg font-bold',
+          accent === 'success' ? 'text-success' : 'text-text-primary',
+        ].join(' ')}
+      >
+        {value}
+      </p>
+      {subtitle && <p className="text-[10px] text-text-secondary">{subtitle}</p>}
+    </div>
+  )
+}
+
+function pctOf(num: number, denom: number): number {
+  if (denom <= 0) return 0
+  return (num / denom) * 100
+}
+
+function fmtCentsCompact(cents: number): string {
+  if (!cents) return '$0'
+  if (cents >= 100_000_000) return `$${(cents / 100_000_000).toFixed(2)}M`
+  if (cents >= 100_000) return `$${(cents / 100_000).toFixed(1)}k`
+  return `$${(cents / 100).toFixed(2)}`
 }
 
 function KpiCard({ testid, title, value, subtitle, accent, info }: KpiCardProps) {
