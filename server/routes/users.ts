@@ -314,3 +314,147 @@ usersRouter.post(
     }
   },
 )
+
+// ── GET /api/users/:id/public-profile (v1.2 F18.1) ──────────────────────
+//
+// Canonical "view someone else's profile" endpoint. Any signed-in user
+// can read any other user's public-safe fields. Private fields (phone,
+// email, stripe_*, wallet_balance, push_tokens) are NEVER returned. The
+// companion vehicle object is included only when the subject is a
+// driver AND has an active vehicle row. Plate is REDACTED to last 4
+// chars to match the F18 design decision (Uber-style); full plate
+// stays in the DB for support purposes but is never sent over this
+// endpoint.
+//
+// Cherry-picked 2026-05-24 from v1.2-wip — closes the "profile preview
+// shows only name + avatar" gap noted in today's session (iOS
+// PublicProfileEndpoint was hitting a non-existent /api/users/:id/public-profile
+// and getting 404, then falling back to whatever .partial(...) was
+// already in hand).
+usersRouter.get(
+  '/:id/public-profile',
+  validateJwt,
+  async (req: Request, res: Response) => {
+    const viewerId = res.locals['userId'] as string
+    if (!viewerId) {
+      res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Not signed in' } })
+      return
+    }
+    const rawSubjectId = req.params['id']
+    const subjectId = typeof rawSubjectId === 'string' ? rawSubjectId : ''
+    if (!subjectId || !/^[0-9a-f-]{36}$/i.test(subjectId)) {
+      res.status(400).json({ error: { code: 'INVALID_ID', message: 'User id must be a UUID' } })
+      return
+    }
+
+    try {
+      const { data: rawUser, error } = await supabaseAdmin
+        .from('users')
+        .select(
+          'id, full_name, avatar_url, is_driver, rating_avg, rating_count, '
+          + 'bio, gender, school, major, graduation_year, '
+          + 'has_accessibility_needs, accessibility_profile, '
+          + 'created_at, waive_caregiver_fee' as never,
+        )
+        .eq('id', subjectId)
+        .single()
+      if (error || !rawUser) {
+        res.status(404).json({ error: { code: 'NOT_FOUND', message: 'User not found' } })
+        return
+      }
+      type UserRow = {
+        id: string
+        full_name: string | null
+        avatar_url: string | null
+        is_driver: boolean | null
+        rating_avg: number | null
+        rating_count: number | null
+        bio: string | null
+        gender: string | null
+        school: string | null
+        major: string | null
+        graduation_year: number | null
+        has_accessibility_needs: boolean | null
+        accessibility_profile: { needs_wheelchair?: boolean } | null
+        created_at: string
+        waive_caregiver_fee?: boolean | null
+      }
+      const user = rawUser as unknown as UserRow
+
+      let vehiclePayload: {
+        make: string | null
+        model: string | null
+        color: string | null
+        year: number | null
+        plate_last4: string | null
+        wheelchair_capable: boolean
+        trunk_size: string | null
+      } | null = null
+      if (user.is_driver === true) {
+        const { data: vRaw } = await supabaseAdmin
+          .from('vehicles')
+          .select('make, model, color, year, plate, wheelchair_capable, trunk_size' as never)
+          .eq('user_id', subjectId)
+          .eq('is_active', true)
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        type VehicleRow = {
+          make: string | null
+          model: string | null
+          color: string | null
+          year: number | null
+          plate: string | null
+          wheelchair_capable?: boolean | null
+          trunk_size?: string | null
+        }
+        const v = vRaw as unknown as VehicleRow | null
+        if (v) {
+          const plate = (v.plate ?? '').replace(/\s+/g, '')
+          const last4 = plate.length >= 4 ? plate.slice(-4) : (plate || null)
+          vehiclePayload = {
+            make: v.make,
+            model: v.model,
+            color: v.color,
+            year: v.year,
+            plate_last4: last4,
+            wheelchair_capable: v.wheelchair_capable === true,
+            trunk_size: v.trunk_size ?? null,
+          }
+        }
+      }
+
+      const { count: ridesCompleted } = await supabaseAdmin
+        .from('rides')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'completed')
+        .or(`rider_id.eq.${subjectId},driver_id.eq.${subjectId}`)
+
+      const needsWheelchair = user.has_accessibility_needs === true
+        && user.accessibility_profile?.needs_wheelchair === true
+
+      res.status(200).json({
+        id: user.id,
+        full_name: user.full_name,
+        avatar_url: user.avatar_url,
+        is_driver: user.is_driver === true,
+        rating_avg: user.rating_avg,
+        rating_count: user.rating_count ?? 0,
+        rides_completed: ridesCompleted ?? 0,
+        bio: user.bio,
+        gender: user.gender,
+        school: user.school,
+        major: user.major,
+        graduation_year: user.graduation_year,
+        has_accessibility_needs: user.has_accessibility_needs === true,
+        needs_wheelchair: needsWheelchair,
+        waive_caregiver_fee: user.waive_caregiver_fee === true,
+        member_since: user.created_at,
+        vehicle: vehiclePayload,
+      })
+    } catch (err) {
+      console.error('[users/:id/public-profile GET] failed:', err)
+      res.status(500).json({ error: { code: 'INTERNAL', message: 'Profile fetch failed' } })
+    }
+  },
+)
