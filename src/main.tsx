@@ -37,6 +37,7 @@ const AdminReportDetailPage = lazy(() => import('@/components/admin/ReportDetail
 const AdminReportsInboxPage = lazy(() => import('@/components/admin/ReportsInboxPage'))
 const AdminRideDetailPage = lazy(() => import('@/components/admin/RideDetailPage'))
 const AdminRidesInboxPage = lazy(() => import('@/components/admin/RidesInboxPage'))
+const AdminGhostRefundsPage = lazy(() => import('@/components/admin/GhostRefundsPage'))
 const AdminCampaignsPage = lazy(() => import('@/components/admin/CampaignsPage'))
 const AdminLiveOpsPage = lazy(() => import('@/components/admin/LiveOpsPage'))
 const AdminAuditLogPage = lazy(() => import('@/components/admin/AuditLogPage'))
@@ -236,6 +237,8 @@ createRoot(rootEl).render(
                   {/* 2026-05-23 — admin ride visibility: full thread + payment timeline per ride. */}
                   <Route path="/admin/rides" element={<Suspense fallback={<ListPageSkeleton />}><AdminRidesInboxPage /></Suspense>} />
                   <Route path="/admin/rides/:id" element={<Suspense fallback={<FormPageSkeleton />}><AdminRideDetailPage /></Suspense>} />
+                  {/* 2026-05-23 — ghost-driver auto-refund queue. */}
+                  <Route path="/admin/ghost-refunds" element={<Suspense fallback={<ListPageSkeleton />}><AdminGhostRefundsPage /></Suspense>} />
                   <Route path="/admin/campaigns"  element={<Suspense fallback={<FormPageSkeleton />}><AdminCampaignsPage /></Suspense>} />
                   <Route path="/admin/ride-board" element={<Suspense fallback={<ListPageSkeleton />}><AdminRideBoardPage /></Suspense>} />
                   <Route path="/admin/api-usage"  element={<Suspense fallback={<ListPageSkeleton />}><AdminApiUsagePage /></Suspense>} />

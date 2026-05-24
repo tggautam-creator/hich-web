@@ -34,6 +34,7 @@ const NAV_ITEMS: readonly NavItem[] = [
   { to: '/admin/users',       label: 'Users',      testId: 'admin-nav-users' },
   { to: '/admin/ride-board',  label: 'Ride Board', testId: 'admin-nav-ride-board' },
   { to: '/admin/rides',       label: 'Rides',      testId: 'admin-nav-rides' },
+  { to: '/admin/ghost-refunds', label: 'Ghost refunds', testId: 'admin-nav-ghost-refunds' },
   { to: '/admin/campaigns',   label: 'Campaigns',  testId: 'admin-nav-campaigns' },
   { to: '/admin/reports',     label: 'Reports',    testId: 'admin-nav-reports' },
   { to: '/admin/live',        label: 'Live',       testId: 'admin-nav-live' },

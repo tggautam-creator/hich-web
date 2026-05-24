@@ -14,6 +14,7 @@ import { adminAlertsRouter } from './alerts.ts'
 import { adminRideBoardRouter } from './rideBoard.ts'
 import { adminReportsRouter } from './reports.ts'
 import { adminRidesRouter } from './rides.ts'
+import { adminGhostRefundsRouter } from './ghostRefunds.ts'
 
 /**
  * `/api/admin/*` — Tago internal admin API.
@@ -86,6 +87,10 @@ adminRouter.use('/rides', adminRefundsRouter)
 // Owns GET /api/admin/rides (inbox) + GET /api/admin/rides/:id (detail).
 // Coexists with adminRefundsRouter via method routing (refunds = POST only).
 adminRouter.use('/rides', adminRidesRouter)
+// 2026-05-23 — ghost-driver auto-refund queue visibility.
+// Owns GET /api/admin/ghost-refunds. Closes the schema-audit gap
+// where ghost_refunds rows existed but had no admin surface.
+adminRouter.use('/ghost-refunds', adminGhostRefundsRouter)
 // Slice 1.4 — broadcast push composer. Owns GET /audience/preview + POST /push.
 adminRouter.use('/campaigns', adminCampaignsRouter)
 // Slice 1.7 — live ops snapshot.
