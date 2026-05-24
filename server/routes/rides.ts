@@ -110,7 +110,20 @@ async function getRoadDistanceMetres(
 async function computeRideFare(
   ride: { pickup_point: GeoPoint | null; dropoff_point: GeoPoint | null; started_at: string | null; gps_distance_metres?: number },
   endedAt: string,
-): Promise<{ fare_cents: number; platform_fee_cents: number; driver_earns_cents: number; distance_miles: number; duration_min: number; distance_source: string }> {
+): Promise<{
+  fare_cents: number
+  platform_fee_cents: number
+  driver_earns_cents: number
+  distance_miles: number
+  duration_min: number
+  distance_source: string
+  // 2026-05-24 — migration-095 forensic intermediates. /end handler
+  // snapshots these onto the rides row so admin can later show
+  // "fare = $X gas + $Y time → $Z min" instead of just the total.
+  gas_cost_cents: number
+  time_cost_cents: number
+  gas_price_per_gallon_cents: number
+}> {
   // Duration from actual ride timestamps
   const startMs = ride.started_at ? new Date(ride.started_at).getTime() : Date.now()
   const endMs = new Date(endedAt).getTime()
@@ -162,7 +175,20 @@ async function computeRideFare(
   const platformFeeCents = Math.round(fareCents * PLATFORM_FEE_RATE)
   const driverEarnsCents = fareCents - platformFeeCents
 
-  return { fare_cents: fareCents, platform_fee_cents: platformFeeCents, driver_earns_cents: driverEarnsCents, distance_miles: distanceMiles, duration_min: durationMin, distance_source: distanceSource }
+  return {
+    fare_cents: fareCents,
+    platform_fee_cents: platformFeeCents,
+    driver_earns_cents: driverEarnsCents,
+    distance_miles: distanceMiles,
+    duration_min: durationMin,
+    distance_source: distanceSource,
+    gas_cost_cents: gasCostCents,
+    time_cost_cents: timeCostCents,
+    // gas_price comes back as $/gallon (float). Migration-095 column
+    // stores cents (int) so admin can render exactly what we used at
+    // fare-set time without dealing with float precision drift.
+    gas_price_per_gallon_cents: Math.round(gasPricePerGallon * 100),
+  }
 }
 
 /// Compute an estimated fare for a hypothetical pickup→dropoff pair —
@@ -1204,9 +1230,20 @@ ridesRouter.patch(
 
     // ── Rider cancel or driver cancel of a 'requested' ride → permanent cancel ──
     console.log(`[rides/cancel:DEBUG] Path B: permanent cancel by ${cancellerRole} ${userId} for ride ${rideId} (was ${originalStatus})`)
+    // 2026-05-24 — stamp migration-095 forensic columns so admin's
+    // ride-detail page can show "who cancelled + why" instead of
+    // just "cancelled."
+    const cancelReasonText =
+      typeof (req.body as { reason?: unknown })?.reason === 'string'
+        ? ((req.body as { reason?: string }).reason ?? '').trim().slice(0, 500)
+        : ''
     const { error: updateErr } = await supabaseAdmin
       .from('rides')
-      .update({ status: 'cancelled' })
+      .update({
+        status: 'cancelled',
+        end_reason: cancellerRole === 'driver' ? 'driver_cancelled' : 'rider_cancelled',
+        ...(cancelReasonText.length > 0 ? { cancel_reason: cancelReasonText } : {}),
+      })
       .eq('id', rideId)
 
     if (updateErr) {
@@ -3440,14 +3477,25 @@ ridesRouter.post(
       return
     }
 
-    // Save rider's actual GPS as pickup_point (where ride truly starts)
+    // Save rider's actual GPS as pickup_point (where ride truly starts).
+    // Also stamp the exact QR-scan location into the migration-095
+    // forensic columns so admin's ride-detail page can show "scanned at"
+    // distinct from pickup_point (which can be the AGREED coord set
+    // during coordination, not the actual scan position).
+    const startedAtIso = new Date().toISOString()
     const startUpdate: Record<string, unknown> = {
       status: 'active',
-      started_at: new Date().toISOString(),
+      started_at: startedAtIso,
     }
     if (typeof lat === 'number' && typeof lng === 'number') {
       startUpdate.pickup_point = { type: 'Point', coordinates: [lng, lat] }
+      startUpdate.pickup_scan_lat = lat
+      startUpdate.pickup_scan_lng = lng
     }
+    // Always stamp the scan timestamp (even when GPS isn't sent), so
+    // ops can prove "the rider scanned at exactly 12:01:34" — useful
+    // for disputes where the rider denies starting the ride.
+    startUpdate.pickup_scan_at = startedAtIso
 
     const { error: updateErr } = await supabaseAdmin
       .from('rides')
@@ -3611,8 +3659,16 @@ ridesRouter.post(
     }
 
     const endedAt = new Date().toISOString()
-    const { fare_cents: fareCents, platform_fee_cents: platformFeeCents, driver_earns_cents: driverEarnsCents, distance_miles, duration_min } =
-      await computeRideFare(rideForFare, endedAt)
+    const {
+      fare_cents: fareCents,
+      platform_fee_cents: platformFeeCents,
+      driver_earns_cents: driverEarnsCents,
+      distance_miles,
+      duration_min,
+      gas_cost_cents: gasCostCents,
+      time_cost_cents: timeCostCents,
+      gas_price_per_gallon_cents: gasPricePerGallonCents,
+    } = await computeRideFare(rideForFare, endedAt)
 
     // Charge rider's card to TAGO's platform balance BEFORE marking the ride
     // completed. On success, credit the driver's in-app wallet atomically via
@@ -3671,6 +3727,12 @@ ridesRouter.post(
 
     // Single UPDATE: status + payment state commit together so the ride can
     // never be marked 'completed' without a recorded payment attempt.
+    // 2026-05-24 — also stamps the migration-095 forensic columns:
+    // dropoff_scan_lat/lng/at (where the end-QR was scanned, distinct
+    // from dropoff_point which is the AGREED coord), end_reason
+    // 'qr_scan_completed' (vs auto_* paths set by rideSafetyNet), +
+    // the fare-breakdown intermediates (gas + time cost) and the EIA
+    // gas price used at this moment.
     const { error: updateErr } = await supabaseAdmin
       .from('rides')
       .update({
@@ -3679,6 +3741,13 @@ ridesRouter.post(
         fare_cents: fareCents,
         payment_status: paymentStatus,
         stripe_fee_cents: stripeFeeCents,
+        end_reason: 'qr_scan_completed',
+        gas_cost_cents: gasCostCents,
+        time_cost_cents: timeCostCents,
+        gas_price_per_gallon_cents: gasPricePerGallonCents,
+        dropoff_scan_at: endedAt,
+        ...(typeof lat === 'number' ? { dropoff_scan_lat: lat } : {}),
+        ...(typeof lng === 'number' ? { dropoff_scan_lng: lng } : {}),
         ...(paymentIntentId ? { payment_intent_id: paymentIntentId } : {}),
         ...(dropoffGeo ? { dropoff_point: dropoffGeo } : {}),
       })
@@ -5866,18 +5935,32 @@ ridesRouter.post(
       const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()
       const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
 
-      // Cancel rides active for > 4 hours
+      // Cancel rides active for > 4 hours.
+      // 2026-05-24 — end_reason='active_timeout_4h' for migration 095.
+      // Different from auto_divergence (safety net catches mid-ride
+      // GPS divergence) — this fires for rides where active state
+      // simply never ended (forgotten QR scan + no GPS divergence).
       const { data: timedOut } = await supabaseAdmin
         .from('rides')
-        .update({ status: 'cancelled', ended_at: new Date().toISOString() })
+        .update({
+          status: 'cancelled',
+          ended_at: new Date().toISOString(),
+          end_reason: 'active_timeout_4h',
+        })
         .eq('status', 'active')
         .lt('started_at', fourHoursAgo)
         .select('id')
 
-      // Cancel rides stuck in requested for > 1 hour
+      // Cancel rides stuck in requested for > 1 hour with no driver
+      // accepting. end_reason='request_expired' distinguishes from
+      // rider/driver-initiated cancels.
       const { data: staleRequested } = await supabaseAdmin
         .from('rides')
-        .update({ status: 'cancelled', ended_at: new Date().toISOString() })
+        .update({
+          status: 'cancelled',
+          ended_at: new Date().toISOString(),
+          end_reason: 'request_expired',
+        })
         .eq('status', 'requested')
         .is('driver_id', null)
         .lt('created_at', oneHourAgo)

@@ -349,9 +349,18 @@ adminRefundsRouter.post(
       }
 
       const nowIso = new Date().toISOString()
+      // 2026-05-24 — migration-095 stamps. `reason` is required by
+      // the validation block above so it's always a non-empty string
+      // at this point. end_reason='admin_force_cancelled' distinguishes
+      // admin-driven kills from user cancels + auto-end paths.
       const { error: updErr } = await supabaseAdmin
         .from('rides')
-        .update({ status: 'cancelled', ended_at: nowIso })
+        .update({
+          status: 'cancelled',
+          ended_at: nowIso,
+          end_reason: 'admin_force_cancelled',
+          cancel_reason: reason,
+        })
         .eq('id', rideId)
       if (updErr) throw updErr
 
