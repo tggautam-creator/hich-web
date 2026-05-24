@@ -285,3 +285,34 @@ export function useAdminCancelRide(rideId: string) {
     },
   })
 }
+
+// ── Force safety check (v1.2 Phase 3 CTO fix, 2026-05-24) ──────────────
+
+export interface AdminForceSafetyCheckResult {
+  ok: true
+  ride_id: string
+  push_count: number
+  max_pushes: number
+}
+
+/**
+ * POSTs `/api/admin/rides/:id/force-safety-check` to fire the v1.2
+ * Phase 3 in-app safety overlay + push notification on demand.
+ * Mirrors what `fireDivergenceWarning` does from the cron, but
+ * triggered by an admin action (audit-logged).
+ *
+ * Server enforces:
+ *   - 409 NOT_ACTIVE  → ride isn't in 'active' status
+ *   - 409 PUSH_CAP_HIT → ride already used 2/2 warning pushes
+ *   - 409 RACE_LOST   → atomic write lost; another path beat us
+ */
+export function useAdminForceSafetyCheck(rideId: string) {
+  const qc = useQueryClient()
+  return useMutation<AdminForceSafetyCheckResult, Error, void>({
+    mutationFn: () =>
+      adminPost<AdminForceSafetyCheckResult>(`/rides/${rideId}/force-safety-check`, {}),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'rides', 'detail', rideId] })
+    },
+  })
+}

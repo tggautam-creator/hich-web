@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   useAdminCancelRide,
+  useAdminForceSafetyCheck,
   useAdminRefundRideById,
   useAdminRideDetail,
   type AdminRideAuditRow,
@@ -1070,6 +1071,12 @@ function RideActionsCard({ ride }: { ride: AdminRideDetail }) {
   const fareCents = ride.fare_cents as number | null
   const terminal = status === 'completed' || status === 'cancelled'
   const refundable = status === 'completed' && paymentStatus === 'paid' && (fareCents ?? 0) > 0
+  // v1.2 Phase 3 CTO fix (2026-05-24) — only show the force-safety
+  // button on active rides. Cap of 2 pushes is enforced server-side
+  // but we surface the current count here so the button copy can
+  // say "Fire safety check (1/2 used)" instead of being a mystery.
+  const warningPushCount = (ride.warning_push_count as number | null | undefined) ?? 0
+  const forceSafetyEligible = status === 'active' && warningPushCount < 2
 
   return (
     <Card title="Actions" testid="ride-actions-card">
@@ -1086,8 +1093,126 @@ function RideActionsCard({ ride }: { ride: AdminRideDetail }) {
           enabled={!terminal}
           status={status}
         />
+        <ForceSafetyCheckAction
+          rideId={ride.id}
+          enabled={forceSafetyEligible}
+          status={status}
+          warningPushCount={warningPushCount}
+        />
       </div>
     </Card>
+  )
+}
+
+/**
+ * v1.2 Phase 3 CTO fix (2026-05-24) — admin-initiated safety
+ * overlay trigger. Server POSTs to fireDivergenceWarning (same
+ * helper the cron uses); writes an audit row; iOS overlay +
+ * time-sensitive FCM push fire on both rider + driver within ~1s.
+ *
+ * Hard cap of 2 pushes per ride is enforced by the rides table
+ * CHECK constraint + the rideSafetyNet.MAX_WARNING_PUSHES gate.
+ * After the cap is hit the button is disabled with explanatory copy.
+ */
+function ForceSafetyCheckAction({
+  rideId,
+  enabled,
+  status,
+  warningPushCount,
+}: {
+  rideId: string
+  enabled: boolean
+  status: AdminRideStatus
+  warningPushCount: number
+}) {
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const m = useAdminForceSafetyCheck(rideId)
+
+  if (!enabled) {
+    return (
+      <div
+        className="rounded-md border border-border bg-surface px-3 py-2 text-[11px] text-text-secondary"
+        data-testid="ride-action-force-safety-disabled"
+      >
+        <p className="font-semibold text-text-primary mb-0.5">Force safety check</p>
+        <p>
+          {warningPushCount >= 2
+            ? 'Push cap reached (2/2 used). The cron will still fire the 90s auto-end timer.'
+            : `Unavailable — ride is ${status}. Only available during the active phase.`}
+        </p>
+      </div>
+    )
+  }
+
+  if (m.isSuccess) {
+    return (
+      <div
+        className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-[11px]"
+        data-testid="ride-action-force-safety-success"
+      >
+        <p className="font-bold text-success">
+          Safety check fired ({m.data?.push_count ?? '?'}/{m.data?.max_pushes ?? 2} used)
+        </p>
+        <p className="text-text-secondary">
+          Both apps should show the overlay + push within ~1 second.
+        </p>
+      </div>
+    )
+  }
+
+  if (!confirmOpen) {
+    return (
+      <button
+        type="button"
+        onClick={() => setConfirmOpen(true)}
+        data-testid="ride-action-force-safety-open"
+        className="w-full rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-xs font-bold text-danger hover:bg-danger/15"
+      >
+        Fire safety check ({warningPushCount}/2 used) →
+      </button>
+    )
+  }
+
+  return (
+    <div
+      className="space-y-2 rounded-md border border-danger/40 bg-danger/5 p-3"
+      data-testid="ride-action-force-safety-form"
+    >
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-danger">
+        Confirm — fire safety check
+      </p>
+      <p className="text-[11px] text-text-secondary">
+        This will pop the safety overlay on both rider + driver apps and send a
+        time-sensitive push (bypasses iOS Focus / DND). They'll have 90 seconds
+        to respond before the cron auto-ends the ride. Use this when you're
+        watching a ride live and have a real reason to intervene — every fire
+        writes an audit row.
+      </p>
+      {m.isError && (
+        <p className="text-[11px] font-semibold text-danger">
+          {m.error?.message ?? 'Failed — check server logs.'}
+        </p>
+      )}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => m.mutate()}
+          disabled={m.isPending}
+          data-testid="ride-action-force-safety-submit"
+          className="flex-1 rounded-md bg-danger px-3 py-2 text-xs font-bold text-white hover:bg-danger/90 disabled:opacity-50"
+        >
+          {m.isPending ? 'Firing…' : 'Fire it'}
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirmOpen(false)}
+          disabled={m.isPending}
+          className="rounded-md border border-border px-3 py-2 text-xs font-bold text-text-secondary hover:bg-surface disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
   )
 }
 

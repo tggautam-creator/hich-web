@@ -18,6 +18,7 @@ import { adminGhostRefundsRouter } from './ghostRefunds.ts'
 import { adminDeclineReasonsRouter } from './declineReasons.ts'
 import { adminStatsRouter } from './stats.ts'
 import { adminSafetyEndedRouter } from './safetyEnded.ts'
+import { adminRideSafetyActionsRouter } from './rideSafetyActions.ts'
 
 /**
  * `/api/admin/*` — Tago internal admin API.
@@ -101,6 +102,11 @@ adminRouter.use('/decline-reasons', adminDeclineReasonsRouter)
 // the safety net (auto-divergence / max-duration cron + user-button
 // safety end). Owns GET /api/admin/safety-ended.
 adminRouter.use('/safety-ended', adminSafetyEndedRouter)
+// 2026-05-24 — v1.2 Phase 3 force-safety-check escalation. Owns
+// POST /api/admin/rides/:id/force-safety-check. Coexists with the
+// read-only adminRidesRouter + write adminRefundsRouter at the
+// same /rides URL prefix via method routing.
+adminRouter.use('/rides', adminRideSafetyActionsRouter)
 // 2026-05-23 — network-wide stats dashboard (Slice 5).
 // Owns GET /api/admin/stats. Single fat response: KPIs + 30d
 // daily chart + lifetime totals + funnel snapshot.
