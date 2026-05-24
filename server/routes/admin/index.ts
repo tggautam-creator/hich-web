@@ -17,6 +17,7 @@ import { adminRidesRouter } from './rides.ts'
 import { adminGhostRefundsRouter } from './ghostRefunds.ts'
 import { adminDeclineReasonsRouter } from './declineReasons.ts'
 import { adminStatsRouter } from './stats.ts'
+import { adminSafetyEndedRouter } from './safetyEnded.ts'
 
 /**
  * `/api/admin/*` — Tago internal admin API.
@@ -96,6 +97,10 @@ adminRouter.use('/ghost-refunds', adminGhostRefundsRouter)
 // 2026-05-23 — supply-side decline analytics from
 // driver_decline_reasons. Owns GET /api/admin/decline-reasons.
 adminRouter.use('/decline-reasons', adminDeclineReasonsRouter)
+// 2026-05-24 — v1.2 Phase 3 admin review queue for rides ended via
+// the safety net (auto-divergence / max-duration cron + user-button
+// safety end). Owns GET /api/admin/safety-ended.
+adminRouter.use('/safety-ended', adminSafetyEndedRouter)
 // 2026-05-23 — network-wide stats dashboard (Slice 5).
 // Owns GET /api/admin/stats. Single fat response: KPIs + 30d
 // daily chart + lifetime totals + funnel snapshot.

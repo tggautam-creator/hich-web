@@ -52,6 +52,7 @@ const MORE_TOOLS: readonly NavItem[] = [
   { to: '/admin/rides',           label: 'Rides',           testId: 'admin-nav-rides' },
   { to: '/admin/ghost-refunds',   label: 'Ghost refunds',   testId: 'admin-nav-ghost-refunds' },
   { to: '/admin/decline-reasons', label: 'Decline reasons', testId: 'admin-nav-decline-reasons' },
+  { to: '/admin/safety-ended',    label: 'Safety-ended',    testId: 'admin-nav-safety-ended' },
 ] as const
 
 export default function AdminLayout() {
