@@ -63,24 +63,12 @@ CREATE TABLE IF NOT EXISTS public.trips (
   updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX trips_driver_active_idx
+CREATE INDEX IF NOT EXISTS trips_driver_active_idx
   ON public.trips (driver_id) WHERE status = 'active';
-CREATE INDEX trips_schedule_idx
+CREATE INDEX IF NOT EXISTS trips_schedule_idx
   ON public.trips (schedule_id) WHERE schedule_id IS NOT NULL;
-CREATE INDEX trips_driver_created_idx
+CREATE INDEX IF NOT EXISTS trips_driver_created_idx
   ON public.trips (driver_id, created_at DESC);
-
-ALTER TABLE public.trips ENABLE ROW LEVEL SECURITY;
-
--- Driver + any participant rider can SELECT. Writes via service-role.
-CREATE POLICY trips_select_participant ON public.trips
-  FOR SELECT TO authenticated USING (
-    auth.uid() = driver_id
-    OR EXISTS (
-      SELECT 1 FROM public.rides r
-       WHERE r.trip_id = trips.id AND r.rider_id = auth.uid()
-    )
-  );
 
 COMMENT ON TABLE public.trips IS
   'v1.2 F17 — top-level trip. One row per driver-trip. Instant rides have '
@@ -97,6 +85,10 @@ COMMENT ON COLUMN public.trips.status IS
 -- ── rides.trip_id ──────────────────────────────────────────────────────
 -- Nullable for backfill (migration 098 sets it for existing rows).
 -- Server-side, every newly-created ride gets a trip_id immediately.
+--
+-- Added BEFORE the trips RLS policy below because Postgres validates
+-- policy WHERE expressions eagerly at CREATE POLICY time — and the
+-- trips_select_participant policy references rides.trip_id.
 ALTER TABLE public.rides
   ADD COLUMN IF NOT EXISTS trip_id UUID REFERENCES public.trips(id) ON DELETE SET NULL;
 
@@ -107,6 +99,22 @@ COMMENT ON COLUMN public.rides.trip_id IS
   'v1.2 F17 — FK to the parent trip. Nullable transitionally during '
   'backfill (migration 098). All NEW rides get this set immediately by '
   'the server. Future work: enforce NOT NULL once backfill is complete.';
+
+
+-- ── trips RLS (after rides.trip_id exists) ─────────────────────────────
+ALTER TABLE public.trips ENABLE ROW LEVEL SECURITY;
+
+-- DROP-then-CREATE so the migration is safe to retry after a partial
+-- apply (e.g. an earlier run that failed at a later step).
+DROP POLICY IF EXISTS trips_select_participant ON public.trips;
+CREATE POLICY trips_select_participant ON public.trips
+  FOR SELECT TO authenticated USING (
+    auth.uid() = driver_id
+    OR EXISTS (
+      SELECT 1 FROM public.rides r
+       WHERE r.trip_id = trips.id AND r.rider_id = auth.uid()
+    )
+  );
 
 
 -- ── ride_segments ──────────────────────────────────────────────────────
@@ -128,12 +136,13 @@ CREATE TABLE IF NOT EXISTS public.ride_segments (
 
 -- "Open segment for this trip right now" lookup — used on every QR scan
 -- to find the segment we need to close.
-CREATE INDEX ride_segments_trip_open_idx
+CREATE INDEX IF NOT EXISTS ride_segments_trip_open_idx
   ON public.ride_segments (trip_id) WHERE ended_at IS NULL;
 
 ALTER TABLE public.ride_segments ENABLE ROW LEVEL SECURITY;
 
 -- Trip participants can SELECT.
+DROP POLICY IF EXISTS ride_segments_select_participant ON public.ride_segments;
 CREATE POLICY ride_segments_select_participant ON public.ride_segments
   FOR SELECT TO authenticated USING (
     EXISTS (
@@ -185,15 +194,16 @@ CREATE TABLE IF NOT EXISTS public.ride_rider_shares (
   UNIQUE (ride_id, rider_id)
 );
 
-CREATE INDEX ride_rider_shares_trip_idx
+CREATE INDEX IF NOT EXISTS ride_rider_shares_trip_idx
   ON public.ride_rider_shares (trip_id);
-CREATE INDEX ride_rider_shares_driver_idx
+CREATE INDEX IF NOT EXISTS ride_rider_shares_driver_idx
   ON public.ride_rider_shares (driver_id, finalized_at);
-CREATE INDEX ride_rider_shares_rider_idx
+CREATE INDEX IF NOT EXISTS ride_rider_shares_rider_idx
   ON public.ride_rider_shares (rider_id, finalized_at);
 
 ALTER TABLE public.ride_rider_shares ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS ride_rider_shares_select_own ON public.ride_rider_shares;
 CREATE POLICY ride_rider_shares_select_own ON public.ride_rider_shares
   FOR SELECT TO authenticated USING (auth.uid() = rider_id OR auth.uid() = driver_id);
 
