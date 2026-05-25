@@ -995,23 +995,64 @@ interface DispatchableRow {
   match_signals: MatchSignals
 }
 
-export async function dispatchSuggestionNotifications(): Promise<{ pushed: number; deferred: number }> {
+export async function dispatchSuggestionNotifications(): Promise<{ pushed: number; deferred: number; suppressed: number }> {
   const today = todayISO()
+  // Sort by relevance so the ONE push a user gets per day (per the
+  // 24h dedup rule below) reflects their best available match.
   const { data: rows, error } = await supabaseAdmin
     .from('ride_suggestions')
     .select('id, rider_user_id, driver_user_id, trip_date, relevance_score, rider_status, driver_status, rider_notified_at, driver_notified_at, notified_via_instant, match_signals')
     .gte('trip_date', today)
     .or('rider_notified_at.is.null,driver_notified_at.is.null')
     .eq('notified_via_instant', false)
-    .limit(200)
+    .order('relevance_score', { ascending: false })
+    .limit(500)
 
   if (error) {
     console.error('[suggestionEngine] dispatch fetch failed:', error.message)
-    return { pushed: 0, deferred: 0 }
+    return { pushed: 0, deferred: 0, suppressed: 0 }
   }
 
   let pushed = 0
   let deferred = 0
+  let suppressed = 0
+
+  // 24h-per-user dedup (added 2026-05-25, fix for spammy 5-min cron).
+  // Before the cron fired every push it saw; users got N pushes for N
+  // pending suggestion rows. Now: at most ONE push per user per 24h.
+  // Any other pending rows for that user are silently marked notified
+  // so the cron doesn't keep re-scanning them.
+  //
+  // recentPushCache memoizes the DB lookup per user_id (since one user
+  // can appear on many rows in the batch).
+  const cutoffISO = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+  const recentPushCache = new Map<string, boolean>()
+  const nowISO = () => new Date().toISOString()
+
+  async function hasRecentPush(userId: string): Promise<boolean> {
+    const cached = recentPushCache.get(userId)
+    if (cached !== undefined) return cached
+    // Either side counts as a push to this user — we don't want them
+    // to receive a "matched as a driver" push 30 seconds after a
+    // "matched as a rider" push.
+    const [{ data: rider }, { data: driver }] = await Promise.all([
+      supabaseAdmin
+        .from('ride_suggestions')
+        .select('id')
+        .eq('rider_user_id', userId)
+        .gte('rider_notified_at', cutoffISO)
+        .limit(1),
+      supabaseAdmin
+        .from('ride_suggestions')
+        .select('id')
+        .eq('driver_user_id', userId)
+        .gte('driver_notified_at', cutoffISO)
+        .limit(1),
+    ])
+    const recent = ((rider?.length ?? 0) > 0) || ((driver?.length ?? 0) > 0)
+    recentPushCache.set(userId, recent)
+    return recent
+  }
 
   for (const r of (rows ?? []) as unknown as DispatchableRow[]) {
     const isInstantWorthy = r.relevance_score >= INSTANT_PUSH_RELEVANCE || r.trip_date === today
@@ -1023,40 +1064,60 @@ export async function dispatchSuggestionNotifications(): Promise<{ pushed: numbe
 
     // Rider side.
     if (r.rider_status === 'new' && r.rider_notified_at === null) {
-      const ok = await pushToUser(
-        r.rider_user_id,
-        pushTitle,
-        'Tap to see the suggested ride',
-        { type: 'suggested_match', suggestion_id: r.id, side: 'rider' },
-      )
-      if (ok) {
+      if (await hasRecentPush(r.rider_user_id)) {
+        // Silent catch-up: mark notified so future cron ticks skip
+        // this row, but don't send a push.
         await supabaseAdmin
           .from('ride_suggestions')
-          .update({ rider_notified_at: new Date().toISOString() } as never)
+          .update({ rider_notified_at: nowISO() } as never)
           .eq('id', r.id)
-        pushed += 1
+        suppressed += 1
+      } else {
+        const ok = await pushToUser(
+          r.rider_user_id,
+          pushTitle,
+          'Tap to see the suggested ride',
+          { type: 'suggested_match', suggestion_id: r.id, side: 'rider' },
+        )
+        if (ok) {
+          await supabaseAdmin
+            .from('ride_suggestions')
+            .update({ rider_notified_at: nowISO() } as never)
+            .eq('id', r.id)
+          pushed += 1
+          recentPushCache.set(r.rider_user_id, true)
+        }
       }
     }
 
     // Driver side.
     if (r.driver_status === 'new' && r.driver_notified_at === null) {
-      const ok = await pushToUser(
-        r.driver_user_id,
-        pushTitle,
-        'Tap to see the suggested ride',
-        { type: 'suggested_match', suggestion_id: r.id, side: 'driver' },
-      )
-      if (ok) {
+      if (await hasRecentPush(r.driver_user_id)) {
         await supabaseAdmin
           .from('ride_suggestions')
-          .update({ driver_notified_at: new Date().toISOString() } as never)
+          .update({ driver_notified_at: nowISO() } as never)
           .eq('id', r.id)
-        pushed += 1
+        suppressed += 1
+      } else {
+        const ok = await pushToUser(
+          r.driver_user_id,
+          pushTitle,
+          'Tap to see the suggested ride',
+          { type: 'suggested_match', suggestion_id: r.id, side: 'driver' },
+        )
+        if (ok) {
+          await supabaseAdmin
+            .from('ride_suggestions')
+            .update({ driver_notified_at: nowISO() } as never)
+            .eq('id', r.id)
+          pushed += 1
+          recentPushCache.set(r.driver_user_id, true)
+        }
       }
     }
   }
 
-  return { pushed, deferred }
+  return { pushed, deferred, suppressed }
 }
 
 async function pushToUser(

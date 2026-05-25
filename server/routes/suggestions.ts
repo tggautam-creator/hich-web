@@ -25,6 +25,7 @@ import { Router } from 'express'
 import type { Request, Response, NextFunction } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { validateJwt } from '../middleware/auth.ts'
+import { scanForRoutine } from '../lib/suggestionEngine.ts'
 
 export const suggestionsRouter = Router()
 
@@ -227,16 +228,33 @@ suggestionsRouter.get(
 suggestionsRouter.get(
   '/top',
   validateJwt,
-  async (_req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const viewerId = res.locals['userId'] as string
-    const { data, error } = await supabaseAdmin
+    // Optional ?side=rider|driver — when set, only return suggestions
+    // where the viewer is on that side. Powers the per-mode home hero
+    // (rider home shows where viewer is rider, driver home shows
+    // where viewer is driver). Omitting it returns both sides
+    // (preserves the legacy /top contract for any older client).
+    const sideRaw = String(req.query['side'] ?? '').toLowerCase()
+    const side: 'rider' | 'driver' | null =
+      sideRaw === 'rider' ? 'rider' : sideRaw === 'driver' ? 'driver' : null
+
+    let query = supabaseAdmin
       .from('ride_suggestions')
       .select('*')
-      .or(`rider_user_id.eq.${viewerId},driver_user_id.eq.${viewerId}`)
       .order('relevance_score', { ascending: false })
       .order('trip_date', { ascending: true })
       .limit(20)
 
+    if (side === 'rider') {
+      query = query.eq('rider_user_id', viewerId)
+    } else if (side === 'driver') {
+      query = query.eq('driver_user_id', viewerId)
+    } else {
+      query = query.or(`rider_user_id.eq.${viewerId},driver_user_id.eq.${viewerId}`)
+    }
+
+    const { data, error } = await query
     if (error) { next(error); return }
 
     const rows = (data ?? []) as unknown as SuggestionRow[]
@@ -294,5 +312,58 @@ suggestionsRouter.post(
 
     if (updateErr) { next(updateErr); return }
     res.status(200).json({ ok: true })
+  },
+)
+
+/**
+ * POST /api/suggestions/scan-routine/:id
+ *
+ * v1.3 Session C+ — instant-scan trigger for a freshly-inserted
+ * routine. iOS calls this fire-and-forget after a Supabase insert
+ * to driver_routines so the matching engine runs immediately
+ * instead of waiting up to 5 min for the backstop cron tick.
+ *
+ * Mirrors the pattern used by /api/schedule/:id/compute-route
+ * which triggers scanForPost on schedule insert.
+ *
+ * Auth: JWT-validated; ownership-checked against the routine's
+ * user_id so a caller can only trigger scans on their own routines.
+ */
+suggestionsRouter.post(
+  '/scan-routine/:id',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const viewerId = res.locals['userId'] as string
+    const routineID = String(req.params['id'] ?? '')
+    if (routineID.length === 0) {
+      res.status(400).json({ error: { code: 'INVALID_BODY', message: 'routine id required' } })
+      return
+    }
+
+    // Ownership + mode lookup in one query.
+    const { data: row, error: fetchErr } = await supabaseAdmin
+      .from('driver_routines')
+      .select('user_id, mode')
+      .eq('id', routineID)
+      .maybeSingle()
+
+    if (fetchErr) { next(fetchErr); return }
+    if (!row) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'routine not found' } })
+      return
+    }
+
+    const r = row as unknown as { user_id: string; mode: string }
+    if (r.user_id !== viewerId) {
+      res.status(403).json({ error: { code: 'FORBIDDEN', message: 'not your routine' } })
+      return
+    }
+
+    // Fire scan synchronously so the response carries the count.
+    // The scan itself can take a few seconds (Google API roundtrip
+    // for transit handoffs) but caller can fire-and-forget on iOS.
+    const role: 'driver' | 'rider' = r.mode === 'rider' ? 'rider' : 'driver'
+    const result = await scanForRoutine(routineID, role)
+    res.status(200).json({ ok: true, inserted: result.inserted, skipped: result.skipped })
   },
 )

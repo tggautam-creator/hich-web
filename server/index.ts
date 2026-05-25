@@ -151,7 +151,7 @@ async function runReminderSweep(reason: string): Promise<void> {
       dispatchSuggestionNotifications().catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err)
         console.error(`[cron/fallback] suggestion notifications failed: ${msg}`)
-        return { pushed: 0, deferred: 0 }
+        return { pushed: 0, deferred: 0, suppressed: 0 }
       }),
       expireStaleSuggestions().catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err)
@@ -159,7 +159,7 @@ async function runReminderSweep(reason: string): Promise<void> {
         return { deleted: 0 }
       }),
     ])
-    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, sync: users=${sync.users} inserted=${sync.inserted}, dunning: scanned=${dunning.scanned} nudged=${dunning.nudged}, snooze: cleared=${snooze.cleared} notified=${snooze.notified}, staleOnline: cleared=${staleOnline.cleared} notified=${staleOnline.notified}, offerExpiry: checked=${offerExpiry.checked} expired=${offerExpiry.expired}, suggestions: backstop=${suggestBackstop.scanned}/${suggestBackstop.inserted} pushes=${suggestPushes.pushed}/${suggestPushes.deferred} expired=${suggestExpired.deleted}`)
+    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, sync: users=${sync.users} inserted=${sync.inserted}, dunning: scanned=${dunning.scanned} nudged=${dunning.nudged}, snooze: cleared=${snooze.cleared} notified=${snooze.notified}, staleOnline: cleared=${staleOnline.cleared} notified=${staleOnline.notified}, offerExpiry: checked=${offerExpiry.checked} expired=${offerExpiry.expired}, suggestions: backstop=${suggestBackstop.scanned}/${suggestBackstop.inserted} pushes=${suggestPushes.pushed}/${suggestPushes.deferred}/${suggestPushes.suppressed} expired=${suggestExpired.deleted}`)
   } catch (err) {
     console.error('[cron/fallback] Failed reminder sweep:', err)
   } finally {
