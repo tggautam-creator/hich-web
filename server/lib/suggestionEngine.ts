@@ -97,8 +97,17 @@ interface MatchSignals {
   dest_distance_m: number
   corridor_origin_m?: number
   corridor_dest_m?: number
+  // Transit-handoff details (transit_dropoff + transit_pickup only).
+  // Drives the medium-density card in the Suggested tab — walk +
+  // transit + ride leg breakdown without leg-cost estimates.
   handoff_total_minutes?: number
   handoff_station_name?: string
+  handoff_station_address?: string
+  handoff_walk_minutes?: number
+  handoff_transit_minutes?: number
+  handoff_ride_minutes?: number
+  handoff_transit_line?: string
+  handoff_transit_type?: string                  // e.g. 'BUS', 'HEAVY_RAIL'
 }
 
 interface SuggestionCandidate {
@@ -462,6 +471,7 @@ async function matchPair(
     const handoffs = handoffResult.suggestions
     if (handoffs.length === 0) return null
     const best = handoffs[0]!
+    const bestOption = best.transit_options[0]
     const signals: MatchSignals = {
       classification: 'transit_dropoff',
       bearing_diff_deg: bearingDiff,
@@ -472,6 +482,12 @@ async function matchPair(
       corridor_dest_m: destProj.distanceM,
       handoff_total_minutes: best.total_rider_minutes,
       handoff_station_name: best.station_name,
+      handoff_station_address: best.station_address,
+      handoff_walk_minutes: best.walk_to_station_minutes,
+      handoff_transit_minutes: best.transit_to_dest_minutes,
+      handoff_ride_minutes: best.ride_with_driver_minutes,
+      ...(bestOption?.line_name ? { handoff_transit_line: bestOption.line_name } : {}),
+      ...(bestOption?.type ? { handoff_transit_type: bestOption.type } : {}),
     }
     return {
       rider_user_id: rider.user_id,
@@ -505,6 +521,7 @@ async function matchPair(
     const handoffs = handoffResult.suggestions
     if (handoffs.length === 0) return null
     const best = handoffs[0]!
+    const bestOption = best.transit_options[0]
     const signals: MatchSignals = {
       classification: 'transit_pickup',
       bearing_diff_deg: bearingDiff,
@@ -515,6 +532,12 @@ async function matchPair(
       corridor_dest_m: destProj.distanceM,
       handoff_total_minutes: best.total_rider_minutes,
       handoff_station_name: best.station_name,
+      handoff_station_address: best.station_address,
+      handoff_walk_minutes: best.walk_to_station_minutes,
+      handoff_transit_minutes: best.transit_to_dest_minutes,
+      handoff_ride_minutes: best.ride_with_driver_minutes,
+      ...(bestOption?.line_name ? { handoff_transit_line: bestOption.line_name } : {}),
+      ...(bestOption?.type ? { handoff_transit_type: bestOption.type } : {}),
     }
     return {
       rider_user_id: rider.user_id,
