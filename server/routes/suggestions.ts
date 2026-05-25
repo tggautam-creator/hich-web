@@ -104,22 +104,21 @@ async function enrichSuggestionRows(
   if (rows.length === 0) return []
 
   // Collect every user_id we need (the "other side" for each row).
+  // v1.3 Session A — single routines table; both rider_routine_id +
+  // driver_routine_id columns reference driver_routines (unified).
   const otherUserIds = new Set<string>()
   const scheduleIds = new Set<string>()
-  const routineIdsByTable: { rider_routines: Set<string>; driver_routines: Set<string> } = {
-    rider_routines: new Set(),
-    driver_routines: new Set(),
-  }
+  const routineIds = new Set<string>()
   for (const r of rows) {
     otherUserIds.add(r.rider_user_id === viewerId ? r.driver_user_id : r.rider_user_id)
     if (r.rider_schedule_id) scheduleIds.add(r.rider_schedule_id)
     if (r.driver_schedule_id) scheduleIds.add(r.driver_schedule_id)
-    if (r.rider_routine_id) routineIdsByTable.rider_routines.add(r.rider_routine_id)
-    if (r.driver_routine_id) routineIdsByTable.driver_routines.add(r.driver_routine_id)
+    if (r.rider_routine_id) routineIds.add(r.rider_routine_id)
+    if (r.driver_routine_id) routineIds.add(r.driver_routine_id)
   }
 
   // Batch-fetch the joins.
-  const [usersResult, schedulesResult, riderRoutinesResult, driverRoutinesResult] = await Promise.all([
+  const [usersResult, schedulesResult, routinesResult] = await Promise.all([
     otherUserIds.size === 0 ? Promise.resolve({ data: [] }) : supabaseAdmin
       .from('users')
       .select('id, full_name, avatar_url, rating_avg')
@@ -128,14 +127,10 @@ async function enrichSuggestionRows(
       .from('ride_schedules')
       .select('id, origin_address, dest_address, trip_time')
       .in('id', Array.from(scheduleIds)),
-    routineIdsByTable.rider_routines.size === 0 ? Promise.resolve({ data: [] }) : supabaseAdmin
-      .from('rider_routines')
-      .select('id, route_name, day_of_week, departure_time, arrival_time, origin_address, dest_address, origin, destination')
-      .in('id', Array.from(routineIdsByTable.rider_routines)),
-    routineIdsByTable.driver_routines.size === 0 ? Promise.resolve({ data: [] }) : supabaseAdmin
+    routineIds.size === 0 ? Promise.resolve({ data: [] }) : supabaseAdmin
       .from('driver_routines')
       .select('id, route_name, day_of_week, departure_time, arrival_time, origin_address, dest_address, origin, destination')
-      .in('id', Array.from(routineIdsByTable.driver_routines)),
+      .in('id', Array.from(routineIds)),
   ])
 
   const usersById = new Map<string, UserMini>(
@@ -144,11 +139,8 @@ async function enrichSuggestionRows(
   const schedulesById = new Map<string, ScheduleMini>(
     ((schedulesResult.data ?? []) as ScheduleMini[]).map((s) => [s.id, s]),
   )
-  const riderRoutinesById = new Map<string, RoutineMini>(
-    ((riderRoutinesResult.data ?? []) as RoutineMini[]).map((r) => [r.id, r]),
-  )
-  const driverRoutinesById = new Map<string, RoutineMini>(
-    ((driverRoutinesResult.data ?? []) as RoutineMini[]).map((r) => [r.id, r]),
+  const routinesById = new Map<string, RoutineMini>(
+    ((routinesResult.data ?? []) as RoutineMini[]).map((r) => [r.id, r]),
   )
 
   return rows.map((r): SuggestionPayload => {
@@ -157,8 +149,8 @@ async function enrichSuggestionRows(
 
     const riderSchedule = r.rider_schedule_id ? schedulesById.get(r.rider_schedule_id) : undefined
     const driverSchedule = r.driver_schedule_id ? schedulesById.get(r.driver_schedule_id) : undefined
-    const riderRoutine = r.rider_routine_id ? riderRoutinesById.get(r.rider_routine_id) : undefined
-    const driverRoutine = r.driver_routine_id ? driverRoutinesById.get(r.driver_routine_id) : undefined
+    const riderRoutine = r.rider_routine_id ? routinesById.get(r.rider_routine_id) : undefined
+    const driverRoutine = r.driver_routine_id ? routinesById.get(r.driver_routine_id) : undefined
 
     return {
       id: r.id,

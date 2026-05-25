@@ -83,7 +83,10 @@ type MatchType = 'same_day_forward' | 'routine_recurring' | 'reverse_trip'
 type MatchClassification = 'direct' | 'transit_dropoff' | 'transit_pickup'
 
 interface Post {
-  source_table: 'ride_schedules' | 'rider_routines' | 'driver_routines'
+  // v1.3 Session A — `driver_routines` is now the unified routines
+  // table (mode column distinguishes rider vs driver). `rider_routines`
+  // dropped in migration 103. Source_table only needs two values.
+  source_table: 'ride_schedules' | 'driver_routines'
   source_id: string
   user_id: string
   role: Role
@@ -397,7 +400,7 @@ async function matchPair(
       driver_user_id: driver.user_id,
       rider_schedule_id: rider.source_table === 'ride_schedules' ? rider.source_id : null,
       driver_schedule_id: driver.source_table === 'ride_schedules' ? driver.source_id : null,
-      rider_routine_id: rider.source_table === 'rider_routines' ? rider.source_id : null,
+      rider_routine_id: rider.source_table === 'driver_routines' ? rider.source_id : null,
       driver_routine_id: driver.source_table === 'driver_routines' ? driver.source_id : null,
       trip_date: rider.trip_date,
       match_type: rider.source_table.includes('routine') || driver.source_table.includes('routine')
@@ -431,7 +434,7 @@ async function matchPair(
         driver_user_id: driver.user_id,
         rider_schedule_id: rider.source_table === 'ride_schedules' ? rider.source_id : null,
         driver_schedule_id: driver.source_table === 'ride_schedules' ? driver.source_id : null,
-        rider_routine_id: rider.source_table === 'rider_routines' ? rider.source_id : null,
+        rider_routine_id: rider.source_table === 'driver_routines' ? rider.source_id : null,
         driver_routine_id: driver.source_table === 'driver_routines' ? driver.source_id : null,
         trip_date: rider.trip_date,
         match_type: rider.source_table.includes('routine') || driver.source_table.includes('routine')
@@ -478,7 +481,7 @@ async function matchPair(
       driver_user_id: driver.user_id,
       rider_schedule_id: rider.source_table === 'ride_schedules' ? rider.source_id : null,
       driver_schedule_id: driver.source_table === 'ride_schedules' ? driver.source_id : null,
-      rider_routine_id: rider.source_table === 'rider_routines' ? rider.source_id : null,
+      rider_routine_id: rider.source_table === 'driver_routines' ? rider.source_id : null,
       driver_routine_id: driver.source_table === 'driver_routines' ? driver.source_id : null,
       trip_date: rider.trip_date,
       match_type: rider.source_table.includes('routine') || driver.source_table.includes('routine')
@@ -532,7 +535,7 @@ async function matchPair(
       driver_user_id: driver.user_id,
       rider_schedule_id: rider.source_table === 'ride_schedules' ? rider.source_id : null,
       driver_schedule_id: driver.source_table === 'ride_schedules' ? driver.source_id : null,
-      rider_routine_id: rider.source_table === 'rider_routines' ? rider.source_id : null,
+      rider_routine_id: rider.source_table === 'driver_routines' ? rider.source_id : null,
       driver_routine_id: driver.source_table === 'driver_routines' ? driver.source_id : null,
       trip_date: rider.trip_date,
       match_type: 'same_day_forward',
@@ -582,7 +585,7 @@ async function matchPair(
       driver_user_id: driver.user_id,
       rider_schedule_id: rider.source_table === 'ride_schedules' ? rider.source_id : null,
       driver_schedule_id: driver.source_table === 'ride_schedules' ? driver.source_id : null,
-      rider_routine_id: rider.source_table === 'rider_routines' ? rider.source_id : null,
+      rider_routine_id: rider.source_table === 'driver_routines' ? rider.source_id : null,
       driver_routine_id: driver.source_table === 'driver_routines' ? driver.source_id : null,
       trip_date: rider.trip_date,
       match_type: rider.source_table.includes('routine') || driver.source_table.includes('routine')
@@ -637,11 +640,13 @@ async function fetchOppositeRoleCandidates(seed: Post): Promise<Post[]> {
 
   // 2. Opposite-role routines whose day_of_week covers seed.trip_date.
   const dow = dayOfWeekFor(seed.trip_date)
-  const routineTable = oppositeRole === 'driver' ? 'driver_routines' : 'rider_routines'
+  // v1.3 Session A — unified routines table. Filter by mode column
+  // instead of branching to a separate table.
   const { data: routineRows, error: routineErr } = await supabaseAdmin
-    .from(routineTable)
+    .from('driver_routines')
     .select('id, user_id, day_of_week, departure_time, arrival_time, is_active, end_date, route_polyline, origin, destination')
     .eq('is_active', true)
+    .eq('mode', oppositeRole)
     .contains('day_of_week', [dow])
     .neq('user_id', seed.user_id)
     .or(`end_date.is.null,end_date.gte.${seed.trip_date}`)
@@ -658,7 +663,7 @@ async function fetchOppositeRoleCandidates(seed: Post): Promise<Post[]> {
       const dLat = raw.destination?.coordinates?.[1]
       if (oLng == null || oLat == null || dLng == null || dLat == null) continue
       candidates.push({
-        source_table: routineTable as 'driver_routines' | 'rider_routines',
+        source_table: 'driver_routines',
         source_id: raw.id,
         user_id: raw.user_id,
         role: oppositeRole,
@@ -766,9 +771,11 @@ export async function scanForRoutine(
   routineId: string,
   role: Role,
 ): Promise<{ inserted: number; skipped: number }> {
-  const table = role === 'driver' ? 'driver_routines' : 'rider_routines'
+  // v1.3 Session A — unified routines table. The role param is no
+  // longer the table selector; the seed Post just carries the mode
+  // for downstream UPSERT logic.
   const { data: row, error } = await supabaseAdmin
-    .from(table)
+    .from('driver_routines')
     .select('id, user_id, day_of_week, departure_time, arrival_time, is_active, end_date, route_polyline, origin, destination')
     .eq('id', routineId)
     .maybeSingle()
@@ -797,7 +804,7 @@ export async function scanForRoutine(
     if (!r.day_of_week.includes(dow)) continue
 
     const seed: Post = {
-      source_table: table as 'driver_routines' | 'rider_routines',
+      source_table: 'driver_routines',
       source_id: r.id,
       user_id: r.user_id,
       role,
@@ -864,30 +871,20 @@ export async function runSuggestionBackstopScan(): Promise<{ scanned: number; in
     inserted += result.inserted
   }
 
-  // 2. Recent driver routines.
-  const { data: driverRoutineRows } = await supabaseAdmin
+  // 2. Recent routines (unified table; mode column distinguishes role).
+  const { data: routineRows } = await supabaseAdmin
     .from('driver_routines')
-    .select('id')
+    .select('id, mode')
     .gte('created_at', cutoff)
     .eq('is_active', true)
     .limit(100)
 
-  for (const row of (driverRoutineRows ?? []) as Array<{ id: string }>) {
-    const result = await scanForRoutine(row.id, 'driver')
-    scanned += 1
-    inserted += result.inserted
-  }
-
-  // 3. Recent rider routines.
-  const { data: riderRoutineRows } = await supabaseAdmin
-    .from('rider_routines')
-    .select('id')
-    .gte('created_at', cutoff)
-    .eq('is_active', true)
-    .limit(100)
-
-  for (const row of (riderRoutineRows ?? []) as Array<{ id: string }>) {
-    const result = await scanForRoutine(row.id, 'rider')
+  // Cast via `unknown` because the auto-generated DB types lag the
+  // mode column added in migration 103 — it's there at runtime, not
+  // in the generated typing.
+  for (const row of (routineRows ?? []) as unknown as Array<{ id: string; mode: string }>) {
+    const role: Role = row.mode === 'rider' ? 'rider' : 'driver'
+    const result = await scanForRoutine(row.id, role)
     scanned += 1
     inserted += result.inserted
   }
@@ -919,58 +916,55 @@ export async function expireStaleSuggestions(): Promise<{ deleted: number }> {
   //    off. ON DELETE CASCADE only fires on actual routine deletes,
   //    not state flips, so we explicitly purge here.
   //
-  //    Strategy: collect inactive/past-end routine IDs from both
-  //    rider_routines + driver_routines, then DELETE FROM
-  //    ride_suggestions WHERE rider_routine_id IN (...) OR
-  //    driver_routine_id IN (...).
+  //    Strategy: collect inactive/past-end routine IDs from the
+  //    unified driver_routines table (v1.3 Session A), then DELETE
+  //    FROM ride_suggestions WHERE rider_routine_id IN (...) OR
+  //    driver_routine_id IN (...). Both FK columns point to the
+  //    same unified table; we hit both with the same ID set.
   const today = todayISO()
-  const inactiveRiderRoutineIds = await fetchInactiveRoutineIds('rider_routines', today)
-  const inactiveDriverRoutineIds = await fetchInactiveRoutineIds('driver_routines', today)
+  const inactiveRoutineIds = await fetchInactiveRoutineIds(today)
 
-  if (inactiveRiderRoutineIds.length > 0) {
-    const { data, error } = await supabaseAdmin
+  if (inactiveRoutineIds.length > 0) {
+    // Two separate deletes because we don't have OR-across-columns
+    // in supabase-js without RPC; the operations are cheap.
+    const { data: riderHits, error: riderErr } = await supabaseAdmin
       .from('ride_suggestions')
       .delete()
-      .in('rider_routine_id', inactiveRiderRoutineIds)
+      .in('rider_routine_id', inactiveRoutineIds)
       .select('id')
-    if (error) {
-      console.error('[suggestionEngine] expire-by-rider-routine failed:', error.message)
+    if (riderErr) {
+      console.error('[suggestionEngine] expire-by-rider-routine failed:', riderErr.message)
     } else {
-      totalDeleted += data?.length ?? 0
+      totalDeleted += riderHits?.length ?? 0
     }
-  }
 
-  if (inactiveDriverRoutineIds.length > 0) {
-    const { data, error } = await supabaseAdmin
+    const { data: driverHits, error: driverErr } = await supabaseAdmin
       .from('ride_suggestions')
       .delete()
-      .in('driver_routine_id', inactiveDriverRoutineIds)
+      .in('driver_routine_id', inactiveRoutineIds)
       .select('id')
-    if (error) {
-      console.error('[suggestionEngine] expire-by-driver-routine failed:', error.message)
+    if (driverErr) {
+      console.error('[suggestionEngine] expire-by-driver-routine failed:', driverErr.message)
     } else {
-      totalDeleted += data?.length ?? 0
+      totalDeleted += driverHits?.length ?? 0
     }
   }
 
   return { deleted: totalDeleted }
 }
 
-/// Helper for `expireStaleSuggestions` — returns IDs of routines that
-/// are either explicitly deactivated (is_active=false) or whose
-/// end_date has passed. Bounded to 500 to keep the IN list reasonable;
-/// any overflow gets caught on the next cron tick.
-async function fetchInactiveRoutineIds(
-  table: 'rider_routines' | 'driver_routines',
-  today: string,
-): Promise<string[]> {
+/// Helper for `expireStaleSuggestions` — returns IDs of routines (any
+/// mode) that are either explicitly deactivated (is_active=false) or
+/// whose end_date has passed. Bounded to 500 to keep the IN list
+/// reasonable; any overflow gets caught on the next cron tick.
+async function fetchInactiveRoutineIds(today: string): Promise<string[]> {
   const { data, error } = await supabaseAdmin
-    .from(table)
+    .from('driver_routines')
     .select('id')
     .or(`is_active.eq.false,end_date.lt.${today}`)
     .limit(500)
   if (error) {
-    console.error(`[suggestionEngine] fetchInactive(${table}) failed:`, error.message)
+    console.error('[suggestionEngine] fetchInactive failed:', error.message)
     return []
   }
   return ((data ?? []) as Array<{ id: string }>).map((r) => r.id)

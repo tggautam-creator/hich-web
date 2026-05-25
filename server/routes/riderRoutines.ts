@@ -1,5 +1,12 @@
 /**
- * /api/rider-routines/* — CRUD for the v1.3 rider_routines table.
+ * /api/rider-routines/* — CRUD for rider-mode routines.
+ *
+ * v1.3 Session A (2026-05-25) — rows now live in the unified
+ * `driver_routines` table with `mode='rider'`. The endpoint URL
+ * stays rider-specific for backwards compat with the iOS client +
+ * because the operation is semantically "manage MY rider routines."
+ * Originally backed the separate `rider_routines` table (migration
+ * 099, dropped in migration 103).
  *
  * Riders save recurring trip patterns (e.g. "Mon-Wed-Fri 9am, dorm →
  * campus") so the Suggested Rides engine can match them against driver
@@ -76,10 +83,14 @@ riderRoutinesRouter.get(
   validateJwt,
   async (_req: Request, res: Response, next: NextFunction) => {
     const userId = res.locals['userId'] as string
+    // v1.3 Session A — unified routines table. Filter to mode='rider'
+    // so this endpoint stays semantically the "list MY rider routines"
+    // operation it was before unification.
     const { data, error } = await supabaseAdmin
-      .from('rider_routines')
+      .from('driver_routines')
       .select('id, user_id, route_name, day_of_week, departure_time, arrival_time, is_active, end_date, route_polyline, note, origin, destination, created_at')
       .eq('user_id', userId)
+      .eq('mode', 'rider')
       .order('created_at', { ascending: false })
 
     if (error) { next(error); return }
@@ -113,8 +124,11 @@ riderRoutinesRouter.post(
     const originWkt = `POINT(${body.origin_lng} ${body.origin_lat})`
     const destWkt = `POINT(${body.dest_lng} ${body.dest_lat})`
 
+    // v1.3 Session A — write to unified driver_routines table with
+    // mode='rider' so this rider-specific endpoint produces rows the
+    // suggestion engine sees on the rider side.
     const { data, error } = await supabaseAdmin
-      .from('rider_routines')
+      .from('driver_routines')
       .insert({
         user_id: userId,
         route_name: body.route_name,
@@ -130,6 +144,7 @@ riderRoutinesRouter.post(
         end_date: body.end_date ?? null,
         route_polyline: body.route_polyline ?? null,
         note: body.note ?? null,
+        mode: 'rider',
       } as never)
       .select('id')
       .single()
@@ -166,9 +181,9 @@ riderRoutinesRouter.put(
 
     // Ownership check — supabaseAdmin bypasses RLS.
     const { data: existing, error: lookupErr } = await supabaseAdmin
-      .from('rider_routines')
+      .from('driver_routines')
       .select('user_id')
-      .eq('id', id)
+      .eq('id', String(id))
       .maybeSingle()
     if (lookupErr) { next(lookupErr); return }
     if (!existing) {
@@ -196,9 +211,9 @@ riderRoutinesRouter.put(
     }
 
     const { error: updateErr } = await supabaseAdmin
-      .from('rider_routines')
+      .from('driver_routines')
       .update(updates as never)
-      .eq('id', id)
+      .eq('id', String(id))
 
     if (updateErr) { next(updateErr); return }
 
@@ -227,9 +242,9 @@ riderRoutinesRouter.delete(
     }
 
     const { data: existing, error: lookupErr } = await supabaseAdmin
-      .from('rider_routines')
+      .from('driver_routines')
       .select('user_id')
-      .eq('id', id)
+      .eq('id', String(id))
       .maybeSingle()
     if (lookupErr) { next(lookupErr); return }
     if (!existing) {
@@ -242,9 +257,9 @@ riderRoutinesRouter.delete(
     }
 
     const { error: deleteErr } = await supabaseAdmin
-      .from('rider_routines')
+      .from('driver_routines')
       .delete()
-      .eq('id', id)
+      .eq('id', String(id))
 
     if (deleteErr) { next(deleteErr); return }
     res.status(200).json({ ok: true })
