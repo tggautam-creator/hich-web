@@ -4384,12 +4384,20 @@ ridesRouter.post(
     // ── Coordinating → start ride ──────────────────────────────────────────
     if (ride.status === 'coordinating') {
       // Save rider's actual GPS as pickup_point (where ride truly starts)
+      const scanStartedAtIso = new Date().toISOString()
       const scanStartUpdate: Record<string, unknown> = {
         status: 'active',
-        started_at: new Date().toISOString(),
+        started_at: scanStartedAtIso,
+        // Migration-095 forensic: stamp the exact scan moment + lat/lng
+        // so admin can prove "rider scanned at exactly 12:01:34", distinct
+        // from pickup_point (the AGREED coord) and last_driver_gps_lat
+        // (overwritten on every ping).
+        pickup_scan_at: scanStartedAtIso,
       }
       if (typeof lat === 'number' && typeof lng === 'number') {
         scanStartUpdate.pickup_point = { type: 'Point', coordinates: [lng, lat] }
+        scanStartUpdate.pickup_scan_lat = lat
+        scanStartUpdate.pickup_scan_lng = lng
       }
 
       const { error: updateErr } = await supabaseAdmin
@@ -4398,6 +4406,22 @@ ridesRouter.post(
         .eq('id', ride.id)
 
       if (updateErr) { next(updateErr); return }
+
+      // v1.2 F17 — segment trail. Ensure a trips row exists + open a
+      // segment with this rider added. Same as /:id/start. For single-
+      // rider trips this is the one segment that runs start→end.
+      try {
+        const tripRes = await getOrCreateTripForRide(ride.id)
+        if (tripRes.tripId) {
+          const gasPrice = await getGasPriceForState('CA')
+          await addRiderToOpenSegment(tripRes.tripId, riderId, scanStartedAtIso, gasPrice)
+          await updateTripStatus(tripRes.tripId, 'active', { startedAt: scanStartedAtIso })
+        } else if (tripRes.error) {
+          console.warn(`[rides/scan-driver/start] segment trail not opened for ${ride.id}: ${tripRes.error}`)
+        }
+      } catch (err) {
+        console.error(`[rides/scan-driver/start] segment trail error for ${ride.id}:`, err)
+      }
 
       // LIVE.2 (2026-04-30) — flip the rider's Live Activity to the
       // .active phase the moment we commit the start. iOS's local
@@ -4502,8 +4526,77 @@ ridesRouter.post(
     }
 
     const endedAt = new Date().toISOString()
-    const { fare_cents: fareCents, platform_fee_cents: platformFeeCents, driver_earns_cents: driverEarnsCents, distance_miles, duration_min } =
-      await computeRideFare(rideForFare, endedAt)
+    const scanSingleRiderFare = await computeRideFare(rideForFare, endedAt)
+    let fareCents = scanSingleRiderFare.fare_cents
+    const platformFeeCents = scanSingleRiderFare.platform_fee_cents
+    let driverEarnsCents = scanSingleRiderFare.driver_earns_cents
+    const distance_miles = scanSingleRiderFare.distance_miles
+    const duration_min = scanSingleRiderFare.duration_min
+    let scanGasCostCents = scanSingleRiderFare.gas_cost_cents
+    let scanTimeCostCents = scanSingleRiderFare.time_cost_cents
+    const scanGasPricePerGallonCents = scanSingleRiderFare.gas_price_per_gallon_cents
+
+    // v1.2 F17 — segmented split fare for multi-rider trips.
+    // Same branching logic as /:id/end. Single-rider trips fall through
+    // to the existing fare numbers; multi-rider trips override fareCents
+    // with this rider's per-segment share.
+    let scanIsMultiRiderTrip = false
+    let scanTripIdForEnd: string | null = null
+    try {
+      const tripRes = await getOrCreateTripForRide(ride.id)
+      if (tripRes.tripId) {
+        scanTripIdForEnd = tripRes.tripId
+        const gasPriceForEnd = await getGasPriceForState('CA')
+
+        const removeRes = await removeRiderFromOpenSegment(
+          tripRes.tripId, ride.rider_id as string, endedAt, gasPriceForEnd,
+        )
+        if (removeRes.error) {
+          console.warn(`[rides/scan-driver/end] segment close failed for ${ride.id}: ${removeRes.error}`)
+        }
+
+        const { count: tripRideCount } = await supabaseAdmin
+          .from('rides')
+          .select('id', { count: 'exact', head: true })
+          .eq('trip_id', tripRes.tripId)
+        scanIsMultiRiderTrip = (tripRideCount ?? 1) >= 2
+
+        if (scanIsMultiRiderTrip) {
+          const { baseShareCents, gasShareCents, timeShareCents, segmentsInCount } =
+            await computeRiderBaseShare(tripRes.tripId, ride.rider_id as string)
+
+          const caregiverFareCentsRaw = (ride as unknown as {
+            caregiver_fare_cents: number | null
+          }).caregiver_fare_cents ?? 0
+          const driverWaiveInfo = await lookupDriverWaiveInfo(ride.driver_id as string | null)
+          const caregiverShareCents = driverWaiveInfo.waives ? 0 : Math.max(0, caregiverFareCentsRaw)
+          const companionShareCents = 0
+
+          const totals = computeRiderTotals({
+            baseShareCents,
+            caregiverFareCents: caregiverShareCents,
+            companionFareCents: companionShareCents,
+            segmentsInCount,
+          })
+
+          await upsertRiderShare({
+            tripId: tripRes.tripId,
+            rideId: ride.id as string,
+            riderId: ride.rider_id as string,
+            driverId: ride.driver_id as string,
+            totals,
+            finalizedAtIso: endedAt,
+          })
+
+          fareCents = totals.total_cents
+          driverEarnsCents = totals.total_cents
+          scanGasCostCents = gasShareCents
+          scanTimeCostCents = timeShareCents
+        }
+      }
+    } catch (err) {
+      console.error(`[rides/scan-driver/end] F17 settlement error for ${ride.id}:`, err)
+    }
 
     // Charge to platform balance BEFORE marking completed. On success, credit
     // driver's in-app wallet via wallet_apply_delta. Stripe outage → ride
@@ -4557,6 +4650,9 @@ ridesRouter.post(
     }
 
     // Single UPDATE: ride completion + payment state committed together.
+    // Also stamps the migration-095 forensic columns (gas_cost_cents +
+    // time_cost_cents + gas_price_per_gallon_cents + end_reason +
+    // dropoff_scan_*) and the F17 per-rider cost shares when multi-rider.
     const { error: updateErr } = await supabaseAdmin
       .from('rides')
       .update({
@@ -4565,12 +4661,51 @@ ridesRouter.post(
         fare_cents: fareCents,
         payment_status: scanPaymentStatus,
         stripe_fee_cents: scanStripeFeeCents,
+        end_reason: 'qr_scan_completed',
+        gas_cost_cents: scanGasCostCents,
+        time_cost_cents: scanTimeCostCents,
+        gas_price_per_gallon_cents: scanGasPricePerGallonCents,
+        dropoff_scan_at: endedAt,
+        ...(typeof lat === 'number' ? { dropoff_scan_lat: lat } : {}),
+        ...(typeof lng === 'number' ? { dropoff_scan_lng: lng } : {}),
         ...(scanPaymentIntentId ? { payment_intent_id: scanPaymentIntentId } : {}),
         ...(scanDropoffGeo ? { dropoff_point: scanDropoffGeo } : {}),
       })
       .eq('id', ride.id)
 
     if (updateErr) { next(updateErr); return }
+
+    // v1.2 F17 — stamp the rider's share status + roll segment costs into
+    // the parent trip + mark trip 'completed' if every rider has exited.
+    if (scanIsMultiRiderTrip && scanTripIdForEnd) {
+      try {
+        await markRiderShareCharged({
+          rideId: ride.id as string,
+          riderId: ride.rider_id as string,
+          paymentStatus: scanPaymentStatus as 'paid' | 'processing' | 'failed' | 'pending',
+          paymentIntentId: scanPaymentIntentId ?? null,
+          chargedAtIso: endedAt,
+        })
+        await updateTripCostsFromSegments(scanTripIdForEnd)
+        const { count: activeStillOnTrip } = await supabaseAdmin
+          .from('rides')
+          .select('id', { count: 'exact', head: true })
+          .eq('trip_id', scanTripIdForEnd)
+          .in('status', ['active', 'coordinating'])
+        if ((activeStillOnTrip ?? 0) === 0) {
+          await updateTripStatus(scanTripIdForEnd, 'completed', { endedAt })
+        }
+      } catch (err) {
+        console.error(`[rides/scan-driver/end] F17 post-charge bookkeeping failed for ${ride.id}:`, err)
+      }
+    } else if (scanTripIdForEnd) {
+      try {
+        await updateTripCostsFromSegments(scanTripIdForEnd)
+        await updateTripStatus(scanTripIdForEnd, 'completed', { endedAt })
+      } catch (err) {
+        console.warn(`[rides/scan-driver/end] trip completion/cost rollup failed for ${ride.id}:`, err)
+      }
+    }
 
     // LIVE.2 (2026-04-30) — end the rider's Live Activity now that
     // the ride completed. `.immediate` dismissal happens client-side
