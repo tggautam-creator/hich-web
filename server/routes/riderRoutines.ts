@@ -43,8 +43,10 @@ interface CreateBody {
   route_name: string
   origin_lat: number
   origin_lng: number
+  origin_address?: string | null
   dest_lat: number
   dest_lng: number
+  dest_address?: string | null
   destination_bearing: number
   day_of_week: number[]
   departure_time?: string | null
@@ -118,6 +120,8 @@ riderRoutinesRouter.post(
         route_name: body.route_name,
         origin: originWkt,
         destination: destWkt,
+        origin_address: body.origin_address ?? null,
+        dest_address: body.dest_address ?? null,
         destination_bearing: body.destination_bearing,
         direction_type: body.direction_type ?? 'one_way',
         day_of_week: body.day_of_week,
