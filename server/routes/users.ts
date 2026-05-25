@@ -92,6 +92,9 @@ const DEFAULT_PREFS = {
   push_promos: true,
   email_marketing: true,
   sms_alerts: false,
+  // v1.3 Suggested Rides (2026-05-25) — default-on; users can opt
+  // out from Settings if the daily/instant cadence becomes noise.
+  push_suggestions: true,
 }
 
 type NotificationPreferences = typeof DEFAULT_PREFS
@@ -112,7 +115,7 @@ usersRouter.get(
     try {
       const { data, error } = await supabaseAdmin
         .from('notification_preferences')
-        .select('push_rides, push_promos, email_marketing, sms_alerts')
+        .select('push_rides, push_promos, email_marketing, sms_alerts, push_suggestions')
         .eq('user_id', userId)
         .maybeSingle()
 
@@ -190,7 +193,7 @@ usersRouter.put(
       // existing values when the client sends a subset.
       const { data: existing } = await supabaseAdmin
         .from('notification_preferences')
-        .select('push_rides, push_promos, email_marketing, sms_alerts')
+        .select('push_rides, push_promos, email_marketing, sms_alerts, push_suggestions')
         .eq('user_id', userId)
         .maybeSingle()
 
