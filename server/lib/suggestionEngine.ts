@@ -56,8 +56,10 @@ const TOP_N_PER_SCAN = 5
 const MAX_CANDIDATES_PER_SCAN = 50
 
 const BBOX_TOLERANCE_M = 100_000
-const BEARING_TOLERANCE_FORWARD_DEG = 90
-const BEARING_TOLERANCE_REVERSE_DEG = 60
+// Bearing was a hard filter in Phase A.0; demoted to a scoring signal
+// only on 2026-05-25 after we identified the 90°-120° dead-zone bug
+// (two students going to UC Davis campus from opposite sides of Davis
+// would be silently dropped). See the bearing comment in matchPair.
 const DIRECT_MATCH_RADIUS_M = 10_000
 const POLYLINE_PROXIMITY_M = 75_000
 const ROUTE_CORRIDOR_M = 2_000
@@ -224,19 +226,18 @@ function postsBoundingBoxOverlap(a: Post, b: Post): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Filter Layer 3: bearing alignment
+// Rejection observability
 // ─────────────────────────────────────────────────────────────────────
 
-function bearingsAlign(rider: Post, driver: Post): 'forward' | 'reverse' | 'misaligned' {
-  // Forward = same-direction trips (rider and driver both going A→B-ish).
-  // Reverse = literal opposite-direction trips (rider going A→B, driver going B→A).
-  //   Reserved for Phase D's "return-trip" matching; Phase A does NOT
-  //   emit suggestions for reverse-bearing pairs because the existing
-  //   transit-handoff engine only handles same-direction scenarios.
-  const diff = bearingDifference(rider.bearing, driver.bearing)
-  if (diff <= BEARING_TOLERANCE_FORWARD_DEG) return 'forward'
-  if (diff >= 180 - BEARING_TOLERANCE_REVERSE_DEG) return 'reverse'
-  return 'misaligned'
+/// Rejection observability — each filter that drops a pair fires
+/// one line so we can grep `[suggestionEngine] reject` and audit
+/// what's being filtered out. Cheap (one console.log per rejection;
+/// rejections happen at low volume because the candidate fetch is
+/// already date+role-scoped).
+function logReject(rider: Post, driver: Post, reason: string): void {
+  const r = `${rider.source_table}/${rider.source_id.slice(0, 8)}`
+  const d = `${driver.source_table}/${driver.source_id.slice(0, 8)}`
+  console.log(`[suggestionEngine] reject ${reason} rider=${r} driver=${d} date=${rider.trip_date}`)
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -340,20 +341,33 @@ async function matchPair(
   let timeDiffMin: number | null = null
   if (rider.trip_time && driver.trip_time && !rider.time_flexible && !driver.time_flexible) {
     timeDiffMin = timeDifferenceMinutes(rider.trip_time, driver.trip_time)
-    if (timeDiffMin > TIME_WINDOW_MIN) return null
+    if (timeDiffMin > TIME_WINDOW_MIN) {
+      logReject(rider, driver, `time_window(${timeDiffMin}min>${TIME_WINDOW_MIN})`)
+      return null
+    }
   }
 
   // Layer 2 — bbox overlap.
-  if (!postsBoundingBoxOverlap(rider, driver)) return null
+  if (!postsBoundingBoxOverlap(rider, driver)) {
+    logReject(rider, driver, 'bbox_overlap')
+    return null
+  }
 
-  // Layer 3 — bearing alignment.
-  // Phase A only handles 'forward' (same-direction) pairs. 'reverse'
-  // bearings (true opposite-direction return-trip matches) are
-  // deferred to Phase D because the existing transit engine doesn't
-  // model that scenario. Drop them silently here.
-  const alignment = bearingsAlign(rider, driver)
-  if (alignment !== 'forward') return null
-
+  // Layer 3 — bearing is NOT a hard filter (removed 2026-05-25 after
+  // user-CTO review). The original 90°/120° dead zone was killing
+  // valid matches like "two students going to UC Davis campus from
+  // opposite sides of Davis" (bearings ~105° apart). The polyline
+  // proximity check (Layer 6) + corridor projection inside matchPair
+  // are strictly more accurate than bearing alignment. Bearing stays
+  // as a SCORING signal only (`bearingScore` weighted 0.30 in
+  // `scoreDirect`), so badly-aligned pairs naturally rank lower
+  // without being silently dropped.
+  //
+  // True opposite-direction reverse-trip pairs (Phase D scope) are
+  // still naturally rejected here because their `originProj.fractionAlong`
+  // ends up GREATER than `destProj.fractionAlong` (rider's drop on
+  // driver's polyline comes BEFORE pickup = wrong order), failing the
+  // direct-match branch + falling through to null.
   const bearingDiff = bearingDifference(rider.bearing, driver.bearing)
   const direct = obviousDirectMatch(rider, driver)
 
@@ -386,6 +400,10 @@ async function matchPair(
   // a polyline), fall back to scoring this as a weaker direct match
   // when the endpoints are at least in the same neighbourhood.
   if (!driver.route_polyline) {
+    if (direct.originDistanceM > 30_000 || direct.destDistanceM > 30_000) {
+      logReject(rider, driver, `no_polyline_endpoints_too_far(${Math.round(direct.originDistanceM)}m,${Math.round(direct.destDistanceM)}m)`)
+      return null
+    }
     if (direct.originDistanceM <= 30_000 && direct.destDistanceM <= 30_000) {
       const signals: MatchSignals = {
         classification: 'direct',
@@ -416,7 +434,10 @@ async function matchPair(
   const polyline = decodePolyline(driver.route_polyline)
 
   // Layer 6 — polyline proximity gate.
-  if (!polylinePassesNearEndpoints(polyline, rider)) return null
+  if (!polylinePassesNearEndpoints(polyline, rider)) {
+    logReject(rider, driver, 'polyline_proximity')
+    return null
+  }
 
   // Now decide: direct (both on/near route), forward handoff (origin
   // on route, dest off), or reverse handoff (dest on route, origin off).
@@ -457,6 +478,11 @@ async function matchPair(
 
   const apiKey = process.env['GOOGLE_MAPS_KEY']
   if (!apiKey) return null
+
+  const apiKeyCheck = process.env['GOOGLE_MAPS_KEY']
+  if (!apiKeyCheck) {
+    logReject(rider, driver, 'no_google_api_key')
+  }
 
   // Transit-dropoff handoff — driver drops rider at a transit station
   // near route, rider transits the rest of the way to their destination.

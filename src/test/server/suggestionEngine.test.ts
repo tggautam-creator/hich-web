@@ -51,10 +51,6 @@ describe('suggestionEngine — tunables locked', () => {
     expect(ENGINE_SRC).toMatch(/const BBOX_TOLERANCE_M\s*=\s*100_000\b/)
   })
 
-  it('keeps BEARING_TOLERANCE_FORWARD_DEG at 90 (cone for same-direction pairs)', () => {
-    expect(ENGINE_SRC).toMatch(/const BEARING_TOLERANCE_FORWARD_DEG\s*=\s*90\b/)
-  })
-
   it('keeps DIRECT_MATCH_RADIUS_M at 10km (direct-match short-circuit threshold)', () => {
     expect(ENGINE_SRC).toMatch(/const DIRECT_MATCH_RADIUS_M\s*=\s*10_000\b/)
   })
@@ -221,9 +217,26 @@ describe('suggestionEngine — match-type enum is migration-aligned', () => {
   })
 })
 
-describe('suggestionEngine — Phase A scope guard', () => {
-  it('Phase A only emits forward-direction suggestions (bearing-reverse is Phase D)', () => {
-    // The matchPair function must early-return on non-forward alignment.
-    expect(ENGINE_SRC).toMatch(/if\s*\(\s*alignment\s*!==\s*'forward'\s*\)\s*return\s+null/)
+describe('suggestionEngine — bearing is scoring-only, not a hard filter', () => {
+  it('matchPair has NO bearing-based early return (removed 2026-05-25)', () => {
+    // 2026-05-25 — bearing was demoted from hard filter to scoring
+    // signal. The old `if (alignment !== 'forward') return null` is
+    // gone. True-opposite reverse pairs are now naturally rejected
+    // by the `originProj.fractionAlong < destProj.fractionAlong`
+    // check inside matchPair.
+    expect(ENGINE_SRC).not.toMatch(/if\s*\(\s*alignment\s*!==\s*'forward'\s*\)\s*return\s+null/)
+    expect(ENGINE_SRC).not.toMatch(/function\s+bearingsAlign\b/)
+  })
+
+  it('matchPair still reads bearingDifference for scoring + match_signals', () => {
+    expect(ENGINE_SRC).toMatch(/bearingDifference\s*\(\s*rider\.bearing\s*,\s*driver\.bearing\s*\)/)
+    expect(ENGINE_SRC).toMatch(/bearing_diff_deg/)
+  })
+
+  it('every rejection in matchPair logs via logReject for observability', () => {
+    // At least one logReject() call per filter path so future debugging
+    // can grep `[suggestionEngine] reject` to see what's being filtered.
+    const rejectCalls = (ENGINE_SRC.match(/logReject\s*\(/g) ?? []).length
+    expect(rejectCalls).toBeGreaterThanOrEqual(3)
   })
 })
