@@ -23,6 +23,11 @@
 import { Router, type Request, type Response, type NextFunction } from 'express'
 import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
 import { writeAuditLog } from '../../lib/adminAudit.ts'
+import {
+  toLocalDateString,
+  daysAgoLocalIso,
+  addLocalDays,
+} from '../../lib/timezone.ts'
 
 export const adminRideBoardRouter = Router()
 
@@ -697,19 +702,23 @@ adminRideBoardRouter.get(
       // Weekly buckets — last N/7 weeks, oldest first.
       const weeks: { week_start: string; posted: number; offered: number; selected: number; completed: number }[] = []
       const totalWeeks = Math.max(1, Math.ceil(windowDays / 7))
+      // 2026-05-25 — bucket weeks by California local time (was UTC).
+      // The admin's mental model of "this week" runs Sun-PT through
+      // Sat-PT, not Sun-UTC through Sat-UTC.
+      const todayLocal = toLocalDateString()
       for (let i = totalWeeks - 1; i >= 0; i--) {
-        const weekStart = new Date()
-        weekStart.setUTCDate(weekStart.getUTCDate() - (i + 1) * 7)
-        weekStart.setUTCHours(0, 0, 0, 0)
-        const weekEnd = new Date(weekStart)
-        weekEnd.setUTCDate(weekEnd.getUTCDate() + 7)
+        const weekStartLocalDate = addLocalDays(todayLocal, -(i + 1) * 7)
+        const weekEndLocalDate = addLocalDays(weekStartLocalDate, 7)
+        const weekStartIso = daysAgoLocalIso(new Date(), (i + 1) * 7)
+        const weekEndIso = daysAgoLocalIso(new Date(), i * 7)
         const inWeek = posts.filter((p) => {
-          const t = new Date(p.created_at).getTime()
-          return t >= weekStart.getTime() && t < weekEnd.getTime()
+          const created = p.created_at as string
+          return created >= weekStartIso && created < weekEndIso
         })
+        void weekEndLocalDate  // kept for symmetry; week_start is the chart label
         const r = rollup(inWeek)
         weeks.push({
-          week_start: weekStart.toISOString().slice(0, 10),
+          week_start: weekStartLocalDate,
           posted: r[0]?.count ?? 0,
           offered: r[1]?.count ?? 0,
           selected: r[2]?.count ?? 0,
@@ -894,21 +903,23 @@ adminRideBoardRouter.get(
         if (dayRow) dayRow[hour] = (dayRow[hour] ?? 0) + 1
       }
 
-      // Daily trend: bucket per day.
+      // Daily trend: bucket per California local day (2026-05-25 fix).
+      // `created_at.slice(0,10)` was UTC-bucketing — late-evening-PT
+      // posts landed in the NEXT day's bar on the chart. Now we
+      // convert each created_at TIMESTAMPTZ to its local-PT date.
       const trendByDay = new Map<string, { posts: number; offers: number; selected: number }>()
+      const trendTodayLocal = toLocalDateString()
       for (let i = windowDays - 1; i >= 0; i--) {
-        const d = new Date()
-        d.setUTCDate(d.getUTCDate() - i)
-        d.setUTCHours(0, 0, 0, 0)
-        trendByDay.set(d.toISOString().slice(0, 10), { posts: 0, offers: 0, selected: 0 })
+        const key = addLocalDays(trendTodayLocal, -i)
+        trendByDay.set(key, { posts: 0, offers: 0, selected: 0 })
       }
       for (const row of postsRes.data ?? []) {
-        const key = row.created_at.slice(0, 10)
+        const key = toLocalDateString(new Date(row.created_at as string))
         const bucket = trendByDay.get(key)
         if (bucket) bucket.posts += 1
       }
       for (const row of offersRes.data ?? []) {
-        const key = row.created_at.slice(0, 10)
+        const key = toLocalDateString(new Date(row.created_at as string))
         const bucket = trendByDay.get(key)
         if (!bucket) continue
         bucket.offers += 1

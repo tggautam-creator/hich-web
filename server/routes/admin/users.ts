@@ -25,6 +25,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express'
 import { handleStuckUsers } from './funnel.ts'
 import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
+import { toLocalDateString } from '../../lib/timezone.ts'
 
 export const adminUsersRouter = Router()
 
@@ -695,7 +696,13 @@ adminUsersRouter.get(
       const status = typeof req.query['status'] === 'string' ? req.query['status'] : 'all'
       const sort = typeof req.query['sort'] === 'string' ? req.query['sort'] : 'date_desc'
       const ascending = sort === 'date_asc'
-      const today = new Date().toISOString().slice(0, 10) // YYYY-MM-DD UTC
+      // 2026-05-25 — bucket "today" by California time so the
+      // upcoming/past filter on a rider's own ride_schedules doesn't
+      // misclassify rides posted for tonight as "past" after 5 PM PT
+      // (when UTC ticks over to the next day). `trip_date` is a
+      // calendar-day column representing the user's local choice,
+      // so the comparison happens in local time too.
+      const today = toLocalDateString()
 
       // Build the base list query, applying the upcoming/past filter
       // and the sort direction. The two count queries below run in

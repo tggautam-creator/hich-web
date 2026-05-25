@@ -16,6 +16,7 @@
  */
 import { Router, type Request, type Response, type NextFunction } from 'express'
 import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
+import { toLocalDateString, addLocalDays } from '../../lib/timezone.ts'
 
 export const adminStatsRouter = Router()
 
@@ -268,20 +269,25 @@ adminStatsRouter.get(
       const gallonsSaved = gallonsForMetres(totalDistance)
       const co2Kg = gallonsSaved * KG_CO2_PER_GALLON
 
-      // 30d daily buckets — by UTC date.
+      // 30d daily buckets — by California LOCAL date (not UTC).
+      // 2026-05-25 fix: pre-change, the chart's day axis rolled over
+      // at 5 PM PT (midnight UTC), so rides completed in late-evening
+      // PT bucketed into the NEXT-day column. Now we bucket by local
+      // PT so the daily totals match the admin's mental model.
       const buckets = new Map<string, { rides_completed: number; revenue_cents: number }>()
       // Seed 30 days even with zero so the chart has a stable x-axis.
+      const todayLocal = toLocalDateString()
       for (let i = 29; i >= 0; i--) {
-        const d = new Date(Date.now() - i * MS_PER_DAY)
-        const key = d.toISOString().slice(0, 10)
+        const key = addLocalDays(todayLocal, -i)
         buckets.set(key, { rides_completed: 0, revenue_cents: 0 })
       }
       for (const r of daily30dRes.data ?? []) {
         // Bucket by ended_at when ride completed (the date a ride
         // "happened" from a business view); fall back to created_at
-        // for non-completed rides. Both are ISO strings.
-        const dateStr = (r.ended_at as string | null)?.slice(0, 10)
-          ?? (r.created_at as string).slice(0, 10)
+        // for non-completed rides. Both are TIMESTAMPTZ ISO strings;
+        // converting to LOCAL PT date matches the seeded bucket keys.
+        const sourceIso = (r.ended_at as string | null) ?? (r.created_at as string)
+        const dateStr = toLocalDateString(new Date(sourceIso))
         const bucket = buckets.get(dateStr)
         if (!bucket) continue // outside the seeded 30d window (timezone edge)
         if (r.status === 'completed') {

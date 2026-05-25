@@ -1,5 +1,14 @@
 import { Router, type Request, type Response, type NextFunction } from 'express'
 import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
+// 2026-05-25 — bucket "day" by California local time (admin's
+// timezone) instead of UTC. Pre-fix, the daily KPIs + chart series
+// rolled over at 5 PM PT (midnight UTC), so the Overview dashboard
+// "today" reset mid-afternoon. Now "today" is local-PT today.
+import {
+  toLocalDateString,
+  startOfLocalDayIso,
+  daysAgoLocalIso,
+} from '../../lib/timezone.ts'
 
 /**
  * `/api/admin/metrics/*` — read-only analytics for the admin dashboards.
@@ -66,20 +75,6 @@ interface OverviewResponse {
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
-function startOfDayUTC(d: Date): Date {
-  const x = new Date(d)
-  x.setUTCHours(0, 0, 0, 0)
-  return x
-}
-
-function daysAgoUTC(now: Date, n: number): Date {
-  return new Date(startOfDayUTC(now).getTime() - n * DAY_MS)
-}
-
-function isoDate(d: Date): string {
-  return d.toISOString().slice(0, 10)
-}
-
 function safeRate(numerator: number, denominator: number): number | null {
   if (denominator === 0) return null
   return numerator / denominator
@@ -113,11 +108,14 @@ adminMetricsRouter.get(
   async (_req: Request, res: Response, next: NextFunction) => {
     try {
       const now = new Date()
-      const startToday = startOfDayUTC(now).toISOString()
-      const start7d = daysAgoUTC(now, 7).toISOString()
-      const _start14d = daysAgoUTC(now, 14).toISOString()
+      // 2026-05-25 — these used to be UTC-bucketed, so the daily KPI
+      // counters ("signups today") flipped at 5 PM PT instead of
+      // midnight PT. Now we bucket by California local time.
+      const startToday = startOfLocalDayIso(now)
+      const start7d = daysAgoLocalIso(now, 7)
+      const _start14d = daysAgoLocalIso(now, 14)
       void _start14d // currently unused — kept for upcoming 14-day KPI
-      const start30d = daysAgoUTC(now, 30).toISOString()
+      const start30d = daysAgoLocalIso(now, 30)
       const start1d = new Date(now.getTime() - 1 * DAY_MS).toISOString()
       const cutoff7dAgo = new Date(now.getTime() - 7 * DAY_MS).toISOString()
 
@@ -258,22 +256,21 @@ adminMetricsRouter.get(
           ? null
           : driverStars.reduce((a, b) => a + b, 0) / driverStars.length
 
-      // ── Chart 1: daily signups (last 14 days) ──────────────────────────
-      const signupsByDay = buildDailySeries(now, 14, (d) =>
-        users.filter((u) => u.created_at >= d && u.created_at < addDay(d)).length,
+      // ── Chart 1: daily signups (last 14 days, PT-bucketed) ────────────
+      const signupsByDay = buildDailySeries(now, 14, (startIso, endIso) =>
+        users.filter((u) => u.created_at >= startIso && u.created_at < endIso).length,
       )
 
-      // ── Chart 2: daily completed rides (last 14 days) ──────────────────
-      const completedByDay = buildDailySeries(now, 14, (d) => {
-        const dEnd = addDay(d)
-        return rides.filter(
+      // ── Chart 2: daily completed rides (last 14 days, PT-bucketed) ────
+      const completedByDay = buildDailySeries(now, 14, (startIso, endIso) =>
+        rides.filter(
           (r) =>
             r.status === 'completed' &&
             r.ended_at !== null &&
-            r.ended_at >= d &&
-            r.ended_at < dEnd,
-        ).length
-      })
+            r.ended_at >= startIso &&
+            r.ended_at < endIso,
+        ).length,
+      )
 
       // ── Chart 3: top 10 email domains ──────────────────────────────────
       const domainCounts = new Map<string, number>()
@@ -323,21 +320,29 @@ adminMetricsRouter.get(
 
 // ── time-series helper ───────────────────────────────────────────────────────
 
-function addDay(isoDay: string): string {
-  return isoDate(new Date(new Date(isoDay).getTime() + DAY_MS))
-}
-
+/**
+ * Build a `days`-long daily series of `{ date, count }` points,
+ * with the date label and the count window both bucketed by
+ * California local time. `startIso` + `endIso` are the [start,end)
+ * UTC instants of midnight-PT for the row's local day. Callers pass
+ * a filter that uses those for `>=` / `<` against TIMESTAMPTZ
+ * created_at / ended_at columns.
+ *
+ * 2026-05-25 — switched from UTC bucketing (where i=0 was midnight
+ * UTC, causing the Overview chart's "today" to roll over at 5 PM PT)
+ * to PT bucketing using `daysAgoLocalIso`.
+ */
 function buildDailySeries(
   now: Date,
   days: number,
-  countForDay: (isoDay: string) => number,
+  countBetween: (startIso: string, endIso: string) => number,
 ): DailyPoint[] {
   const out: DailyPoint[] = []
-  const today = startOfDayUTC(now)
   for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(today.getTime() - i * DAY_MS)
-    const iso = isoDate(d)
-    out.push({ date: iso, count: countForDay(iso) })
+    const startIso = daysAgoLocalIso(now, i)
+    const endIso = daysAgoLocalIso(now, i - 1)
+    const dateLabel = toLocalDateString(new Date(startIso))
+    out.push({ date: dateLabel, count: countBetween(startIso, endIso) })
   }
   return out
 }
