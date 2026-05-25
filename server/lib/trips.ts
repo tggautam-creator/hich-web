@@ -155,3 +155,61 @@ export async function updateTripStatus(
   if (error) return { success: false, error: error.message }
   return { success: true }
 }
+
+/**
+ * Roll up segment totals into the parent trip's cost + distance columns.
+ *
+ * getOrCreateTripForRide snapshots costs from the rides row at /start
+ * time — but those columns are 0 then because /end hasn't computed the
+ * fare yet. After /end finishes (and segments are closed with their
+ * real costs), this helper sums the segments and writes the aggregate
+ * back to the trip so admin queries against `trips` see real numbers.
+ *
+ * For single-rider trips there's exactly one segment; trip totals
+ * mirror the rides row. For multi-rider trips the trip totals are the
+ * UNION of driver-fuel + driver-time across all segments (not the
+ * per-rider split — those live in ride_rider_shares).
+ */
+export async function updateTripCostsFromSegments(
+  tripId: string,
+  client: SupabaseClient = supabaseAdmin,
+): Promise<{ success: boolean; error?: string }> {
+  const { data: segments } = await client
+    .from('ride_segments')
+    .select('distance_meters, duration_seconds, gas_cost_cents, time_cost_cents')
+    .eq('trip_id', tripId)
+
+  let totalDistance = 0
+  let totalGasCost = 0
+  let totalTimeCost = 0
+  for (const s of (segments ?? []) as Array<{
+    distance_meters: number
+    duration_seconds: number
+    gas_cost_cents: number
+    time_cost_cents: number
+  }>) {
+    totalDistance += s.distance_meters
+    totalGasCost += s.gas_cost_cents
+    totalTimeCost += s.time_cost_cents
+  }
+
+  // No segments means /start never opened one (shouldn't happen for a
+  // ride that reached /end, but be defensive — don't zero out anything
+  // that may have been previously set).
+  if (totalDistance === 0 && totalGasCost === 0 && totalTimeCost === 0) {
+    return { success: true }
+  }
+
+  const { error } = await client
+    .from('trips')
+    .update({
+      gps_distance_metres: totalDistance,
+      gas_cost_cents: totalGasCost,
+      time_cost_cents: totalTimeCost,
+      updated_at: new Date().toISOString(),
+    } as never)
+    .eq('id', tripId)
+
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}

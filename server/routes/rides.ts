@@ -11,7 +11,7 @@ import { realtimeBroadcast, realtimeBroadcastMany } from '../lib/realtimeBroadca
 import { pushLiveActivityUpdateForRide, endLiveActivitiesForRide } from '../lib/apns.ts'
 import { chargeRideViaWallet, creditDriverEarning } from '../lib/walletPayment.ts'
 import { chargeTip } from '../lib/tipPayment.ts'
-import { getOrCreateTripForRide, updateTripStatus } from '../lib/trips.ts'
+import { getOrCreateTripForRide, updateTripStatus, updateTripCostsFromSegments } from '../lib/trips.ts'
 import {
   addRiderToOpenSegment,
   removeRiderFromOpenSegment,
@@ -4190,7 +4190,8 @@ ridesRouter.post(
     }
 
     // v1.2 F17 — stamp the rider's share with the resolved payment status
-    // + mark the trip 'completed' if every rider has now exited.
+    // + roll segment costs into the parent trip + mark the trip
+    // 'completed' if every rider has now exited.
     if (isMultiRiderTrip && tripIdForEnd) {
       try {
         await markRiderShareCharged({
@@ -4200,6 +4201,12 @@ ridesRouter.post(
           paymentIntentId: paymentIntentId ?? null,
           chargedAtIso: endedAt,
         })
+
+        // Aggregate segment costs onto the parent trip so trip-level
+        // queries (admin, driver history) see real numbers instead of
+        // the 0 that was snapshotted at /start time. Idempotent —
+        // rerunning recomputes from the same closed segments.
+        await updateTripCostsFromSegments(tripIdForEnd)
 
         // If no rides on this trip still active, the driver-trip is done.
         const { count: activeStillOnTrip } = await supabaseAdmin
@@ -4214,11 +4221,12 @@ ridesRouter.post(
         console.error(`[rides/end] F17 post-charge bookkeeping failed for ${rideId}:`, err)
       }
     } else if (tripIdForEnd) {
-      // Single-rider trip: complete the trip too.
+      // Single-rider trip: roll segment costs into the trip + complete it.
       try {
+        await updateTripCostsFromSegments(tripIdForEnd)
         await updateTripStatus(tripIdForEnd, 'completed', { endedAt })
       } catch (err) {
-        console.warn(`[rides/end] trip completion update failed for ${rideId}:`, err)
+        console.warn(`[rides/end] trip completion/cost rollup failed for ${rideId}:`, err)
       }
     }
 
