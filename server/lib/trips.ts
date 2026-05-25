@@ -46,9 +46,17 @@ export async function getOrCreateTripForRide(
   rideId: string,
   client: SupabaseClient = supabaseAdmin,
 ): Promise<{ tripId: string; created: boolean; error?: string }> {
+  // Note: origin + destination are deliberately NOT selected/inserted
+  // here. They're GEOGRAPHY columns and the round-trip via PostgREST
+  // (returns hex WKB string, can't reliably cast back to GEOGRAPHY on
+  // INSERT through the JS client) was silently failing — leaving rides
+  // with trip_id=null on dev 2026-05-24 (PT). They're cosmetic for F17
+  // math; the per-segment trail carries the authoritative cost data.
+  // If we later want trip-level origin/destination, populate them in
+  // a separate UPDATE using raw SQL or ST_GeographyFromText.
   const { data: ride, error: fetchErr } = await client
     .from('rides')
-    .select('id, trip_id, driver_id, schedule_id, status, started_at, ended_at, origin, origin_name, destination, destination_name, route_polyline, gps_distance_metres, gas_cost_cents, time_cost_cents, gas_price_per_gallon_cents')
+    .select('id, trip_id, driver_id, schedule_id, status, started_at, ended_at, origin_name, destination_name, route_polyline, gps_distance_metres, gas_cost_cents, time_cost_cents, gas_price_per_gallon_cents')
     .eq('id', rideId)
     .single()
 
@@ -86,16 +94,14 @@ export async function getOrCreateTripForRide(
       status: tripStatus,
       started_at: (ride as Record<string, unknown>)['started_at'] as string | null,
       ended_at: (ride as Record<string, unknown>)['ended_at'] as string | null,
-      origin: (ride as Record<string, unknown>)['origin'] ?? null,
       origin_name: (ride as Record<string, unknown>)['origin_name'] as string | null,
-      destination: (ride as Record<string, unknown>)['destination'] ?? null,
       destination_name: (ride as Record<string, unknown>)['destination_name'] as string | null,
       route_polyline: (ride as Record<string, unknown>)['route_polyline'] as string | null,
       gps_distance_metres: ((ride as Record<string, unknown>)['gps_distance_metres'] as number | null) ?? 0,
       gas_cost_cents: ((ride as Record<string, unknown>)['gas_cost_cents'] as number | null) ?? 0,
       time_cost_cents: ((ride as Record<string, unknown>)['time_cost_cents'] as number | null) ?? 0,
       gas_price_per_gallon_cents: (ride as Record<string, unknown>)['gas_price_per_gallon_cents'] as number | null,
-    })
+    } as never)
     .select('id')
     .single()
 
