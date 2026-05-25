@@ -343,7 +343,11 @@ scheduleRouter.get(
     const userIds = [...new Set(filteredSchedules.map((s: Record<string, unknown>) => s['user_id'] as string))]
     const { data: users } = await supabaseAdmin
       .from('users')
-      .select('id, full_name, avatar_url, rating_avg, rating_count, is_driver, stripe_customer_id, default_payment_method_id, wallet_balance')
+      .select(
+        'id, full_name, avatar_url, rating_avg, rating_count, is_driver, '
+        + 'stripe_customer_id, default_payment_method_id, wallet_balance, '
+        + 'has_accessibility_needs, accessibility_profile' as never,
+      )
       .in('id', userIds)
 
     type PosterRow = {
@@ -356,13 +360,24 @@ scheduleRouter.get(
       stripe_customer_id: string | null
       default_payment_method_id: string | null
       wallet_balance: number | null
+      // v1.2 F5.2 — accessibility flags for the board card ♿
+      // "Mobility aid access" pill. `has_accessibility_needs` is the
+      // top-level toggle (users.has_accessibility_needs); the JSONB
+      // sub-state (accessibility_profile.needs_wheelchair) is only
+      // meaningful when the top flag is true. iOS gates the pill on
+      // BOTH being true, but we compute the AND server-side so the
+      // wire format stays a simple bool.
+      has_accessibility_needs: boolean | null
+      accessibility_profile: { needs_wheelchair?: boolean } | null
     }
     const userMap = new Map(
-      ((users ?? []) as PosterRow[]).map((u) => {
+      ((users ?? []) as unknown as PosterRow[]).map((u) => {
         const hasCard =
           (u.stripe_customer_id != null && u.stripe_customer_id.length > 0)
           && (u.default_payment_method_id != null && u.default_payment_method_id.length > 0)
         const walletHasFunds = (u.wallet_balance ?? 0) > 0
+        const hasAccess = u.has_accessibility_needs === true
+        const needsWheelchair = hasAccess && u.accessibility_profile?.needs_wheelchair === true
         return [
           u.id,
           {
@@ -375,6 +390,10 @@ scheduleRouter.get(
             // Trust signals consumed by the iOS RideBoardCard. Don't
             // leak the raw stripe IDs or wallet balance.
             has_payment_method: hasCard || walletHasFunds,
+            // v1.2 F5.2 — accessibility flags surfaced for the
+            // RideBoardCard mobility-aid pill.
+            has_accessibility_needs: hasAccess,
+            needs_wheelchair: needsWheelchair,
           },
         ]
       }),
@@ -1064,11 +1083,17 @@ scheduleRouter.post(
       return
     }
 
-    // Step 2: pull poster info (rating + payment-ready badges)
+    // Step 2: pull poster info (rating + payment-ready badges +
+    // v1.2 F5.2 accessibility flags for the ♿ "Mobility aid access"
+    // pill).
     const userIds = [...new Set(schedules.map((s: Record<string, unknown>) => s['user_id'] as string))]
     const { data: posterRows } = await supabaseAdmin
       .from('users')
-      .select('id, full_name, avatar_url, rating_avg, rating_count, is_driver, stripe_customer_id, default_payment_method_id, wallet_balance')
+      .select(
+        'id, full_name, avatar_url, rating_avg, rating_count, is_driver, '
+        + 'stripe_customer_id, default_payment_method_id, wallet_balance, '
+        + 'has_accessibility_needs, accessibility_profile' as never,
+      )
       .in('id', userIds)
 
     type PosterRow = {
@@ -1081,22 +1106,30 @@ scheduleRouter.post(
       stripe_customer_id: string | null
       default_payment_method_id: string | null
       wallet_balance: number | null
+      has_accessibility_needs: boolean | null
+      accessibility_profile: { needs_wheelchair?: boolean } | null
     }
     const posterMap = new Map(
-      ((posterRows ?? []) as PosterRow[]).map((u) => [
-        u.id,
-        {
-          id: u.id,
-          full_name: u.full_name,
-          avatar_url: u.avatar_url,
-          rating_avg: u.rating_avg,
-          rating_count: u.rating_count ?? 0,
-          is_driver: u.is_driver ?? false,
-          has_payment_method:
-            (!!u.stripe_customer_id && !!u.default_payment_method_id)
-            || ((u.wallet_balance ?? 0) > 0),
-        },
-      ]),
+      ((posterRows ?? []) as unknown as PosterRow[]).map((u) => {
+        const hasAccess = u.has_accessibility_needs === true
+        const needsWheelchair = hasAccess && u.accessibility_profile?.needs_wheelchair === true
+        return [
+          u.id,
+          {
+            id: u.id,
+            full_name: u.full_name,
+            avatar_url: u.avatar_url,
+            rating_avg: u.rating_avg,
+            rating_count: u.rating_count ?? 0,
+            is_driver: u.is_driver ?? false,
+            has_payment_method:
+              (!!u.stripe_customer_id && !!u.default_payment_method_id)
+              || ((u.wallet_balance ?? 0) > 0),
+            has_accessibility_needs: hasAccess,
+            needs_wheelchair: needsWheelchair,
+          },
+        ]
+      }),
     )
 
     // Step 3: pull driver_routines as a fallback endpoint source for
@@ -1898,10 +1931,15 @@ async function runDriverSideSearch(args: {
   }
 
   // 3. Poster info for trust badges (same shape as rider-side).
+  // v1.2 F5.2 — also pulls accessibility flags for the ♿ pill.
   const userIds = [...new Set(riderPosts.map((s: Record<string, unknown>) => s['user_id'] as string))]
   const { data: posterRows } = await supabaseAdmin
     .from('users')
-    .select('id, full_name, avatar_url, rating_avg, rating_count, is_driver, stripe_customer_id, default_payment_method_id, wallet_balance')
+    .select(
+      'id, full_name, avatar_url, rating_avg, rating_count, is_driver, '
+      + 'stripe_customer_id, default_payment_method_id, wallet_balance, '
+      + 'has_accessibility_needs, accessibility_profile' as never,
+    )
     .in('id', userIds)
 
   type PosterRow = {
@@ -1914,22 +1952,30 @@ async function runDriverSideSearch(args: {
     stripe_customer_id: string | null
     default_payment_method_id: string | null
     wallet_balance: number | null
+    has_accessibility_needs: boolean | null
+    accessibility_profile: { needs_wheelchair?: boolean } | null
   }
   const posterMap = new Map(
-    ((posterRows ?? []) as PosterRow[]).map((u) => [
-      u.id,
-      {
-        id: u.id,
-        full_name: u.full_name,
-        avatar_url: u.avatar_url,
-        rating_avg: u.rating_avg,
-        rating_count: u.rating_count ?? 0,
-        is_driver: u.is_driver ?? false,
-        has_payment_method:
-          (!!u.stripe_customer_id && !!u.default_payment_method_id)
-          || ((u.wallet_balance ?? 0) > 0),
-      },
-    ]),
+    ((posterRows ?? []) as unknown as PosterRow[]).map((u) => {
+      const hasAccess = u.has_accessibility_needs === true
+      const needsWheelchair = hasAccess && u.accessibility_profile?.needs_wheelchair === true
+      return [
+        u.id,
+        {
+          id: u.id,
+          full_name: u.full_name,
+          avatar_url: u.avatar_url,
+          rating_avg: u.rating_avg,
+          rating_count: u.rating_count ?? 0,
+          is_driver: u.is_driver ?? false,
+          has_payment_method:
+            (!!u.stripe_customer_id && !!u.default_payment_method_id)
+            || ((u.wallet_balance ?? 0) > 0),
+          has_accessibility_needs: hasAccess,
+          needs_wheelchair: needsWheelchair,
+        },
+      ]
+    }),
   )
 
   // 4. Score loop — INVERTED. Project rider candidate's (o, d) onto
