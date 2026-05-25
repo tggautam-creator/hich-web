@@ -66,6 +66,15 @@ interface RoutineMini {
   day_of_week: number[]
   departure_time: string | null
   arrival_time: string | null
+  // Migration 102 — human-readable addresses populated by the client
+  // at insert time. Nullable for legacy routines pre-backfill.
+  origin_address: string | null
+  dest_address: string | null
+  // PostGIS GEOMETRY(Point, 4326) columns come back as GeoJSON Point
+  // objects — `{ type: 'Point', coordinates: [lng, lat] }`. iOS uses
+  // these as the CLGeocoder fallback when address columns are null.
+  origin: { type: string; coordinates: [number, number] } | null
+  destination: { type: string; coordinates: [number, number] } | null
 }
 
 interface SuggestionPayload {
@@ -121,11 +130,11 @@ async function enrichSuggestionRows(
       .in('id', Array.from(scheduleIds)),
     routineIdsByTable.rider_routines.size === 0 ? Promise.resolve({ data: [] }) : supabaseAdmin
       .from('rider_routines')
-      .select('id, route_name, day_of_week, departure_time, arrival_time')
+      .select('id, route_name, day_of_week, departure_time, arrival_time, origin_address, dest_address, origin, destination')
       .in('id', Array.from(routineIdsByTable.rider_routines)),
     routineIdsByTable.driver_routines.size === 0 ? Promise.resolve({ data: [] }) : supabaseAdmin
       .from('driver_routines')
-      .select('id, route_name, day_of_week, departure_time, arrival_time')
+      .select('id, route_name, day_of_week, departure_time, arrival_time, origin_address, dest_address, origin, destination')
       .in('id', Array.from(routineIdsByTable.driver_routines)),
   ])
 
