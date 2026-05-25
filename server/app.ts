@@ -28,6 +28,8 @@ import { usersRouter } from './routes/users.ts'
 import { caregiversRouter } from './routes/caregivers.ts'
 import { liveActivityRouter } from './routes/liveActivity.ts'
 import { publicCampaignsRouter } from './routes/publicCampaigns.ts'
+import { suggestionsRouter } from './routes/suggestions.ts'
+import { riderRoutinesRouter } from './routes/riderRoutines.ts'
 import { errorHandler } from './middleware/errorHandler.ts'
 import { metricsMiddleware } from './middleware/metrics.ts'
 
@@ -153,6 +155,9 @@ app.use('/api/live-activity', liveActivityRouter)
 // powers the /c/:slug marketing surface that admin pushes deep-link
 // into. See server/routes/publicCampaigns.ts + migration 077.
 app.use('/api/campaigns', publicCampaignsRouter)
+// v1.3 Suggested Rides — see server/lib/suggestionEngine.ts.
+app.use('/api/suggestions', suggestionsRouter)
+app.use('/api/rider-routines', riderRoutinesRouter)
 
 // ── SPA fallback — serve built frontend in production ─────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url))

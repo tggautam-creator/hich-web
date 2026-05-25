@@ -8,6 +8,7 @@ import { validateJwt } from '../middleware/auth.ts'
 import { adminAuth } from '../middleware/adminAuth.ts'
 import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
 import { haversineMetres, decodePolyline, projectPointOntoPolyline, type LatLng } from '../lib/polyline.ts'
+import { scanForPost } from '../lib/suggestionEngine.ts'
 import { computeTransitDropoffSuggestions, computeTransitPickupSuggestions, fetchDrivingRoute, type TransitOption } from '../lib/transitSuggestions.ts'
 import { checkUpcomingRides, expireMissedRides, expirePendingBoardOffers, expireStaleRequests, syncAllRoutines } from '../lib/scheduledReminders.ts'
 import { resolveAndPersistDefaultPm } from './payment.ts'
@@ -805,6 +806,14 @@ scheduleRouter.post(
       console.log(
         `[compute-route] schedule=${scheduleId.slice(0, 8)}… origin=(${result.originLat.toFixed(4)},${result.originLng.toFixed(4)}) dest=(${result.destLat.toFixed(4)},${result.destLng.toFixed(4)}) polyline=${result.polyline.length}chars`,
       )
+
+      // v1.3 Suggested Rides — fire-and-forget match scan now that
+      // origin/dest geo + polyline are persisted. Failures logged but
+      // don't fail the user's compute-route response. The 30-min
+      // backstop cron picks up any miss.
+      void scanForPost(scheduleId).catch((err: unknown) => {
+        console.error('[compute-route] scanForPost failed:', err)
+      })
 
       res.status(200).json({
         polyline: result.polyline,

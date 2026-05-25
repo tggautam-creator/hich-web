@@ -43,7 +43,7 @@ function getMessaging(): admin.messaging.Messaging {
  * through `sendFcmPush` — they go via the Supabase `auth.email`
  * dispatcher / Twilio respectively, and each owns its own filter.
  */
-export type FcmCategory = 'rides' | 'promos'
+export type FcmCategory = 'rides' | 'promos' | 'suggestions'
 
 /**
  * Sends FCM push notifications via the Firebase Admin SDK (HTTP v1 API).
@@ -370,18 +370,20 @@ async function filterByPreferences(
     // 055 outside the type-gen run). Same pattern as the upsert in
     // `routes/users.ts`.
     .from('notification_preferences' as never)
-    .select('user_id, push_rides, push_promos')
+    .select('user_id, push_rides, push_promos, push_suggestions')
     .in('user_id', userIDs)
   if (prefErr) {
     console.error('[FCM] filterByPreferences: prefs lookup failed', prefErr)
     return tokens
   }
 
-  type PrefRow = { user_id: string; push_rides: boolean; push_promos: boolean }
+  type PrefRow = { user_id: string; push_rides: boolean; push_promos: boolean; push_suggestions: boolean }
   const prefRows = (prefRowsRaw ?? []) as PrefRow[]
 
-  const flag: 'push_rides' | 'push_promos' =
-    category === 'promos' ? 'push_promos' : 'push_rides'
+  const flag: 'push_rides' | 'push_promos' | 'push_suggestions' =
+    category === 'promos' ? 'push_promos'
+      : category === 'suggestions' ? 'push_suggestions'
+        : 'push_rides'
   const optedOut = new Set<string>()
   for (const row of prefRows) {
     if (row[flag] === false) {

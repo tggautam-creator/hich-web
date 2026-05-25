@@ -4,6 +4,7 @@ import { checkUpcomingRides, clearExpiredSnoozes, clearStaleOnlineFlags, expireM
 import { checkActiveRides } from './lib/rideSafetyNet.ts'
 import { startRideEtaTick } from './lib/rideEtaTick.ts'
 import { sendPendingPaymentNudges } from './jobs/paymentDunning.ts'
+import { dispatchSuggestionNotifications, expireStaleSuggestions, runSuggestionBackstopScan } from './lib/suggestionEngine.ts'
 
 const env = getServerEnv()
 const { PORT, STRIPE_SECRET_KEY, SUPABASE_URL, FIREBASE_SERVICE_ACCOUNT_PATH } = env
@@ -86,7 +87,7 @@ async function runReminderSweep(reason: string): Promise<void> {
 
   try {
     console.log(`[cron/fallback] Starting reminder sweep (${reason})`)
-    const [reminders, expiry, missed, safetyNet, sync, dunning, snooze, staleOnline, offerExpiry] = await Promise.all([
+    const [reminders, expiry, missed, safetyNet, sync, dunning, snooze, staleOnline, offerExpiry, suggestBackstop, suggestPushes, suggestExpired] = await Promise.all([
       checkUpcomingRides(),
       expireStaleRequests(),
       expireMissedRides(),
@@ -132,8 +133,33 @@ async function runReminderSweep(reason: string): Promise<void> {
         console.error(`[cron/fallback] offer-expiry sweep failed: ${msg}`)
         return { checked: 0, expired: 0 }
       }),
+      // v1.3 Suggested Rides (2026-05-25) — three independent
+      // sweeps, each defensively .catch()'d so a failure in one
+      // can't tank the others via Promise.all rejection.
+      //   (a) Backstop scan picks up posts/routines whose on-write
+      //       trigger missed (driver_routines have no server-side
+      //       create endpoint, so this is their only scan path).
+      //   (b) Notification dispatch fires instant pushes for
+      //       relevance > 0.7 OR trip_date = today; everything else
+      //       is held for the 7am digest (Phase E).
+      //   (c) Expiry purge deletes suggestion rows past expires_at.
+      runSuggestionBackstopScan().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[cron/fallback] suggestion backstop scan failed: ${msg}`)
+        return { scanned: 0, inserted: 0 }
+      }),
+      dispatchSuggestionNotifications().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[cron/fallback] suggestion notifications failed: ${msg}`)
+        return { pushed: 0, deferred: 0 }
+      }),
+      expireStaleSuggestions().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[cron/fallback] suggestion expiry failed: ${msg}`)
+        return { deleted: 0 }
+      }),
     ])
-    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, sync: users=${sync.users} inserted=${sync.inserted}, dunning: scanned=${dunning.scanned} nudged=${dunning.nudged}, snooze: cleared=${snooze.cleared} notified=${snooze.notified}, staleOnline: cleared=${staleOnline.cleared} notified=${staleOnline.notified}, offerExpiry: checked=${offerExpiry.checked} expired=${offerExpiry.expired}`)
+    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, sync: users=${sync.users} inserted=${sync.inserted}, dunning: scanned=${dunning.scanned} nudged=${dunning.nudged}, snooze: cleared=${snooze.cleared} notified=${snooze.notified}, staleOnline: cleared=${staleOnline.cleared} notified=${staleOnline.notified}, offerExpiry: checked=${offerExpiry.checked} expired=${offerExpiry.expired}, suggestions: backstop=${suggestBackstop.scanned}/${suggestBackstop.inserted} pushes=${suggestPushes.pushed}/${suggestPushes.deferred} expired=${suggestExpired.deleted}`)
   } catch (err) {
     console.error('[cron/fallback] Failed reminder sweep:', err)
   } finally {
