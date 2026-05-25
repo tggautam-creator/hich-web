@@ -896,17 +896,84 @@ export async function runSuggestionBackstopScan(): Promise<{ scanned: number; in
 }
 
 export async function expireStaleSuggestions(): Promise<{ deleted: number }> {
-  const { data, error } = await supabaseAdmin
+  let totalDeleted = 0
+
+  // 1. Pass-the-trip-date expiry — driven by the row's own expires_at
+  //    column (trip_date + 1 day grace).
+  const { data: expired, error: expireErr } = await supabaseAdmin
     .from('ride_suggestions')
     .delete()
     .lt('expires_at', new Date().toISOString())
     .select('id')
 
-  if (error) {
-    console.error('[suggestionEngine] expire failed:', error.message)
-    return { deleted: 0 }
+  if (expireErr) {
+    console.error('[suggestionEngine] expire-by-date failed:', expireErr.message)
+  } else {
+    totalDeleted += expired?.length ?? 0
   }
-  return { deleted: data?.length ?? 0 }
+
+  // 2. Routine-state cleanup (added 2026-05-25). When a routine is
+  //    deactivated (is_active=false) or its end_date passes, any
+  //    suggestions still referencing it become stale — the user sees
+  //    "match for your Mon-Wed-Fri routine" for a routine they turned
+  //    off. ON DELETE CASCADE only fires on actual routine deletes,
+  //    not state flips, so we explicitly purge here.
+  //
+  //    Strategy: collect inactive/past-end routine IDs from both
+  //    rider_routines + driver_routines, then DELETE FROM
+  //    ride_suggestions WHERE rider_routine_id IN (...) OR
+  //    driver_routine_id IN (...).
+  const today = todayISO()
+  const inactiveRiderRoutineIds = await fetchInactiveRoutineIds('rider_routines', today)
+  const inactiveDriverRoutineIds = await fetchInactiveRoutineIds('driver_routines', today)
+
+  if (inactiveRiderRoutineIds.length > 0) {
+    const { data, error } = await supabaseAdmin
+      .from('ride_suggestions')
+      .delete()
+      .in('rider_routine_id', inactiveRiderRoutineIds)
+      .select('id')
+    if (error) {
+      console.error('[suggestionEngine] expire-by-rider-routine failed:', error.message)
+    } else {
+      totalDeleted += data?.length ?? 0
+    }
+  }
+
+  if (inactiveDriverRoutineIds.length > 0) {
+    const { data, error } = await supabaseAdmin
+      .from('ride_suggestions')
+      .delete()
+      .in('driver_routine_id', inactiveDriverRoutineIds)
+      .select('id')
+    if (error) {
+      console.error('[suggestionEngine] expire-by-driver-routine failed:', error.message)
+    } else {
+      totalDeleted += data?.length ?? 0
+    }
+  }
+
+  return { deleted: totalDeleted }
+}
+
+/// Helper for `expireStaleSuggestions` — returns IDs of routines that
+/// are either explicitly deactivated (is_active=false) or whose
+/// end_date has passed. Bounded to 500 to keep the IN list reasonable;
+/// any overflow gets caught on the next cron tick.
+async function fetchInactiveRoutineIds(
+  table: 'rider_routines' | 'driver_routines',
+  today: string,
+): Promise<string[]> {
+  const { data, error } = await supabaseAdmin
+    .from(table)
+    .select('id')
+    .or(`is_active.eq.false,end_date.lt.${today}`)
+    .limit(500)
+  if (error) {
+    console.error(`[suggestionEngine] fetchInactive(${table}) failed:`, error.message)
+    return []
+  }
+  return ((data ?? []) as Array<{ id: string }>).map((r) => r.id)
 }
 
 // ─────────────────────────────────────────────────────────────────────
