@@ -63,8 +63,14 @@ describe('suggestionEngine — tunables locked', () => {
     expect(ENGINE_SRC).toMatch(/const INSTANT_PUSH_RELEVANCE\s*=\s*0\.7\b/)
   })
 
-  it('keeps TIME_WINDOW_MIN at 30 (tighter than search\'s 120 — suggestions are persisted, search is one-shot)', () => {
-    expect(ENGINE_SRC).toMatch(/const TIME_WINDOW_MIN\s*=\s*30\b/)
+  it('time is scoring-only — TIME_SCORE_DECAY_MIN drives the curve (no hard cutoff)', () => {
+    // 2026-05-25 — TIME_WINDOW_MIN hard filter removed (same root
+    // cause as the bearing dead zone). TIME_SCORE_DECAY_MIN at 180
+    // min means a 60-min-apart pair still scores ~0.67 on time
+    // instead of 0; pairs >180 min apart score 0 on time but still
+    // get bearing + proximity contributions.
+    expect(ENGINE_SRC).not.toMatch(/const TIME_WINDOW_MIN\b/)
+    expect(ENGINE_SRC).toMatch(/const TIME_SCORE_DECAY_MIN\s*=\s*180\b/)
   })
 })
 
@@ -234,9 +240,17 @@ describe('suggestionEngine — bearing is scoring-only, not a hard filter', () =
   })
 
   it('every rejection in matchPair logs via logReject for observability', () => {
-    // At least one logReject() call per filter path so future debugging
-    // can grep `[suggestionEngine] reject` to see what's being filtered.
+    // At least one logReject() call per remaining filter path. Time
+    // is no longer a filter (scoring-only); bearing was never a filter
+    // here either. So we expect ≥2 calls (bbox + no-polyline-too-far),
+    // plus optionally polyline_proximity and no_google_api_key.
     const rejectCalls = (ENGINE_SRC.match(/logReject\s*\(/g) ?? []).length
-    expect(rejectCalls).toBeGreaterThanOrEqual(3)
+    expect(rejectCalls).toBeGreaterThanOrEqual(2)
+  })
+
+  it('matchPair does NOT early-return on time-window mismatch', () => {
+    // 2026-05-25 — time hard filter removed. No `if (timeDiffMin >
+    // TIME_WINDOW_MIN) return null` should remain.
+    expect(ENGINE_SRC).not.toMatch(/timeDiffMin\s*>\s*TIME_WINDOW_MIN/)
   })
 })

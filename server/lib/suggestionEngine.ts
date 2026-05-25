@@ -64,7 +64,14 @@ const DIRECT_MATCH_RADIUS_M = 10_000
 const POLYLINE_PROXIMITY_M = 75_000
 const ROUTE_CORRIDOR_M = 2_000
 
-const TIME_WINDOW_MIN = 30
+// Time was a hard filter at 30 min in Phase A.0; demoted to a scoring
+// signal only on 2026-05-25 (same root cause as the bearing dead zone:
+// for a discovery surface like Suggested Rides, hard time-filtering
+// silently kills valid matches users WANT to see). The decay window
+// below controls how aggressively distant-time matches lose score —
+// closer pairs score higher, distant pairs score lower but still
+// appear in the tab.
+const TIME_SCORE_DECAY_MIN = 180  // timeScore reaches 0 at 180 min apart
 const INSTANT_PUSH_RELEVANCE = 0.7
 
 // ─────────────────────────────────────────────────────────────────────
@@ -305,9 +312,14 @@ function polylinePassesNearEndpoints(polyline: LatLng[], rider: Post): boolean {
 // ─────────────────────────────────────────────────────────────────────
 
 function scoreDirect(signals: MatchSignals): number {
+  // Time decay extended from 60 to 180 min (TIME_SCORE_DECAY_MIN)
+  // so a 60-min apart match still contributes ~0.67 instead of 0
+  // (the old 60-min decay made anything beyond 60 score effectively
+  // zero on time, which combined with the now-removed hard time
+  // filter would have hidden most matches in low-density data).
   const timeScore = signals.time_diff_min === null
     ? 0.5
-    : Math.max(0, 1 - signals.time_diff_min / 60)
+    : Math.max(0, 1 - signals.time_diff_min / TIME_SCORE_DECAY_MIN)
   const bearingScore = Math.max(0, 1 - signals.bearing_diff_deg / 90)
   const proximityScore = Math.max(0,
     1 - (signals.origin_distance_m + signals.dest_distance_m) / (2 * DIRECT_MATCH_RADIUS_M),
@@ -337,14 +349,14 @@ async function matchPair(
   // Don't match against self.
   if (rider.user_id === driver.user_id) return null
 
-  // Time filter (skipped when either side is flexible).
+  // Time diff is now a SCORING signal only (hard filter removed
+  // 2026-05-25, same rationale as the bearing demotion). Distant-time
+  // pairs still reach matchPair and produce rows with low scores;
+  // they appear in the Suggested tab but don't push. Closer-time
+  // pairs score high enough to push instantly.
   let timeDiffMin: number | null = null
   if (rider.trip_time && driver.trip_time && !rider.time_flexible && !driver.time_flexible) {
     timeDiffMin = timeDifferenceMinutes(rider.trip_time, driver.trip_time)
-    if (timeDiffMin > TIME_WINDOW_MIN) {
-      logReject(rider, driver, `time_window(${timeDiffMin}min>${TIME_WINDOW_MIN})`)
-      return null
-    }
   }
 
   // Layer 2 — bbox overlap.
