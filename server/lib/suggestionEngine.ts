@@ -148,11 +148,13 @@ interface RideScheduleRow {
   mode: 'rider' | 'driver'
   trip_date: string
   trip_time: string | null
+  time_flexible: boolean | null
   origin_lat: number | null
   origin_lng: number | null
   dest_lat: number | null
   dest_lng: number | null
   route_polyline: string | null
+  origin_place_id: string | null
 }
 
 interface RoutineRow {
@@ -653,14 +655,23 @@ async function fetchOppositeRoleCandidates(seed: Post): Promise<Post[]> {
   const candidates: Post[] = []
 
   // 1. Opposite-role one-off schedules on the same trip_date.
+  //
+  // 2026-05-25 — exclude routine-projected schedules. The iOS routine
+  // submit flow (and server `/sync-routines`) writes daily ride_schedules
+  // rows for each routine, tagged `origin_place_id = 'routine:{id}'`.
+  // The routine itself is matched in step (2) below; matching the
+  // projections too produces N+1 duplicate suggestion cards for the
+  // same effective trip (one per projection + one for the routine).
+  // Skip them here — they exist for the board UI, not for matching.
   const { data: schedRows, error: schedErr } = await supabaseAdmin
     .from('ride_schedules')
-    .select('id, user_id, mode, trip_date, trip_time, origin_lat, origin_lng, dest_lat, dest_lng, route_polyline')
+    .select('id, user_id, mode, trip_date, trip_time, time_flexible, origin_lat, origin_lng, dest_lat, dest_lng, route_polyline, origin_place_id')
     .eq('mode', oppositeRole)
     .eq('trip_date', seed.trip_date)
     .neq('user_id', seed.user_id)
     .not('origin_lat', 'is', null)
     .not('dest_lat', 'is', null)
+    .not('origin_place_id', 'like', 'routine:%')
     .limit(MAX_CANDIDATES_PER_SCAN)
 
   if (!schedErr && schedRows) {
@@ -677,7 +688,10 @@ async function fetchOppositeRoleCandidates(seed: Post): Promise<Post[]> {
         dest_lng: row.dest_lng,
         trip_date: seed.trip_date,
         trip_time: row.trip_time,
-        time_flexible: false,
+        // Read time_flexible from the row so anytime opposite-side
+        // schedules score with the Tier 1A anytime path (was
+        // hardcoded false → anytime drivers/riders never benefited).
+        time_flexible: row.time_flexible === true,
         route_polyline: row.route_polyline,
         bearing: calculateBearing(row.origin_lat, row.origin_lng, row.dest_lat, row.dest_lng),
       })
@@ -779,12 +793,23 @@ async function persistSuggestions(
 export async function scanForPost(scheduleId: string): Promise<{ inserted: number; skipped: number }> {
   const { data: row, error } = await supabaseAdmin
     .from('ride_schedules')
-    .select('id, user_id, mode, trip_date, trip_time, origin_lat, origin_lng, dest_lat, dest_lng, route_polyline')
+    .select('id, user_id, mode, trip_date, trip_time, time_flexible, origin_lat, origin_lng, dest_lat, dest_lng, route_polyline, origin_place_id')
     .eq('id', scheduleId)
     .maybeSingle()
 
   if (error || !row) return { inserted: 0, skipped: 0 }
   const r = row as unknown as RideScheduleRow
+
+  // 2026-05-25 — skip routine-projected schedules. iOS submitRoutine
+  // writes one ride_schedules row per upcoming date (tagged
+  // origin_place_id='routine:{id}') and fires compute-route on each;
+  // each compute-route used to trigger a scanForPost, producing
+  // duplicate suggestions parallel to the routine's own scanForRoutine.
+  // The routine itself is matched directly; the projections exist
+  // only for the board UI.
+  if (r.origin_place_id?.startsWith('routine:')) {
+    return { inserted: 0, skipped: 0 }
+  }
 
   // Window guard: ignore posts beyond the look-ahead horizon.
   if (r.trip_date < todayISO() || r.trip_date > dateNDaysFromNow(WINDOW_DAYS_AHEAD)) {
@@ -805,7 +830,9 @@ export async function scanForPost(scheduleId: string): Promise<{ inserted: numbe
     dest_lng: r.dest_lng,
     trip_date: r.trip_date,
     trip_time: r.trip_time,
-    time_flexible: false,
+    // Read time_flexible from the seed row (was hardcoded false →
+    // anytime posters never triggered the Tier 1A anytime scoring).
+    time_flexible: r.time_flexible === true,
     route_polyline: r.route_polyline,
     bearing: calculateBearing(r.origin_lat, r.origin_lng, r.dest_lat, r.dest_lng),
   }
@@ -902,13 +929,16 @@ export async function runSuggestionBackstopScan(): Promise<{ scanned: number; in
   let scanned = 0
   let inserted = 0
 
-  // 1. Recent schedules.
+  // 1. Recent schedules. Skip routine-projected rows (origin_place_id
+  // 'routine:{id}') so we don't double-scan — the routine itself is
+  // handled in step 2.
   const { data: schedRows } = await supabaseAdmin
     .from('ride_schedules')
     .select('id')
     .gte('created_at', cutoff)
     .gte('trip_date', todayISO())
     .lte('trip_date', dateNDaysFromNow(WINDOW_DAYS_AHEAD))
+    .not('origin_place_id', 'like', 'routine:%')
     .limit(100)
 
   for (const row of (schedRows ?? []) as Array<{ id: string }>) {
