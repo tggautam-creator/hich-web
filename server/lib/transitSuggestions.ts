@@ -543,20 +543,36 @@ export async function computeTransitDropoffSuggestions(
   apiKey: string,
   existingPolyline?: string,
 ): Promise<{ suggestions: TransitDropoffSuggestion[]; polyline: string }> {
+  // 2026-05-25 — diagnostic logging added to find why this function
+  // returns empty in Suggested Rides. Each stage logs its outcome so
+  // we can see exactly which API call / branch is the culprit.
+  const tag = `[transit] driver=(${driverLat.toFixed(4)},${driverLng.toFixed(4)})→(${driverDestLat.toFixed(4)},${driverDestLng.toFixed(4)}) rider→(${riderDestLat.toFixed(4)},${riderDestLng.toFixed(4)})`
+  console.log(`${tag} start`)
+
   // 1. Get the driver's route polyline
   let polyline = existingPolyline ?? ''
   let driverDirectDurationMin = 0
 
   if (!polyline) {
+    console.log(`${tag} no existing polyline, fetching from Google`)
     const route = await fetchDrivingRoute(driverLat, driverLng, driverDestLat, driverDestLng, apiKey)
-    if (!route) return { suggestions: [], polyline: '' }
+    if (!route) {
+      console.log(`${tag} BAIL: fetchDrivingRoute returned null`)
+      return { suggestions: [], polyline: '' }
+    }
     polyline = route.polyline
     driverDirectDurationMin = route.durationMin
+  } else {
+    console.log(`${tag} using existing polyline, len=${polyline.length}`)
   }
 
   // 2. Decode polyline
   const decoded = decodePolyline(polyline)
-  if (decoded.length === 0) return { suggestions: [], polyline }
+  console.log(`${tag} decoded polyline to ${decoded.length} points`)
+  if (decoded.length === 0) {
+    console.log(`${tag} BAIL: polyline decoded to 0 points`)
+    return { suggestions: [], polyline }
+  }
 
   // Estimate driver direct duration from polyline if we don't have it from API
   if (driverDirectDurationMin === 0) {
@@ -565,9 +581,11 @@ export async function computeTransitDropoffSuggestions(
 
   // 3. Find divergence point (pure math — zero API calls)
   const divergence = findDivergencePoint(decoded, riderDestLat, riderDestLng)
+  console.log(`${tag} divergence at index ${divergence.index} (${divergence.point.lat.toFixed(4)},${divergence.point.lng.toFixed(4)})`)
 
   // 4. Find major transit hubs along the route (pure math — zero API calls)
   const hubStations = findHubsAlongRoute(decoded)
+  console.log(`${tag} hub stations along route: ${hubStations.length}`)
 
   // 5. Search for stations near the divergence point (1-2 Nearby Search API calls)
   //    Also search slightly before divergence for better coverage
@@ -586,6 +604,7 @@ export async function computeTransitDropoffSuggestions(
       .then(({ options }) => options.length > 0 ? options[0].total_minutes : 0)
       .catch(() => 0),
   ])
+  console.log(`${tag} nearby@divergence=${nearbyAtDivergence.length} nearby@before=${nearbyBefore.length} fullTransitMin=${fullTransitMinutes}`)
 
   // 6. Merge hub stations + nearby results, deduplicate by place ID
   const uniqueStations = new Map<string, { id: string; name: string; address: string; lat: number; lng: number }>()
@@ -598,21 +617,31 @@ export async function computeTransitDropoffSuggestions(
       uniqueStations.set(station.id, station)
     }
   }
+  console.log(`${tag} unique stations after merge: ${uniqueStations.size}`)
 
-  if (uniqueStations.size === 0) return { suggestions: [], polyline }
+  if (uniqueStations.size === 0) {
+    console.log(`${tag} BAIL: no station candidates (hubs + nearby both empty)`)
+    return { suggestions: [], polyline }
+  }
 
   // 7. For each station candidate, fetch transit + detour
   const candidates: TransitDropoffSuggestion[] = []
   const pickupToDestM = haversineMetres(driverLat, driverLng, riderDestLat, riderDestLng)
 
   // Cap candidates to avoid excessive API calls
-  const stationEntries = [...uniqueStations.values()]
+  const allStations = [...uniqueStations.values()]
+  const stationEntries = allStations
     .filter((station) => {
       // Skip stations that don't get the rider closer to their destination
       const stationToDestM = haversineMetres(station.lat, station.lng, riderDestLat, riderDestLng)
       return pickupToDestM <= 0 || stationToDestM <= pickupToDestM * 0.95
     })
     .slice(0, MAX_CANDIDATES)
+  console.log(`${tag} stations after progress filter: ${stationEntries.length}/${allStations.length} (pickupToDestM=${Math.round(pickupToDestM)})`)
+  if (stationEntries.length === 0) {
+    console.log(`${tag} BAIL: progress filter removed all stations`)
+    return { suggestions: [], polyline }
+  }
 
   // Process in parallel batches of 5 to avoid rate limits
   const BATCH_SIZE = 5
@@ -679,6 +708,11 @@ export async function computeTransitDropoffSuggestions(
     for (const r of results) {
       if (r) candidates.push(r)
     }
+  }
+
+  console.log(`${tag} final candidates with transit options: ${candidates.length}`)
+  if (candidates.length === 0) {
+    console.log(`${tag} BAIL: all station candidates returned no transit options`)
   }
 
   // 8. Score and sort — lower is better

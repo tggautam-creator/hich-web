@@ -792,6 +792,17 @@ scheduleRouter.post(
         schedule.dest_place_id as string | null,
       )
 
+      // v1.3 Suggested Rides — ALWAYS fire scanForPost, even when the
+      // Google enrichment failed. Since 2026-05-25 iOS posts the
+      // route_polyline directly at insert time (via MapKit + the
+      // validate-polyline endpoint), so the suggestion engine has
+      // what it needs even when Google's place-ID call fails
+      // (which it always does for iOS's apple:NNN IDs). Without this
+      // line, suggestions never land for iOS-originated schedules.
+      void scanForPost(scheduleId).catch((err: unknown) => {
+        console.error('[compute-route] scanForPost failed:', err)
+      })
+
       if (!result.ok) {
         const httpStatus =
           result.code === 'NO_PLACES' ? 400 :
@@ -806,14 +817,6 @@ scheduleRouter.post(
       console.log(
         `[compute-route] schedule=${scheduleId.slice(0, 8)}… origin=(${result.originLat.toFixed(4)},${result.originLng.toFixed(4)}) dest=(${result.destLat.toFixed(4)},${result.destLng.toFixed(4)}) polyline=${result.polyline.length}chars`,
       )
-
-      // v1.3 Suggested Rides — fire-and-forget match scan now that
-      // origin/dest geo + polyline are persisted. Failures logged but
-      // don't fail the user's compute-route response. The 30-min
-      // backstop cron picks up any miss.
-      void scanForPost(scheduleId).catch((err: unknown) => {
-        console.error('[compute-route] scanForPost failed:', err)
-      })
 
       res.status(200).json({
         polyline: result.polyline,
