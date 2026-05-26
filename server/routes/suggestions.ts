@@ -329,6 +329,74 @@ suggestionsRouter.post(
  * Auth: JWT-validated; ownership-checked against the routine's
  * user_id so a caller can only trigger scans on their own routines.
  */
+/**
+ * POST /api/suggestions/purge-routine/:id
+ *
+ * v1.3 CTO review (2026-05-25) — instant cleanup hook. When the user
+ * deletes OR deactivates a routine on iOS, this endpoint immediately
+ * deletes any pending `ride_suggestions` rows for that routine so the
+ * hero / Suggested tab stop surfacing matches the user no longer
+ * cares about. Before this, the 5-min `expireStaleSuggestions` cron
+ * was the only cleanup path → up to 5 minutes of stale UI.
+ *
+ * Hard deletes are technically handled by the FK CASCADE in
+ * migration 103, so calling this after a hard delete is a no-op
+ * (returns 0). Pause (is_active=false) is where it really matters —
+ * the routine row stays but its suggestions should not.
+ *
+ * Auth: JWT-validated; ownership-checked against the routine's
+ * user_id so a caller can only purge their own routine's suggestions.
+ * Idempotent — repeated calls return the same count (0 after first).
+ */
+suggestionsRouter.post(
+  '/purge-routine/:id',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const viewerId = res.locals['userId'] as string
+    const routineID = String(req.params['id'] ?? '')
+    if (routineID.length === 0) {
+      res.status(400).json({ error: { code: 'INVALID_BODY', message: 'routine id required' } })
+      return
+    }
+
+    // Ownership check. Note: if the routine was already hard-deleted
+    // (CASCADE already fired), the lookup returns null and we just
+    // return 0 — keeps the call idempotent for either case.
+    const { data: row, error: fetchErr } = await supabaseAdmin
+      .from('driver_routines')
+      .select('user_id')
+      .eq('id', routineID)
+      .maybeSingle()
+
+    if (fetchErr) { next(fetchErr); return }
+    if (row) {
+      const r = row as unknown as { user_id: string }
+      if (r.user_id !== viewerId) {
+        res.status(403).json({ error: { code: 'FORBIDDEN', message: 'not your routine' } })
+        return
+      }
+    }
+
+    // Two separate deletes because the routine could be on either
+    // side of any given suggestion. supabase-js can't OR across
+    // columns in a single .delete() without RPC.
+    const [riderHit, driverHit] = await Promise.all([
+      supabaseAdmin
+        .from('ride_suggestions')
+        .delete()
+        .eq('rider_routine_id', routineID)
+        .select('id'),
+      supabaseAdmin
+        .from('ride_suggestions')
+        .delete()
+        .eq('driver_routine_id', routineID)
+        .select('id'),
+    ])
+    const deleted = (riderHit.data?.length ?? 0) + (driverHit.data?.length ?? 0)
+    res.status(200).json({ ok: true, deleted })
+  },
+)
+
 suggestionsRouter.post(
   '/scan-routine/:id',
   validateJwt,

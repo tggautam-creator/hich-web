@@ -105,6 +105,13 @@ interface MatchSignals {
   classification: MatchClassification
   bearing_diff_deg: number
   time_diff_min: number | null
+  // Anytime flags (2026-05-25 CTO review). When either side is
+  // anytime (`time_flexible=true` or `trip_time IS NULL`),
+  // `time_diff_min` is null. We separately record WHICH side(s) were
+  // anytime so the score can advantage flexible matches instead of
+  // treating null as a neutral mid-score.
+  rider_anytime?: boolean
+  driver_anytime?: boolean
   origin_distance_m: number
   dest_distance_m: number
   corridor_origin_m?: number
@@ -320,9 +327,28 @@ function scoreDirect(signals: MatchSignals): number {
   // (the old 60-min decay made anything beyond 60 score effectively
   // zero on time, which combined with the now-removed hard time
   // filter would have hidden most matches in low-density data).
-  const timeScore = signals.time_diff_min === null
-    ? 0.5
-    : Math.max(0, 1 - signals.time_diff_min / TIME_SCORE_DECAY_MIN)
+  //
+  // Anytime handling (2026-05-25 CTO review). Old behavior: any
+  // anytime side → timeScore=0.5, which is identical to a 90-min
+  // mismatch and effectively penalized flexible users. New behavior:
+  //   - Both sides anytime: 1.0 (ideal — total temporal flexibility)
+  //   - One side anytime:   0.85 (one-side flex still resolves cleanly)
+  //   - Both scheduled:     linear decay over TIME_SCORE_DECAY_MIN
+  // This lifts anytime↔scheduled pairs above the 0.7 push threshold
+  // so the most flexible users start getting instant notifications
+  // instead of silently disappearing into the Suggested tab.
+  let timeScore: number
+  if (signals.time_diff_min !== null) {
+    timeScore = Math.max(0, 1 - signals.time_diff_min / TIME_SCORE_DECAY_MIN)
+  } else if (signals.rider_anytime && signals.driver_anytime) {
+    timeScore = 1.0
+  } else if (signals.rider_anytime || signals.driver_anytime) {
+    timeScore = 0.85
+  } else {
+    // Defensive: time_diff_min null but no anytime flags set (e.g.
+    // legacy rows from before this commit). Treat as neutral.
+    timeScore = 0.5
+  }
   const bearingScore = Math.max(0, 1 - signals.bearing_diff_deg / 90)
   const proximityScore = Math.max(0,
     1 - (signals.origin_distance_m + signals.dest_distance_m) / (2 * DIRECT_MATCH_RADIUS_M),
@@ -357,9 +383,11 @@ async function matchPair(
   // pairs still reach matchPair and produce rows with low scores;
   // they appear in the Suggested tab but don't push. Closer-time
   // pairs score high enough to push instantly.
+  const riderAnytime = !rider.trip_time || rider.time_flexible
+  const driverAnytime = !driver.trip_time || driver.time_flexible
   let timeDiffMin: number | null = null
-  if (rider.trip_time && driver.trip_time && !rider.time_flexible && !driver.time_flexible) {
-    timeDiffMin = timeDifferenceMinutes(rider.trip_time, driver.trip_time)
+  if (!riderAnytime && !driverAnytime) {
+    timeDiffMin = timeDifferenceMinutes(rider.trip_time!, driver.trip_time!)
   }
 
   // Layer 2 — bbox overlap.
@@ -392,6 +420,8 @@ async function matchPair(
       classification: 'direct',
       bearing_diff_deg: bearingDiff,
       time_diff_min: timeDiffMin,
+      rider_anytime: riderAnytime,
+      driver_anytime: driverAnytime,
       origin_distance_m: direct.originDistanceM,
       dest_distance_m: direct.destDistanceM,
     }
@@ -424,6 +454,8 @@ async function matchPair(
         classification: 'direct',
         bearing_diff_deg: bearingDiff,
         time_diff_min: timeDiffMin,
+      rider_anytime: riderAnytime,
+      driver_anytime: driverAnytime,
         origin_distance_m: direct.originDistanceM,
         dest_distance_m: direct.destDistanceM,
       }
@@ -471,6 +503,8 @@ async function matchPair(
       classification: 'direct',
       bearing_diff_deg: bearingDiff,
       time_diff_min: timeDiffMin,
+      rider_anytime: riderAnytime,
+      driver_anytime: driverAnytime,
       origin_distance_m: direct.originDistanceM,
       dest_distance_m: direct.destDistanceM,
       corridor_origin_m: originProj.distanceM,
@@ -517,6 +551,8 @@ async function matchPair(
       classification: 'transit_dropoff',
       bearing_diff_deg: bearingDiff,
       time_diff_min: timeDiffMin,
+      rider_anytime: riderAnytime,
+      driver_anytime: driverAnytime,
       origin_distance_m: direct.originDistanceM,
       dest_distance_m: direct.destDistanceM,
       corridor_origin_m: originProj.distanceM,
@@ -567,6 +603,8 @@ async function matchPair(
       classification: 'transit_pickup',
       bearing_diff_deg: bearingDiff,
       time_diff_min: timeDiffMin,
+      rider_anytime: riderAnytime,
+      driver_anytime: driverAnytime,
       origin_distance_m: direct.originDistanceM,
       dest_distance_m: direct.destDistanceM,
       corridor_origin_m: originProj.distanceM,
