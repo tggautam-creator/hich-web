@@ -361,10 +361,18 @@ function scoreTransit(handoff: TransitDropoffSuggestion, isPickupHandoff: boolea
   // anchored slightly lower than transit-dropoff matches because
   // they require the rider to commit to transit BEFORE the driver
   // shows up, which is operationally harder.
+  //
+  // Cap raised from 0.75 → 0.85 (2026-05-25 CTO review). The old
+  // 0.75 cap meant even ideal handoffs (e.g. Davis→Pier 39 driver
+  // + Davis→SFO rider via BART) stayed under the 0.7 push threshold
+  // once the bearing/proximity weights weighed in — the feature's
+  // marquee use case was silently never push-notifying. 0.85 keeps
+  // a meaningful discount vs direct (1.0) while letting genuinely
+  // good handoffs cross the push line.
   const totalMin = handoff.total_rider_minutes ?? 60
   const decay = Math.max(0, 1 - totalMin / 120)
   const base = isPickupHandoff ? 0.45 : 0.55
-  return Math.min(0.75, base + decay * 0.20)
+  return Math.min(0.85, base + decay * 0.30)
 }
 
 // ─────────────────────────────────────────────────────────────────────

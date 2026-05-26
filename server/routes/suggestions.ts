@@ -59,6 +59,12 @@ interface ScheduleMini {
   origin_address: string | null
   dest_address: string | null
   trip_time: string | null
+  // 2026-05-25 CTO review — iOS posts anytime schedules with
+  // trip_time='12:00:00' + time_flexible=true (NOT NULL placeholder).
+  // Without surfacing this flag the client can't tell an anytime
+  // post from a real noon trip → showed "12:00 PM" on the detail
+  // sheet for what the user meant as Anytime.
+  time_flexible: boolean | null
 }
 
 interface RoutineMini {
@@ -126,7 +132,7 @@ async function enrichSuggestionRows(
       .in('id', Array.from(otherUserIds)),
     scheduleIds.size === 0 ? Promise.resolve({ data: [] }) : supabaseAdmin
       .from('ride_schedules')
-      .select('id, origin_address, dest_address, trip_time')
+      .select('id, origin_address, dest_address, trip_time, time_flexible')
       .in('id', Array.from(scheduleIds)),
     routineIds.size === 0 ? Promise.resolve({ data: [] }) : supabaseAdmin
       .from('driver_routines')
