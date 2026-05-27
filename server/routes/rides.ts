@@ -6911,3 +6911,100 @@ ridesRouter.delete(
     }
   },
 )
+
+/**
+ * GET /api/rides/:rideId/counterparty-contact
+ *
+ * 2026-05-27 — share the counter-party's phone + name during the
+ * active-ride window so rider + driver can phone-call each other
+ * from chat / pickup / active-ride drawers.
+ *
+ * Privacy gate (all must hold):
+ *   1. JWT-authenticated user
+ *   2. Caller is the ride's rider_id OR driver_id
+ *   3. Ride status ∈ {accepted, coordinating, active}
+ *
+ * NOT gated on the counter-party's `phone_verified` flag — Twilio
+ * Verify isn't live yet in this codebase (project_twilio_verify_not_live)
+ * so every user has phone_verified=false. We expose the raw stored
+ * `users.phone`; client renders an explicit "Phone unavailable"
+ * state when it's null.
+ *
+ * Responses:
+ *   200 { phone: string|null, full_name: string|null }
+ *   400 INVALID_PARAMS — rideId missing/malformed
+ *   403 FORBIDDEN — caller isn't a party to this ride
+ *   403 OUTSIDE_WINDOW — ride status is requested / completed / cancelled
+ *   404 RIDE_NOT_FOUND
+ */
+ridesRouter.get(
+  '/:rideId/counterparty-contact',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = res.locals['userId'] as string
+      const rideId = String(req.params['rideId'] ?? '')
+      if (!rideId) {
+        res.status(400).json({ error: { code: 'INVALID_PARAMS', message: 'rideId required' } })
+        return
+      }
+
+      const { data: ride, error: rideErr } = await supabaseAdmin
+        .from('rides')
+        .select('id, rider_id, driver_id, status')
+        .eq('id', rideId)
+        .single()
+
+      if (rideErr || !ride) {
+        res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+        return
+      }
+
+      const rideRow = ride as { rider_id: string | null; driver_id: string | null; status: string }
+      const isParty = rideRow.rider_id === userId || rideRow.driver_id === userId
+      if (!isParty) {
+        res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Not a party to this ride' } })
+        return
+      }
+
+      const ALLOWED = new Set(['accepted', 'coordinating', 'active'])
+      if (!ALLOWED.has(rideRow.status)) {
+        res.status(403).json({
+          error: {
+            code: 'OUTSIDE_WINDOW',
+            message: 'Contact is only shared during active rides.',
+          },
+        })
+        return
+      }
+
+      const counterpartyId =
+        rideRow.rider_id === userId ? rideRow.driver_id : rideRow.rider_id
+      if (!counterpartyId) {
+        res.status(200).json({ phone: null, full_name: null })
+        return
+      }
+
+      const { data: user, error: userErr } = await supabaseAdmin
+        .from('users')
+        .select('phone, full_name')
+        .eq('id', counterpartyId)
+        .single()
+      if (userErr || !user) {
+        res.status(200).json({ phone: null, full_name: null })
+        return
+      }
+
+      const userRow = user as { phone: string | null; full_name: string | null }
+      console.log(
+        `[rides/counterparty-contact] caller=${userId.slice(0, 8)}… ride=${rideId.slice(0, 8)}… status=${rideRow.status} phone=${userRow.phone ? 'present' : 'null'}`,
+      )
+      res.status(200).json({
+        phone: userRow.phone ?? null,
+        full_name: userRow.full_name ?? null,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)

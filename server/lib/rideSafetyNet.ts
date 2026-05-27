@@ -50,7 +50,25 @@ export const WARNING_TO_AUTOEND_MS = 90_000
 export const WARNING_REFIRE_COOLDOWN_MS = 5 * 60_000
 export const MAX_WARNING_PUSHES = 2
 export const PICKUP_GRACE_MS = 2 * 60_000
-export const RECENT_PING_WINDOW_MS = 5 * 60_000
+// 2026-05-27 — tightened 5min → 60s. The previous 5-min window was
+// the "Never auto-end on radio loss alone" guard, but it was too
+// generous: when either party's app went to background and iOS's
+// "While Using" permission stopped GPS broadcasting, their last ping
+// went stale within seconds. During the 0-5min staleness transition,
+// the server still treated the ping as "fresh enough" to compute
+// separation against — and a stale-frozen GPS vs the other party's
+// moving GPS looks identical to actual divergence. Several riders
+// reported "ride auto-ended before reaching destination" caused by
+// exactly this loop (driver locks phone → driver_ping freezes →
+// 60s later separation > 500m → warning push → 90s no response →
+// auto_divergence end). 60s window means any stale ping is treated
+// as radio loss and divergence detection is skipped, so the only
+// remaining path to auto-end is genuine sustained separation with
+// both parties' GPS actively reporting. Paired with the iOS-side
+// allowsBackgroundLocationUpdates=true during active rides
+// (Phase Y / 2026-05-27) so the typical phone-locked scenario keeps
+// pings flowing rather than going stale.
+export const RECENT_PING_WINDOW_MS = 60_000
 export const MAX_RIDE_DURATION_MS = 8 * 60 * 60_000
 
 const KM_TO_MILES = 0.621371

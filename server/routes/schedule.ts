@@ -438,6 +438,11 @@ scheduleRouter.get(
     const requestedSet = new Set<string>()
 
     const rideStatusMap = new Map<string, { status: string; ride_id: string }>()
+    // 2026-05-27 — maps schedule_id → caller's pending offer id, so
+    // the iOS RideBoardCard can render a "Withdraw" affordance on a
+    // driver's pending offer (mirrors how `rideStatusMap` lets the
+    // card render "Open Chat" on accepted rides).
+    const myOfferIdMap = new Map<string, string>()
 
     if (userId && scheduleIds.length > 0) {
       const { data: userRides } = await supabaseAdmin
@@ -460,16 +465,24 @@ scheduleRouter.get(
       // sends an offer (no rides row yet → already_requested=false).
       // Treat a pending ride_offer from this user as
       // already_requested so the iOS / web UI flips to "Offer Sent".
+      //
+      // 2026-05-27 — also capture the offer's id so the iOS board
+      // card can render a "Withdraw" button that calls the new
+      // `/board/offers/:offerId/withdraw` endpoint. Without this the
+      // card couldn't identify WHICH offer to withdraw.
       const { data: userOffers } = await supabaseAdmin
         .from('ride_offers')
-        .select('schedule_id' as never)
+        .select('id, schedule_id' as never)
         .in('schedule_id' as never, scheduleIds)
         .eq('driver_id', userId)
         .eq('status', 'pending')
 
       if (userOffers) {
-        for (const o of userOffers as unknown as Array<{ schedule_id: string }>) {
-          if (o.schedule_id) requestedSet.add(o.schedule_id)
+        for (const o of userOffers as unknown as Array<{ id: string; schedule_id: string }>) {
+          if (o.schedule_id) {
+            requestedSet.add(o.schedule_id)
+            myOfferIdMap.set(o.schedule_id, o.id)
+          }
         }
       }
     }
@@ -515,6 +528,10 @@ scheduleRouter.get(
         already_requested: requestedSet.has(schedId),
         ride_status: rideInfo?.status ?? null,
         ride_id: rideInfo?.ride_id ?? null,
+        // 2026-05-27 — only populated for the caller's own pending
+        // outgoing offer on this rider-post. Drives the new
+        // driver-side "Withdraw" button on RideBoardCard.
+        my_offer_id: myOfferIdMap.get(schedId) ?? null,
         // Include driver's route coords for transit preview (if available)
         driver_origin_lat: coords?.originLat ?? null,
         driver_origin_lng: coords?.originLng ?? null,
@@ -556,6 +573,210 @@ scheduleRouter.get(
  * sections + the "My posts" icon on `RideBoardHomePage` that
  * jumps the user straight to them.
  */
+
+/**
+ * GET /api/schedule/by-id/:id
+ *
+ * v1.3 (2026-05-25) — single-row schedule fetch in the shape iOS's
+ * `ScheduledRide` decoder expects. Powers the Suggested Rides
+ * "Request this ride" / "Offer this ride" buttons which open the
+ * existing `RideBoardConfirmSheet` and need a fully-populated
+ * `ScheduledRide` object. Reuses the same enrichment pattern as
+ * `/board` (poster info) but for one row only.
+ *
+ * Auth: JWT required (the confirm sheet is action-gated; only
+ * authenticated users can request/offer). No ownership check —
+ * the requester just needs to read the schedule to act on it.
+ */
+/**
+ * POST /api/schedule/project-routine
+ *
+ * v1.3 (2026-05-25) — lazy projection for the Suggested Rides
+ * "Request" / "Offer" buttons. iOS only projects the NEXT occurrence
+ * of each day-of-week at routine-create time, but the matching engine
+ * scans 60 days ahead, so suggestions for a date that's 2+ weeks out
+ * land without a projected ride_schedules row to act on. This
+ * endpoint finds OR creates the projection for a given (routine, date)
+ * pair and returns the schedule_id.
+ *
+ * Body: { routine_id: string, trip_date: 'YYYY-MM-DD' }
+ * Response: { schedule_id: string, created: boolean }
+ *
+ * Auth: JWT required, no ownership check — anyone can materialize a
+ * projection so the rider/driver on either side can act on the
+ * suggestion. The action endpoints (/request, /board/offers) enforce
+ * their own gating downstream.
+ */
+scheduleRouter.post(
+  '/project-routine',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const body = (req.body ?? {}) as { routine_id?: string; trip_date?: string }
+    const routineID = String(body.routine_id ?? '')
+    const tripDate = String(body.trip_date ?? '')
+    if (!routineID || !/^\d{4}-\d{2}-\d{2}$/.test(tripDate)) {
+      res.status(400).json({
+        error: { code: 'INVALID_BODY', message: 'routine_id + trip_date YYYY-MM-DD required' },
+      })
+      return
+    }
+
+    // 1. Find existing projection — that's the cheap path.
+    const placeId = `routine:${routineID}`
+    const { data: existing } = await supabaseAdmin
+      .from('ride_schedules')
+      .select('id')
+      .eq('origin_place_id', placeId)
+      .eq('trip_date', tripDate)
+      .limit(1)
+      .maybeSingle()
+    if (existing) {
+      res.status(200).json({ schedule_id: (existing as { id: string }).id, created: false })
+      return
+    }
+
+    // 2. Load the routine so we can synthesize a projection row.
+    const { data: routine, error: routineErr } = await supabaseAdmin
+      .from('driver_routines')
+      .select('*')
+      .eq('id', routineID)
+      .maybeSingle()
+    if (routineErr) { next(routineErr); return }
+    if (!routine) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'routine not found' } })
+      return
+    }
+    const r = routine as Record<string, unknown>
+
+    const originPoint = r['origin'] as { coordinates?: [number, number] } | null
+    const destPoint = r['destination'] as { coordinates?: [number, number] } | null
+    const originCoords = originPoint?.coordinates
+    const destCoords = destPoint?.coordinates
+    if (!originCoords || !destCoords) {
+      res.status(422).json({
+        error: { code: 'ROUTINE_MISSING_COORDS', message: 'routine has no origin/destination coordinates' },
+      })
+      return
+    }
+
+    const isArrival = r['arrival_time'] != null && r['departure_time'] == null
+    const tripTime = (r['departure_time'] ?? r['arrival_time'] ?? '12:00:00') as string
+
+    // 3. Insert the projection. Mirror the columns iOS's
+    // projectRoutineGroupsToBoard writes so this row is
+    // indistinguishable from a normally-projected one.
+    const insertPayload = {
+      user_id: r['user_id'],
+      mode: r['mode'],
+      route_name: r['route_name'] ?? '',
+      origin_place_id: placeId,
+      dest_place_id: `${placeId}:dest`,
+      origin_address: r['origin_address'] ?? '',
+      dest_address: r['dest_address'] ?? '',
+      direction_type: 'one_way',
+      trip_date: tripDate,
+      time_type: isArrival ? 'arrival' : 'departure',
+      trip_time: tripTime,
+      time_flexible: false,
+      available_seats: r['available_seats'],
+      note: r['note'],
+      origin_lat: originCoords[1],
+      origin_lng: originCoords[0],
+      dest_lat: destCoords[1],
+      dest_lng: destCoords[0],
+      route_polyline: r['route_polyline'],
+      polyline_source: r['polyline_source'],
+    }
+
+    const { data: inserted, error: insertErr } = await supabaseAdmin
+      .from('ride_schedules')
+      .insert(insertPayload as never)
+      .select('id')
+      .single()
+
+    if (insertErr) { next(insertErr); return }
+    res.status(200).json({ schedule_id: (inserted as { id: string }).id, created: true })
+  },
+)
+
+scheduleRouter.get(
+  '/by-id/:id',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const scheduleId = String(req.params['id'] ?? '')
+    if (!scheduleId) {
+      res.status(400).json({ error: { code: 'INVALID_PARAMS', message: 'schedule id required' } })
+      return
+    }
+
+    const { data: row, error } = await supabaseAdmin
+      .from('ride_schedules')
+      .select('*')
+      .eq('id', scheduleId)
+      .maybeSingle()
+
+    if (error) { next(error); return }
+    if (!row) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'schedule not found' } })
+      return
+    }
+
+    const r = row as Record<string, unknown>
+
+    // Enrich with poster info — must match the shape iOS's `Poster`
+    // decoder expects (is_driver, has_payment_method, accessibility
+    // flags). Missing is_driver caused "Couldn't open this match" toasts
+    // because Poster requires the field (no default in the iOS init).
+    const { data: poster } = await supabaseAdmin
+      .from('users')
+      .select(
+        'id, full_name, avatar_url, rating_avg, rating_count, is_driver, '
+        + 'stripe_customer_id, default_payment_method_id, wallet_balance, '
+        + 'has_accessibility_needs, accessibility_profile' as never,
+      )
+      .eq('id', r['user_id'] as string)
+      .maybeSingle()
+    const p = (poster ?? {}) as Record<string, unknown>
+    const hasCard =
+      (p['stripe_customer_id'] != null && (p['stripe_customer_id'] as string).length > 0)
+      && (p['default_payment_method_id'] != null && (p['default_payment_method_id'] as string).length > 0)
+    const walletHasFunds = ((p['wallet_balance'] as number | null) ?? 0) > 0
+    const accessibilityProfile = (p['accessibility_profile'] ?? {}) as { needs_wheelchair?: boolean }
+
+    res.status(200).json({
+      id: r['id'],
+      user_id: r['user_id'],
+      mode: r['mode'],
+      route_name: r['route_name'] ?? '',
+      origin_address: r['origin_address'] ?? '',
+      dest_address: r['dest_address'] ?? '',
+      direction_type: r['direction_type'] ?? 'one_way',
+      trip_date: r['trip_date'],
+      time_type: r['time_type'] ?? 'departure',
+      trip_time: r['trip_time'],
+      time_flexible: r['time_flexible'],
+      available_seats: r['available_seats'],
+      note: r['note'],
+      created_at: r['created_at'],
+      origin_lat: r['origin_lat'],
+      origin_lng: r['origin_lng'],
+      dest_lat: r['dest_lat'],
+      dest_lng: r['dest_lng'],
+      poster: {
+        id: p['id'],
+        full_name: p['full_name'],
+        avatar_url: p['avatar_url'],
+        rating_avg: p['rating_avg'],
+        rating_count: p['rating_count'],
+        is_driver: p['is_driver'] ?? false,
+        has_payment_method: hasCard || walletHasFunds,
+        has_accessibility_needs: p['has_accessibility_needs'] ?? false,
+        needs_wheelchair: accessibilityProfile.needs_wheelchair ?? false,
+      },
+    })
+  },
+)
+
 scheduleRouter.get(
   '/my-posts',
   validateJwt,
@@ -5582,6 +5803,122 @@ scheduleRouter.post(
 
     console.log(
       `[board/offers:decline] rider=${userId.slice(0, 8)}… declined offer=${offerId.slice(0, 8)}… reason=${reason ?? 'null'}`,
+    )
+    res.status(200).json({ status: 'released' })
+  },
+)
+
+/**
+ * POST /api/schedule/board/offers/:offerId/withdraw
+ *
+ * 2026-05-27 — driver-initiated withdrawal of their own pending board
+ * offer. Mirrors the rider's `/decline` endpoint but the auth gate is
+ * driver-side: only the driver who made the offer can withdraw it.
+ * Flips the offer to 'released' and fires a courtesy push to the
+ * rider so their offers list reflects reality immediately.
+ *
+ * Returns: 200 OK { status: 'released' }
+ * Errors:
+ *   - 404 OFFER_NOT_FOUND
+ *   - 400 NOT_A_BOARD_OFFER (offer has ride_id set — instant offer)
+ *   - 403 FORBIDDEN (caller isn't the offer's driver)
+ *   - 409 ALREADY_RELEASED (offer already selected / standby / released)
+ */
+scheduleRouter.post(
+  '/board/offers/:offerId/withdraw',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const userId = res.locals['userId'] as string
+    const offerId = String(req.params['offerId'] ?? '')
+
+    if (!offerId) {
+      res.status(400).json({ error: { code: 'INVALID_PARAMS', message: 'offerId required' } })
+      return
+    }
+
+    type WithdrawOfferRow = {
+      id: string
+      schedule_id: string | null
+      driver_id: string
+      status: 'pending' | 'selected' | 'standby' | 'released'
+      ride_id: string | null
+    }
+    const { data: offerRaw, error: offerErr } = await supabaseAdmin
+      .from('ride_offers')
+      .select('id, schedule_id, driver_id, status, ride_id' as never)
+      .eq('id', offerId)
+      .single()
+    const offer = (offerRaw as unknown) as WithdrawOfferRow | null
+
+    if (offerErr || !offer) {
+      res.status(404).json({ error: { code: 'OFFER_NOT_FOUND', message: 'Offer not found' } })
+      return
+    }
+
+    if (offer.ride_id != null || offer.schedule_id == null) {
+      res.status(400).json({
+        error: { code: 'NOT_A_BOARD_OFFER', message: 'This endpoint only handles board offers' },
+      })
+      return
+    }
+
+    if (offer.driver_id !== userId) {
+      res.status(403).json({
+        error: { code: 'FORBIDDEN', message: 'Only the driver who made the offer can withdraw it' },
+      })
+      return
+    }
+
+    if (offer.status !== 'pending') {
+      res.status(409).json({
+        error: { code: 'ALREADY_RELEASED', message: `Offer is already ${offer.status}` },
+      })
+      return
+    }
+
+    const { error: updateErr } = await supabaseAdmin
+      .from('ride_offers')
+      .update({ status: 'released' } as never)
+      .eq('id', offerId)
+
+    if (updateErr) {
+      next(updateErr)
+      return
+    }
+
+    // Notify the rider (poster of the schedule) so their offers list
+    // converges immediately. Best-effort; non-fatal.
+    void (async () => {
+      try {
+        const { data: schedRow } = await supabaseAdmin
+          .from('ride_schedules')
+          .select('user_id')
+          .eq('id', offer.schedule_id as string)
+          .single()
+        const riderId = (schedRow as { user_id?: string } | null)?.user_id
+        if (!riderId) return
+        const { data: riderTokens } = await supabaseAdmin
+          .from('push_tokens')
+          .select('token')
+          .eq('user_id', riderId)
+        const tokens = (riderTokens ?? []).map((t: { token: string }) => t.token)
+        if (tokens.length === 0) return
+        await sendFcmPush(tokens, {
+          title: 'Driver withdrew their offer',
+          body: 'They\'re no longer available — other offers may still be open.',
+          data: {
+            type: 'board_offer_withdrawn',
+            schedule_id: offer.schedule_id as string,
+            offer_id: offerId,
+          },
+        })
+      } catch (err) {
+        console.error('[board/offers:withdraw] push failed:', err instanceof Error ? err.message : String(err))
+      }
+    })()
+
+    console.log(
+      `[board/offers:withdraw] driver=${userId.slice(0, 8)}… withdrew offer=${offerId.slice(0, 8)}…`,
     )
     res.status(200).json({ status: 'released' })
   },
