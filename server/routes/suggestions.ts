@@ -82,6 +82,15 @@ interface RoutineMini {
   // these as the CLGeocoder fallback when address columns are null.
   origin: { type: string; coordinates: [number, number] } | null
   destination: { type: string; coordinates: [number, number] } | null
+  // v1.3 (2026-05-25) — for the Suggested Rides "Request" / "Offer"
+  // action buttons we need the concrete ride_schedules row id for the
+  // suggestion's trip_date so we can present the existing
+  // RideBoardConfirmSheet (which is schedule-id-oriented). iOS
+  // submitRoutine projects every routine into daily ride_schedules
+  // rows tagged origin_place_id='routine:{id}'. We resolve them per
+  // suggestion below — null when no projection exists for that date
+  // (in which case the action button degrades gracefully).
+  projected_schedule_id?: string | null
 }
 
 interface SuggestionPayload {
@@ -150,14 +159,58 @@ async function enrichSuggestionRows(
     ((routinesResult.data ?? []) as RoutineMini[]).map((r) => [r.id, r]),
   )
 
+  // Resolve every routine_id used in these suggestions to its
+  // projected ride_schedules row for the matching trip_date. iOS's
+  // submitRoutine writes one ride_schedules row per upcoming date
+  // tagged origin_place_id='routine:{id}'. The Request/Offer flow
+  // needs a concrete schedule_id to act on, so we fold it into the
+  // payload here instead of forcing iOS to round-trip a lookup.
+  if (routineIds.size > 0) {
+    const trip_dates = [...new Set(rows.map((r) => r.trip_date))]
+    const placeIdPatterns = Array.from(routineIds).map((id) => `routine:${id}`)
+    const { data: projections } = await supabaseAdmin
+      .from('ride_schedules')
+      .select('id, origin_place_id, trip_date')
+      .in('origin_place_id', placeIdPatterns)
+      .in('trip_date', trip_dates)
+    const projectionByKey = new Map<string, string>()
+    for (const p of (projections ?? []) as Array<{ id: string; origin_place_id: string; trip_date: string }>) {
+      // origin_place_id is 'routine:{uuid}' → extract uuid
+      const routineId = p.origin_place_id.startsWith('routine:')
+        ? p.origin_place_id.slice('routine:'.length)
+        : null
+      if (routineId) {
+        projectionByKey.set(`${routineId}|${p.trip_date}`, p.id)
+      }
+    }
+    for (const routine of routinesById.values()) {
+      // Find any projection for this routine across the trip_dates we
+      // care about. We attach per-suggestion below.
+      // (No-op here; lookup happens in the row.map call.)
+      void routine
+    }
+    // Stash on a side map keyed by routineId|trip_date for the row.map.
+    ;(routinesById as unknown as { __projectionByKey?: Map<string, string> }).__projectionByKey = projectionByKey
+  }
+
   return rows.map((r): SuggestionPayload => {
     const isRider = r.rider_user_id === viewerId
     const otherId = isRider ? r.driver_user_id : r.rider_user_id
 
     const riderSchedule = r.rider_schedule_id ? schedulesById.get(r.rider_schedule_id) : undefined
     const driverSchedule = r.driver_schedule_id ? schedulesById.get(r.driver_schedule_id) : undefined
+    const projectionByKey = (routinesById as unknown as { __projectionByKey?: Map<string, string> }).__projectionByKey
     const riderRoutine = r.rider_routine_id ? routinesById.get(r.rider_routine_id) : undefined
     const driverRoutine = r.driver_routine_id ? routinesById.get(r.driver_routine_id) : undefined
+    // Inject the projected schedule_id (if any) onto each routine. The
+    // map is keyed by routineId|trip_date so the same routine can
+    // resolve to different schedules across different suggestions.
+    const enrichedRiderRoutine: RoutineMini | undefined = riderRoutine
+      ? { ...riderRoutine, projected_schedule_id: projectionByKey?.get(`${riderRoutine.id}|${r.trip_date}`) ?? null }
+      : undefined
+    const enrichedDriverRoutine: RoutineMini | undefined = driverRoutine
+      ? { ...driverRoutine, projected_schedule_id: projectionByKey?.get(`${driverRoutine.id}|${r.trip_date}`) ?? null }
+      : undefined
 
     return {
       id: r.id,
@@ -169,13 +222,13 @@ async function enrichSuggestionRows(
       status: isRider ? r.rider_status : r.driver_status,
       notified_at: null,                            // not exposed to client
       other_user: usersById.get(otherId) ?? null,
-      rider_source: (riderSchedule || riderRoutine) ? {
+      rider_source: (riderSchedule || enrichedRiderRoutine) ? {
         schedule: riderSchedule,
-        routine: riderRoutine,
+        routine: enrichedRiderRoutine,
       } : null,
-      driver_source: (driverSchedule || driverRoutine) ? {
+      driver_source: (driverSchedule || enrichedDriverRoutine) ? {
         schedule: driverSchedule,
-        routine: driverRoutine,
+        routine: enrichedDriverRoutine,
       } : null,
       created_at: r.created_at,
     }
