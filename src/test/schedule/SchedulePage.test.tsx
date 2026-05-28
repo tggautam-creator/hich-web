@@ -889,6 +889,7 @@ describe('SchedulePage', () => {
       await waitFor(() => {
         expect(mockInsert).toHaveBeenCalledWith({
           user_id:             'user-123',
+          mode:                'driver',
           route_name:          'Daily Commute',
           origin:              { type: 'Point', coordinates: [-121.76, 38.54] },
           destination:         { type: 'Point', coordinates: [-121.76, 38.54] },

@@ -53,28 +53,31 @@ async function main(): Promise<void> {
   }
   const schedules = (schedRows ?? []) as Array<{ id: string }>
 
-  // 2. All active driver routines (engine expands them across 14 dates).
+  // 2-3. Active routines, split by mode. v1.3 Session A (migration 103)
+  // unified driver_routines + rider_routines into one table; we filter
+  // by the mode column to drive the engine with the correct seed role.
   const { data: driverRows, error: driverErr } = await supabaseAdmin
     .from('driver_routines')
     .select('id')
+    .eq('mode', 'driver')
     .eq('is_active', true)
     .or(`end_date.is.null,end_date.gte.${today}`)
 
   if (driverErr) {
-    console.error('[backfill] driver_routines fetch failed:', driverErr.message)
+    console.error('[backfill] driver routines fetch failed:', driverErr.message)
     process.exit(1)
   }
   const driverRoutines = (driverRows ?? []) as Array<{ id: string }>
 
-  // 3. All active rider routines.
   const { data: riderRows, error: riderErr } = await supabaseAdmin
-    .from('rider_routines')
+    .from('driver_routines')
     .select('id')
+    .eq('mode', 'rider')
     .eq('is_active', true)
     .or(`end_date.is.null,end_date.gte.${today}`)
 
   if (riderErr) {
-    console.error('[backfill] rider_routines fetch failed:', riderErr.message)
+    console.error('[backfill] rider routines fetch failed:', riderErr.message)
     process.exit(1)
   }
   const riderRoutines = (riderRows ?? []) as Array<{ id: string }>

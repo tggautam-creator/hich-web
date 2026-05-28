@@ -564,6 +564,12 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
           .from('driver_routines')
           .insert({
             user_id:             user.id,
+            // 2026-05-24 — must specify mode explicitly. The DB
+            // default was dropped in migration 106 after a bug here
+            // (omitting mode) silently coerced rider routines into
+            // driver routines, surfacing riders as driver matches in
+            // ride_suggestions.
+            mode:                activeMode,
             route_name:          routeName.trim(),
             origin:              { type: 'Point' as const, coordinates: [fromCoords.lng, fromCoords.lat] },
             destination:         { type: 'Point' as const, coordinates: [toCoords.lng, toCoords.lat] },
