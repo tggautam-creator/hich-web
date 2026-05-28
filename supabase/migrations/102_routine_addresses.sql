@@ -20,9 +20,29 @@ ALTER TABLE driver_routines
   ADD COLUMN IF NOT EXISTS origin_address TEXT,
   ADD COLUMN IF NOT EXISTS dest_address TEXT;
 
-ALTER TABLE rider_routines
-  ADD COLUMN IF NOT EXISTS origin_address TEXT,
-  ADD COLUMN IF NOT EXISTS dest_address TEXT;
+-- 2026-05-24 — rider_routines was dropped by migration 103
+-- (unify_routines). Guard the rider_routines ALTER + its COMMENTs in
+-- an IF EXISTS block so this migration can be applied out of order
+-- (after 103) without erroring on the missing table. For fresh DBs
+-- applying 101 → 102 → 103 in order, the table still exists at this
+-- point and the ALTER runs normally.
+DO $rider_routines_addresses$
+BEGIN
+  IF EXISTS (
+    SELECT FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'rider_routines'
+  ) THEN
+    ALTER TABLE rider_routines
+      ADD COLUMN IF NOT EXISTS origin_address TEXT,
+      ADD COLUMN IF NOT EXISTS dest_address TEXT;
+
+    COMMENT ON COLUMN rider_routines.origin_address IS
+      'v1.3 — human-readable origin address. See driver_routines.origin_address.';
+    COMMENT ON COLUMN rider_routines.dest_address IS
+      'v1.3 — human-readable destination address. See driver_routines.dest_address.';
+  END IF;
+END
+$rider_routines_addresses$;
 
 COMMENT ON COLUMN driver_routines.origin_address IS
   'v1.3 — human-readable origin address. Populated at insert time '
@@ -33,9 +53,3 @@ COMMENT ON COLUMN driver_routines.origin_address IS
 COMMENT ON COLUMN driver_routines.dest_address IS
   'v1.3 — human-readable destination address. Same population path '
   'as origin_address.';
-
-COMMENT ON COLUMN rider_routines.origin_address IS
-  'v1.3 — human-readable origin address. See driver_routines.origin_address.';
-
-COMMENT ON COLUMN rider_routines.dest_address IS
-  'v1.3 — human-readable destination address. See driver_routines.dest_address.';
