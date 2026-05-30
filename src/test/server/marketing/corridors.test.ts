@@ -164,6 +164,69 @@ describe('clusterCorridors', () => {
     expect(corridors.length).toBeLessThanOrEqual(6)
   })
 
+  it('respects askingFor=driver filter (keeps only rider-heavy corridors)', () => {
+    const corridors = clusterCorridors(
+      [
+        // Davis ⇌ SoCal: 2 riders → asks DRIVERS
+        ride('a1', 'rider', 'Davis, CA', 'Los Angeles, CA', '2026-06-05'),
+        ride('a2', 'rider', 'Davis, CA', 'Anaheim, CA',     '2026-06-05'),
+        // Davis ⇌ Bay Area: 2 drivers → asks RIDERS
+        ride('b1', 'driver', 'Davis, CA', 'San Francisco, CA', '2026-06-05'),
+        ride('b2', 'driver', 'Davis, CA', 'Oakland, CA',       '2026-06-05'),
+      ],
+      today,
+      'driver',
+    )
+    expect(corridors).toHaveLength(1)
+    expect(corridors[0]!.asking_for).toBe('driver')
+    expect(corridors[0]!.corridor).toBe('Davis ⇌ SoCal')
+  })
+
+  it('respects askingFor=rider filter (keeps only driver-heavy corridors)', () => {
+    const corridors = clusterCorridors(
+      [
+        ride('a1', 'rider', 'Davis, CA', 'Los Angeles, CA', '2026-06-05'),
+        ride('a2', 'rider', 'Davis, CA', 'Anaheim, CA',     '2026-06-05'),
+        ride('b1', 'driver', 'Davis, CA', 'San Francisco, CA', '2026-06-05'),
+        ride('b2', 'driver', 'Davis, CA', 'Oakland, CA',       '2026-06-05'),
+      ],
+      today,
+      'rider',
+    )
+    expect(corridors).toHaveLength(1)
+    expect(corridors[0]!.asking_for).toBe('rider')
+    expect(corridors[0]!.corridor).toBe('Bay Area ⇌ Davis')
+  })
+
+  it('askingFor=both keeps both directions (default)', () => {
+    const corridors = clusterCorridors(
+      [
+        ride('a1', 'rider', 'Davis, CA', 'Los Angeles, CA', '2026-06-05'),
+        ride('a2', 'rider', 'Davis, CA', 'Anaheim, CA',     '2026-06-05'),
+        ride('b1', 'driver', 'Davis, CA', 'San Francisco, CA', '2026-06-05'),
+        ride('b2', 'driver', 'Davis, CA', 'Oakland, CA',       '2026-06-05'),
+      ],
+      today,
+      'both',
+    )
+    expect(corridors).toHaveLength(2)
+  })
+
+  it('includes origin_address + dest_address on each ride for source-rides snapshot', () => {
+    const corridors = clusterCorridors(
+      [
+        ride('1', 'rider', 'UC Davis, 1 Shields Ave, Davis, CA', 'Pier 39, San Francisco, CA', '2026-06-05'),
+        ride('2', 'rider', 'Davis Commons, Davis, CA',           'SFO, San Francisco, CA',     '2026-06-05'),
+      ],
+      today,
+    )
+    expect(corridors).toHaveLength(1)
+    const rides = corridors[0]!.rides
+    expect(rides[0]!.origin_address).toBe('UC Davis, 1 Shields Ave, Davis, CA')
+    expect(rides[0]!.dest_address).toBe('Pier 39, San Francisco, CA')
+    expect(rides[1]!.origin_address).toBe('Davis Commons, Davis, CA')
+  })
+
   it('drops rides missing addresses', () => {
     const corridors = clusterCorridors(
       [

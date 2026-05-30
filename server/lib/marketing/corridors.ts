@@ -72,6 +72,11 @@ export interface CorridorRide {
   trip_date: string
   trip_time: string | null
   direction_type: string | null
+  // Full addresses kept so the source-rides drawer in the admin UI
+  // can show the real "Axis at Davis, 2555 Research Park Dr" instead
+  // of just "Davis". The story prompt also uses these for grounding.
+  origin_address: string
+  dest_address: string
 }
 
 export interface Corridor {
@@ -135,11 +140,27 @@ function dateNDaysFromNow(n: number): string {
 }
 
 /**
+ * `askingFor` filter (Phase 1.1):
+ *   - 'driver' → only return corridors that need DRIVERS (rider-heavy)
+ *   - 'rider'  → only return corridors that need RIDERS (driver-heavy)
+ *   - 'both' or undefined → both directions (default behavior)
+ *
+ * Lets the admin manually steer story generation toward one audience
+ * ("I have a backlog of driver demand today — push riders only").
+ * The daily cron passes 'both' for full coverage.
+ */
+export type AskingForFilter = 'driver' | 'rider' | 'both'
+
+/**
  * Pure clustering — given an arbitrary rides array, returns ranked
  * corridors. Exported for testability; the production path calls
  * fetchAndClusterCorridors() which wraps DB-fetch + this.
  */
-export function clusterCorridors(rides: RideRow[], today: Date = new Date()): Corridor[] {
+export function clusterCorridors(
+  rides: RideRow[],
+  today: Date = new Date(),
+  askingFor: AskingForFilter = 'both',
+): Corridor[] {
   // Map each ride to its (origin_region, dest_region) pair.
   const enriched: CorridorRide[] = rides
     .filter((r) => r.origin_address && r.dest_address)
@@ -151,6 +172,8 @@ export function clusterCorridors(rides: RideRow[], today: Date = new Date()): Co
       trip_date: r.trip_date,
       trip_time: r.trip_time,
       direction_type: r.direction_type,
+      origin_address: r.origin_address!,
+      dest_address: r.dest_address!,
     }))
     // Drop intra-region rides (Davis → Davis) — those don't make for
     // compelling stories ("come carpool 2 miles!" doesn't convert).
@@ -223,8 +246,11 @@ export function clusterCorridors(rides: RideRow[], today: Date = new Date()): Co
   }
 
   // Drop balanced corridors before ranking — they don't make stories.
+  // Then optionally narrow by askingFor so the admin can target a
+  // single audience on demand.
   return corridors
     .filter((c) => c.asking_for !== null)
+    .filter((c) => askingFor === 'both' || c.asking_for === askingFor)
     .sort((a, b) => b.score - a.score)
     .slice(0, TOP_CORRIDORS_PER_BATCH)
 }
@@ -234,7 +260,9 @@ export function clusterCorridors(rides: RideRow[], today: Date = new Date()): Co
  * cluster them. Returns the top N corridors ready for the story
  * generator to consume.
  */
-export async function fetchAndClusterCorridors(): Promise<{
+export async function fetchAndClusterCorridors(
+  askingFor: AskingForFilter = 'both',
+): Promise<{
   corridors: Corridor[]
   error: string | null
 }> {
@@ -262,5 +290,8 @@ export async function fetchAndClusterCorridors(): Promise<{
     console.error('[marketing/corridors] fetch failed:', error.message)
     return { corridors: [], error: error.message }
   }
-  return { corridors: clusterCorridors((data ?? []) as RideRow[]), error: null }
+  return {
+    corridors: clusterCorridors((data ?? []) as RideRow[], new Date(), askingFor),
+    error: null,
+  }
 }

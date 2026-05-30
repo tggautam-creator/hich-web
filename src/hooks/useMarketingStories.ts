@@ -5,6 +5,19 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { adminGet, adminPatch, adminPost } from '@/lib/admin/api'
 
 export type StoryItemStatus = 'pending' | 'copied' | 'posted' | 'skipped'
+export type AskingForFilter = 'driver' | 'rider' | 'both'
+
+/** Snapshot of one ride_schedules row that contributed to a story.
+ * Migration 109 stores up to 8 of these per item in source_rides
+ * (JSONB), so the admin can audit what the LLM was working from. */
+export interface SourceRide {
+  ride_id: string
+  mode: 'rider' | 'driver'
+  origin_address: string
+  dest_address: string
+  trip_date: string
+  trip_time: string | null
+}
 
 export interface StoryItem {
   id: string
@@ -18,6 +31,7 @@ export interface StoryItem {
   status: StoryItemStatus
   acted_at: string | null
   created_at: string
+  source_rides: SourceRide[] | null
 }
 
 export interface StoryBatch {
@@ -56,7 +70,8 @@ interface GenerateResponse {
 export function useGenerateStoryBatch() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: () => adminPost<GenerateResponse>('/marketing/stories/generate', {}),
+    mutationFn: (askingFor: AskingForFilter = 'both') =>
+      adminPost<GenerateResponse>('/marketing/stories/generate', { asking_for: askingFor }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'marketing', 'stories'] })
     },

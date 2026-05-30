@@ -17,13 +17,27 @@
 import { supabaseAdmin } from '../supabaseAdmin.ts'
 import { geminiGenerate, MODEL_FAST, isGeminiConfigured } from './gemini.ts'
 import { BRAND_SYSTEM_PROMPT } from './brandContext.ts'
-import { fetchAndClusterCorridors, type Corridor } from './corridors.ts'
+import {
+  fetchAndClusterCorridors,
+  type AskingForFilter,
+  type Corridor,
+} from './corridors.ts'
 
 interface GenerateArgs {
   source: 'cron' | 'manual'
   /** UTC date string YYYY-MM-DD; defaults to today. */
   forDate?: string
+  /**
+   * Phase 1.1 — narrow generation to one audience. 'both' (default)
+   * keeps current behavior; 'driver' / 'rider' lets the admin push
+   * a targeted batch (e.g. "we have too many drivers tonight, push
+   * riders only"). Cron always passes 'both'.
+   */
+  askingFor?: AskingForFilter
 }
+
+/** Cap source-rides snapshot so we don't bloat marketing_story_items. */
+const MAX_SOURCE_RIDES_PER_ITEM = 8
 
 export interface StoryGenerationResult {
   batch_id: string
@@ -117,25 +131,30 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
   }
 
   const forDate = args.forDate ?? new Date().toISOString().slice(0, 10)
+  const askingFor: AskingForFilter = args.askingFor ?? 'both'
 
-  // Short-circuit: if a batch for (forDate, source) already exists,
-  // return it. Cheaper than inserting and hitting the UNIQUE error.
-  const { data: existing } = await supabaseAdmin
-    .from('marketing_story_batches')
-    .select('id, item_count')
-    .eq('for_date', forDate)
-    .eq('source', args.source)
-    .maybeSingle()
-
-  if (existing) {
-    return {
-      batch_id: (existing as { id: string }).id,
-      item_count: (existing as { item_count: number }).item_count,
-      skipped_existing: true,
+  // Short-circuit only applies to the cron path. Manual runs can
+  // stack (e.g. admin runs 'driver' then 'rider' on the same day —
+  // both intentional, both produce different stories). The partial
+  // unique index in migration 109 enforces source='cron'
+  // one-per-day at the DB level as the backstop.
+  if (args.source === 'cron') {
+    const { data: existing } = await supabaseAdmin
+      .from('marketing_story_batches')
+      .select('id, item_count')
+      .eq('for_date', forDate)
+      .eq('source', 'cron')
+      .maybeSingle()
+    if (existing) {
+      return {
+        batch_id: (existing as { id: string }).id,
+        item_count: (existing as { item_count: number }).item_count,
+        skipped_existing: true,
+      }
     }
   }
 
-  const { corridors, error: fetchErr } = await fetchAndClusterCorridors()
+  const { corridors, error: fetchErr } = await fetchAndClusterCorridors(askingFor)
   if (fetchErr) {
     // Surface the DB error onto the batch row so the admin UI shows
     // the actual cause instead of "no eligible corridors today" —
@@ -204,7 +223,11 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
   const batchId = (batch as { id: string }).id
 
   let inserted = 0
-  let errorCount = 0
+  // Per-corridor failure reasons, aggregated into batch.error so the
+  // admin UI shows the actual cause (Gemini API error message, parse
+  // failure with raw text preview, DB insert error) instead of just
+  // a "N failed" count. Truncated to 800 chars total for cell sanity.
+  const errors: string[] = []
 
   for (const corridor of corridors) {
     try {
@@ -212,14 +235,42 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
         systemPrompt: BRAND_SYSTEM_PROMPT,
         userPrompt: buildCorridorPrompt(corridor),
         temperature: 0.9,
-        maxOutputTokens: 512,
+        // Bumped from 512 → 1024. 2.5-flash is a thinking model;
+        // even with thinkingBudget=0 below, JSON output for the
+        // headline + body can run ~300 tokens with emojis (which
+        // are multi-byte and inflate token count). 1024 leaves
+        // safe headroom.
+        maxOutputTokens: 1024,
+        // Pure JSON output — no markdown fences. Eliminates the
+        // ```json wrapper that was making parseStoryCopy's slice
+        // logic fragile when the response got truncated.
+        responseMimeType: 'application/json',
+        // Story copy is a template-filling task, not a reasoning
+        // task. Disable the thinking pass entirely so we don't burn
+        // the output budget on internal reasoning tokens that get
+        // discarded — that's what caused the truncated responses.
+        thinkingBudget: 0,
       })
       const copy = parseStoryCopy(result.text)
       if (!copy) {
-        console.warn(`[marketing/stories] unparseable Gemini response for ${corridor.corridor}:`, result.text.slice(0, 200))
-        errorCount += 1
+        const preview = result.text ? result.text.slice(0, 200) : '(empty response)'
+        const msg = `${corridor.corridor}: unparseable Gemini response → ${preview}`
+        console.warn(`[marketing/stories] ${msg}`)
+        errors.push(msg)
         continue
       }
+      // Phase 1.1 — snapshot the source rides into source_rides so
+      // the admin UI can show "Source rides (4)" drawer per card.
+      // Capped at MAX_SOURCE_RIDES_PER_ITEM to keep rows small.
+      const sourceRides = corridor.rides.slice(0, MAX_SOURCE_RIDES_PER_ITEM).map((r) => ({
+        ride_id: r.ride_id,
+        mode: r.mode,
+        origin_address: r.origin_address,
+        dest_address: r.dest_address,
+        trip_date: r.trip_date,
+        trip_time: r.trip_time,
+      }))
+
       const { error: itemErr } = await supabaseAdmin
         .from('marketing_story_items')
         .insert({
@@ -231,27 +282,36 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
           date_label: corridor.date_label,
           matched_ride_count: corridor.rides.length,
           status: 'pending',
+          source_rides: sourceRides,
         } as never)
       if (itemErr) {
-        console.error(`[marketing/stories] item insert failed for ${corridor.corridor}:`, itemErr.message)
-        errorCount += 1
+        const msg = `${corridor.corridor}: item insert failed → ${itemErr.message}`
+        console.error(`[marketing/stories] ${msg}`)
+        errors.push(msg)
         continue
       }
       inserted += 1
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.error(`[marketing/stories] Gemini call failed for ${corridor.corridor}:`, msg)
-      errorCount += 1
+      const msg = `${corridor.corridor}: Gemini call threw → ${err instanceof Error ? err.message : String(err)}`
+      console.error(`[marketing/stories] ${msg}`)
+      errors.push(msg)
     }
   }
 
-  // Persist the final count on the batch row.
+  // Aggregate errors into batch.error (truncated). Surfaces the real
+  // cause directly in the admin UI instead of a generic count.
+  let aggregatedError: string | null = null
+  if (errors.length > 0) {
+    const joined = errors.join(' | ')
+    aggregatedError = joined.length > 800 ? `${joined.slice(0, 797)}...` : joined
+  }
+
   await supabaseAdmin
     .from('marketing_story_batches')
     .update({
       item_count: inserted,
       status: inserted > 0 ? 'pending' : 'failed',
-      ...(errorCount > 0 ? { error: `${errorCount} item(s) failed during generation` } : {}),
+      ...(aggregatedError ? { error: aggregatedError } : {}),
     } as never)
     .eq('id', batchId)
 
@@ -259,7 +319,7 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
     batch_id: batchId,
     item_count: inserted,
     skipped_existing: false,
-    ...(errorCount > 0 ? { reason: `${inserted} ok, ${errorCount} failed` } : {}),
+    ...(errors.length > 0 ? { reason: `${inserted} ok, ${errors.length} failed` } : {}),
   }
 }
 

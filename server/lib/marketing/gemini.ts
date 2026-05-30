@@ -51,6 +51,22 @@ export interface GenerateArgs {
   model?: string
   temperature?: number
   maxOutputTokens?: number
+  /**
+   * When the response must be pure JSON, pass 'application/json'.
+   * Gemini will skip markdown fences and emit only the JSON body —
+   * eliminates the markdown-fence stripping the caller would
+   * otherwise have to do.
+   */
+  responseMimeType?: string
+  /**
+   * Thinking budget for 2.5-series thinking models. Set to 0 to
+   * disable reasoning entirely (faster + cheaper for short
+   * deterministic tasks like template-filling copywriting).
+   * Undefined leaves the model's default (which can consume most
+   * of maxOutputTokens on a thinking pass and truncate the actual
+   * response).
+   */
+  thinkingBudget?: number
 }
 
 export interface GenerateResult {
@@ -79,6 +95,10 @@ export async function geminiGenerate(args: GenerateArgs): Promise<GenerateResult
       systemInstruction: args.systemPrompt,
       temperature: args.temperature ?? 0.85,
       maxOutputTokens: args.maxOutputTokens ?? 1024,
+      ...(args.responseMimeType ? { responseMimeType: args.responseMimeType } : {}),
+      ...(args.thinkingBudget !== undefined
+        ? { thinkingConfig: { thinkingBudget: args.thinkingBudget } }
+        : {}),
     },
   })
 

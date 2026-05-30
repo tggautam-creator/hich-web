@@ -88,7 +88,7 @@ adminMarketingRouter.get(
 
       const { data: items, error: itemsErr } = await supabaseAdmin
         .from('marketing_story_items')
-        .select('id, batch_id, corridor, asking_for, headline, body, date_label, matched_ride_count, status, acted_at, created_at')
+        .select('id, batch_id, corridor, asking_for, headline, body, date_label, matched_ride_count, status, acted_at, created_at, source_rides')
         .in('batch_id', ids)
         .order('created_at', { ascending: true })
       if (itemsErr) throw itemsErr
@@ -114,14 +114,22 @@ adminMarketingRouter.get(
 
 /**
  * POST /api/admin/marketing/stories/generate
- * Manual "Generate now" button. Always source='manual' so it doesn't
- * collide with the daily cron batch via the (for_date, source) UNIQUE.
+ * Manual "Generate now" button. Always source='manual'. Optional
+ * body `{ asking_for: 'driver' | 'rider' | 'both' }` narrows the
+ * generation to one audience; defaults to 'both' (cron behavior).
+ * Manual batches can stack within a day — different askingFor
+ * values produce different stories the admin may want side-by-side.
  */
 adminMarketingRouter.post(
   '/stories/generate',
-  async (_req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const result = await generateStoryBatch({ source: 'manual' })
+      const raw = (req.body ?? {}) as { asking_for?: unknown }
+      const ALLOWED = ['driver', 'rider', 'both'] as const
+      const askingFor = (ALLOWED as readonly string[]).includes(raw.asking_for as string)
+        ? (raw.asking_for as 'driver' | 'rider' | 'both')
+        : 'both'
+      const result = await generateStoryBatch({ source: 'manual', askingFor })
       res.status(200).json({ ok: true, ...result })
     } catch (err) {
       next(err)

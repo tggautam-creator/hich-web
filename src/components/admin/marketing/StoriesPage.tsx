@@ -17,6 +17,7 @@ import {
   useMarketingStoryBatches,
   useGenerateStoryBatch,
   useUpdateStoryItem,
+  type SourceRide,
   type StoryBatch,
   type StoryItem,
   type StoryItemStatus,
@@ -38,15 +39,29 @@ export default function StoriesPage() {
             board. Copy → paste → post.
           </p>
         </div>
-        <button
-          data-testid="generate-stories-now"
-          type="button"
-          onClick={() => generate.mutate()}
-          disabled={generate.isPending}
-          className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/90 disabled:opacity-50"
-        >
-          {generate.isPending ? 'Generating…' : 'Generate now'}
-        </button>
+        <div className="flex items-center gap-2">
+          <GenerateButton
+            testid="generate-stories-drivers"
+            label="Ask drivers"
+            tone="primary"
+            disabled={generate.isPending}
+            onClick={() => generate.mutate('driver')}
+          />
+          <GenerateButton
+            testid="generate-stories-riders"
+            label="Ask riders"
+            tone="success"
+            disabled={generate.isPending}
+            onClick={() => generate.mutate('rider')}
+          />
+          <GenerateButton
+            testid="generate-stories-both"
+            label="Generate (both)"
+            tone="primary-solid"
+            disabled={generate.isPending}
+            onClick={() => generate.mutate('both')}
+          />
+        </div>
       </header>
 
       {generate.isError && (
@@ -148,9 +163,37 @@ function BatchCard({
   )
 }
 
+function GenerateButton({
+  testid, label, tone, disabled, onClick,
+}: {
+  testid: string
+  label: string
+  tone: 'primary' | 'success' | 'primary-solid'
+  disabled: boolean
+  onClick: () => void
+}) {
+  const cls = tone === 'primary-solid'
+    ? 'bg-primary text-white hover:bg-primary/90'
+    : tone === 'success'
+      ? 'border border-success/40 text-success bg-success/5 hover:bg-success/10'
+      : 'border border-primary/40 text-primary bg-primary/5 hover:bg-primary/10'
+  return (
+    <button
+      data-testid={testid}
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-lg px-3 py-2 text-sm font-semibold disabled:opacity-50 ${cls}`}
+    >
+      {label}
+    </button>
+  )
+}
+
 function StoryCard({ item }: { item: StoryItem }) {
   const update = useUpdateStoryItem()
   const [copied, setCopied] = useState(false)
+  const [showSources, setShowSources] = useState(false)
 
   const fullText = `${item.headline}\n\n${item.body}`
 
@@ -228,7 +271,80 @@ function StoryCard({ item }: { item: StoryItem }) {
           />
         </div>
       </div>
+
+      {/* Phase 1.1 — source-rides drawer. Lets the admin verify the
+          LLM didn't hallucinate by showing the actual ride board
+          posts the story was based on. */}
+      {item.source_rides && item.source_rides.length > 0 && (
+        <SourceRidesDrawer
+          open={showSources}
+          onToggle={() => setShowSources((v) => !v)}
+          rides={item.source_rides}
+          total={item.matched_ride_count}
+        />
+      )}
     </article>
+  )
+}
+
+function SourceRidesDrawer({
+  open, onToggle, rides, total,
+}: {
+  open: boolean
+  onToggle: () => void
+  rides: SourceRide[]
+  total: number
+}) {
+  return (
+    <div className="border-t border-border pt-2">
+      <button
+        data-testid="source-rides-toggle"
+        type="button"
+        onClick={onToggle}
+        className="flex items-center gap-1 text-[11px] font-semibold text-text-secondary hover:text-text-primary"
+      >
+        <span
+          aria-hidden="true"
+          className={`transition-transform ${open ? 'rotate-90' : ''}`}
+        >
+          ›
+        </span>
+        Source rides ({total}{rides.length < total ? `, showing ${rides.length}` : ''})
+      </button>
+      {open && (
+        <ul className="mt-2 space-y-2">
+          {rides.map((r) => (
+            <li
+              key={r.ride_id}
+              className="rounded-md border border-border bg-white p-2 text-[11px]"
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <span
+                  className={[
+                    'rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase',
+                    r.mode === 'driver'
+                      ? 'bg-primary/10 text-primary'
+                      : 'bg-success/10 text-success',
+                  ].join(' ')}
+                >
+                  {r.mode}
+                </span>
+                <span className="text-text-secondary">
+                  {r.trip_date}
+                  {r.trip_time && ` · ${r.trip_time.slice(0, 5)}`}
+                </span>
+              </div>
+              <div className="text-text-primary">
+                <span className="text-text-secondary">From:</span> {r.origin_address}
+              </div>
+              <div className="text-text-primary">
+                <span className="text-text-secondary">To:</span> {r.dest_address}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   )
 }
 
