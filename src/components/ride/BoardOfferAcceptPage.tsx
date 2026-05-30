@@ -23,6 +23,11 @@ interface OfferDriver {
   avatar_url: string | null
   rating_avg: number | null
   rating_count: number | null
+  /** v1.2 F14.2 — true when this driver flipped the goodwill toggle in
+   *  EditProfile. Combined with `posted.has_caregiver` to render the
+   *  "Driver waives caregiver seat fee 💛" banner. Server normalises
+   *  to a strict boolean so missing rows resolve to `false`. */
+  waive_caregiver_fee: boolean
 }
 
 interface OfferVehicle {
@@ -46,8 +51,28 @@ interface BoardOffer {
   vehicle: OfferVehicle | null
 }
 
+interface PostedBlock {
+  pickup_name:          string | null
+  pickup_lat:           number | null
+  pickup_lng:           number | null
+  dropoff_name:         string | null
+  dropoff_lat:          number | null
+  dropoff_lng:          number | null
+  trip_date:            string
+  trip_time:            string
+  time_flexible:        boolean
+  /** v1.2 F14.2 — true when the rider's post has a caregiver
+   *  attached. Gates the waiver banner together with the offering
+   *  driver's `waive_caregiver_fee`. */
+  has_caregiver?:       boolean
+  /** Persisted seat-fee on the post; used in the banner copy
+   *  ("waives the $5 caregiver seat fee"). */
+  caregiver_fare_cents?: number | null
+}
+
 interface ListOffersResponse {
   offers: BoardOffer[]
+  posted?: PostedBlock | null
 }
 
 interface AcceptResponse {
@@ -67,7 +92,7 @@ interface RestoredAcceptState {
   confirmState?: { pendingAcceptOfferId?: string }
 }
 
-async function fetchOffers(scheduleId: string): Promise<BoardOffer[]> {
+async function fetchOffers(scheduleId: string): Promise<{ offers: BoardOffer[]; posted: PostedBlock | null }> {
   const { data: { session } } = await supabase.auth.getSession()
   if (!session) throw new Error('Not authenticated')
   const resp = await fetch(`/api/schedule/board/schedule/${scheduleId}/offers`, {
@@ -78,7 +103,7 @@ async function fetchOffers(scheduleId: string): Promise<BoardOffer[]> {
     throw new Error(body?.error?.message ?? `Failed to load offers (${resp.status})`)
   }
   const json = await resp.json() as ListOffersResponse
-  return json.offers ?? []
+  return { offers: json.offers ?? [], posted: json.posted ?? null }
 }
 
 export default function BoardOfferAcceptPage() {
@@ -91,6 +116,9 @@ export default function BoardOfferAcceptPage() {
   )
 
   const [offers, setOffers] = useState<BoardOffer[]>([])
+  // v1.2 F14.2 — keep the `posted` block in state so the waiver
+  // banner can read `posted.has_caregiver` + `posted.caregiver_fare_cents`.
+  const [posted, setPosted] = useState<PostedBlock | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actingOfferId, setActingOfferId] = useState<string | null>(null)
@@ -100,8 +128,9 @@ export default function BoardOfferAcceptPage() {
     if (!scheduleId) return
     setLoadError(null)
     try {
-      const list = await fetchOffers(scheduleId)
+      const { offers: list, posted: postedBlock } = await fetchOffers(scheduleId)
       setOffers(list)
+      setPosted(postedBlock)
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : 'Could not load offers')
     } finally {
@@ -320,6 +349,19 @@ export default function BoardOfferAcceptPage() {
                   {fare != null ? `~$${(fare / 100).toFixed(2)} you'll pay` : 'Fare: confirm in chat'}
                 </div>
 
+                {/* v1.2 F14.2 — caregiver-fee waiver banner. Renders
+                    only when BOTH sides line up: the rider's posted
+                    board entry has a caregiver attached AND the
+                    offering driver flipped the goodwill waiver on
+                    their profile. Copy + tone match iOS
+                    BoardOfferAcceptPage.caregiverWaiverBanner. */}
+                {posted?.has_caregiver === true && offer.driver.waive_caregiver_fee === true && (
+                  <CaregiverWaiverBanner
+                    driverName={offer.driver.full_name}
+                    waivedCents={posted.caregiver_fare_cents ?? null}
+                  />
+                )}
+
                 <div className="mt-4 flex gap-2">
                   <button
                     type="button"
@@ -345,6 +387,38 @@ export default function BoardOfferAcceptPage() {
           })}
         </ul>
       )}
+    </div>
+  )
+}
+
+// ── Sub-component ────────────────────────────────────────────────────
+
+function CaregiverWaiverBanner({
+  driverName,
+  waivedCents,
+}: {
+  driverName: string | null
+  waivedCents: number | null
+}) {
+  const driverFirst = (driverName ?? '').split(' ').filter(Boolean)[0] ?? 'Your driver'
+  const amountClause = waivedCents != null && waivedCents > 0
+    ? ` $${(waivedCents / 100).toFixed(2)}`
+    : ''
+
+  return (
+    <div
+      data-testid="board-offer-caregiver-waiver"
+      className="mt-3 flex items-start gap-2 rounded-2xl border border-primary/25 bg-primary/[0.08] p-3"
+    >
+      <span aria-hidden="true" className="mt-0.5 text-primary">♥</span>
+      <div className="flex-1 min-w-0">
+        <p className="text-xs font-semibold text-text-primary">
+          {driverFirst} waives the{amountClause} caregiver seat fee 💛
+        </p>
+        <p className="mt-0.5 text-[11px] text-text-secondary">
+          Goodwill from your driver — you'll only be charged the base fare.
+        </p>
+      </div>
     </div>
   )
 }

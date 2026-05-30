@@ -55,6 +55,13 @@ interface ScheduleContextRow {
   trip_date: string
   trip_time: string
   time_flexible: boolean | null
+  // v1.2 F14.2 — caregiver fields surfaced on the `posted` block so
+  // BoardOfferAcceptPage can render the "Driver waives caregiver
+  // seat fee" banner. `has_caregiver` is the boolean iOS gates the
+  // banner on (matches the JSON shape iOS Codable expects);
+  // `caregiver_fare_cents` is the dollar amount in the banner copy.
+  caregiver_id?: string | null
+  caregiver_fare_cents?: number | null
 }
 
 /// Shape the schedule row into the `posted` block iOS / web consume
@@ -72,6 +79,9 @@ function buildPostedBlock(schedule: ScheduleContextRow) {
     trip_date: schedule.trip_date,
     trip_time: schedule.trip_time,
     time_flexible: schedule.time_flexible === true,
+    // v1.2 F14.2 — caregiver context for the waiver banner.
+    has_caregiver: schedule.caregiver_id != null,
+    caregiver_fare_cents: schedule.caregiver_fare_cents ?? null,
   }
 }
 
@@ -4915,7 +4925,11 @@ scheduleRouter.get(
     // <addr> (you posted <orig>)" when they didn't.
     const { data: schedule, error: schedErr } = await supabaseAdmin
       .from('ride_schedules')
-      .select('id, user_id, mode, origin_address, dest_address, origin_lat, origin_lng, dest_lat, dest_lng, trip_date, trip_time, time_flexible' as never)
+      // v1.2 F14.2 — caregiver_id + caregiver_fare_cents feed the
+      // waiver banner on BoardOfferAcceptPage. Both are nullable;
+      // buildPostedBlock turns caregiver_id into a boolean for the
+      // `posted.has_caregiver` field iOS/web consume.
+      .select('id, user_id, mode, origin_address, dest_address, origin_lat, origin_lng, dest_lat, dest_lng, trip_date, trip_time, time_flexible, caregiver_id, caregiver_fare_cents' as never)
       .eq('id', scheduleId)
       .single() as { data: {
         id: string
@@ -4930,6 +4944,8 @@ scheduleRouter.get(
         trip_date: string
         trip_time: string
         time_flexible: boolean | null
+        caregiver_id: string | null
+        caregiver_fare_cents: number | null
       } | null; error: unknown }
 
     if (schedErr || !schedule) {
@@ -5037,7 +5053,11 @@ scheduleRouter.get(
     const [driversResp, vehiclesResp, fallbackVehiclesResp] = await Promise.all([
       supabaseAdmin
         .from('users')
-        .select('id, full_name, avatar_url, rating_avg, rating_count')
+        // v1.2 F14.2 — waive_caregiver_fee surfaced so BoardOfferAcceptPage
+        // can render the "Driver waives caregiver seat fee 💛" banner when
+        // a driver opted into the goodwill flag AND the rider's post has
+        // a caregiver attached.
+        .select('id, full_name, avatar_url, rating_avg, rating_count, waive_caregiver_fee')
         .in('id', driverIds),
       vehicleIds.length > 0
         ? supabaseAdmin
@@ -5076,6 +5096,7 @@ scheduleRouter.get(
       avatar_url: string | null
       rating_avg: number | null
       rating_count: number | null
+      waive_caregiver_fee: boolean | null
     }
     type VehicleRow = {
       id: string
@@ -5130,13 +5151,22 @@ scheduleRouter.get(
       proposed_transit_walk_minutes: o.proposed_transit_walk_minutes,
       proposed_transit_to_dest_minutes: o.proposed_transit_to_dest_minutes,
       proposed_transit_total_minutes: o.proposed_transit_total_minutes,
-      driver: driverMap.get(o.driver_id) ?? {
-        id: o.driver_id,
-        full_name: null,
-        avatar_url: null,
-        rating_avg: null,
-        rating_count: null,
-      },
+      driver: (() => {
+        const d = driverMap.get(o.driver_id)
+        if (d) {
+          // Normalise the nullable boolean to a strict bool so iOS /
+          // web both decode it as `Bool` without `if let`.
+          return { ...d, waive_caregiver_fee: d.waive_caregiver_fee === true }
+        }
+        return {
+          id: o.driver_id,
+          full_name: null,
+          avatar_url: null,
+          rating_avg: null,
+          rating_count: null,
+          waive_caregiver_fee: false,
+        }
+      })(),
       vehicle: o.vehicle_id
         ? (vehicleMap.get(o.vehicle_id) ?? null)
         : (driverPrimaryVehicleMap.get(o.driver_id) ?? null),
