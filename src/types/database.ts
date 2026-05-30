@@ -234,6 +234,55 @@ export type Database = {
         Relationships: never[]
       }
 
+      // ── caregivers ──────────────────────────────────────────────────────────
+      //
+      // v1.2 F3 — rider-side caregivers who may accompany the user on
+      // rides. Hard-delete model (Tarun direction): destroying a row
+      // sets caregiver_id=NULL on past rides + ride_schedules via the
+      // ON DELETE SET NULL clause in mig 091. RLS scopes all access
+      // to the owning user (auth.uid() = user_id).
+      caregivers: {
+        Row: {
+          id: string
+          user_id: string
+          /** 1-100 chars, CHECK constraint in mig 089. */
+          name: string
+          /** ≤50 chars, nullable. e.g. "Mom", "Sister", "Aide". */
+          relationship: string | null
+          /** E.164 phone, nullable. Client validates. */
+          phone: string | null
+          /** ≤500 chars, nullable. Free-text note for the rider. */
+          notes: string | null
+          /** v1.2 F18.5 — mandatory at the UI layer (mig 093), nullable
+           *  in the DB for back-compat with pre-093 rows. */
+          avatar_url: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          name: string
+          relationship?: string | null
+          phone?: string | null
+          notes?: string | null
+          avatar_url?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          name?: string
+          relationship?: string | null
+          phone?: string | null
+          notes?: string | null
+          avatar_url?: string | null
+          updated_at?: string
+        }
+        Relationships: never[]
+      }
+
       // ── driver_locations ────────────────────────────────────────────────────
       driver_locations: {
         Row: {
@@ -1454,6 +1503,7 @@ export type Database = {
 
 export type User           = Database['public']['Tables']['users']['Row']
 export type Vehicle        = Database['public']['Tables']['vehicles']['Row']
+export type Caregiver      = Database['public']['Tables']['caregivers']['Row']
 export type DriverLocation = Database['public']['Tables']['driver_locations']['Row']
 export type Ride           = Database['public']['Tables']['rides']['Row']
 export type Transaction    = Database['public']['Tables']['transactions']['Row']

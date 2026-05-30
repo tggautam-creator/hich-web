@@ -12,7 +12,12 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { calculateFare, calculateFareRange, formatCents } from '@/lib/fare'
+import {
+  caregiverFareCents,
+  calculateFare,
+  calculateFareRange,
+  formatCents,
+} from '@/lib/fare'
 
 describe('calculateFare', () => {
   it('clamps to minimum $5.00 for 0 km / 0 min', () => {
@@ -151,5 +156,42 @@ describe('formatCents', () => {
 
   it('formats 99 cents as "$0.99"', () => {
     expect(formatCents(99)).toBe('$0.99')
+  })
+})
+
+// v1.2 F6 — tiered caregiver seat fee. Same DJC-revised breakpoints
+// as `server/routes/rides.ts::caregiverFareCentsFor`.
+describe('caregiverFareCents', () => {
+  it('returns $3 (300¢) for trips under 10 miles', () => {
+    expect(caregiverFareCents(0)).toBe(300)
+    expect(caregiverFareCents(1)).toBe(300)            // 0.62 mi
+    expect(caregiverFareCents(15)).toBe(300)           // 9.32 mi
+    expect(caregiverFareCents(16)).toBe(300)           // 9.94 mi — still under 10
+  })
+
+  it('returns $5 (500¢) at the 10-mile lower boundary', () => {
+    // 10 mi = 16.0934 km — anything ≥ that should tier up to medium
+    expect(caregiverFareCents(16.1)).toBe(500)
+    expect(caregiverFareCents(40)).toBe(500)           // ~24.85 mi
+    expect(caregiverFareCents(80)).toBe(500)           // ~49.71 mi
+  })
+
+  it('returns $5 (500¢) right at the 50-mile upper boundary', () => {
+    // 50 mi = 80.4672 km — inclusive on the medium tier per DJC
+    expect(caregiverFareCents(80.46)).toBe(500)
+  })
+
+  it('returns $8 (800¢) for trips over 50 miles', () => {
+    // 50.001 mi = 80.4688 km
+    expect(caregiverFareCents(80.5)).toBe(800)
+    expect(caregiverFareCents(200)).toBe(800)          // ~124.27 mi
+    expect(caregiverFareCents(1000)).toBe(800)         // ~621 mi — cap holds
+  })
+
+  it('always returns integer cents (the money-rule invariant)', () => {
+    for (const km of [0, 5, 15.999, 16.1, 80, 80.5, 500]) {
+      const cents = caregiverFareCents(km)
+      expect(Number.isInteger(cents)).toBe(true)
+    }
   })
 })

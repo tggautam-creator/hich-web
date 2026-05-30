@@ -120,6 +120,27 @@ export function calculateFareRange(
   return { low, high }
 }
 
+/**
+ * v1.2 F6 — tiered caregiver seat fee. Computed server-side at ride-
+ * request time via `caregiverFareCentsFor` in `server/routes/rides.ts`;
+ * this is the client mirror used for the RideConfirm / SchedulePost
+ * preview ("+$3 caregiver seat fee"). Server is the canonical source —
+ * if these diverge, server wins at end-of-ride settlement.
+ *
+ * Tier breakpoints (revised 2026-05-22 per DJC):
+ *   < 10 mi   → $3 (300¢)
+ *   10–50 mi  → $5 (500¢)
+ *   > 50 mi   → $8 (800¢)
+ *
+ * Mirrors iOS `Fare.caregiverFareCents(distanceKM:)` 1:1.
+ */
+export function caregiverFareCents(distance_km: number): number {
+  const miles = distance_km * KM_TO_MILES
+  if (miles < 10) return 300
+  if (miles <= 50) return 500
+  return 800
+}
+
 /** Format cents as a dollar string, e.g. 1250 → "$12.50" */
 export function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`
