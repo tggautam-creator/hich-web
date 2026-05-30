@@ -112,6 +112,15 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       if (filters.time === 'custom' && filters.customDate && r.trip_date !== filters.customDate) return false
       // Seat filter only narrows driver posts; rider posts pass through unchanged.
       if (filters.seats === '2plus' && r.mode === 'driver' && (r.available_seats ?? 0) < 2) return false
+      // v1.2 F5.3 — accessibility filter. Server already AND's
+      // has_accessibility_needs + needs_wheelchair into a single
+      // bool, so the client just checks the computed field. Mirrors
+      // iOS `RideBoardViewModel.filteredRides` (F5.3).
+      if (filters.accessibility === 'accessibility_only') {
+        const poster = r.poster
+        const passes = poster?.has_accessibility_needs === true && poster.needs_wheelchair === true
+        if (!passes) return false
+      }
       return true
     })
   }, [rides, searchQuery, filters])

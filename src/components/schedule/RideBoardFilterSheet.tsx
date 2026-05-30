@@ -129,6 +129,25 @@ export default function RideBoardFilterSheet({
           </button>
         </div>
 
+        {/* ── Accessibility (v1.2 F5.3) ───────────────────────────── */}
+        <div>
+          <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">Accessibility</p>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              data-testid="filter-accessibility-any"
+              onClick={() => setDraft({ ...draft, accessibility: 'any' })}
+              className={radioClass(draft.accessibility === 'any')}
+            >All riders</button>
+            <button
+              type="button"
+              data-testid="filter-accessibility-only"
+              onClick={() => setDraft({ ...draft, accessibility: 'accessibility_only' })}
+              className={radioClass(draft.accessibility === 'accessibility_only')}
+            >♿ Mobility-aid only</button>
+          </div>
+        </div>
+
         {/* ── Sort ────────────────────────────────────────────────── */}
         <div>
           <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">Sort</p>

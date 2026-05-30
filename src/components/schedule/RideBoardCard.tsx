@@ -76,6 +76,20 @@ export default function RideBoardCard({
           {poster?.rating_avg != null && (
             <span className="text-xs text-text-secondary shrink-0">★ {poster.rating_avg.toFixed(1)}</span>
           )}
+          {/* v1.2 F5.2 — mobility-aid access pill. Server-side AND on
+              has_accessibility_needs + needs_wheelchair means both flags
+              are true here; we re-check on the client defensively so a
+              future legacy / pre-088 row doesn't render a false pill. */}
+          {poster?.has_accessibility_needs === true && poster.needs_wheelchair === true && (
+            <span
+              data-testid="board-card-mobility-aid"
+              title="Rider uses a mobility aid"
+              aria-label="Rider uses a mobility aid"
+              className="shrink-0 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary"
+            >
+              ♿
+            </span>
+          )}
         </div>
       </div>
 

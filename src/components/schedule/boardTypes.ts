@@ -6,6 +6,17 @@ export interface Poster {
   avatar_url: string | null
   rating_avg: number | null
   is_driver: boolean
+  /**
+   * v1.2 F5.2 — mobility-aid signals surfaced on the board card.
+   * `has_accessibility_needs` mirrors `users.has_accessibility_needs`
+   * (top-level toggle). `needs_wheelchair` is the AND of the top toggle
+   * and `users.accessibility_profile.needs_wheelchair`, computed
+   * server-side in `/api/schedule/board` so the wire shape stays a
+   * simple bool. Both default false / absent on rows from a pre-088
+   * server response so legacy clients keep parsing cleanly.
+   */
+  has_accessibility_needs?: boolean
+  needs_wheelchair?: boolean
 }
 
 export interface ScheduledRide {
