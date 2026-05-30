@@ -47,6 +47,7 @@ const AdminAlertsPage = lazy(() => import('@/components/admin/AlertsPage'))
 const AdminRideBoardPage = lazy(() => import('@/components/admin/RideBoardPage'))
 const AdminApiUsagePage = lazy(() => import('@/components/admin/ApiUsagePage'))
 const AdminMarketingHome = lazy(() => import('@/components/admin/marketing/MarketingHome'))
+const AdminMarketingStories = lazy(() => import('@/components/admin/marketing/StoriesPage'))
 const CampaignDetailPage = lazy(() => import('@/components/campaign/CampaignDetailPage'))
 
 // ── Onboarding ───────────────────────────────────────────────────────────────
@@ -254,8 +255,10 @@ createRoot(rootEl).render(
                   <Route path="/admin/live"       element={<Suspense fallback={<MapPageSkeleton />}><AdminLiveOpsPage /></Suspense>} />
                   <Route path="/admin/audit-log"  element={<Suspense fallback={<ListPageSkeleton />}><AdminAuditLogPage /></Suspense>} />
                   <Route path="/admin/alerts"     element={<Suspense fallback={<ListPageSkeleton />}><AdminAlertsPage /></Suspense>} />
-                  {/* 2026-05-24 — marketing panel (Phase 0 scaffold; story/poster/advisor land in Phase 1+). */}
-                  <Route path="/admin/marketing"  element={<Suspense fallback={<FormPageSkeleton />}><AdminMarketingHome /></Suspense>} />
+                  {/* 2026-05-24 — marketing panel. Phase 1 ships /stories;
+                       poster + advisor land in Phase 2+ under the same prefix. */}
+                  <Route path="/admin/marketing"          element={<Suspense fallback={<FormPageSkeleton />}><AdminMarketingHome /></Suspense>} />
+                  <Route path="/admin/marketing/stories"  element={<Suspense fallback={<ListPageSkeleton />}><AdminMarketingStories /></Suspense>} />
                   <Route path="/admin/settings"   element={<Placeholder name="Admin settings — future" />} />
                 </Route>
               </Route>

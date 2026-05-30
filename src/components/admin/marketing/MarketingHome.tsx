@@ -87,23 +87,28 @@ export default function MarketingHome() {
       </section>
 
       <section
-        data-testid="marketing-coming-soon"
+        data-testid="marketing-features"
         className="rounded-2xl border border-border bg-white p-5"
       >
-        <h2 className="text-sm font-bold text-text-primary mb-3">
-          Phase 1+ — coming next
-        </h2>
-        <ul className="text-sm text-text-secondary space-y-2">
+        <h2 className="text-sm font-bold text-text-primary mb-3">Features</h2>
+        <ul className="text-sm text-text-secondary space-y-3">
           <li>
-            <span className="font-semibold text-text-primary">
-              Daily story queue —
-            </span>{' '}
-            6 Instagram-story copies generated from the ride board every
-            morning. Copy button per card.
+            <a
+              href="/admin/marketing/stories"
+              className="block rounded-lg border border-primary/30 bg-primary/5 p-3 hover:bg-primary/10 transition-colors"
+            >
+              <p className="font-semibold text-primary">
+                Daily story queue →
+              </p>
+              <p className="text-xs text-text-secondary mt-0.5">
+                6 Instagram-story copies generated from the ride board
+                every morning. Copy button per card.
+              </p>
+            </a>
           </li>
           <li>
             <span className="font-semibold text-text-primary">
-              Poster ideas —
+              Poster ideas (Phase 2) —
             </span>{' '}
             1 feed-post copy per day, themed by the current monthly
             focus + this week's feature spotlight. Paste into your
@@ -111,7 +116,7 @@ export default function MarketingHome() {
           </li>
           <li>
             <span className="font-semibold text-text-primary">
-              Marketing advisor —
+              Marketing advisor (Phase 3+) —
             </span>{' '}
             Chat with an agent that knows everything about Tago.
             Daily morning focus + weekly Slack strategy review.

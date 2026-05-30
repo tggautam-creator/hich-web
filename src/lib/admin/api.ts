@@ -70,6 +70,19 @@ export async function adminGet<T>(path: string): Promise<T> {
  * tab.
  */
 export async function adminPost<T>(path: string, body: unknown): Promise<T> {
+  return adminMutate<T>('POST', path, body)
+}
+
+/**
+ * PATCH a JSON body to an `/api/admin/*` endpoint. Same auth + error
+ * envelope as adminPost. Used by status-update mutations (marketing
+ * story items, etc.).
+ */
+export async function adminPatch<T>(path: string, body: unknown): Promise<T> {
+  return adminMutate<T>('PATCH', path, body)
+}
+
+async function adminMutate<T>(method: 'POST' | 'PATCH', path: string, body: unknown): Promise<T> {
   const { data: sessionRes } = await supabase.auth.getSession()
   const token = sessionRes.session?.access_token
   if (!token) {
@@ -81,7 +94,7 @@ export async function adminPost<T>(path: string, body: unknown): Promise<T> {
   }
 
   const res = await fetch(`/api/admin${path}`, {
-    method: 'POST',
+    method,
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',

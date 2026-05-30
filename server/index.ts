@@ -5,6 +5,7 @@ import { checkActiveRides } from './lib/rideSafetyNet.ts'
 import { startRideEtaTick } from './lib/rideEtaTick.ts'
 import { sendPendingPaymentNudges } from './jobs/paymentDunning.ts'
 import { dispatchSuggestionNotifications, expireStaleSuggestions, runSuggestionBackstopScan } from './lib/suggestionEngine.ts'
+import { tryGenerateDailyStories } from './lib/marketing/storyGenerator.ts'
 
 const env = getServerEnv()
 const { PORT, STRIPE_SECRET_KEY, SUPABASE_URL, FIREBASE_SERVICE_ACCOUNT_PATH } = env
@@ -87,7 +88,7 @@ async function runReminderSweep(reason: string): Promise<void> {
 
   try {
     console.log(`[cron/fallback] Starting reminder sweep (${reason})`)
-    const [reminders, expiry, missed, safetyNet, sync, dunning, snooze, staleOnline, offerExpiry, suggestBackstop, suggestPushes, suggestExpired] = await Promise.all([
+    const [reminders, expiry, missed, safetyNet, sync, dunning, snooze, staleOnline, offerExpiry, suggestBackstop, suggestPushes, suggestExpired, marketingStories] = await Promise.all([
       checkUpcomingRides(),
       expireStaleRequests(),
       expireMissedRides(),
@@ -158,8 +159,19 @@ async function runReminderSweep(reason: string): Promise<void> {
         console.error(`[cron/fallback] suggestion expiry failed: ${msg}`)
         return { deleted: 0 }
       }),
+      // 2026-05-24 — marketing panel daily story generator. Internally
+      // gated to only fire once per day after 7 AM PT (the rest of
+      // the 5-min ticks are a single SELECT). The UNIQUE constraint
+      // on marketing_story_batches(for_date, source='cron') is the
+      // backstop. Defensively .catch()'d so a Gemini outage can't
+      // tank the rest of the sweep.
+      tryGenerateDailyStories().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[cron/fallback] marketing stories failed: ${msg}`)
+        return { generated: false, reason: 'error' }
+      }),
     ])
-    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, sync: users=${sync.users} inserted=${sync.inserted}, dunning: scanned=${dunning.scanned} nudged=${dunning.nudged}, snooze: cleared=${snooze.cleared} notified=${snooze.notified}, staleOnline: cleared=${staleOnline.cleared} notified=${staleOnline.notified}, offerExpiry: checked=${offerExpiry.checked} expired=${offerExpiry.expired}, suggestions: backstop=${suggestBackstop.scanned}/${suggestBackstop.inserted} pushes=${suggestPushes.pushed}/${suggestPushes.deferred}/${suggestPushes.suppressed} expired=${suggestExpired.deleted}`)
+    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, sync: users=${sync.users} inserted=${sync.inserted}, dunning: scanned=${dunning.scanned} nudged=${dunning.nudged}, snooze: cleared=${snooze.cleared} notified=${snooze.notified}, staleOnline: cleared=${staleOnline.cleared} notified=${staleOnline.notified}, offerExpiry: checked=${offerExpiry.checked} expired=${offerExpiry.expired}, suggestions: backstop=${suggestBackstop.scanned}/${suggestBackstop.inserted} pushes=${suggestPushes.pushed}/${suggestPushes.deferred}/${suggestPushes.suppressed} expired=${suggestExpired.deleted}, marketingStories: ${marketingStories.generated ? 'generated' : 'skipped'}/${marketingStories.reason}`)
   } catch (err) {
     console.error('[cron/fallback] Failed reminder sweep:', err)
   } finally {
