@@ -192,7 +192,11 @@ export default function CreateProfilePage() {
       trackEvent('signup_completed')
       // TODO: Re-enable when Twilio toll-free verification is approved.
       // navigate('/onboarding/verify-phone', { state: { phone: fullPhone } })
-      navigate('/onboarding/location', { replace: true })
+      // v1.2 F2.2 — route to the new AboutYouPage (bio / education /
+      // access needs) before continuing on to location permissions.
+      // The page is optional + has a Skip button, so users who don't
+      // want to fill it in still reach /onboarding/location in one tap.
+      navigate('/onboarding/about-you', { replace: true })
     } catch (err: unknown) {
       // eslint-disable-next-line no-console
       console.error('[CreateProfilePage] submit error:', err)

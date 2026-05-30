@@ -444,9 +444,10 @@ describe('submit behavior', () => {
     renderPage()
     fillValidForm()
     submitForm()
-    // Should still navigate — the same-password error is not fatal
+    // Should still navigate — the same-password error is not fatal.
+    // v1.2 F2.2 — next stop is AboutYouPage, then Location.
     await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/onboarding/location', { replace: true })
+      expect(mockNavigate).toHaveBeenCalledWith('/onboarding/about-you', { replace: true })
     })
     expect(screen.queryByTestId('submit-error')).toBeNull()
   })
@@ -471,12 +472,16 @@ describe('submit behavior', () => {
     expect(mockStorageUpload).not.toHaveBeenCalled()
   })
 
-  it('navigates to /onboarding/location on success', async () => {
+  it('navigates to /onboarding/about-you on success', async () => {
+    // v1.2 F2.2 — CreateProfile now routes to the new AboutYouPage
+    // (bio / education / access needs) before Location. AboutYouPage
+    // has a Skip button so users who don't want to fill it in still
+    // reach Location in one tap.
     renderPage()
     fillValidForm()
     submitForm()
     await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/onboarding/location', { replace: true })
+      expect(mockNavigate).toHaveBeenCalledWith('/onboarding/about-you', { replace: true })
     })
   })
 
