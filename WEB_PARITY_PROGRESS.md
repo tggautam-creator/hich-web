@@ -38,10 +38,22 @@ For every stage:
 
 ### Currently pending decisions
 
-- **Stage 1 audit landed** — see Sprint 5 below. Awaiting "go" on Sprint 5 Slice 1 (notifications drift — highest blast radius) before any web code changes ship.
-- **Stage 2 audit landed** (2026-05-30) — see Sprint 6 below. Caregivers is a near-total web parity gap.
-- **Stage 3 audit landed** (2026-05-30) — see Sprint 7 below. Accessibility / user-profile / vehicle accessibility is a 100% user-facing parity gap on web. Sprint 7 ships the `has_accessibility_needs` + `needs_wheelchair` predicates that Sprint 6's caregiver picker visibility depends on, so **Sprint 7 should ship before Sprint 6 Slices 2-3** (or be bundled into a combined sprint by area).
-- Stage 4 (Rider routines + Suggestions) is queued.
+- **Stages 1–3 audits landed**. Stages 4–9 still queued.
+- **Sprint 7 (accessibility / user profile)** — ✅ Slices 1–5 shipped + committed locally. Slice 6 (UserProfilePreviewCard polish) is the only remaining piece; skipped for now in favour of Sprint 6.
+- **Sprint 6 (caregivers)** — ✅ Slices 1–6 shipped + committed locally. Sprint complete pending one prod-deploy step for the Slice 5 server response (extends `/api/schedule/board/schedule/:id/offers` with `driver.waive_caregiver_fee` + `posted.has_caregiver` + `posted.caregiver_fare_cents`).
+- **Sprint 5 (Reports v2 polish)** — ⏳ Not started. Notifications-drift slice is highest blast radius; awaiting "go".
+- Nothing is pushed to origin yet — every slice above is local-commit-only per the per-feature green-light rule.
+
+### Current focus
+
+Sprint 6 Slice 6 just shipped (see [Sprint 6](#sprint-6--caregivers-v12-parity)). All Sprint 6 + most of Sprint 7 is in local commits.
+
+### Next action
+
+User QA pass on local dev, then decide on push timing + whether to:
+- Run **Stage 4 audit** (rider routines + suggestions) — next in the audit pipeline.
+- Tackle **Sprint 5** (Reports v2 notifications drift) — bounded slice, high-impact fix.
+- Polish **Sprint 7 Slice 6** (UserProfilePreviewCard).
 
 ---
 
@@ -148,43 +160,30 @@ None on the v1.2 profile/accessibility/vehicle surface — iOS is feature-comple
 
 ### Sprint 7 slice plan
 
-#### Slice 1 — Foundation + write contract (W-T1-A1 + W-T1-A2 + W-T1-A7)
-Decide the write pattern (recommend direct supabase-js). Extend `useProfile` to decode the v1.2 fields. Port `defaultTrunkSize` helper. No user-visible change yet but unblocks every later slice.
-
-#### Slice 2 — Edit profile + display (W-T1-A3 + W-T1-A4 + W-T1-A5)
-Full EditProfile sheet with About you / Education / Accessibility sections + ProfilePage bio subtitle + education chip. After this slice, web users can set everything iOS users can (except vehicle accessibility, which lands in Slice 3). **Ships the `has_accessibility_needs` predicate Sprint 6 needs.**
-
-#### Slice 3 — Vehicle accessibility (W-T1-A6)
-Wheelchair toggle + trunk-size picker on VehicleEditPage + VehicleRegistrationPage. Closes the driver-vehicle gap so the upcoming F5.3 4-option board filter (and any matching work) has the data it needs.
-
-#### Slice 4 — Board pill + filter (W-T1-A10 + W-T1-A11 + W-T1-A12)
-♿ "Mobility aid access" pill on RideBoardCard + "Accessibility only" filter chip. Visible to all riders + drivers immediately upon ship.
-
-#### Slice 5 — Onboarding step (W-T1-A8)
-Add bio/gender/school/major/grad-year fields to web onboarding + the `has_accessibility_needs` toggle that routes into the caregiver onboarding (Sprint 6 CG5).
-
-#### Slice 6 — UserProfilePreviewCard parity (W-T1-A9)
-Polish — if web surfaces a poster preview anywhere, add `needs_wheelchair` indicator + bio/education context.
-
-#### Slice 7 — Tests (W-T1-A13)
-Vitest coverage. Spread across slices in practice (each slice ships its own tests) but called out here so it doesn't slip.
+- [x] **Slice 1 — Foundation + write contract** (W-T1-A1 + A2 + A7) — shipped `faef2b5`. Write pattern locked: direct supabase-js (mirrors iOS).
+- [x] **Slice 2 — Edit profile + display** (W-T1-A3 + A4 + A5) — shipped `d65cd26`. EditProfileSheet + bio subtitle + education chip on ProfilePage.
+- [x] **Slice 3 — Vehicle accessibility** (W-T1-A6) — shipped `3a03d63`. Wheelchair toggle + trunk-size picker on VehicleEditPage + VehicleRegistrationPage.
+- [x] **Slice 4 — Board pill + filter** (W-T1-A10 + A11 + A12) — shipped `2b3913e`. ♿ pill on RideBoardCard + accessibility filter chip.
+- [x] **Slice 5 — Onboarding step** (W-T1-A8) — shipped `ba27da5`. AboutYouPage between CreateProfile and Location.
+- [ ] **Slice 6 — UserProfilePreviewCard parity** (W-T1-A9) — polish, deferred. If web surfaces a poster preview anywhere, add `needs_wheelchair` indicator + bio/education context.
+- [x] **Slice 7 — Tests** (W-T1-A13) — Vitest coverage shipped per-slice (didn't ship as a separate slice).
 
 ### Sprint 7 summary
 
 | Status | Count |
 |---|---|
-| Not started | 13 |
+| Not started | 1 (Slice 6 polish) |
 | In progress | 0 |
-| Done (awaiting QA) | 0 |
+| Done (local commit, awaiting prod QA) | 5 slices, 12 of 13 actionable items |
 | Done (verified + pushed) | 0 |
 
 ### Current focus
 
-Awaiting Tarun's call on (a) write pattern choice (W-T1-A1 — direct supabase-js vs new REST routes) and (b) sequencing — recommend Sprint 7 Slice 1 + 2 before Sprint 6 Slice 2-3 so the gating predicate is in place.
+Sprint 7 substantively complete. Slice 6 polish parked unless surface emerges.
 
 ### Next action
 
-Tarun decides on Sprint sequencing. If go on Sprint 7: ask via `AskUserQuestion` for the write-pattern decision first (it determines every subsequent slice's call shape), then start Slice 1.
+User QA on local dev + push timing call.
 
 ### Plain English
 

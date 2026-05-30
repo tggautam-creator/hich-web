@@ -13,10 +13,11 @@
  *     visible tiered fare explainer ($3/$5/$8)
  *
  * If the user opts into wheelchair + caregiver both, we surface a
- * "We'll set up your caregiver next." hint matching iOS. The actual
- * caregiver-add interstitial is Sprint 6's W-T1-CG5 — until that
- * lands, Continue still advances to /onboarding/location and the
- * user can add a caregiver from Profile.
+ * "We'll set up your caregiver next." hint matching iOS — and on
+ * Continue we route to /onboarding/caregiver
+ * (AddCaregiverOnboardingPage, Sprint 6 Slice 6) instead of
+ * /onboarding/location. Skip is a hard escape hatch: bypasses the
+ * caregiver step even when the toggles were on at click time.
  *
  * Write contract: direct supabase-js via `useAuthStore.updateProfileFields`
  * (Slice 1's helper). Same JSON shape iOS sends.
@@ -98,6 +99,14 @@ export default function AboutYouPage({
   const schoolList = schoolPickerOptions(profile?.school)
   const yearList   = graduationYearOptions(profile?.graduation_year)
 
+  // v1.2 F2.2 + Sprint 6 Slice 6 — when the user opted into the
+  // wheelchair + caregiver flow, Continue routes to the
+  // /onboarding/caregiver interstitial; otherwise straight to
+  // Location. Skip ALWAYS bypasses the caregiver step — it's a hard
+  // escape hatch even when the user toggled the flags on at the
+  // last second (iOS parity: defer caregiver setup to Profile).
+  const wantsCaregiverFlow = hasAccessibilityNeeds && needsWheelchair && needsCaregiver
+
   async function saveAndContinue(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     if (isSaving) return
@@ -127,7 +136,10 @@ export default function AboutYouPage({
         // accidentally reset it. Matches iOS line 449.
         waiveCaregiverFee:    profile?.waive_caregiver_fee === true,
       })
-      navigate('/onboarding/location', { replace: true })
+      navigate(
+        wantsCaregiverFlow ? '/onboarding/caregiver' : '/onboarding/location',
+        { replace: true },
+      )
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Could not save changes'
       setError(msg)
@@ -138,8 +150,6 @@ export default function AboutYouPage({
   function skip() {
     navigate('/onboarding/location', { replace: true })
   }
-
-  const wantsCaregiverFlow = hasAccessibilityNeeds && needsWheelchair && needsCaregiver
 
   return (
     <div

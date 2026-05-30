@@ -146,7 +146,12 @@ describe('AboutYouPage', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/onboarding/location', { replace: true })
   })
 
-  it('Continue writes the iOS-matching snake_case payload + navigates forward', async () => {
+  it('Continue writes the iOS-matching snake_case payload + navigates forward (caregiver flow)', async () => {
+    // This test toggles wheelchair + caregiver on, so per Sprint 6
+    // Slice 6 routing the navigate target is /onboarding/caregiver
+    // (the new interstitial), not /onboarding/location. The "Continue
+    // routes to /onboarding/location when wheelchair is on but caregiver
+    // is NOT" case below pins the no-caregiver branch.
     renderPage()
 
     fireEvent.change(screen.getByTestId('about-you-bio'),   { target: { value: '  New bio  ' } })
@@ -172,7 +177,7 @@ describe('AboutYouPage', () => {
       waiveCaregiverFee:    false,
     })
     await waitFor(() =>
-      expect(mockNavigate).toHaveBeenCalledWith('/onboarding/location', { replace: true }),
+      expect(mockNavigate).toHaveBeenCalledWith('/onboarding/caregiver', { replace: true }),
     )
   })
 
@@ -194,5 +199,70 @@ describe('AboutYouPage', () => {
       expect(screen.getByTestId('about-you-error').textContent).toContain('RLS denied')
     })
     expect(mockNavigate).not.toHaveBeenCalled()
+  })
+
+  // ── Sprint 6 Slice 6 — wantsCaregiverFlow routing branch ──────────
+
+  it('Continue routes to /onboarding/caregiver when wheelchair + caregiver are both on', async () => {
+    renderPage()
+    fireEvent.click(screen.getByTestId('about-you-has-access'))
+    fireEvent.click(screen.getByTestId('about-you-needs-wheelchair'))
+    fireEvent.click(screen.getByTestId('about-you-needs-caregiver'))
+    fireEvent.click(screen.getByTestId('about-you-continue'))
+
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalledOnce())
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith('/onboarding/caregiver', { replace: true }),
+    )
+  })
+
+  it('Continue routes to /onboarding/location when wheelchair is on but caregiver is NOT', async () => {
+    renderPage()
+    fireEvent.click(screen.getByTestId('about-you-has-access'))
+    fireEvent.click(screen.getByTestId('about-you-needs-wheelchair'))
+    // caregiver toggle deliberately left off
+    fireEvent.click(screen.getByTestId('about-you-continue'))
+
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalledOnce())
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith('/onboarding/location', { replace: true }),
+    )
+    expect(mockNavigate).not.toHaveBeenCalledWith('/onboarding/caregiver', { replace: true })
+  })
+
+  it('Skip ALWAYS routes to /onboarding/location, even when wheelchair + caregiver are both on', () => {
+    renderPage()
+    fireEvent.click(screen.getByTestId('about-you-has-access'))
+    fireEvent.click(screen.getByTestId('about-you-needs-wheelchair'))
+    fireEvent.click(screen.getByTestId('about-you-needs-caregiver'))
+
+    fireEvent.click(screen.getByTestId('about-you-skip'))
+
+    expect(mockUpdate).not.toHaveBeenCalled()
+    expect(mockNavigate).toHaveBeenCalledWith('/onboarding/location', { replace: true })
+    expect(mockNavigate).not.toHaveBeenCalledWith('/onboarding/caregiver', { replace: true })
+  })
+
+  it('Continue routes to /onboarding/location when wheelchair was toggled OFF after caregiver was on (predicate-pin)', async () => {
+    // Regression pin: the caregiver sub-toggle hides when wheelchair
+    // flips off, but its STATE remains true in React. The predicate
+    // must keep using `&&` so the route stays /onboarding/location.
+    // A future refactor that lifted the conjunction out of the
+    // predicate would silently route to /onboarding/caregiver for a
+    // user who toggled wheelchair off at the last second.
+    renderPage()
+    fireEvent.click(screen.getByTestId('about-you-has-access'))
+    fireEvent.click(screen.getByTestId('about-you-needs-wheelchair'))
+    fireEvent.click(screen.getByTestId('about-you-needs-caregiver'))
+    // Now toggle wheelchair OFF — caregiver sub-row hides, but
+    // needsCaregiver state remains true.
+    fireEvent.click(screen.getByTestId('about-you-needs-wheelchair'))
+    fireEvent.click(screen.getByTestId('about-you-continue'))
+
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalledOnce())
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith('/onboarding/location', { replace: true }),
+    )
+    expect(mockNavigate).not.toHaveBeenCalledWith('/onboarding/caregiver', { replace: true })
   })
 })

@@ -54,6 +54,7 @@ const CampaignDetailPage = lazy(() => import('@/components/campaign/CampaignDeta
 // ── Onboarding ───────────────────────────────────────────────────────────────
 const CreateProfilePage = lazy(() => import('@/components/auth/CreateProfilePage'))
 const AboutYouPage      = lazy(() => import('@/components/onboarding/AboutYouPage'))
+const AddCaregiverOnboardingPage = lazy(() => import('@/components/onboarding/AddCaregiverOnboardingPage'))
 const LocationPermissionsPage = lazy(() => import('@/components/auth/LocationPermissionsPage'))
 const ModeSelectionPage = lazy(() => import('@/components/auth/ModeSelectionPage'))
 const PhoneVerificationPage = lazy(() => import('@/components/auth/PhoneVerificationPage'))
@@ -162,6 +163,7 @@ createRoot(rootEl).render(
               {/* Onboarding */}
               <Route path="/onboarding/profile" element={<Suspense fallback={<FormPageSkeleton />}><CreateProfilePage /></Suspense>} />
               <Route path="/onboarding/about-you" element={<Suspense fallback={<FormPageSkeleton />}><AboutYouPage /></Suspense>} />
+              <Route path="/onboarding/caregiver" element={<Suspense fallback={<FormPageSkeleton />}><AddCaregiverOnboardingPage /></Suspense>} />
               <Route path="/onboarding/verify-phone" element={<Suspense fallback={<FormPageSkeleton />}><PhoneVerificationPage /></Suspense>} />
               <Route path="/onboarding/location" element={<Suspense fallback={<FormPageSkeleton />}><LocationPermissionsPage /></Suspense>} />
               <Route path="/onboarding/mode" element={<Suspense fallback={<FormPageSkeleton />}><ModeSelectionPage /></Suspense>} />
