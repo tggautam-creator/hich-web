@@ -157,3 +157,96 @@ A task is not done until all three pass:
 1. `npm test -- --run` — all tests pass, including tests for the feature just built
 2. `npm run lint` — zero errors
 3. `npm run build` — builds without errors
+
+---
+
+## iOS-parity audit — web-side rules (added 2026-05-22)
+
+These rules govern any session that's porting iOS features to the web (the multi-stage parity audit tracked in `WEB_PARITY_PROGRESS.md`). They mirror `ios/CLAUDE.md` but flipped — for new features, **iOS is the source of truth**, web is the platform doing the catching-up. For older flows where web shipped first (auth, fare math, server contracts), web stays canonical.
+
+### Reading order at audit time (hard rule)
+
+Before changing a single line of web code in a parity sprint, read in this order, end to end, no skimming:
+
+1. `WEB_PARITY_PROGRESS.md` — current stage, last decisions, blockers.
+2. `WEB_PARITY_REPORT_2026-05-22.md` (current report) — scope of the active stage.
+3. The relevant **iOS file(s)** in `ios/Tago/Features/<Area>/`. Top to bottom. Enumerate every screen, every button, every state branch, every endpoint call, every server route reference.
+4. The relevant **iOS endpoint definitions** in `ios/Tago/Core/Networking/Endpoints/<Area>*Endpoint.swift`. These tell you the exact request/response shape iOS expects.
+5. The current web counterpart in `src/components/**/*` or `src/lib/*`. End to end.
+6. The corresponding **Vitest tests** for the web counterpart.
+7. The **server route(s)** the feature calls in `server/routes/*.ts`.
+8. Any **Supabase migrations** touching the relevant tables in `supabase/migrations/*.sql` — especially anything ≥086.
+
+Skipping this read is how features ship missing buttons / banners / endpoints. Trust erodes fast. Before writing code, list every iOS user-visible element + every endpoint hit in your plan and mark each as "shipping this slice" or "deferring because X" so Tarun can veto.
+
+### iOS planning markdowns are off-limits during audits (hard rule, added 2026-05-30)
+
+When auditing an iOS feature for parity, **only read iOS source code** (`*.swift`), the matching `supabase/migrations/*.sql`, and the matching `server/routes/*.ts`. Do NOT read iOS planning / spec markdown files — `ios/REPORTS_IOS_PLAN.md`, `ios/IOS_PROGRESS.md`, `ios/IOS_ROADMAP.md`, `docs/REPORTS_PLAN.md`, `docs/V1_2_PLAN.md`, `docs/BOARD_REDESIGN_PLAN.md`, `docs/SMART_SEARCH_PLAN.md`, or any other `*_PLAN.md` / `*_PROGRESS.md` under `ios/` or `docs/`.
+
+**Why:** Tarun's iOS planning docs are not kept in sync with the shipped iOS code. Reading them produces audit findings that describe what was *planned* rather than what *ships* — phases get re-scoped, deferred items get cut, surprise features get added — and the markdowns lag behind. Reading source-of-truth code avoids the drift entirely.
+
+**How to apply:**
+- For every parity stage, the file list is: iOS `.swift` files in `Features/<Area>/` and `Core/Networking/Endpoints/`, iOS models in `ios/Tago/Models/`, the web counterpart, the matching server route, the matching migrations. That's it.
+- If you find yourself reaching for a `*_PLAN.md`, stop. Grep the iOS source for the feature name and read those files instead.
+- If a stage row in [WEB_PARITY_REPORT_2026-05-22.md](WEB_PARITY_REPORT_2026-05-22.md) cites a planning markdown as a scope input, ignore that reference and discover scope from the iOS source tree.
+- The only markdowns whitelisted for parity audits are `CLAUDE.md`, `WEB_PARITY_PROGRESS.md`, and `WEB_PARITY_REPORT_*.md` — those are web-side audit-state, not iOS plans.
+
+### `WEB_PARITY_PROGRESS.md` is the scoreboard — keep it live (hard rule)
+
+The same rule iOS has for `IOS_PROGRESS.md` applies on the web side. At session start, read it. While working, flip `[ ]` → `[~]` the moment a task starts, append decisions to the relevant sprint section as they happen, and on completion flip `[x]` with a short note + update the summary table counts + the "Current focus" line.
+
+A sprint that ships but leaves the progress file stale is a half-done sprint. Don't wait to be told.
+
+### iOS is the source of truth for new features (hard rule, 2026-05-22)
+
+For every feature added on iOS first (everything migrated ≥086 — Reports v2, Caregivers, Accessibility, Suggestions, Trips, Rider Routines, Board Redesign, Smart Geo-Match, Live Activity, Admin Campaigns), iOS is canonical. Web should copy the iOS UX (sheet vs page, copy strings, button order, empty states, error handling) before adding any web-only innovation.
+
+For older flows where web shipped first (auth + onboarding, fare formula in `src/lib/fare.ts`, the historical payment server contract, the matching stages 1-4), **web stays canonical**. iOS came second on those.
+
+When in doubt about which platform is canonical for a specific behaviour: check the migration number. New tables (≥086) → iOS canonical. Older tables → web canonical or already parity-locked.
+
+### Web parity — copy closely, then improve (hard rule, mirrored from iOS)
+
+For every iOS feature being ported:
+
+1. Read the matching iOS file(s) end-to-end (per the Reading Order rule).
+2. Enumerate every visible element + every behaviour iOS has and plan to match them 1:1 first.
+3. Layer on web-native upgrades only on top of parity — never instead of it. (Web-native means: deep-linkable routes, keyboard shortcuts, SEO, browser back, copy-paste of values.)
+4. Scope cuts must be called out in your plan so Tarun can veto before you start writing TypeScript.
+
+The user's repeated feedback: "copy from iOS as close as possible." Not "invent something different." If in doubt, match iOS behavior exactly and upgrade the chrome.
+
+### Tough self-review before any handoff (hard rule)
+
+After every slice — even after the three Definition-of-Done gates pass — do a reviewer pass against the iOS source files:
+
+1. Re-read the iOS file(s) with fresh eyes against the new web code.
+2. Walk every iOS user-visible element and confirm the web build has a matching behaviour OR an explicit deferral.
+3. Walk every error / empty / loading state on both platforms.
+4. Confirm the web build hits the same endpoints with the same payload shape iOS does.
+5. List anything that drifted in the QA prompt to Tarun before asking him to test.
+
+Missing this step is how features look right but behave differently from iOS. The user has been burned enough times that this is now mandatory.
+
+### Don't push without Tarun's "go" (hard rule, from memory)
+
+The per-feature green-light memory rule applies here too. After every slice:
+1. Lint + tests + build green.
+2. Tough self-review pass complete + findings reported.
+3. **Stop and wait** for Tarun's explicit "go" / "push" / "ship it" before pushing the next slice.
+
+The audit advances one slice at a time, not one sprint at a time.
+
+### Instant-ride UX must feel like Uber (mirrored from iOS)
+
+The full iOS rule applies on web too. For the request → match → waiting room → en-route pickup → active ride → drop-off → summary loop (plus every cancel / change / chat inside it), the bar is Uber-class — not just "does the same thing as before." Web shipped a lot of this in Sprints 1–4 already (DriverCancelledOverlay, optimistic chat bubbles, two-step accept, etc.). Keep the bar high.
+
+### What's off-limits without user approval
+
+- Anything under `ios/`, `supabase/migrations/`, or `server/routes/` that's actively being changed by the parallel admin / v1.2 session. Check `git status` for files modified within the last hour — if another session is editing them, flag and wait. (Mirrors the iOS-side "wait for parallel session" memory rule.)
+- Deleting files outside the slice scope.
+- `git push` without explicit "go" / "push" / "ship it" (per the per-feature green light memory).
+- Force-pushing to main. Ever. Without explicit user request.
+- Adding a new npm dependency (ask first — dependencies are a long-term cost).
+- Changing `tsconfig.*.json`, `vite.config.ts`, or `package.json` "scripts" without flagging it.
+- Changing the production Stripe keys, Supabase project URL, or Firebase project ID. (The HARD RULE above already covers this.)
