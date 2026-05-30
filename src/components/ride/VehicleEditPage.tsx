@@ -3,7 +3,9 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import PrimaryButton from '@/components/ui/PrimaryButton'
-import type { Vehicle } from '@/types/database'
+import WheelchairSection from '@/components/profile/WheelchairSection'
+import { defaultTrunkSize } from '@/lib/vehicle'
+import type { TrunkSize, Vehicle } from '@/types/database'
 
 const CAR_COLORS = [
   { name: 'White',  hex: '#FFFFFF' },
@@ -39,6 +41,14 @@ export default function VehicleEditPage({
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
 
+  // v1.2 F4.2 — mobility-aid section. Flipping the toggle ON without
+  // an explicit trunkSize seeds it from `vehicle.body_type` via the
+  // shared derivation (`defaultTrunkSize`). Flipping OFF nulls the
+  // trunkSize so the save patches the column back to NULL. Mirrors
+  // iOS `VehicleEditPage.swift::wheelchairToggleBinding`.
+  const [wheelchairCapable, setWheelchairCapable] = useState(false)
+  const [trunkSize, setTrunkSize] = useState<TrunkSize | null>(null)
+
   useEffect(() => {
     if (!profile?.id || !vehicleId) return
     const vid = vehicleId
@@ -55,11 +65,24 @@ export default function VehicleEditPage({
         setColor(v.color)
         setPlate(v.plate)
         setSeats(v.seats_available)
+        // v1.2 F4.2 — restore accessibility state. Legacy pre-090 rows
+        // come back with these fields undefined; coerce to safe defaults.
+        setWheelchairCapable(v.wheelchair_capable === true)
+        setTrunkSize(v.trunk_size ?? null)
       }
       setLoading(false)
     }
     void load()
   }, [profile?.id, vehicleId])
+
+  function handleWheelchairToggle(next: boolean) {
+    setWheelchairCapable(next)
+    if (next && trunkSize === null) {
+      setTrunkSize(defaultTrunkSize(vehicle?.body_type) ?? 'small')
+    } else if (!next) {
+      setTrunkSize(null)
+    }
+  }
 
   function handleCarPhotoChange(e: ChangeEvent<HTMLInputElement>) {
     setCarPhoto(e.target.files?.[0] ?? null)
@@ -95,6 +118,13 @@ export default function VehicleEditPage({
         carPhotoUrl = carUrlData.publicUrl
       }
 
+      // v1.2 F4.2 — resolve trunk_size with the same fallback chain
+      // iOS uses: when wheelchair is on, never send nil (fall back to
+      // body-type derivation, default "small"); when off, send NULL.
+      const resolvedTrunkSize: TrunkSize | null = wheelchairCapable
+        ? (trunkSize ?? defaultTrunkSize(vehicle.body_type) ?? 'small')
+        : null
+
       const { error: updateErr } = await supabase
         .from('vehicles')
         .update({
@@ -102,6 +132,8 @@ export default function VehicleEditPage({
           plate: plate.trim().toUpperCase(),
           seats_available: seats,
           car_photo_url: carPhotoUrl ?? undefined,
+          wheelchair_capable: wheelchairCapable,
+          trunk_size: resolvedTrunkSize,
         })
         .eq('id', vehicle.id)
 
@@ -252,6 +284,14 @@ export default function VehicleEditPage({
               className="text-sm text-text-secondary file:mr-3 file:rounded-lg file:border-0 file:bg-primary-light file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-primary"
             />
           </div>
+
+          {/* v1.2 F4.2 — Mobility aid space */}
+          <WheelchairSection
+            wheelchairCapable={wheelchairCapable}
+            onToggle={handleWheelchairToggle}
+            trunkSize={trunkSize ?? defaultTrunkSize(vehicle.body_type) ?? 'small'}
+            onTrunkSizeChange={setTrunkSize}
+          />
 
           {error && (
             <p data-testid="submit-error" role="alert" className="rounded-2xl border border-danger/20 bg-danger/5 px-4 py-3 text-sm text-danger">

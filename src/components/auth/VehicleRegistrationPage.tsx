@@ -6,9 +6,12 @@ import { validateVin, validateYear } from '@/lib/validation'
 import { guessBodyType } from '@/lib/vin'
 import type { VehicleBodyType } from '@/lib/vin'
 import { lookupFuelEconomy, DEFAULT_MPG } from '@/lib/fuelEconomy'
+import { defaultTrunkSize } from '@/lib/vehicle'
 import VehicleIcon from '@/components/ui/VehicleIcon'
 import InputField from '@/components/ui/InputField'
 import PrimaryButton from '@/components/ui/PrimaryButton'
+import WheelchairSection from '@/components/profile/WheelchairSection'
+import type { TrunkSize } from '@/types/database'
 
 // ── US states ─────────────────────────────────────────────────────────────────
 const US_STATES = [
@@ -146,6 +149,23 @@ export default function VehicleRegistrationPage({
   const [isLoading, setIsLoading]           = useState(false)
   const [fuelMpg, setFuelMpg]              = useState<number | null>(null)
   const lookupRef                           = useRef<AbortController | null>(null)
+
+  // v1.2 F4.2 — mobility-aid space. Flip ON without an explicit
+  // trunkSize seeds from the currently-selected bodyType via the
+  // shared derivation; flip OFF nulls trunkSize so the insert writes
+  // NULL into the column. Mirrors iOS
+  // `VehicleRegistrationPage.swift::wheelchairToggleBinding`.
+  const [wheelchairCapable, setWheelchairCapable] = useState(false)
+  const [trunkSize, setTrunkSize]                 = useState<TrunkSize | null>(null)
+
+  function handleWheelchairToggle(next: boolean) {
+    setWheelchairCapable(next)
+    if (next && trunkSize === null) {
+      setTrunkSize(defaultTrunkSize(bodyType) ?? 'small')
+    } else if (!next) {
+      setTrunkSize(null)
+    }
+  }
 
   // Auto-lookup plate when plate is 2-8 chars and state is set
   useEffect(() => {
@@ -294,6 +314,14 @@ export default function VehicleRegistrationPage({
           .eq('is_active', true)
       }
 
+      // v1.2 F4.2 — resolve trunk_size with the same fallback chain
+      // iOS uses: wheelchair on → fall back to body-type derivation
+      // (default "small"); wheelchair off → null so the column stays
+      // NULL on insert.
+      const resolvedTrunkSize: TrunkSize | null = wheelchairCapable
+        ? (trunkSize ?? defaultTrunkSize(bodyType) ?? 'small')
+        : null
+
       // Insert vehicle record
       const { error: vehErr } = await supabase.from('vehicles').insert({
         user_id:                 user.id,
@@ -308,6 +336,8 @@ export default function VehicleRegistrationPage({
         fuel_efficiency_mpg:     fuelMpg ?? DEFAULT_MPG,
         body_type:               bodyType,
         is_active:               true,
+        wheelchair_capable:      wheelchairCapable,
+        trunk_size:              resolvedTrunkSize,
       })
       if (vehErr) throw vehErr
 
@@ -555,6 +585,14 @@ export default function VehicleRegistrationPage({
               </div>
             </div>
           </div>
+
+          {/* v1.2 F4.2 — Mobility aid space */}
+          <WheelchairSection
+            wheelchairCapable={wheelchairCapable}
+            onToggle={handleWheelchairToggle}
+            trunkSize={trunkSize ?? defaultTrunkSize(bodyType) ?? 'small'}
+            onTrunkSizeChange={setTrunkSize}
+          />
 
           {/* ── Seats stepper ───────────────────────────────────────── */}
           <div className="flex flex-col gap-1">
