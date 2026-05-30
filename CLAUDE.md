@@ -228,6 +228,38 @@ After every slice — even after the three Definition-of-Done gates pass — do 
 
 Missing this step is how features look right but behave differently from iOS. The user has been burned enough times that this is now mandatory.
 
+### Reviewer parity-check before every slice handoff (hard rule, added 2026-05-30)
+
+Stronger than the tough-self-review rule above. After EVERY slice — even ones that pass lint + tests + build cleanly — a dedicated reviewer pass MUST verify iOS↔web parity for the slice's feature area, and the handoff message MUST contain the reviewer's verdict. Tarun has been burned by drift sneaking through "looks fine to me" self-reviews; from 2026-05-30 the reviewer pass is a separate, explicit step.
+
+**Who reviews:** the same session can play reviewer (no need to spawn a sub-agent unless the slice is large enough to warrant fresh eyes). The point is the SEPARATE, STRUCTURED pass — not who runs it.
+
+**What the reviewer must do (each slice):**
+1. Open every iOS source file (`.swift`) the slice touches OR mirrors, end-to-end. No skimming. Same files cited in the audit findings count as the canonical iOS surface.
+2. Walk every user-visible element on iOS: every button, label, copy string, empty state, error state, loading state, gating predicate, sub-row, footer, success state, push notification handler. For each, decide: ✅ matches on web / ⚠️ drifted on web (call out exactly how) / ➖ explicitly deferred for a later slice (cite the slice).
+3. Verify the wire shape: every server endpoint the slice touches receives the same payload keys + types on web as on iOS. Verify by reading the actual write call sites on both platforms, not by trusting comments.
+4. Verify the read shape: every server field the slice surfaces is decoded + rendered on web the same way iOS renders it (or explicitly deferred).
+5. Produce a parity verdict matrix in the handoff message with columns: `iOS element / web counterpart / verdict`. Use `:white_check_mark:` / `:warning:` / `:heavy_minus_sign:`. Tarun reads this before deciding to push.
+
+**The handoff message structure (mandatory):**
+- One-paragraph summary of what the slice ships
+- The parity verdict matrix (see above)
+- Outstanding gaps the reviewer flagged
+- Test + lint + build gate status
+- Plain English summary
+- "What's next" pointer to the next slice
+- The "awaiting your go" line per the per-feature green-light rule
+
+**What this rule replaces:** the "Tough self-review before any handoff" rule above is the floor; this rule layers a structured parity matrix on top so drift never sneaks through unnoticed. Self-review is "I checked my own code"; parity review is "I confirmed web matches iOS or flagged exactly what drifted."
+
+**Anti-patterns this rule blocks:**
+- Shipping a slice and saying "looks good, matches iOS" without the matrix.
+- Burying parity gaps in prose instead of a matrix row.
+- Marking a parity gap as ✅ because the column is "kind of similar" — the only acceptable verdicts are full match, explicit drift, or explicit deferral.
+- Calling the reviewer pass "done" when an iOS element wasn't enumerated at all (silent omission is failure).
+
+**Mandatory exception:** a slice that's pure docs / rules / tests (no user-visible behaviour change) can skip the parity matrix but MUST still note "N/A — no user-visible parity surface in this slice" in the handoff so Tarun sees the reviewer made the call deliberately.
+
 ### Don't push without Tarun's "go" (hard rule, from memory)
 
 The per-feature green-light memory rule applies here too. After every slice:
