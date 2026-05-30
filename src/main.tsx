@@ -48,6 +48,7 @@ const AdminRideBoardPage = lazy(() => import('@/components/admin/RideBoardPage')
 const AdminApiUsagePage = lazy(() => import('@/components/admin/ApiUsagePage'))
 const AdminMarketingHome = lazy(() => import('@/components/admin/marketing/MarketingHome'))
 const AdminMarketingStories = lazy(() => import('@/components/admin/marketing/StoriesPage'))
+const AdminMarketingPosters = lazy(() => import('@/components/admin/marketing/PostersPage'))
 const CampaignDetailPage = lazy(() => import('@/components/campaign/CampaignDetailPage'))
 
 // ── Onboarding ───────────────────────────────────────────────────────────────
@@ -259,6 +260,7 @@ createRoot(rootEl).render(
                        poster + advisor land in Phase 2+ under the same prefix. */}
                   <Route path="/admin/marketing"          element={<Suspense fallback={<FormPageSkeleton />}><AdminMarketingHome /></Suspense>} />
                   <Route path="/admin/marketing/stories"  element={<Suspense fallback={<ListPageSkeleton />}><AdminMarketingStories /></Suspense>} />
+                  <Route path="/admin/marketing/posters"  element={<Suspense fallback={<ListPageSkeleton />}><AdminMarketingPosters /></Suspense>} />
                   <Route path="/admin/settings"   element={<Placeholder name="Admin settings — future" />} />
                 </Route>
               </Route>

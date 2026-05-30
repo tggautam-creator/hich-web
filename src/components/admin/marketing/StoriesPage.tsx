@@ -8,24 +8,44 @@
  *   - headline + body (the actual copy to paste into IG)
  *   - Copy button (writes to clipboard, flips status → 'copied')
  *   - Status pills (Posted / Skipped) so you can track what you used
+ *   - Source-rides drawer (Phase 1.1 — see which ride board posts
+ *     the LLM was working from)
  *
- * Batches list most-recent-first, expanded by default for today's
- * batch and collapsed for older ones.
+ * Phase 2 hardening parity: shares UI primitives with PostersPage
+ * via _shared.tsx so button order/verbs, banner audience echo,
+ * per-button loading, a11y, and clipboard error UX all stay in
+ * lockstep across the two queues.
  */
-import { useState } from 'react'
+import { useState, useId, useRef } from 'react'
 import {
   useMarketingStoryBatches,
   useGenerateStoryBatch,
   useUpdateStoryItem,
+  type AskingForFilter,
   type SourceRide,
   type StoryBatch,
   type StoryItem,
   type StoryItemStatus,
 } from '@/hooks/useMarketingStories'
+import {
+  GenerateButton,
+  StatusPill,
+  CollapsibleBatchHeader,
+  onEnterOrSpace,
+  type AudienceVariant,
+} from './_shared'
+
+/** "rider" → "riders", "driver" → "drivers", "both" → "both audiences". */
+function audienceLabel(a: AskingForFilter): string {
+  return a === 'both' ? 'both audiences' : `${a}s`
+}
 
 export default function StoriesPage() {
   const query = useMarketingStoryBatches()
   const generate = useGenerateStoryBatch()
+  const inFlight: AudienceVariant | null = generate.isPending
+    ? ((generate.variables ?? 'both') as AudienceVariant)
+    : null
 
   return (
     <div data-testid="admin-marketing-stories" className="space-y-6">
@@ -39,25 +59,32 @@ export default function StoriesPage() {
             board. Copy → paste → post.
           </p>
         </div>
+        {/* Button order matches PostersPage: rider, driver, both. */}
         <div className="flex items-center gap-2">
-          <GenerateButton
-            testid="generate-stories-drivers"
-            label="Ask drivers"
-            tone="primary"
-            disabled={generate.isPending}
-            onClick={() => generate.mutate('driver')}
-          />
           <GenerateButton
             testid="generate-stories-riders"
             label="Ask riders"
-            tone="success"
+            tone="rider"
+            variant="rider"
+            inFlight={inFlight}
             disabled={generate.isPending}
             onClick={() => generate.mutate('rider')}
           />
           <GenerateButton
+            testid="generate-stories-drivers"
+            label="Ask drivers"
+            tone="driver"
+            variant="driver"
+            inFlight={inFlight}
+            disabled={generate.isPending}
+            onClick={() => generate.mutate('driver')}
+          />
+          <GenerateButton
             testid="generate-stories-both"
             label="Generate (both)"
-            tone="primary-solid"
+            tone="both"
+            variant="both"
+            inFlight={inFlight}
             disabled={generate.isPending}
             onClick={() => generate.mutate('both')}
           />
@@ -74,8 +101,8 @@ export default function StoriesPage() {
           {generate.data.skipped_existing
             ? `Today's batch already exists (${generate.data.item_count} stories).`
             : generate.data.item_count > 0
-              ? `Generated ${generate.data.item_count} stories.`
-              : `Generated empty batch — ${generate.data.reason ?? 'no eligible corridors'}.`}
+              ? `Generated ${generate.data.item_count} stories for ${audienceLabel((generate.variables ?? 'both') as AskingForFilter)}.`
+              : `Generated empty batch for ${audienceLabel((generate.variables ?? 'both') as AskingForFilter)} — ${generate.data.reason ?? 'no eligible corridors'}.`}
         </div>
       )}
 
@@ -92,12 +119,10 @@ export default function StoriesPage() {
           data-testid="stories-empty"
           className="rounded-2xl border border-border bg-white p-8 text-center text-sm text-text-secondary"
         >
-          <p className="font-semibold text-text-primary mb-1">
-            No batches yet
-          </p>
+          <p className="font-semibold text-text-primary mb-1">No batches yet</p>
           <p>
-            Click "Generate now" to create the first batch from today's
-            ride board, or wait for the daily 7 AM PT cron.
+            Click a "Generate" button to create the first batch from
+            today's ride board, or wait for the daily 7 AM PT cron.
           </p>
         </div>
       )}
@@ -110,18 +135,20 @@ export default function StoriesPage() {
 }
 
 function BatchCard({
-  batch,
-  defaultExpanded,
+  batch, defaultExpanded,
 }: { batch: StoryBatch; defaultExpanded: boolean }) {
   const [open, setOpen] = useState(defaultExpanded)
+  const regionId = useId()
   return (
     <section
       data-testid={`story-batch-${batch.id}`}
       className="rounded-2xl border border-border bg-white overflow-hidden"
     >
-      <header
-        className="flex items-center justify-between gap-3 px-5 py-3 cursor-pointer hover:bg-surface"
-        onClick={() => setOpen((v) => !v)}
+      <CollapsibleBatchHeader
+        open={open}
+        onToggle={() => setOpen((v) => !v)}
+        ariaLabel={`Batch for ${batch.for_date} (${batch.source}, ${batch.item_count} stor${batch.item_count === 1 ? 'y' : 'ies'})`}
+        ariaControls={regionId}
       >
         <div>
           <p className="text-sm font-bold text-text-primary">
@@ -132,87 +159,65 @@ function BatchCard({
           </p>
           <p className="text-xs text-text-secondary">
             {batch.item_count} stories · {batch.llm_model}
-            {batch.error && (
-              <span className="text-danger ml-2">{batch.error}</span>
-            )}
+            {batch.error && <span className="text-danger ml-2">{batch.error}</span>}
           </p>
         </div>
-        <span
-          aria-hidden="true"
-          className={[
-            'text-text-secondary transition-transform',
-            open ? 'rotate-90' : '',
-          ].join(' ')}
-        >
-          ›
-        </span>
-      </header>
-      {open && batch.items.length === 0 && (
-        <div className="px-5 py-4 text-sm text-text-secondary border-t border-border">
-          No items in this batch. {batch.error ?? 'Ride board may have been quiet.'}
-        </div>
-      )}
-      {open && batch.items.length > 0 && (
-        <div className="px-5 py-4 border-t border-border grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {batch.items.map((item) => (
-            <StoryCard key={item.id} item={item} />
-          ))}
-        </div>
-      )}
+      </CollapsibleBatchHeader>
+      <div id={regionId}>
+        {open && batch.items.length === 0 && (
+          <div className="px-5 py-4 text-sm text-text-secondary border-t border-border">
+            No items in this batch. {batch.error ?? 'Ride board may have been quiet.'}
+          </div>
+        )}
+        {open && batch.items.length > 0 && (
+          <div className="px-5 py-4 border-t border-border grid grid-cols-1 gap-4 lg:grid-cols-2">
+            {batch.items.map((item) => (
+              <StoryCard key={item.id} item={item} />
+            ))}
+          </div>
+        )}
+      </div>
     </section>
-  )
-}
-
-function GenerateButton({
-  testid, label, tone, disabled, onClick,
-}: {
-  testid: string
-  label: string
-  tone: 'primary' | 'success' | 'primary-solid'
-  disabled: boolean
-  onClick: () => void
-}) {
-  const cls = tone === 'primary-solid'
-    ? 'bg-primary text-white hover:bg-primary/90'
-    : tone === 'success'
-      ? 'border border-success/40 text-success bg-success/5 hover:bg-success/10'
-      : 'border border-primary/40 text-primary bg-primary/5 hover:bg-primary/10'
-  return (
-    <button
-      data-testid={testid}
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={`rounded-lg px-3 py-2 text-sm font-semibold disabled:opacity-50 ${cls}`}
-    >
-      {label}
-    </button>
   )
 }
 
 function StoryCard({ item }: { item: StoryItem }) {
   const update = useUpdateStoryItem()
-  const [copied, setCopied] = useState(false)
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [showSources, setShowSources] = useState(false)
+  const firstCopiedRef = useRef(false)
 
   const fullText = `${item.headline}\n\n${item.body}`
 
   async function handleCopy() {
     try {
       await navigator.clipboard.writeText(fullText)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-      if (item.status === 'pending') {
+      setCopyStatus('success')
+      setTimeout(() => setCopyStatus('idle'), 1200)
+      if (!firstCopiedRef.current && item.status === 'pending') {
+        firstCopiedRef.current = true
         update.mutate({ itemId: item.id, status: 'copied' })
       }
     } catch (err) {
-      console.warn('clipboard write failed:', err)
+      console.warn('[marketing/stories] clipboard write failed:', err)
+      setCopyStatus('error')
+      setTimeout(() => setCopyStatus('idle'), 2400)
     }
   }
 
-  function setStatus(status: StoryItemStatus) {
-    update.mutate({ itemId: item.id, status })
+  function setStatus(next: StoryItemStatus) {
+    // Toggle-back: clicking active pill reverts to pending.
+    const target: StoryItemStatus = item.status === next ? 'pending' : next
+    update.mutate({ itemId: item.id, status: target })
   }
+
+  const copyLabel = copyStatus === 'success' ? 'Copied!'
+    : copyStatus === 'error' ? 'Copy failed'
+    : 'Copy story text'
+  const copyCls = copyStatus === 'error'
+    ? 'bg-danger text-white hover:bg-danger/90'
+    : 'bg-primary text-white hover:bg-primary/90'
+  const previewLabel = item.headline.slice(0, 40)
 
   return (
     <article
@@ -243,38 +248,41 @@ function StoryCard({ item }: { item: StoryItem }) {
         <p className="text-xs text-text-secondary mt-0.5">{item.corridor}</p>
       </div>
 
-      <p className="text-sm text-text-primary whitespace-pre-wrap">
-        {item.body}
-      </p>
+      <p className="text-sm text-text-primary whitespace-pre-wrap">{item.body}</p>
 
       <div className="flex items-center justify-between gap-2 pt-2 border-t border-border">
         <button
           data-testid={`story-copy-${item.id}`}
           type="button"
           onClick={handleCopy}
-          className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary/90"
+          aria-label={`Copy "${previewLabel}" story text`}
+          className={`rounded-md px-3 py-1.5 text-xs font-semibold ${copyCls}`}
         >
-          {copied ? 'Copied!' : 'Copy story text'}
+          {copyLabel}
         </button>
         <div className="flex items-center gap-1">
           <StatusPill
             active={item.status === 'posted'}
             label="Posted"
             tone="success"
+            ariaLabel={`Mark "${previewLabel}" as posted (toggle)`}
             onClick={() => setStatus('posted')}
           />
           <StatusPill
             active={item.status === 'skipped'}
             label="Skip"
             tone="muted"
+            ariaLabel={`Mark "${previewLabel}" as skipped (toggle)`}
             onClick={() => setStatus('skipped')}
           />
         </div>
       </div>
+      {/* aria-live announcement for clipboard copy outcome. */}
+      <span className="sr-only" aria-live="polite">
+        {copyStatus === 'success' ? 'Story text copied to clipboard.' : ''}
+        {copyStatus === 'error' ? 'Story text copy failed.' : ''}
+      </span>
 
-      {/* Phase 1.1 — source-rides drawer. Lets the admin verify the
-          LLM didn't hallucinate by showing the actual ride board
-          posts the story was based on. */}
       {item.source_rides && item.source_rides.length > 0 && (
         <SourceRidesDrawer
           open={showSources}
@@ -301,6 +309,8 @@ function SourceRidesDrawer({
         data-testid="source-rides-toggle"
         type="button"
         onClick={onToggle}
+        onKeyDown={(e) => onEnterOrSpace(e, onToggle)}
+        aria-expanded={open}
         className="flex items-center gap-1 text-[11px] font-semibold text-text-secondary hover:text-text-primary"
       >
         <span
@@ -345,32 +355,5 @@ function SourceRidesDrawer({
         </ul>
       )}
     </div>
-  )
-}
-
-function StatusPill({
-  active,
-  label,
-  tone,
-  onClick,
-}: {
-  active: boolean
-  label: string
-  tone: 'success' | 'muted'
-  onClick: () => void
-}) {
-  const base = 'rounded-md px-2 py-1 text-[11px] font-semibold border transition-colors'
-  const toneActive = tone === 'success'
-    ? 'bg-success/10 text-success border-success/30'
-    : 'bg-text-secondary/10 text-text-secondary border-text-secondary/30'
-  const toneInactive = 'bg-white text-text-secondary border-border hover:bg-surface'
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={[base, active ? toneActive : toneInactive].join(' ')}
-    >
-      {label}
-    </button>
   )
 }

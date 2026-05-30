@@ -130,7 +130,16 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
     }
   }
 
-  const forDate = args.forDate ?? new Date().toISOString().slice(0, 10)
+  // Default to PT-anchored "today" (not UTC) so manual batches
+  // group with the cron's batches on the admin's "today" mental
+  // model. Without this, late-PT-evening manual clicks tag the
+  // batch with tomorrow's date and split the queue across rows.
+  const forDate = args.forDate ?? new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date())
   const askingFor: AskingForFilter = args.askingFor ?? 'both'
 
   // Short-circuit only applies to the cron path. Manual runs can
@@ -138,12 +147,16 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
   // both intentional, both produce different stories). The partial
   // unique index in migration 109 enforces source='cron'
   // one-per-day at the DB level as the backstop.
+  //
+  // Skip rows in 'failed' status so a transient Gemini failure
+  // doesn't wedge the entire day's auto-cron.
   if (args.source === 'cron') {
     const { data: existing } = await supabaseAdmin
       .from('marketing_story_batches')
       .select('id, item_count')
       .eq('for_date', forDate)
       .eq('source', 'cron')
+      .neq('status', 'failed')
       .maybeSingle()
     if (existing) {
       return {
@@ -306,7 +319,9 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
     aggregatedError = joined.length > 800 ? `${joined.slice(0, 797)}...` : joined
   }
 
-  await supabaseAdmin
+  // Surface the update error so a silent RLS/network failure doesn't
+  // wedge the batch at status='pending' / item_count=0 forever.
+  const { error: updateErr } = await supabaseAdmin
     .from('marketing_story_batches')
     .update({
       item_count: inserted,
@@ -314,6 +329,10 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
       ...(aggregatedError ? { error: aggregatedError } : {}),
     } as never)
     .eq('id', batchId)
+  if (updateErr) {
+    console.error('[marketing/stories] batch finalize update failed:', updateErr.message)
+    errors.push(`batch update failed: ${updateErr.message}`)
+  }
 
   return {
     batch_id: batchId,

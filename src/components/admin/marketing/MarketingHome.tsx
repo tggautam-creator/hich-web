@@ -7,6 +7,7 @@
  * Real Story / Poster / Advisor pages get their own routes once we
  * implement them; this page is the index.
  */
+import { Link } from 'react-router-dom'
 import { useMarketingConfig, useCurrentMarketingTheme } from '@/hooks/useMarketingConfig'
 
 export default function MarketingHome() {
@@ -93,8 +94,8 @@ export default function MarketingHome() {
         <h2 className="text-sm font-bold text-text-primary mb-3">Features</h2>
         <ul className="text-sm text-text-secondary space-y-3">
           <li>
-            <a
-              href="/admin/marketing/stories"
+            <Link
+              to="/admin/marketing/stories"
               className="block rounded-lg border border-primary/30 bg-primary/5 p-3 hover:bg-primary/10 transition-colors"
             >
               <p className="font-semibold text-primary">
@@ -104,15 +105,22 @@ export default function MarketingHome() {
                 6 Instagram-story copies generated from the ride board
                 every morning. Copy button per card.
               </p>
-            </a>
+            </Link>
           </li>
           <li>
-            <span className="font-semibold text-text-primary">
-              Poster ideas (Phase 2) —
-            </span>{' '}
-            1 feed-post copy per day, themed by the current monthly
-            focus + this week's feature spotlight. Paste into your
-            Canva templates.
+            <Link
+              to="/admin/marketing/posters"
+              className="block rounded-lg border border-primary/30 bg-primary/5 p-3 hover:bg-primary/10 transition-colors"
+            >
+              <p className="font-semibold text-primary">
+                Poster ideas →
+              </p>
+              <p className="text-xs text-text-secondary mt-0.5">
+                1 themed feed-post copy per day, grounded in this
+                month's theme + this week's feature focus. Paste into
+                your Canva templates.
+              </p>
+            </Link>
           </li>
           <li>
             <span className="font-semibold text-text-primary">
