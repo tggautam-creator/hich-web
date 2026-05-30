@@ -7,7 +7,9 @@ import { trackEvent } from '@/lib/analytics'
 import { parseStateFromSecondaryText, fetchGasPrice } from '@/lib/gasPrice'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 import CardBrandBadge from '@/components/ui/CardBrandBadge'
+import CaregiverPickerSection from '@/components/profile/CaregiverPickerSection'
 import { useAuthStore } from '@/stores/authStore'
+import { useMyCaregivers } from '@/hooks/useCaregivers'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -56,6 +58,17 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
   // over-promise zero-card-charge for a ride that lands at the upper bound.
   const profile = useAuthStore((s) => s.profile)
   const walletBalanceCents = profile?.wallet_balance ?? 0
+
+  // v1.2 F6.2 — caregiver attach. Picker visibility gated on the
+  // same predicate iOS uses (hasAccessibilityNeeds + needsWheelchair
+  // + caregivers.length > 0). React Query stays disabled when the
+  // user isn't a wheelchair rider so signed-in non-accessibility
+  // users don't pay the round-trip for nothing.
+  const isWheelchairRider = profile?.has_accessibility_needs === true
+    && profile.accessibility_profile?.needs_wheelchair === true
+  const caregiversQuery = useMyCaregivers()
+  const myCaregivers = isWheelchairRider ? (caregiversQuery.data ?? []) : []
+  const [selectedCaregiverId, setSelectedCaregiverId] = useState<string | null>(null)
 
   const fetchCards = useCallback(async () => {
     try {
@@ -149,6 +162,10 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
           estimated_fare_cents: fareRange.low.fare_cents,
           route_polyline: state?.polyline,
           client_date: clientDate,
+          // v1.2 F6.1 — caregiver attachment. Server validates
+          // ownership (caregiver.user_id === rider) + recomputes the
+          // tier fee from distance_km, so we just pass the id.
+          ...(selectedCaregiverId ? { caregiver_id: selectedCaregiverId } : {}),
         }),
       })
 
@@ -481,6 +498,19 @@ export default function RideConfirm({ 'data-testid': testId }: RideConfirmProps)
             You won&apos;t be charged now. The final fare is calculated automatically when the ride ends based on actual distance and time.
           </p>
         </div>
+
+        {/* v1.2 F6.2 — caregiver picker. Mounted only when the rider
+            is a wheelchair user AND has at least one caregiver on
+            file. Server recomputes the +$3/$5/$8 fee at request
+            time from distance_km, so we just pass the id. */}
+        {isWheelchairRider && myCaregivers.length > 0 && (
+          <CaregiverPickerSection
+            caregivers={myCaregivers}
+            selectedId={selectedCaregiverId}
+            onChange={setSelectedCaregiverId}
+            distanceKm={distanceKm}
+          />
+        )}
 
         {/* Spacer */}
         <div className="flex-1" />

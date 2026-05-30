@@ -14,9 +14,12 @@ import {
   geocodeAddress,
   type PlaceSuggestion,
 } from '@/lib/places'
-import { calculateBearing } from '@/lib/geo'
+import { calculateBearing, haversineMetres } from '@/lib/geo'
 import { getDirectionsByLatLng } from '@/lib/directions'
 import { rememberLastSeats } from '@/lib/lastSeats'
+import { caregiverFareCents } from '@/lib/fare'
+import { useMyCaregivers } from '@/hooks/useCaregivers'
+import CaregiverPickerSection from '@/components/profile/CaregiverPickerSection'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -128,6 +131,18 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
 
   const user = useAuthStore((s) => s.user)
   const isDriver = useAuthStore((s) => s.isDriver)
+  const profile = useAuthStore((s) => s.profile)
+
+  // v1.2 F7.2 — caregiver picker on rider-mode posts. Gating:
+  // hasAccessibilityNeeds + needsWheelchair + caregivers.length > 0.
+  // Driver-mode posts never carry a caregiver (drivers don't bring
+  // passengers as caregivers in v1.2), so the picker is hidden +
+  // the insert payload sends nil regardless.
+  const isWheelchairRider = profile?.has_accessibility_needs === true
+    && profile.accessibility_profile?.needs_wheelchair === true
+  const caregiversQuery = useMyCaregivers()
+  const myCaregivers = isWheelchairRider ? (caregiversQuery.data ?? []) : []
+  const [selectedCaregiverId, setSelectedCaregiverId] = useState<string | null>(null)
 
   // Non-drivers are always locked to rider mode
   useEffect(() => {
@@ -332,6 +347,23 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
       // cached coords → it can't be matched by smart-search's
       // route-corridor / transit-handoff logic. iOS already does
       // this; web was silently missing it.
+      // v1.2 F7.2 — caregiver attach on rider-mode posts only.
+      // Driver-mode posts never carry a caregiver. The tier fee
+      // preview is a haversine straight-line estimate (server
+      // doesn't re-derive on ride_schedules inserts the way it
+      // does on /api/rides/request) — close enough for the board-
+      // card display until the per-corridor distance lands via
+      // compute-route enrichment.
+      const wantsCaregiverAttach = activeMode === 'rider' && selectedCaregiverId != null
+      let caregiverFareCentsValue: number | null = null
+      if (wantsCaregiverAttach && fromCoords && toCoords) {
+        const km = haversineMetres(
+          fromCoords.lat, fromCoords.lng,
+          toCoords.lat,   toCoords.lng,
+        ) / 1000
+        caregiverFareCentsValue = caregiverFareCents(km)
+      }
+
       const { data: inserted, error } = await supabase
         .from('ride_schedules')
         .insert({
@@ -353,6 +385,9 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
           origin_lng:       fromCoords?.lng ?? null,
           dest_lat:         toCoords?.lat ?? null,
           dest_lng:         toCoords?.lng ?? null,
+          // v1.2 F7.1 — both fields nullable when no caregiver attached.
+          caregiver_id:        wantsCaregiverAttach ? selectedCaregiverId : null,
+          caregiver_fare_cents: caregiverFareCentsValue,
         })
         .select('id')
         .single()
@@ -880,6 +915,19 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
                   </p>
                 )}
               </div>
+            )}
+
+            {/* v1.2 F7.2 — caregiver picker on rider-mode posts.
+                Hidden for driver-mode posts even when the user is
+                an accessibility rider — drivers don't bring
+                caregivers as passengers in v1.2. */}
+            {activeMode === 'rider' && isWheelchairRider && myCaregivers.length > 0 && (
+              <CaregiverPickerSection
+                caregivers={myCaregivers}
+                selectedId={selectedCaregiverId}
+                onChange={setSelectedCaregiverId}
+                distanceKm={schedulePostDistanceKmEstimate(fromLocation, toLocation)}
+              />
             )}
 
             {/* Submit Error */}
@@ -1485,4 +1533,25 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
       )}
     </div>
   )
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+/**
+ * v1.2 F7.2 — straight-line km estimate between the post's origin +
+ * dest, used by the caregiver fee preview. Returns 0 when either
+ * place hasn't resolved coords yet; CaregiverPickerSection handles
+ * that gracefully (fee renders as "+$3" — the floor tier).
+ *
+ * Server stores `caregiver_fare_cents` verbatim on the
+ * ride_schedules row but recomputes the real fee at end-of-ride
+ * from actual distance, so this estimate only affects the board-
+ * card display.
+ */
+function schedulePostDistanceKmEstimate(
+  from: PlaceSuggestion | null,
+  to:   PlaceSuggestion | null,
+): number {
+  if (!from?.lat || !from?.lng || !to?.lat || !to?.lng) return 0
+  return haversineMetres(from.lat, from.lng, to.lat, to.lng) / 1000
 }
