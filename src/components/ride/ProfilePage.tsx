@@ -13,7 +13,11 @@ import AddressPickerModal from '@/components/ride/AddressPickerModal'
 
 // v1.2 Sprint 7 Slice 2 — lazy-loaded so the sheet's React Query /
 // supabase write dependencies don't inflate the ProfilePage chunk.
-const EditProfileSheet = lazy(() => import('@/components/profile/EditProfileSheet'))
+const EditProfileSheet  = lazy(() => import('@/components/profile/EditProfileSheet'))
+// v1.2 Sprint 6 Slice 2 — caregivers section. Only mounted for
+// users with hasAccessibilityNeeds=true so non-accessibility riders
+// don't see the section at all (matching iOS gate).
+const CaregiversSection = lazy(() => import('@/components/profile/CaregiversSection'))
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -607,6 +611,15 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
           </svg>
         </button>
       </div>
+
+      {/* v1.2 Sprint 6 Slice 2 — Caregivers section. Gated on
+          has_accessibility_needs so non-accessibility riders never
+          see it (matching iOS ProfilePage gate). */}
+      {profile?.has_accessibility_needs === true && (
+        <Suspense fallback={null}>
+          <CaregiversSection />
+        </Suspense>
+      )}
 
       {/* ── Saved Places ────────────────────────────────────────────────── */}
       <div className="mx-4 mt-4" data-testid="saved-places-section">
