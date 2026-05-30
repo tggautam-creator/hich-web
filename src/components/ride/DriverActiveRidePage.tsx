@@ -10,6 +10,8 @@ import CarMarker from '@/components/map/CarMarker'
 import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
 import JourneyDrawer from '@/components/ride/JourneyDrawer'
+import CaregiverContextRow from '@/components/profile/CaregiverContextRow'
+import { loadCaregiverForRide, type CaregiverEnrichment } from '@/lib/caregiverForRide'
 import type { Ride, User, GeoPoint } from '@/types/database'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -27,6 +29,9 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
 
   const [ride, setRide] = useState<Ride | null>(null)
   const [rider, setRider] = useState<Pick<User, 'id' | 'full_name' | 'avatar_url' | 'rating_avg' | 'rating_count'> | null>(null)
+  // v1.2 F18.3 — caregiver context persists from pickup → active.
+  // Same /api/rides/active enrichment as DriverPickupPage.
+  const [caregiver, setCaregiver] = useState<CaregiverEnrichment | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [qrOpen, setQrOpen] = useState(false)
@@ -103,6 +108,13 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
         .single()
 
       if (riderData) setRider(riderData)
+
+      // v1.2 F18.3 — caregiver enrichment. Silent on failure / when
+      // ride has no caregiver attached; CaregiverContextRow renders
+      // nothing in that case.
+      if (rideData.caregiver_id) {
+        void loadCaregiverForRide(rideId as string).then(setCaregiver)
+      }
 
       setLoading(false)
     }
@@ -483,6 +495,14 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
       </div>
 
       {/* ── Rider signal banner ───────────────────────────────────────────── */}
+      {/* v1.2 F18.3 — caregiver context row. Renders nothing for non-
+          caregiver rides so call site stays unconditional. */}
+      {caregiver && (
+        <div className="px-4 py-2 bg-white border-b border-border">
+          <CaregiverContextRow caregiver={caregiver} />
+        </div>
+      )}
+
       {riderSignalled && (
         <div
           data-testid="rider-signal-banner"

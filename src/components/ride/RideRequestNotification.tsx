@@ -27,6 +27,14 @@ interface RideRequestData {
   destination_lng?: string
   rider_rating?: string
   rider_rating_count?: string
+  /** v1.2 F6.1 — caregiver context surfaced pre-Accept so drivers
+   *  see "+$X caregiver" badge + "Riding with caregiver" hint at
+   *  decision time. Phone deliberately NOT in the pre-Accept push
+   *  (privacy vector); released post-Accept via /api/rides/active.
+   *  Both string-typed since FCM payloads are always strings. */
+  has_caregiver?: string
+  caregiver_name?: string
+  caregiver_fare_cents?: string
 }
 
 /** Payload shape sent by the board request push. */
@@ -77,6 +85,12 @@ interface NotificationState {
   boardTripTime?: string
   /** When true, this is a re-notification after the selected driver cancelled — show standby screen */
   isRenewal?: boolean
+  /** v1.2 F6.1 — caregiver context (pre-Accept). hasCaregiver gates
+   *  the badge render; caregiverName + caregiverFareCents are the
+   *  display values. Empty / undefined for non-caregiver rides. */
+  hasCaregiver?: boolean
+  caregiverName?: string
+  caregiverFareCents?: number
 }
 
 interface InboxNotification {
@@ -340,6 +354,10 @@ export default function RideRequestNotification({
     }
     seenRideIdsRef.current.add(data.ride_id)
 
+    const hasCaregiver = data.has_caregiver === 'true'
+    const parsedCaregiverFareCents = hasCaregiver && data.caregiver_fare_cents
+      ? Number(data.caregiver_fare_cents)
+      : undefined
     const entry: NotificationState = {
       rideId: data.ride_id,
       riderName: data.rider_name ?? 'A rider',
@@ -354,6 +372,11 @@ export default function RideRequestNotification({
       riderRatingCount: data.rider_rating_count ?? '0',
       originAddress: '',
       isRenewal: isRenewal ?? false,
+      hasCaregiver,
+      caregiverName: hasCaregiver && data.caregiver_name ? data.caregiver_name : undefined,
+      caregiverFareCents: parsedCaregiverFareCents && !Number.isNaN(parsedCaregiverFareCents)
+        ? parsedCaregiverFareCents
+        : undefined,
     }
     setQueue((prev) => {
       // If queue is empty, reset countdown
@@ -1288,6 +1311,30 @@ export default function RideRequestNotification({
               </p>
               <p className="text-[10px] text-text-secondary">Est. time</p>
             </div>
+          </div>
+        )}
+
+        {/* v1.2 F6.1 \u2014 caregiver badge (pre-Accept). Surfaces the
+            "Riding with caregiver" hint + the +$X fare delta on the
+            ride-request push so the driver's accept/decline call
+            has full context. */}
+        {!notification.isBoardRequest && notification.hasCaregiver && (
+          <div
+            data-testid="notification-caregiver-badge"
+            className="mx-3 mb-2 flex items-center justify-between rounded-2xl bg-primary/10 px-3 py-2"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span aria-hidden="true">\u267f</span>
+              <p className="text-xs font-medium text-text-primary truncate">
+                Riding with caregiver
+                {notification.caregiverName ? `: ${notification.caregiverName}` : ''}
+              </p>
+            </div>
+            {typeof notification.caregiverFareCents === 'number' && notification.caregiverFareCents > 0 && (
+              <span className="shrink-0 text-xs font-semibold text-primary">
+                +{formatCents(notification.caregiverFareCents)}
+              </span>
+            )}
           </div>
         )}
 

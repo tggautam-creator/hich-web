@@ -405,6 +405,14 @@ export type Database = {
           // Anytime ride per day.
           time_flexible: boolean
           reminder_today_sent: boolean
+          /** v1.2 F6.1 — mig 091. Caregiver attached at ride-request
+           *  time. ON DELETE SET NULL preserves the ride row when
+           *  the rider hard-deletes the caregiver. */
+          caregiver_id: string | null
+          /** v1.2 F6.1 — mig 091. Server-computed tier fee (300 /
+           *  500 / 800 cents) added to rider charge + driver
+           *  earnings. NULL when no caregiver attached. */
+          caregiver_fare_cents: number | null
         }
         Insert: {
           id?: string
@@ -457,6 +465,8 @@ export type Database = {
           auto_ended?: boolean
           time_flexible?: boolean
           reminder_today_sent?: boolean
+          caregiver_id?: string | null
+          caregiver_fare_cents?: number | null
         }
         Update: {
           id?: string
@@ -509,6 +519,8 @@ export type Database = {
           auto_ended?: boolean
           time_flexible?: boolean
           reminder_today_sent?: boolean
+          caregiver_id?: string | null
+          caregiver_fare_cents?: number | null
         }
         Relationships: never[]
       }

@@ -2253,6 +2253,23 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             )
           }
 
+          // ── Special message: caregiver_fee_waived (v1.2 F14.3) ──
+          // Inserted server-side on /select-driver when the matched
+          // driver opted into the goodwill waiver. Renders as a
+          // centered pill so the rider sees the heart-token copy at
+          // a glance: "Sarah is waiving the $5 caregiver seat fee 💛"
+          if (msg.type === 'caregiver_fee_waived') {
+            return (
+              <div key={msg.id} data-testid={`message-${msg.id}`} className="flex justify-center">
+                <div className="max-w-[80%] rounded-2xl bg-primary/10 px-4 py-2 text-center">
+                  <p className="text-xs font-medium text-primary">
+                    {msg.content}
+                  </p>
+                </div>
+              </div>
+            )
+          }
+
           // ── Regular text message ──
           // Bubble tail is rounded square on the SENDER's side only
           // for the LAST message of a run — visual cue for "this is

@@ -14,6 +14,8 @@ import DriverQrSheet from '@/components/ride/DriverQrSheet'
 import EmergencySheet from '@/components/ui/EmergencySheet'
 import AppIcon from '@/components/ui/AppIcon'
 import JourneyDrawer from '@/components/ride/JourneyDrawer'
+import CaregiverContextRow from '@/components/profile/CaregiverContextRow'
+import { loadCaregiverForRide, type CaregiverEnrichment } from '@/lib/caregiverForRide'
 import type { Ride, User, GeoPoint } from '@/types/database'
 
 interface PickupLocationState {
@@ -43,6 +45,10 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
 
   const [ride, setRide] = useState<Ride | null>(null)
   const [rider, setRider] = useState<Pick<User, 'id' | 'full_name' | 'avatar_url' | 'rating_avg' | 'rating_count'> | null>(null)
+  // v1.2 F18.3 — caregiver context for the matched driver. Pulled
+  // via the server-enriched /api/rides/active endpoint since the
+  // caregivers table RLS scopes reads to the owning rider (mig 089).
+  const [caregiver, setCaregiver] = useState<CaregiverEnrichment | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -155,6 +161,14 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
         .single()
 
       if (riderData) setRider(riderData)
+
+      // v1.2 F18.3 — fire-and-forget caregiver lookup. /api/rides/active
+      // joins the caregiver row in via service-role; returns null when
+      // the ride has no caregiver attached or when the call fails. Either
+      // way we silently skip the CaregiverContextRow render.
+      if (rideData.caregiver_id) {
+        void loadCaregiverForRide(rideId as string).then(setCaregiver)
+      }
 
       // Check if rider already signalled they're close
       const { data: signalMsg } = await supabase
@@ -801,6 +815,13 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
 
       {/* ── Bottom card ─────────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col px-5 pt-4">
+        {/* v1.2 F18.3 — caregiver context row (when attached). Renders
+            nothing for non-caregiver rides so call site stays
+            unconditional. */}
+        <div className="mb-3">
+          <CaregiverContextRow caregiver={caregiver} />
+        </div>
+
         <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-3">
           {isDropoffMode ? 'Drag the pin to adjust dropoff' : 'Drag the pin to adjust pickup'}
         </p>
