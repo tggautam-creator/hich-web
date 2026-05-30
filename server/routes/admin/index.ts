@@ -19,6 +19,7 @@ import { adminDeclineReasonsRouter } from './declineReasons.ts'
 import { adminStatsRouter } from './stats.ts'
 import { adminSafetyEndedRouter } from './safetyEnded.ts'
 import { adminRideSafetyActionsRouter } from './rideSafetyActions.ts'
+import { adminMarketingRouter } from './marketing.ts'
 
 /**
  * `/api/admin/*` — Tago internal admin API.
@@ -111,6 +112,9 @@ adminRouter.use('/rides', adminRideSafetyActionsRouter)
 // Owns GET /api/admin/stats. Single fat response: KPIs + 30d
 // daily chart + lifetime totals + funnel snapshot.
 adminRouter.use('/stats', adminStatsRouter)
+// 2026-05-24 — marketing panel (Phase 0). Owns config probe + theme
+// fetch; story/poster/advisor endpoints land here in Phase 1+.
+adminRouter.use('/marketing', adminMarketingRouter)
 // Slice 1.4 — broadcast push composer. Owns GET /audience/preview + POST /push.
 adminRouter.use('/campaigns', adminCampaignsRouter)
 // Slice 1.7 — live ops snapshot.

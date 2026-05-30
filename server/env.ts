@@ -60,6 +60,12 @@ export function getServerEnv() {
     // gives you when wiring inbound delivery to
     // /api/webhooks/resend-inbound.
     RESEND_WEBHOOK_SECRET: process.env['RESEND_WEBHOOK_SECRET'] ?? '',
+    // 2026-05-24 — marketing panel. Optional. Powers the story +
+    // poster + advisor generators. When empty, the marketing UI
+    // surfaces a "configure GEMINI_API_KEY" banner; rest of the
+    // admin keeps working.
+    GEMINI_API_KEY: process.env['GEMINI_API_KEY'] ?? '',
+    SLACK_MARKETING_WEBHOOK_URL: process.env['SLACK_MARKETING_WEBHOOK_URL'] ?? '',
     PORT: process.env['PORT'] ? parseInt(process.env['PORT'], 10) : 3001,
   }
 }

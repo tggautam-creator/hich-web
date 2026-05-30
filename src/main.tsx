@@ -46,10 +46,12 @@ const AdminAuditLogPage = lazy(() => import('@/components/admin/AuditLogPage'))
 const AdminAlertsPage = lazy(() => import('@/components/admin/AlertsPage'))
 const AdminRideBoardPage = lazy(() => import('@/components/admin/RideBoardPage'))
 const AdminApiUsagePage = lazy(() => import('@/components/admin/ApiUsagePage'))
+const AdminMarketingHome = lazy(() => import('@/components/admin/marketing/MarketingHome'))
 const CampaignDetailPage = lazy(() => import('@/components/campaign/CampaignDetailPage'))
 
 // ── Onboarding ───────────────────────────────────────────────────────────────
 const CreateProfilePage = lazy(() => import('@/components/auth/CreateProfilePage'))
+const AboutYouPage      = lazy(() => import('@/components/onboarding/AboutYouPage'))
 const LocationPermissionsPage = lazy(() => import('@/components/auth/LocationPermissionsPage'))
 const ModeSelectionPage = lazy(() => import('@/components/auth/ModeSelectionPage'))
 const PhoneVerificationPage = lazy(() => import('@/components/auth/PhoneVerificationPage'))
@@ -157,6 +159,7 @@ createRoot(rootEl).render(
 
               {/* Onboarding */}
               <Route path="/onboarding/profile" element={<Suspense fallback={<FormPageSkeleton />}><CreateProfilePage /></Suspense>} />
+              <Route path="/onboarding/about-you" element={<Suspense fallback={<FormPageSkeleton />}><AboutYouPage /></Suspense>} />
               <Route path="/onboarding/verify-phone" element={<Suspense fallback={<FormPageSkeleton />}><PhoneVerificationPage /></Suspense>} />
               <Route path="/onboarding/location" element={<Suspense fallback={<FormPageSkeleton />}><LocationPermissionsPage /></Suspense>} />
               <Route path="/onboarding/mode" element={<Suspense fallback={<FormPageSkeleton />}><ModeSelectionPage /></Suspense>} />
@@ -251,6 +254,8 @@ createRoot(rootEl).render(
                   <Route path="/admin/live"       element={<Suspense fallback={<MapPageSkeleton />}><AdminLiveOpsPage /></Suspense>} />
                   <Route path="/admin/audit-log"  element={<Suspense fallback={<ListPageSkeleton />}><AdminAuditLogPage /></Suspense>} />
                   <Route path="/admin/alerts"     element={<Suspense fallback={<ListPageSkeleton />}><AdminAlertsPage /></Suspense>} />
+                  {/* 2026-05-24 — marketing panel (Phase 0 scaffold; story/poster/advisor land in Phase 1+). */}
+                  <Route path="/admin/marketing"  element={<Suspense fallback={<FormPageSkeleton />}><AdminMarketingHome /></Suspense>} />
                   <Route path="/admin/settings"   element={<Placeholder name="Admin settings — future" />} />
                 </Route>
               </Route>
