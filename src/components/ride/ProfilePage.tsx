@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
@@ -10,6 +10,10 @@ import VehicleIcon from '@/components/ui/VehicleIcon'
 import TrustBadges from '@/components/ui/TrustBadges'
 import type { Ride, DriverRoutine, Vehicle, SavedAddress } from '@/types/database'
 import AddressPickerModal from '@/components/ride/AddressPickerModal'
+
+// v1.2 Sprint 7 Slice 2 — lazy-loaded so the sheet's React Query /
+// supabase write dependencies don't inflate the ProfilePage chunk.
+const EditProfileSheet = lazy(() => import('@/components/profile/EditProfileSheet'))
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -69,6 +73,10 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
   // Avatar upload state
   const avatarInputRef = useRef<HTMLInputElement>(null)
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
+
+  // v1.2 Sprint 7 Slice 2 — EditProfileSheet (v1.2 fields only). The
+  // existing inline name+phone edit stays as the quick-edit path.
+  const [profileDetailsOpen, setProfileDetailsOpen] = useState(false)
 
   // Refresh profile to get latest wallet_balance
   useEffect(() => { void refreshProfile() }, [refreshProfile])
@@ -458,6 +466,17 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
                     {profile.phone}
                   </p>
                 )}
+                {/* v1.2 F1.2 — bio subtitle. 3-line clamp so a long bio
+                    doesn't dominate the hero (full bio reads from
+                    EditProfileSheet). */}
+                {profile?.bio && profile.bio.length > 0 && (
+                  <p
+                    data-testid="profile-bio"
+                    className="mt-1 text-xs text-text-secondary line-clamp-3"
+                  >
+                    {profile.bio}
+                  </p>
+                )}
                 <TrustBadges
                   email={profile?.email}
                   ratingAvg={profile?.rating_avg ?? null}
@@ -466,6 +485,25 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
                   size="md"
                   className="mt-1.5"
                 />
+                {/* v1.2 F1.2 — education chip: "school · major · class of YYYY".
+                    Renders only when at least one piece is set, matching iOS
+                    `ProfilePage.swift::educationLabel`. */}
+                {(() => {
+                  const parts: string[] = []
+                  if (profile?.school) parts.push(profile.school)
+                  if (profile?.major)  parts.push(profile.major)
+                  if (profile?.graduation_year) parts.push(`Class of ${profile.graduation_year}`)
+                  if (parts.length === 0) return null
+                  return (
+                    <div
+                      data-testid="profile-education-chip"
+                      className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary"
+                    >
+                      <AppIcon name="graduation" className="h-3 w-3" />
+                      <span className="truncate">{parts.join(' · ')}</span>
+                    </div>
+                  )
+                })()}
               </>
             )}
           </div>
@@ -546,6 +584,28 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
             <span className="text-xs font-medium text-success">Registered Driver</span>
           </div>
         )}
+
+        {/* v1.2 Sprint 7 Slice 2 — profile details (bio/gender/education/
+            accessibility + driver waive). Opens the EditProfileSheet.
+            Separate from the inline name+phone edit above so the quick-
+            edit path stays one tap. */}
+        <button
+          type="button"
+          data-testid="profile-details-button"
+          onClick={() => setProfileDetailsOpen(true)}
+          className="mt-3 w-full flex items-center justify-between rounded-2xl bg-surface px-4 py-3"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
+              <circle cx="12" cy="7" r="4" />
+              <path d="M5.5 21a6.5 6.5 0 0 1 13 0" />
+            </svg>
+            <span className="text-sm text-text-secondary truncate">Bio, education & access needs</span>
+          </div>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
+            <path d="M9 18l6-6-6-6" />
+          </svg>
+        </button>
       </div>
 
       {/* ── Saved Places ────────────────────────────────────────────────── */}
@@ -1009,6 +1069,18 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
           onClose={() => { setQrOpen(false) }}
           driverId={profile.id}
         />
+      )}
+
+      {/* v1.2 Sprint 7 Slice 2 — EditProfileSheet. Lazy-loaded; only
+          rendered while open so the existing test suite doesn't need to
+          mock the supabase-js update path on every ProfilePage render. */}
+      {profileDetailsOpen && (
+        <Suspense fallback={null}>
+          <EditProfileSheet
+            isOpen={profileDetailsOpen}
+            onClose={() => setProfileDetailsOpen(false)}
+          />
+        </Suspense>
       )}
 
       <BottomNav activeTab="profile" />
