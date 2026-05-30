@@ -19,6 +19,7 @@ import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
 import { isGeminiConfigured } from '../../lib/marketing/gemini.ts'
 import { generateStoryBatch } from '../../lib/marketing/storyGenerator.ts'
 import { generatePosterBatch } from '../../lib/marketing/posterGenerator.ts'
+import { generatePosterImage } from '../../lib/marketing/posterImageGenerator.ts'
 
 export const adminMarketingRouter = Router()
 
@@ -203,7 +204,7 @@ adminMarketingRouter.get(
 
       const { data: items, error: itemsErr } = await supabaseAdmin
         .from('marketing_poster_items')
-        .select('id, batch_id, audience, canva_template, headline, subheadline, body, hashtags, status, acted_at, created_at')
+        .select('id, batch_id, audience, format, canva_template, headline, subheadline, body, hashtags, caption, image_prompt, image_url, image_generated_at, image_model, founder_note, event_tag, feature_spotlight, theme_angle, status, acted_at, created_at')
         .in('batch_id', ids)
         .order('created_at', { ascending: true })
       if (itemsErr) throw itemsErr
@@ -228,21 +229,86 @@ adminMarketingRouter.get(
 
 /**
  * POST /api/admin/marketing/posters/generate
- * Manual "Generate now" for posters. Optional body
- * `{ audience: 'rider' | 'driver' | 'both' }` narrows the target;
- * defaults 'both' (cron default).
+ * Phase 3 — accepts { audience, format, founder_note, event_tag,
+ * feature_spotlight } (all optional). Returns 500 + ok:false when
+ * the batch produced 0 items so the UI can distinguish failure
+ * from success.
  */
 adminMarketingRouter.post(
   '/posters/generate',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const raw = (req.body ?? {}) as { audience?: unknown }
-      const ALLOWED = ['rider', 'driver', 'both'] as const
-      const audience = (ALLOWED as readonly string[]).includes(raw.audience as string)
+      const raw = (req.body ?? {}) as {
+        audience?: unknown
+        format?: unknown
+        founder_note?: unknown
+        event_tag?: unknown
+        feature_spotlight?: unknown
+      }
+      const AUD = ['rider', 'driver', 'both'] as const
+      const FMT = ['ig_story', 'ig_post', 'a4_sheet', 'custom'] as const
+      const audience = (AUD as readonly string[]).includes(raw.audience as string)
         ? (raw.audience as 'rider' | 'driver' | 'both')
         : 'both'
-      const result = await generatePosterBatch({ source: 'manual', audience })
+      const format = (FMT as readonly string[]).includes(raw.format as string)
+        ? (raw.format as 'ig_story' | 'ig_post' | 'a4_sheet' | 'custom')
+        : 'ig_story'
+      const clip = (v: unknown): string =>
+        typeof v === 'string' ? v.slice(0, 500) : ''
+      const result = await generatePosterBatch({
+        source: 'manual',
+        audience,
+        format,
+        founderNote: clip(raw.founder_note),
+        eventTag: clip(raw.event_tag),
+        featureSpotlight: clip(raw.feature_spotlight),
+      })
+      // Surface failure via HTTP status so the UI can distinguish a
+      // failed batch (0 items) from a successful one.
+      if (!result.ok) {
+        res.status(500).json({
+          error: {
+            code: 'POSTER_GEN_FAILED',
+            message: result.reason ?? 'poster generation failed',
+          },
+          batch_id: result.batch_id,
+          skipped_existing: result.skipped_existing,
+        })
+        return
+      }
       res.status(200).json({ ok: true, ...result })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+/**
+ * POST /api/admin/marketing/posters/items/:itemId/generate-image
+ * Phase 3 — calls gemini-2.5-flash-image with the item's stored
+ * image_prompt + uploads to Supabase Storage. Returns the public
+ * URL. Re-callable to regenerate.
+ */
+adminMarketingRouter.post(
+  '/posters/items/:itemId/generate-image',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { itemId } = req.params
+      // Minimal UUID format check — server-side defense for typos.
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(itemId ?? '')) {
+        res.status(400).json({
+          error: { code: 'INVALID_ITEM_ID', message: 'itemId must be a UUID' },
+        })
+        return
+      }
+      const result = await generatePosterImage(itemId)
+      if (!result.ok) {
+        res.status(500).json({
+          error: { code: 'IMAGE_GEN_FAILED', message: result.error ?? 'image generation failed' },
+        })
+        return
+      }
+      res.status(200).json({ ok: true, image_url: result.image_url })
     } catch (err) {
       next(err)
     }

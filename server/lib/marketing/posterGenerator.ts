@@ -1,64 +1,35 @@
 /**
- * Daily Instagram feed-post copy generator (Phase 2).
- *
- * Where stories (Phase 1) are reactive to the current ride board,
- * posters are PROACTIVE: one feed post per day, driven by the
- * current month's marketing theme + the rotating weekly feature
- * focus from marketing_themes. The output is text-only — headline,
- * subheadline, body, hashtags — designed to be pasted into one of
- * the admin's Canva templates.
- *
- * Two entry points:
- *  - generatePosterBatch({ source: 'manual', audience? }) — Generate-now
- *    button. Audience optional (defaults 'both' = rider+driver).
- *  - tryGenerateDailyPoster() — cron, gated to >= 7 AM PT, idempotent
- *    via the partial unique index source='cron' on poster_batches.
- *
- * The generator produces ONE poster_item per batch (not 6 like
- * stories) — feed posts have a much lower healthy cadence than
- * stories. Audience='both' generates a single poster that frames
- * the feature for both sides; 'rider' or 'driver' generates a
- * targeted variant.
+ * Phase 3 themed-poster generator. Produces a full Gemini/ChatGPT
+ * image-gen PROMPT + a CAPTION + the legacy text fields per item.
+ * Variety via deterministic angle rotation + "avoid these recent
+ * headlines" injection. Steering via optional founder note +
+ * structured event/feature inputs. Format-aware (story/post/A4/custom).
  */
 import { supabaseAdmin } from '../supabaseAdmin.ts'
 import { geminiGenerate, MODEL_FAST, isGeminiConfigured } from './gemini.ts'
 import { BRAND_SYSTEM_PROMPT } from './brandContext.ts'
+import {
+  FORMAT_SPECS,
+  pickAngle,
+  fetchRecentPosterHeadlines,
+  type PosterAngle,
+} from './posterAngles.ts'
 
 export type PosterAudience = 'rider' | 'driver' | 'both'
+export type PosterFormat = 'ig_story' | 'ig_post' | 'a4_sheet' | 'custom'
 
 interface GenerateArgs {
   source: 'cron' | 'manual'
-  /**
-   * Date string YYYY-MM-DD. Defaults to TODAY in America/Los_Angeles
-   * (NOT UTC) so manual generations match the cron's PT-anchored
-   * batch grouping. Late-PT-evening clicks no longer jump into
-   * tomorrow's row.
-   */
   forDate?: string
-  /**
-   * Which audience the poster speaks to. 'both' is the safe daily
-   * default; 'rider' or 'driver' lets the admin do targeted drops
-   * when they're trying to grow one side of the marketplace.
-   */
   audience?: PosterAudience
-}
-
-/**
- * Today's date in America/Los_Angeles as YYYY-MM-DD. Used as the
- * `for_date` anchor for everything in the marketing panel so the
- * admin's "today" mental model (PT, matching the cron clock)
- * lines up with both manual and cron batches.
- */
-function todayPT(): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Los_Angeles',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date())
+  format?: PosterFormat
+  founderNote?: string
+  eventTag?: string
+  featureSpotlight?: string
 }
 
 export interface PosterGenerationResult {
+  ok: boolean
   batch_id: string
   item_count: number
   skipped_existing: boolean
@@ -70,6 +41,8 @@ interface PosterCopy {
   subheadline: string
   body: string
   hashtags: string
+  caption: string
+  image_prompt: string
   canva_template: string
 }
 
@@ -84,11 +57,17 @@ interface MarketingThemeRow {
   week_4_feature: string
 }
 
-/**
- * Returns the marketing_themes row whose effective_month is the
- * first of the current month (or null if no theme is seeded).
- * Also picks the week-of-month feature focus to pass to Gemini.
- */
+const MODEL_FOR_POSTERS = MODEL_FAST
+
+function todayPT(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date())
+}
+
 async function fetchCurrentThemeAndFocus(forDate: string): Promise<{
   theme: MarketingThemeRow | null
   weekFocus: string
@@ -100,9 +79,6 @@ async function fetchCurrentThemeAndFocus(forDate: string): Promise<{
     .toISOString()
     .slice(0, 10)
 
-  // Destructure error too — previously this swallowed RLS/network/
-  // schema-drift failures and silently routed into the "no theme"
-  // prompt branch with no batch.error signal.
   const { data, error } = await supabaseAdmin
     .from('marketing_themes')
     .select('id, effective_month, theme_name, theme_summary, week_1_feature, week_2_feature, week_3_feature, week_4_feature')
@@ -114,11 +90,6 @@ async function fetchCurrentThemeAndFocus(forDate: string): Promise<{
   }
 
   const theme = (data as MarketingThemeRow | null) ?? null
-
-  // Week index: roughly week-of-month bucketed into 1..4 by the
-  // ceil(day/7) heuristic. Day 1-7 → week 1, 8-14 → 2, 15-21 → 3,
-  // 22-end → 4. Good enough — themes are monthly artifacts, not
-  // calendar-week precise.
   const weekIndex = Math.min(4, Math.ceil(d.getUTCDate() / 7)) as 1 | 2 | 3 | 4
   const weekFocus = theme
     ? [theme.week_1_feature, theme.week_2_feature, theme.week_3_feature, theme.week_4_feature][weekIndex - 1]!
@@ -128,92 +99,130 @@ async function fetchCurrentThemeAndFocus(forDate: string): Promise<{
 }
 
 /**
- * Per-poster prompt. Same brand prompt as stories, different
- * instructions for the output shape (5 fields vs 2) + the theme
- * grounding so the post lands in a coherent month-long arc.
+ * The Phase 3 prompt. Critical: image_prompt is described as
+ * natural-language scene description (NOT section headers like
+ * "Role:/Task:") because Nano Banana tends to render literal
+ * label text onto the poster. Recent-headlines injection is scoped
+ * to the COPY rather than the image to avoid the model echoing
+ * them into rendered text.
  */
 function buildPosterPrompt(args: {
   theme: MarketingThemeRow | null
   weekFocus: string
   weekIndex: 1 | 2 | 3 | 4
   audience: PosterAudience
+  format: PosterFormat
+  angle: PosterAngle
+  recentHeadlines: string[]
+  founderNote: string
+  eventTag: string
+  featureSpotlight: string
 }): string {
+  const fmt = FORMAT_SPECS[args.format] ?? FORMAT_SPECS.ig_story!
+
   const audLine =
     args.audience === 'rider'
-      ? 'Speak TO RIDERS specifically (frame the value as a rider).'
+      ? 'Speak TO RIDERS specifically (trust + cost split + .edu framing).'
       : args.audience === 'driver'
-        ? 'Speak TO DRIVERS specifically (frame the value as gas reimbursement on trips they were already making).'
-        // Balanced-marketplace rule (CLAUDE.md): the copy must land
-        // for BOTH roles. Pick a frame that names both sides
-        // explicitly OR a verb that works for either ("split the gas
-        // or get yours covered"). Don't pick one side and assume it
-        // works — it doesn't.
-        : 'Write copy that lands for BOTH riders AND drivers in the same post. The headline and body MUST each contain language that works for either side reading it (e.g. "split the gas or get yours covered", "ride together — drivers paid, riders save").'
+        ? 'Speak TO DRIVERS specifically (gas reimbursement on a trip they were already making — NEVER "earn", "make", "pocket"; if mentioning the 100%, phrase as "right now, drivers keep 100% of the fare").'
+        : 'Write copy that lands for BOTH riders AND drivers in the same post. Headline and body MUST each contain language that works for either role reading it.'
 
   const themeBlock = args.theme
-    ? `
-Current monthly theme: "${args.theme.theme_name}"
-  ${args.theme.theme_summary}
+    ? `Current monthly theme: "${args.theme.theme_name}"\n  ${args.theme.theme_summary}\n\nThis week (week ${args.weekIndex}) focuses on: ${args.weekFocus}`
+    : 'No monthly theme set; use the angle below as your only anchor.'
 
-This week (week ${args.weekIndex} of the month) focuses on:
-  ${args.weekFocus}
-    `.trim()
-    : `No monthly theme set. Pick any high-converting Tago feature naturally.`
+  const founderBlock = [
+    args.founderNote.trim() ? `Note: ${args.founderNote.trim()}` : '',
+    args.eventTag.trim() ? `Event/occasion: ${args.eventTag.trim()}` : '',
+    args.featureSpotlight.trim() ? `Feature to spotlight: ${args.featureSpotlight.trim()}` : '',
+  ].filter(Boolean).join('\n')
+
+  // Recent-headlines injection is scoped to a single instruction so
+  // the LLM avoids them WITHOUT echoing them into the rendered
+  // image_prompt (where they could leak onto the poster as text).
+  const recentBlock = args.recentHeadlines.length > 0
+    ? `IMPORTANT — variety guard: the last ${args.recentHeadlines.length} posters used these headlines. Pick a fundamentally different phrasing AND angle. Do NOT echo them anywhere in your output (especially not inside image_prompt):\n${args.recentHeadlines.map((h, i) => `  ${i + 1}. "${h}"`).join('\n')}`
+    : ''
+
+  // Image-prompt instructions — natural-language scene description,
+  // not section-header scaffolding. Nano Banana renders headers as
+  // literal text on the image; flowing prose works far better.
+  const imagePromptInstructions = `
+The "image_prompt" field is what we (or the founder, copy-pasted
+into Gemini/ChatGPT/Midjourney) will use to actually GENERATE the
+poster image. Write it as ONE flowing natural-language scene
+description — NO section headers, NO bullet lists, NO "Role:" /
+"Task:" / "Visual Style:" labels (those render as literal text on
+the poster, which we never want).
+
+What the image must depict:
+- A ${fmt.human_label}-shaped poster (${fmt.aspect_ratio},
+  ${fmt.pixel_dims}) for the TAGO carpool brand.
+- Minimalist, premium, sparse — never crowded or scammy-looking.
+- Brand colors: primary blue #00A8F3 and accent green #10B981 on a
+  light surface (#F8FAFC or pure white).
+- A clean, abstract geometric background OR a single illustrated
+  graphic element evoking the angle (e.g. a stylized highway, two
+  speech bubbles, a campus silhouette). NEVER attempt to render an
+  actual map of Davis CA — image models render maps as illegible
+  squiggles. Subtle dot-grid, light gradient, or single iconic
+  graphic only.
+- The transparent "T" TAGO logo prominently placed
+  (top center for stories/posts, top left for A4).
+- The actual headline you wrote in clean modern sans-serif, large.
+- The CTA "REGISTER AT: tagorides.com" near the bottom.
+- The tagline "Tag Along. Go Smarter." in small text at the
+  very bottom.
+- ${fmt.composition_rules}
+
+Constraints to bake into the image_prompt itself (since the founder
+or downstream model needs them):
+- Do NOT include the word "Driver" — use "share a ride" or "split
+  the trip" or "trip you were already making" instead.
+- Do NOT mention "earn money", "make money", "side hustle", or
+  "time costs". Focus is purely on covering gas.
+- Do NOT generate stock-photo carpool imagery or Uber-style mockups.
+- Keep on-image text to: headline, optional subheadline, CTA, tagline.
+  No other text.
+
+Write the image_prompt as 150-300 words of clean prose.`.trim()
 
   return `
-Generate ONE Instagram FEED POST (not a story) for Tago in the
-founder's voice. Feed posts are higher-stakes than stories — they
-sit on the profile grid and represent the brand. Goal: ground the
-post in the current monthly theme + this week's feature focus so
-the feed has a coherent arc.
+Generate ONE Instagram poster spec for Tago in the founder's voice.
 
 ${themeBlock}
 
+ANGLE for THIS generation:
+  ${args.angle.title}
+  ${args.angle.prompt_seed}
+
 ${audLine}
 
-Output a JSON object (no markdown fences):
+Output FORMAT: ${fmt.human_label} (${fmt.aspect_ratio}, ${fmt.pixel_dims})
+
+${founderBlock ? `Founder context (overrides the angle's default lean if conflicting):\n${founderBlock}\n` : ''}
+
+${recentBlock}
+
+Output a JSON object (no markdown fences) with EXACTLY these 7 fields:
 {
-  "headline":     "...",  // 6-10 words. Used as the hero text in Canva.
-  "subheadline":  "...",  // 5-12 words. One supporting line.
-  "body":         "...",  // 2-3 sentences. The actual post copy.
-  "hashtags":     "...",  // 8-12 space-separated hashtags. Mix:
-                          //   #ucdavis #aggielife (school)
-                          //   #carpool #rideshare (category)
-                          //   #davisca #sacramento #bayarea #socal (geo)
-                          //   #studentlife #collegelife (lifestyle)
-                          //   #gasreimbursement (positioning)
-  "canva_template": "..." // ONE OF: 'safety', 'driver-upside',
-                          //   'smart-matching', 'frictionless'.
-                          //   Pick the template that best fits the
-                          //   week's focus.
+  "headline":       "...", // 6-10 words. Hero text on the image.
+  "subheadline":    "...", // 5-12 words. Supporting line.
+  "body":           "...", // 2-3 sentences. Actual post body copy.
+  "hashtags":       "...", // 8-12 space-separated. #ucdavis #aggielife #carpool #davisca #studentlife etc.
+  "caption":        "...", // Instagram FEED CAPTION (separate from on-image text). 2-4 sentences + line break + 8-12 hashtags. Empty string "" for ig_story.
+  "image_prompt":   "...", // 150-300 words natural-language scene description (see instructions below).
+  "canva_template": "..."  // One of: safety, driver-upside, smart-matching, frictionless.
 }
 
-Constraints:
-- Strong verbs. Short sentences. Specific over abstract.
-- Reference the weekly focus directly in the headline OR body.
-- NEVER use "earn money", "side hustle", "join the movement",
-  "community", or any "Uber for students" framing.
-- The link in the bio is tagorides.com — don't restate it in body.
-- If the audience is 'rider', emphasize trust + cost split + .edu.
-- If 'driver', emphasize gas reimbursement + the
-  trip-you-were-already-making framing. Brand-safe phrasing for the
-  driver-keeps-everything point is: "right now, drivers keep 100% of
-  the fare" — NEVER "earn", "make", "pocket", or "take home" 100%.
-  Drop the "right now" hedge only when space forces it.
-- If 'both', follow the audience block above — balanced two-sided
-  copy (see audLine). Do NOT pick a single audience for the 'both'
-  case; that violates the balanced-marketplace rule.
+${imagePromptInstructions}
+
+ALL 7 fields REQUIRED. Empty string ONLY acceptable for "caption"
+when format is ig_story. Every other field must be non-empty.
 `.trim()
 }
 
-/**
- * Strict parser — requires ALL 5 fields with sensible minimum
- * lengths. A degraded poster (empty hashtags, no subheadline) is
- * worse than a missing one in a once-per-day cadence: the admin
- * wouldn't know to regenerate. Hard-fail with a descriptive reason
- * so the batch.error column surfaces what's missing.
- */
-function parsePosterCopy(text: string): { copy: PosterCopy | null; reason: string | null } {
+function parsePosterCopy(text: string, isStory: boolean): { copy: PosterCopy | null; reason: string | null } {
   const cleaned = text
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/i, '')
@@ -234,8 +243,8 @@ function parsePosterCopy(text: string): { copy: PosterCopy | null; reason: strin
   const body = (typeof obj.body === 'string' ? obj.body : '').trim()
   const subheadline = (typeof obj.subheadline === 'string' ? obj.subheadline : '').trim()
   const hashtags = (typeof obj.hashtags === 'string' ? obj.hashtags : '').trim()
-  // Use `||` not `??` so empty strings ALSO fall back to 'safety'
-  // (the `??` short-circuit only caught null/undefined).
+  const caption = (typeof obj.caption === 'string' ? obj.caption : '').trim()
+  const image_prompt = (typeof obj.image_prompt === 'string' ? obj.image_prompt : '').trim()
   const canva_template = ((typeof obj.canva_template === 'string' ? obj.canva_template : '').trim()) || 'safety'
 
   const missing: string[] = []
@@ -243,39 +252,30 @@ function parsePosterCopy(text: string): { copy: PosterCopy | null; reason: strin
   if (body.length < 10) missing.push('body')
   if (subheadline.length < 3) missing.push('subheadline')
   if (hashtags.length < 3) missing.push('hashtags')
+  if (image_prompt.length < 100) missing.push('image_prompt (too short, expected 150-300 words)')
+  if (!isStory && caption.length < 10) missing.push('caption')
   if (missing.length > 0) {
-    return {
-      copy: null,
-      reason: `missing/empty fields: ${missing.join(', ')}`,
-    }
+    return { copy: null, reason: `missing/empty fields: ${missing.join(', ')}` }
   }
 
   return {
-    copy: { headline, subheadline, body, hashtags, canva_template },
+    copy: { headline, subheadline, body, hashtags, caption, image_prompt, canva_template },
     reason: null,
   }
 }
 
 export async function generatePosterBatch(args: GenerateArgs): Promise<PosterGenerationResult> {
   if (!isGeminiConfigured()) {
-    return {
-      batch_id: '',
-      item_count: 0,
-      skipped_existing: false,
-      reason: 'GEMINI_API_KEY not configured',
-    }
+    return { ok: false, batch_id: '', item_count: 0, skipped_existing: false, reason: 'GEMINI_API_KEY not configured' }
   }
 
-  // Default to PT-anchored date (not UTC) so manual batches group
-  // with the cron's batches on the admin's "today" mental model.
   const forDate = args.forDate ?? todayPT()
   const audience: PosterAudience = args.audience ?? 'both'
+  const format: PosterFormat = args.format ?? 'ig_story'
+  const founderNote = (args.founderNote ?? '').trim()
+  const eventTag = (args.eventTag ?? '').trim()
+  const featureSpotlight = (args.featureSpotlight ?? '').trim()
 
-  // Cron is idempotent (one batch/day), manual stacks (multiple
-  // audience runs welcome). The short-circuit reuses an existing
-  // PENDING/REVIEWED cron batch only — if today's cron batch is in
-  // 'failed' status, fall through and try again. Without this gate
-  // a transient Gemini failure wedges the entire day's auto-cron.
   if (args.source === 'cron') {
     const { data: existing } = await supabaseAdmin
       .from('marketing_poster_batches')
@@ -286,6 +286,7 @@ export async function generatePosterBatch(args: GenerateArgs): Promise<PosterGen
       .maybeSingle()
     if (existing) {
       return {
+        ok: true,
         batch_id: (existing as { id: string }).id,
         item_count: (existing as { item_count: number }).item_count,
         skipped_existing: true,
@@ -294,6 +295,8 @@ export async function generatePosterBatch(args: GenerateArgs): Promise<PosterGen
   }
 
   const { theme, weekFocus, weekIndex, fetchError: themeErr } = await fetchCurrentThemeAndFocus(forDate)
+  const angle = pickAngle({ forDate, audience, format })
+  const recentHeadlines = await fetchRecentPosterHeadlines(5)
 
   const { data: batch, error: batchErr } = await supabaseAdmin
     .from('marketing_poster_batches')
@@ -303,7 +306,7 @@ export async function generatePosterBatch(args: GenerateArgs): Promise<PosterGen
       theme_id: theme?.id ?? null,
       theme_snapshot: theme?.theme_name ?? null,
       weekly_focus_snapshot: weekFocus || null,
-      llm_model: MODEL_FAST,
+      llm_model: MODEL_FOR_POSTERS,
       item_count: 0,
       status: 'pending',
     } as never)
@@ -311,35 +314,30 @@ export async function generatePosterBatch(args: GenerateArgs): Promise<PosterGen
     .single()
   if (batchErr || !batch) {
     console.error('[marketing/posters] batch insert failed:', batchErr?.message)
-    return {
-      batch_id: '',
-      item_count: 0,
-      skipped_existing: false,
-      reason: batchErr?.message ?? 'batch insert failed',
-    }
+    return { ok: false, batch_id: '', item_count: 0, skipped_existing: false, reason: batchErr?.message ?? 'batch insert failed' }
   }
   const batchId = (batch as { id: string }).id
 
   let inserted = 0
   const errors: string[] = []
-  // Surface the theme-fetch error (if any) into the batch so admins
-  // see "theme fetch failed: ..." in the UI instead of getting a
-  // silent default-prompt batch.
   if (themeErr) errors.push(`theme lookup failed: ${themeErr}`)
 
   try {
     const result = await geminiGenerate({
       systemPrompt: BRAND_SYSTEM_PROMPT,
-      userPrompt: buildPosterPrompt({ theme, weekFocus, weekIndex, audience }),
-      temperature: 0.85,
-      maxOutputTokens: 1024,
+      userPrompt: buildPosterPrompt({
+        theme, weekFocus, weekIndex, audience, format, angle,
+        recentHeadlines, founderNote, eventTag, featureSpotlight,
+      }),
+      temperature: 0.9,
+      maxOutputTokens: 4096,
       responseMimeType: 'application/json',
       thinkingBudget: 0,
     })
-    const { copy, reason: parseReason } = parsePosterCopy(result.text)
+    const { copy, reason: parseReason } = parsePosterCopy(result.text, format === 'ig_story')
     if (!copy) {
       const preview = result.text ? result.text.slice(0, 200) : '(empty response)'
-      const msg = `audience=${audience}: ${parseReason ?? 'unparseable'} → ${preview}`
+      const msg = `audience=${audience} format=${format}: ${parseReason ?? 'unparseable'} → ${preview}`
       console.warn(`[marketing/posters] ${msg}`)
       errors.push(msg)
     } else {
@@ -348,15 +346,22 @@ export async function generatePosterBatch(args: GenerateArgs): Promise<PosterGen
         .insert({
           batch_id: batchId,
           audience,
+          format,
           canva_template: copy.canva_template,
           headline: copy.headline,
           subheadline: copy.subheadline,
           body: copy.body,
           hashtags: copy.hashtags,
+          caption: copy.caption,
+          image_prompt: copy.image_prompt,
+          theme_angle: angle.key,
+          founder_note: founderNote || null,
+          event_tag: eventTag || null,
+          feature_spotlight: featureSpotlight || null,
           status: 'pending',
         } as never)
       if (itemErr) {
-        const msg = `audience=${audience}: item insert failed → ${itemErr.message}`
+        const msg = `audience=${audience} format=${format}: item insert failed → ${itemErr.message}`
         console.error(`[marketing/posters] ${msg}`)
         errors.push(msg)
       } else {
@@ -364,19 +369,15 @@ export async function generatePosterBatch(args: GenerateArgs): Promise<PosterGen
       }
     }
   } catch (err) {
-    const msg = `audience=${audience}: Gemini call threw → ${err instanceof Error ? err.message : String(err)}`
+    const msg = `audience=${audience} format=${format}: Gemini call threw → ${err instanceof Error ? err.message : String(err)}`
     console.error(`[marketing/posters] ${msg}`)
     errors.push(msg)
   }
 
   const aggregatedError = errors.length > 0
-    ? (errors.join(' | ').length > 800
-      ? `${errors.join(' | ').slice(0, 797)}...`
-      : errors.join(' | '))
+    ? (errors.join(' | ').length > 800 ? `${errors.join(' | ').slice(0, 797)}...` : errors.join(' | '))
     : null
 
-  // Surface the update error too — silently failing here leaves the
-  // batch stuck at status='pending' with item_count=0 forever.
   const { error: updateErr } = await supabaseAdmin
     .from('marketing_poster_batches')
     .update({
@@ -391,6 +392,7 @@ export async function generatePosterBatch(args: GenerateArgs): Promise<PosterGen
   }
 
   return {
+    ok: inserted > 0,
     batch_id: batchId,
     item_count: inserted,
     skipped_existing: false,
@@ -398,11 +400,6 @@ export async function generatePosterBatch(args: GenerateArgs): Promise<PosterGen
   }
 }
 
-/**
- * Cron entry point. Same PT-7-AM gate + once-per-day guarantee as
- * the story generator. Always runs with audience='both' for the
- * cron path — the admin can still trigger targeted manual runs.
- */
 export async function tryGenerateDailyPoster(): Promise<{ generated: boolean; reason: string }> {
   if (!isGeminiConfigured()) return { generated: false, reason: 'no_key' }
 
@@ -416,7 +413,12 @@ export async function tryGenerateDailyPoster(): Promise<{ generated: boolean; re
     return { generated: false, reason: `pt_hour=${ptHour}_before_7am` }
   }
 
-  const result = await generatePosterBatch({ source: 'cron', forDate: todayPT(), audience: 'both' })
+  const result = await generatePosterBatch({
+    source: 'cron',
+    forDate: todayPT(),
+    audience: 'both',
+    format: 'ig_story',
+  })
   if (result.skipped_existing) return { generated: false, reason: 'already_ran_today' }
   return {
     generated: result.item_count > 0,
