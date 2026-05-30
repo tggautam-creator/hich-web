@@ -42,6 +42,17 @@ vi.mock('@/lib/supabase', () => ({
   },
 }))
 
+// v1.2 Sprint 6 Slice 3 — RideConfirm now reads caregivers via
+// React Query. Stub the hook here so the existing tests don't
+// need a QueryClientProvider wrapper. The picker only renders when
+// the auth profile has `has_accessibility_needs` + `needs_wheelchair`
+// AND the list is non-empty — the default mocked profile has none
+// of those flags, so an empty list is the correct shape for every
+// test in this file.
+vi.mock('@/hooks/useCaregivers', () => ({
+  useMyCaregivers: () => ({ data: [], isLoading: false, error: null }),
+}))
+
 /* ── Helpers ─────────────────────────────────────────────────────────── */
 
 const MOCK_DESTINATION = {

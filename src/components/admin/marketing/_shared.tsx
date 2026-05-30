@@ -164,6 +164,7 @@ export function CopyableField({
         onFirstCopy?.()
       }
     } catch (err) {
+      // eslint-disable-next-line no-console -- diagnostic for clipboard-API failure on insecure-origin / old browsers
       console.warn('[marketing] clipboard write failed:', err)
       setStatus('error')
       setTimeout(() => setStatus('idle'), 2400)
@@ -211,6 +212,7 @@ export function CopyableField({
 
 // ── KeyboardActivatable wrapper helper (for the rare div-as-toggle case) ────
 
+// eslint-disable-next-line react-refresh/only-export-components -- shared keyboard helper colocated with marketing UI atoms
 export function onEnterOrSpace(e: KeyboardEvent, handler: () => void): void {
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault()

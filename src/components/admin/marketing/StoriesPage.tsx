@@ -199,6 +199,7 @@ function StoryCard({ item }: { item: StoryItem }) {
         update.mutate({ itemId: item.id, status: 'copied' })
       }
     } catch (err) {
+      // eslint-disable-next-line no-console -- diagnostic for clipboard-API failure on insecure-origin / old browsers
       console.warn('[marketing/stories] clipboard write failed:', err)
       setCopyStatus('error')
       setTimeout(() => setCopyStatus('idle'), 2400)

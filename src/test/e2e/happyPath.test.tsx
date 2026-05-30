@@ -73,6 +73,12 @@ vi.mock('@/lib/supabase', () => ({
   },
 }))
 
+// v1.2 Sprint 6 Slice 3 — RideConfirm reads caregivers via React Query.
+// Stub the hook so the e2e happy-path doesn't need a QueryClientProvider.
+vi.mock('@/hooks/useCaregivers', () => ({
+  useMyCaregivers: () => ({ data: [], isLoading: false, error: null }),
+}))
+
 // Analytics — no-op all exports
 vi.mock('@/lib/analytics', () => ({
   initAnalytics:  vi.fn(),

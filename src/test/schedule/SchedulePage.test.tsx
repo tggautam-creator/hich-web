@@ -113,7 +113,16 @@ vi.mock('@/lib/directions', () => ({
 
 vi.mock('@/stores/authStore', () => ({
   useAuthStore: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({ user: { id: 'user-123' }, isDriver: true }),
+    selector({ user: { id: 'user-123' }, isDriver: true, profile: null }),
+}))
+
+// v1.2 Sprint 6 Slice 3 — SchedulePage now reads caregivers via
+// React Query. Stub the hook here so the existing tests don't
+// need a QueryClientProvider wrapper. The picker only renders for
+// wheelchair riders; the default mocked profile is null, so an
+// empty list is the correct shape for every test in this file.
+vi.mock('@/hooks/useCaregivers', () => ({
+  useMyCaregivers: () => ({ data: [], isLoading: false, error: null }),
 }))
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -641,6 +650,10 @@ describe('SchedulePage', () => {
           origin_lng:       -121.76,
           dest_lat:         38.54,
           dest_lng:         -121.76,
+          // v1.2 Sprint 6 Slice 3 — caregiver attach. Both null when
+          // the rider didn't attach a caregiver via the picker.
+          caregiver_id:        null,
+          caregiver_fare_cents: null,
         })
       })
 
