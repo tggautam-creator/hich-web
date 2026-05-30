@@ -234,21 +234,33 @@ export function clusterCorridors(rides: RideRow[], today: Date = new Date()): Co
  * cluster them. Returns the top N corridors ready for the story
  * generator to consume.
  */
-export async function fetchAndClusterCorridors(): Promise<Corridor[]> {
+export async function fetchAndClusterCorridors(): Promise<{
+  corridors: Corridor[]
+  error: string | null
+}> {
   const { supabaseAdmin } = await import('../supabaseAdmin.ts')
+  // Notes on the filter:
+  //  - ride_schedules has no `status` column. Posts are deleted on
+  //    cancellation, so "exists in table" == "active".
+  //  - No payment_status filter either — that column lives on `rides`,
+  //    not `ride_schedules` (the rider posts the request before paying).
+  //  - seats_locked=true means the schedule was already paired and the
+  //    QR scan locked the seat; no value in promoting it.
+  //  - origin_place_id LIKE 'routine:%' are projection rows from
+  //    routines — skip so we don't double-count alongside the routine
+  //    itself.
   const { data, error } = await supabaseAdmin
     .from('ride_schedules')
     .select('id, mode, origin_address, dest_address, trip_date, trip_time, direction_type, available_seats')
-    .eq('status', 'active')
     .gte('trip_date', todayISO())
     .lte('trip_date', dateNDaysFromNow(WINDOW_DAYS_AHEAD))
     .not('origin_place_id', 'like', 'routine:%')
-    .in('payment_status', ['pending', 'paid'])
+    .neq('seats_locked', true)
     .limit(500)
 
   if (error) {
     console.error('[marketing/corridors] fetch failed:', error.message)
-    return []
+    return { corridors: [], error: error.message }
   }
-  return clusterCorridors((data ?? []) as RideRow[])
+  return { corridors: clusterCorridors((data ?? []) as RideRow[]), error: null }
 }

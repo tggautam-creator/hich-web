@@ -135,7 +135,30 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
     }
   }
 
-  const corridors = await fetchAndClusterCorridors()
+  const { corridors, error: fetchErr } = await fetchAndClusterCorridors()
+  if (fetchErr) {
+    // Surface the DB error onto the batch row so the admin UI shows
+    // the actual cause instead of "no eligible corridors today" —
+    // which is misleading when the real problem is a query failure.
+    const { data: errBatch } = await supabaseAdmin
+      .from('marketing_story_batches')
+      .insert({
+        for_date: forDate,
+        source: args.source,
+        llm_model: MODEL_FAST,
+        item_count: 0,
+        status: 'failed',
+        error: `ride_schedules query failed: ${fetchErr}`,
+      } as never)
+      .select('id')
+      .single()
+    return {
+      batch_id: (errBatch as { id: string } | null)?.id ?? '',
+      item_count: 0,
+      skipped_existing: false,
+      reason: `ride_schedules query failed: ${fetchErr}`,
+    }
+  }
   if (corridors.length === 0) {
     // Still insert a (zero-item) batch row so the admin UI can show
     // "we scanned today; nothing worth posting" rather than a blank
