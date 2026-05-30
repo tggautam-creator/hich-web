@@ -17,13 +17,41 @@
 
 import { create } from 'zustand'
 import type { User as SupabaseUser, Session } from '@supabase/supabase-js'
-import type { User } from '@/types/database'
+import type { AccessibilityProfile, Database, Gender, User } from '@/types/database'
 import { supabase } from '@/lib/supabase'
 import { requestAndSaveFcmToken } from '@/lib/fcm'
 import { identifyUser, resetAnalytics } from '@/lib/analytics'
 import { syncSessionToServer, recoverSessionFromServer, clearServerSession } from '@/lib/serverSession'
 import { requestPersistentStorage, cacheRefreshToken, getCachedRefreshToken, clearCachedRefreshToken } from '@/lib/persistentStorage'
 import { authLog } from '@/lib/authLogger'
+
+// ── v1.2 profile-write payload ────────────────────────────────────────────────
+
+/**
+ * All-fields-in-one config used by `updateProfileFields`. Mirrors iOS
+ * `AuthStore.ProfileFieldsUpdate` (Swift) 1:1 so the web write path
+ * stays in lockstep with iOS. New v1.2 fields land here as they're
+ * added.
+ *
+ * Conventions:
+ *  - Optional string fields (bio / school / major) accept null to
+ *    clear the column; pass the existing value to leave it alone.
+ *  - `gender` is nullable (clear via null) and constrained to the
+ *    closed `Gender` enum on the type level.
+ *  - `hasAccessibilityNeeds` + `accessibilityProfile` + `waiveCaregiverFee`
+ *    are NOT NULL on the column — callers always pass an explicit value
+ *    loaded from `auth.profile`, same as iOS.
+ */
+export interface ProfileFieldsUpdate {
+  bio?: string | null
+  gender?: Gender | null
+  school?: string | null
+  major?: string | null
+  graduationYear?: number | null
+  hasAccessibilityNeeds: boolean
+  accessibilityProfile: AccessibilityProfile
+  waiveCaregiverFee: boolean
+}
 
 // ── State & Actions ────────────────────────────────────────────────────────────
 
@@ -57,6 +85,17 @@ export interface AuthState {
    * Sets isLoading=false when complete (used to mark initial load done).
    */
   refreshProfile: () => Promise<void>
+
+  /**
+   * v1.2 — write the v1.2 user-profile + accessibility + driver-waiver
+   * fields directly against the `users` table via supabase-js (RLS-
+   * scoped to `auth.uid() = id`). Mirrors iOS
+   * `AuthStore.updateProfileFields` exactly so both clients write the
+   * same shape; refreshes profile on success so observers re-render
+   * with the new values. Throws on network / RLS failure — callers
+   * own error UI.
+   */
+  updateProfileFields: (fields: ProfileFieldsUpdate) => Promise<void>
 }
 
 // ── Diagnostic beacon (temporary) ─────────────────────────────────────────────
@@ -337,5 +376,39 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     // Request FCM push notification permission and save token (fire-and-forget)
     void requestAndSaveFcmToken()
+  },
+
+  updateProfileFields: async (fields) => {
+    const { user } = get()
+    if (!user) throw new Error('updateProfileFields called without a signed-in user')
+
+    // Typed snake_case payload matching the `users` table columns.
+    // Mirrors iOS `AuthStore.updateProfileFields::ProfileFieldsPayload`
+    // field-for-field so both clients write the same JSON shape.
+    // Using the table's `Update` type keeps the key names honest at
+    // compile time — a typo (e.g. `graduate_year`) would fail to build.
+    const payload: Database['public']['Tables']['users']['Update'] = {
+      has_accessibility_needs: fields.hasAccessibilityNeeds,
+      accessibility_profile:   fields.accessibilityProfile,
+      waive_caregiver_fee:     fields.waiveCaregiverFee,
+    }
+    // Optional clears: only include the key if the caller passed it
+    // (even null), so we don't accidentally NULL fields a partial
+    // caller didn't intend to touch.
+    if ('bio' in fields)            payload.bio             = fields.bio ?? null
+    if ('gender' in fields)         payload.gender          = fields.gender ?? null
+    if ('school' in fields)         payload.school          = fields.school ?? null
+    if ('major' in fields)          payload.major           = fields.major ?? null
+    if ('graduationYear' in fields) payload.graduation_year = fields.graduationYear ?? null
+
+    const { error } = await supabase
+      .from('users')
+      .update(payload)
+      .eq('id', user.id)
+
+    if (error) {
+      throw new Error(error.message)
+    }
+    await get().refreshProfile()
   },
 }))

@@ -30,6 +30,28 @@ export type RideStatus =
   | 'cancelled'
   | 'expired'
 
+/**
+ * Closed enum mirroring the `users.gender` CHECK constraint (mig 087).
+ * `prefer_not_to_say` is a first-class option, not an "other" — gender
+ * is treated as a self-declared social signal, not a categorization.
+ */
+export type Gender = 'male' | 'female' | 'non_binary' | 'prefer_not_to_say'
+
+/**
+ * JSONB shape stored in `users.accessibility_profile` (mig 088).
+ * When `users.has_accessibility_needs` is false the blob is ignored
+ * downstream; the values are still persisted so toggling the flag
+ * back on restores the user's prior selections.
+ */
+export interface AccessibilityProfile {
+  needs_wheelchair?: boolean
+  needs_caregiver?: boolean
+  other_notes?: string | null
+}
+
+/** Vehicle trunk size enum (mig 090). Driver-declared. */
+export type TrunkSize = 'small' | 'medium' | 'large'
+
 // ── Supabase Database schema ──────────────────────────────────────────────────
 
 export type Database = {
@@ -64,6 +86,18 @@ export type Database = {
           last_known_at: string | null
           suspended_at: string | null
           suspended_reason: string | null
+          /** v1.2 F1 — mig 087, social profile fields. All optional. */
+          bio: string | null
+          gender: Gender | null
+          school: string | null
+          major: string | null
+          graduation_year: number | null
+          /** v1.2 F2 — mig 088. NOT NULL DEFAULT false. */
+          has_accessibility_needs: boolean
+          /** v1.2 F2 — mig 088. NOT NULL DEFAULT '{}'. */
+          accessibility_profile: AccessibilityProfile
+          /** v1.2 F14 — mig 092. Driver goodwill opt-out. NOT NULL DEFAULT false. */
+          waive_caregiver_fee: boolean
           created_at: string
         }
         Insert: {
@@ -91,6 +125,14 @@ export type Database = {
           last_known_at?: string | null
           suspended_at?: string | null
           suspended_reason?: string | null
+          bio?: string | null
+          gender?: Gender | null
+          school?: string | null
+          major?: string | null
+          graduation_year?: number | null
+          has_accessibility_needs?: boolean
+          accessibility_profile?: AccessibilityProfile
+          waive_caregiver_fee?: boolean
           created_at?: string
         }
         Update: {
@@ -118,6 +160,14 @@ export type Database = {
           last_known_at?: string | null
           suspended_at?: string | null
           suspended_reason?: string | null
+          bio?: string | null
+          gender?: Gender | null
+          school?: string | null
+          major?: string | null
+          graduation_year?: number | null
+          has_accessibility_needs?: boolean
+          accessibility_profile?: AccessibilityProfile
+          waive_caregiver_fee?: boolean
           created_at?: string
         }
         Relationships: never[]
@@ -140,6 +190,10 @@ export type Database = {
           is_active: boolean
           body_type: string
           deleted_at: string | null
+          /** v1.2 F4 — mig 090. Driver-declared. NOT NULL DEFAULT false. */
+          wheelchair_capable: boolean
+          /** v1.2 F4 — mig 090. NULL when wheelchair_capable is false. */
+          trunk_size: TrunkSize | null
         }
         Insert: {
           id?: string
@@ -156,6 +210,8 @@ export type Database = {
           is_active?: boolean
           body_type?: string
           deleted_at?: string | null
+          wheelchair_capable?: boolean
+          trunk_size?: TrunkSize | null
         }
         Update: {
           id?: string
@@ -172,6 +228,8 @@ export type Database = {
           is_active?: boolean
           body_type?: string
           deleted_at?: string | null
+          wheelchair_capable?: boolean
+          trunk_size?: TrunkSize | null
         }
         Relationships: never[]
       }

@@ -79,6 +79,14 @@ describe('database types — row aliases', () => {
       last_known_at: null,
       suspended_at: null,
       suspended_reason: null,
+      bio: null,
+      gender: null,
+      school: null,
+      major: null,
+      graduation_year: null,
+      has_accessibility_needs: false,
+      accessibility_profile: {},
+      waive_caregiver_fee: false,
       created_at: new Date().toISOString(),
     }
     expect(user.wallet_balance).toBe(500)
@@ -93,6 +101,7 @@ describe('database types — row aliases', () => {
       car_photo_url: 'https://x.com/c.jpg', seats_available: 3,
       fuel_efficiency_mpg: null, is_active: true,
       body_type: 'suv', deleted_at: null,
+      wheelchair_capable: false, trunk_size: null,
     }
     expect(v.seats_available).toBeGreaterThanOrEqual(1)
   })

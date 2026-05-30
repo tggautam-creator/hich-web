@@ -41,6 +41,14 @@ describe('scaffold — @/ alias and database types', () => {
       last_known_at: null,
       suspended_at: null,
       suspended_reason: null,
+      bio: null,
+      gender: null,
+      school: null,
+      major: null,
+      graduation_year: null,
+      has_accessibility_needs: false,
+      accessibility_profile: {},
+      waive_caregiver_fee: false,
       created_at: new Date().toISOString(),
     }
     expect(user.wallet_balance).toBe(0)
@@ -74,6 +82,14 @@ describe('scaffold — @/ alias and database types', () => {
       last_known_at: null,
       suspended_at: null,
       suspended_reason: null,
+      bio: null,
+      gender: null,
+      school: null,
+      major: null,
+      graduation_year: null,
+      has_accessibility_needs: false,
+      accessibility_profile: {},
+      waive_caregiver_fee: false,
       created_at: new Date().toISOString(),
     }
     expect(Number.isInteger(user.wallet_balance)).toBe(true)
@@ -108,6 +124,8 @@ describe('scaffold — @/ alias and database types', () => {
       is_active: true,
       body_type: 'sedan',
       deleted_at: null,
+      wheelchair_capable: false,
+      trunk_size: null,
     }
     expect(v.seats_available).toBeGreaterThanOrEqual(1)
     expect(v.seats_available).toBeLessThanOrEqual(4)

@@ -55,6 +55,14 @@ const fakeProfile = {
   last_known_at:      null,
   suspended_at:       null,
   suspended_reason:   null,
+  bio:                null,
+  gender:             null,
+  school:             null,
+  major:              null,
+  graduation_year:    null,
+  has_accessibility_needs: false,
+  accessibility_profile:   {},
+  waive_caregiver_fee:     false,
   created_at:         '2024-01-01T00:00:00Z',
 }
 
