@@ -18,7 +18,7 @@ iOS has added 22 migrations (086–107), 22 new endpoints, and entire new Featur
 | 1 | **Reports v2** | mig 086, `Features/Reports/`, `REPORTS_IOS_PLAN.md`, `docs/REPORTS_PLAN.md`, Reports endpoints | ✅ audit complete 2026-05-30 — see [Sprint 5](#sprint-5--reports-v2-parity) below |
 | 2 | **Caregivers** | mig 089, 091, 092, 093, iOS surface much wider than originally scoped (Profile + Auth + Schedule + RideBoard + Driver UX + 3 DesignSystem components + repository, no Endpoints/ files — iOS goes direct via Supabase SDK) | ✅ audit complete 2026-05-30 — see [Sprint 6](#sprint-6--caregivers-v12-parity) below |
 | 3 | **Vehicle + user accessibility** | mig 087 (user-profile expansion: bio/gender/school/major/grad-year), 088 (accessibility profile), 090 (vehicle wheelchair_capable + trunk_size) | ✅ audit complete 2026-05-30 — see [Sprint 7](#sprint-7--accessibility--user-profile-v12-parity) below |
-| 4 | **Rider routines + Suggestions** | mig 099–104, `Features/Suggestions/`, `Features/Profile/RoutineManagement*` | ⏳ pending |
+| 4 | **Rider routines + Suggestions** | mig 099–106, `Features/Suggestions/`, `Features/Schedule/Routines*`, `Features/Profile/ProfileRoutinesSection`, suggestion + project-routine + sync-routine endpoints | ✅ audit complete 2026-05-30 — see [Sprint 8](#sprint-8--suggestions--rider-routines-v13-parity) below |
 | 5 | **Trips & segments (split fare)** | mig 097, 098, trips endpoints, `Features/Rides/` | ⏳ pending |
 | 6 | **Board redesign + Smart geo-match** | `docs/BOARD_REDESIGN_PLAN.md`, `SMART_SEARCH_PLAN.md`, `Features/RideBoard/`, board endpoints | ⏳ pending (coordinate with parallel session) |
 | 7 | **Ride safety + forensics (admin)** | mig 094, 095, 096, `Features/Safety/`, `Features/AdminCampaign/` | ⏳ pending |
@@ -38,22 +38,285 @@ For every stage:
 
 ### Currently pending decisions
 
-- **Stages 1–3 audits landed**. Stages 4–9 still queued.
-- **Sprint 7 (accessibility / user profile)** — ✅ Slices 1–5 shipped + committed locally. Slice 6 (UserProfilePreviewCard polish) is the only remaining piece; skipped for now in favour of Sprint 6.
-- **Sprint 6 (caregivers)** — ✅ Slices 1–6 shipped + committed locally. Sprint complete pending one prod-deploy step for the Slice 5 server response (extends `/api/schedule/board/schedule/:id/offers` with `driver.waive_caregiver_fee` + `posted.has_caregiver` + `posted.caregiver_fare_cents`).
+- **Stages 1–4 audits landed**. Stages 5–9 still queued.
+- **Sprint 8 (Suggestions + rider routines v1.3)** — ✅ Audit complete 2026-05-30. 6-slice plan landed below; no code yet. Headline: chasm-sized rider-side gap — iOS ships full Suggested Rides home hero + detail sheet + dismiss + lazy-routine action flow, web ships ZERO of it. Sprint 8 also bundles small parity corrections (mode badge on routine rows, Add-Routine pre-select, push_suggestions toggle).
+- **Sprint 7 (accessibility / user profile)** — ✅ Slices 1–5 shipped + pushed (CI green 2026-05-30). Slice 6 (UserProfilePreviewCard polish) is the only remaining piece; parked unless surface emerges.
+- **Sprint 6 (caregivers)** — ✅ Slices 1–6 shipped + pushed (CI green 2026-05-30). Slice 5's server response will light up on web + iOS once Vercel auto-deploy + EC2 PM2 pick up the new build.
 - **Sprint 5 (Reports v2 polish)** — ⏳ Not started. Notifications-drift slice is highest blast radius; awaiting "go".
-- Nothing is pushed to origin yet — every slice above is local-commit-only per the per-feature green-light rule.
 
 ### Current focus
 
-Sprint 6 Slice 6 just shipped (see [Sprint 6](#sprint-6--caregivers-v12-parity)). All Sprint 6 + most of Sprint 7 is in local commits.
+Stage 4 audit just landed. All Sprint 6 + Sprint 7 (except Slice 6 polish) are on `origin/main`.
 
 ### Next action
 
-User QA pass on local dev, then decide on push timing + whether to:
-- Run **Stage 4 audit** (rider routines + suggestions) — next in the audit pipeline.
-- Tackle **Sprint 5** (Reports v2 notifications drift) — bounded slice, high-impact fix.
-- Polish **Sprint 7 Slice 6** (UserProfilePreviewCard).
+Tarun decides:
+1. **Sprint 8 Slice 1** (Suggestions foundation: types + hooks + API helpers + FCM handler) — unblocks every later slice in Sprint 8.
+2. **Sprint 5 Slice 1** (Reports v2 notifications drift — bounded slice, fixes a broken UX today).
+3. Run **Stage 5 audit** (Trips & segments / split fare) — next in the audit pipeline.
+4. Resolve any **open questions** in Sprint 8 (driver-side floating hero, Suggested tab on RideBoard, match-signals debug card visibility, feature-flag rollout).
+
+---
+
+## Sprint 8 — Suggestions + rider routines v1.3 parity
+
+**Audit-first mode.** Stage 4 of the multi-stage iOS-parity audit completed 2026-05-30 with no code changes. This section is the side-by-side findings + slice plan. Nothing here is shipped on the web app yet.
+
+### Headline
+
+As of 2026-05-30, iOS ships a full v1.3 Suggested Rides surface (rider home hero card + detail sheet + dismiss flow + lazy-routine action wiring) against six live server endpoints (`GET /api/suggestions/top`, `POST /api/suggestions/:id/dismiss`, `POST /api/suggestions/scan-routine/:id`, `POST /api/suggestions/purge-routine/:id`, `GET /api/suggestions/board` declared-but-unused, `POST /api/schedule/project-routine`, `GET /api/schedule/by-id/:id`), while web ships **ZERO** of it — riders on web cannot see, dismiss, or act on any suggestion the engine generates.
+
+Secondary gaps: routine rows on web `ProfilePage` and `RideBoard` don't render the `mode` badge added by migrations 103/106, the `Add Routine` CTA hard-codes driver-mode pre-selection (rider-only users land on the wrong segment), and the `push_suggestions` notification pref toggle (migration 101 column already SELECTed by the server) is not exposed in web settings UI.
+
+Two reciprocal observations: web is reading the unified `driver_routines` table correctly post-103 (no schema break — confirmed at `src/components/schedule/SchedulePage.tsx:607`), and web's existing `src/components/ride/RideSuggestion.tsx` is the **driver-side push-notification accept/decline page** — a completely different feature from iOS Suggestions (rider-facing match feed) — and must not be conflated.
+
+### Files read end-to-end during the audit
+
+**iOS source-of-truth surface (14 files, ~6,087 lines):**
+
+Suggestions feature:
+- [`ios/Tago/Features/Suggestions/SuggestedRidesHero.swift`](ios/Tago/Features/Suggestions/SuggestedRidesHero.swift) (292 lines) — hero card mounted on RiderHomePage in `.embedded` mode and (planned) DriverHomePage in `.floating` mode; `openConfirmSheet` flow drives CTA action with 350ms single-presentation-host delay workaround.
+- [`ios/Tago/Features/Suggestions/SuggestedRideCard.swift`](ios/Tago/Features/Suggestions/SuggestedRideCard.swift) (431 lines) — compact card with classification badge (Same route / Transit dropoff / Transit pickup), dismiss X, avatar+name fallback, destination first-comma extraction, date/time with 'Anytime' for time_flexible, rating with 'New' fallback, role-aware CTA color + copy, `.light`/`.medium` UIImpactFeedbackGenerator haptics.
+- [`ios/Tago/Features/Suggestions/SuggestionDetailSheet.swift`](ios/Tago/Features/Suggestions/SuggestionDetailSheet.swift) (649 lines) — `.medium`/`.large` detents, six-section layout (tripDateBanner / classificationBanner / otherUserCard / two tripCards with SourceSubtitle variants / transitBreakdownCard / matchSignalsCard / bottom CTA). Bottom CTA uses brand-primary blue for BOTH sides (line 52).
+- [`ios/Tago/Features/Suggestions/SuggestionsNotifications.swift`](ios/Tago/Features/Suggestions/SuggestionsNotifications.swift) (12 lines) — `NotificationCenter.Name.suggestionsRefreshRequested` cross-surface refresh signal.
+
+Routines feature:
+- [`ios/Tago/Features/Schedule/RoutinesSheet.swift`](ios/Tago/Features/Schedule/RoutinesSheet.swift) (488 lines) — modal sheet with per-day grouping + sync badge ("X routine(s) synced to the board") + edit / delete actions.
+- [`ios/Tago/Features/Schedule/RoutinesViewModel.swift`](ios/Tago/Features/Schedule/RoutinesViewModel.swift) (169 lines)
+- [`ios/Tago/Features/Schedule/AddRoutinePromptCover.swift`](ios/Tago/Features/Schedule/AddRoutinePromptCover.swift) (175 lines) — full-screen cover that opens SchedulePostPage with `initialMode` pre-selected from `auth.isDriver`.
+- [`ios/Tago/Features/Schedule/SchedulePostRoutineSection.swift`](ios/Tago/Features/Schedule/SchedulePostRoutineSection.swift) (208 lines)
+- [`ios/Tago/Features/Schedule/SchedulePostViewModel.swift`](ios/Tago/Features/Schedule/SchedulePostViewModel.swift) (582 lines)
+- [`ios/Tago/Features/Schedule/SchedulePostViewModel+Submit.swift`](ios/Tago/Features/Schedule/SchedulePostViewModel+Submit.swift) (1058 lines) — routine submission paths (single-day, recurring, projected).
+- [`ios/Tago/Features/Profile/ProfileRoutinesSection.swift`](ios/Tago/Features/Profile/ProfileRoutinesSection.swift) (604 lines) — list with 'Driver' (teal) / 'Rider' (blue) mode badge per group, edit button → SchedulePostPage prefill.
+- [`ios/Tago/Core/Supabase/Repositories/RoutinesRepository.swift`](ios/Tago/Core/Supabase/Repositories/RoutinesRepository.swift) (153 lines) — direct Supabase SDK CRUD against unified `driver_routines` table.
+- [`ios/Tago/Models/DriverRoutine.swift`](ios/Tago/Models/DriverRoutine.swift) — unified routine model with `mode` discriminator.
+
+Endpoints:
+- [`ios/Tago/Core/Networking/Endpoints/SuggestionEndpoints.swift`](ios/Tago/Core/Networking/Endpoints/SuggestionEndpoints.swift) (345 lines) — defines `TopSuggestions`, `DismissSuggestion`, `BoardSuggestions` (declared, unused on iOS), `ScanForRoutine`, `PurgeForRoutine` endpoint structs with full request/response decode shapes.
+- [`ios/Tago/Core/Networking/Endpoints/PurgeRoutineSuggestionsEndpoint.swift`](ios/Tago/Core/Networking/Endpoints/PurgeRoutineSuggestionsEndpoint.swift) (22 lines)
+- [`ios/Tago/Core/Networking/Endpoints/SyncRoutinesEndpoint.swift`](ios/Tago/Core/Networking/Endpoints/SyncRoutinesEndpoint.swift) (31 lines)
+- [`ios/Tago/Core/Networking/Endpoints/ProjectRoutineEndpoint.swift`](ios/Tago/Core/Networking/Endpoints/ProjectRoutineEndpoint.swift) (39 lines) — `{ routine_id, trip_date: 'YYYY-MM-DD' } → { schedule_id, created }`.
+- [`ios/Tago/Core/Networking/Endpoints/ScanRoutineEndpoint.swift`](ios/Tago/Core/Networking/Endpoints/ScanRoutineEndpoint.swift) (22 lines)
+
+**Server + migrations (11 files, ~7,244 lines):**
+
+Migrations:
+- [`supabase/migrations/099_rider_routines.sql`](supabase/migrations/099_rider_routines.sql) (90 lines) — initial rider_routines table (later dropped in 103).
+- [`supabase/migrations/100_ride_suggestions.sql`](supabase/migrations/100_ride_suggestions.sql) (133 lines) — `ride_suggestions` table with `match_type`, `relevance_score`, `match_signals` JSONB, `side`, `status`, rider/driver source columns.
+- [`supabase/migrations/101_notification_preferences_push_suggestions.sql`](supabase/migrations/101_notification_preferences_push_suggestions.sql) (18 lines) — `notification_preferences.push_suggestions BOOLEAN DEFAULT true`.
+- [`supabase/migrations/102_routine_addresses.sql`](supabase/migrations/102_routine_addresses.sql) (55 lines) — `origin_address` + `dest_address` columns on routines (nullable for pre-102 rows).
+- [`supabase/migrations/103_unify_routines.sql`](supabase/migrations/103_unify_routines.sql) (97 lines) — **drops rider_routines table**, adds `mode` discriminator column to `driver_routines`, copies rider rows over.
+- [`supabase/migrations/104_routine_groups.sql`](supabase/migrations/104_routine_groups.sql) (40 lines) — `routine_groups` table for per-day groupings.
+- [`supabase/migrations/105_polyline_source.sql`](supabase/migrations/105_polyline_source.sql) (34 lines)
+- [`supabase/migrations/106_routines_mode_drop_default.sql`](supabase/migrations/106_routines_mode_drop_default.sql) (36 lines) — `mode` NOT NULL no default; writes must specify explicitly.
+
+Server routes:
+- [`server/routes/suggestions.ts`](server/routes/suggestions.ts) (496 lines) — `GET /top`, `POST /:id/dismiss`, `POST /scan-routine/:id` (fire-and-forget engine trigger), `POST /purge-routine/:id` (ownership-checked cleanup), `GET /board`.
+- [`server/routes/riderRoutines.ts`](server/routes/riderRoutines.ts) (270 lines) — POST creates routine and triggers `scanForRoutine` fire-and-forget; DELETE path needs audit for `purge-routine` parity.
+- [`server/routes/schedule.ts`](server/routes/schedule.ts) (5,975 lines — only `project-routine` + `by-id` handlers in scope; verified path is `/api/schedule/by-id/:id`, **NOT** `/api/schedule/:id`).
+
+**Web user-facing surface (audit result):**
+
+Routines (partial parity):
+- [`src/components/schedule/SchedulePage.tsx`](src/components/schedule/SchedulePage.tsx) — INSERTs `mode` explicitly (line 607 — correct post-106 NOT NULL no-default). Accepts `initialMode` prop (line 84).
+- [`src/components/ride/ProfilePage.tsx`](src/components/ride/ProfilePage.tsx) — SELECTs `driver_routines` rows. **Missing mode badge.**
+- [`src/components/schedule/RideBoard.tsx`](src/components/schedule/RideBoard.tsx) — routines sheet SELECTs same table. **Missing mode badge.**
+
+Suggestions (ZERO parity):
+- ❌ **No rider-side suggestions surface anywhere.** Confirmed via `grep -rln` — no `useSuggestions`, no caller of `/api/suggestions/*`, no caller of `/api/schedule/project-routine`, no `SuggestedRide*` / `SuggestionDetail*` components.
+- ⚠️ Existing [`src/components/ride/RideSuggestion.tsx`](src/components/ride/RideSuggestion.tsx) is the **driver-side push-notification accept/decline page** (completely different feature) — must NOT be conflated or refactored to share types.
+- ⚠️ Existing [`src/components/ride/TransitSuggestionCard.tsx`](src/components/ride/TransitSuggestionCard.tsx) is the transit-dropoff suggestion (different feature again) — keep separate.
+
+Settings (partial parity):
+- [`src/components/ride/SettingsPage.tsx`](src/components/ride/SettingsPage.tsx) — notification prefs UI driven by `PrefServerKey` union. **Missing `push_suggestions` toggle.** Endpoint already SELECTs the column per `server/routes/users.ts:118,196`.
+
+### Side-by-side parity matrix
+
+| Surface | iOS | Web | Severity |
+|---|---|---|---|
+| **Rider home — Suggested Rides hero card** | Embedded on RiderHomePage, always visible (renders empty state when no rows), lists up to 3 via `GET /api/suggestions/top` (server slices), sparkles icon + 'Suggested for you' header | ❌ Does not exist on `src/components/ride/RiderHomePage.tsx` — no suggestions surface at all | 🚨 CRITICAL |
+| **Suggested ride card (compact)** | Classification badge (Same route / Transit dropoff / Transit pickup), dismiss X, avatar+name with 'Driver'/'Rider' fallback, destination first-comma segment, date/time (Today/Tomorrow/weekday + time, or 'Anytime'), total-time, rating (star+decimal OR 'New'), role-aware CTA, light/medium haptic | ❌ No component exists. Cannot reuse `RideBoardCard` (no match-type badge, no dismiss, different action wiring). | 🚨 CRITICAL |
+| **Suggestion detail sheet** | Modal sheet with navigationTitle 'Suggested ride' + Close, 6 sections (tripDateBanner / classificationBanner / otherUserCard / two tripCards with SourceSubtitle / transitBreakdownCard / matchSignalsCard); bottom CTA uses brand-primary blue for BOTH sides | ❌ Does not exist | 🚨 HIGH |
+| **Dismiss suggestion** | Tap X → confirm dialog "Remove this suggestion?" / "This match won't show here anymore. You can still find the ride on the Ride board." → POST `/api/suggestions/:id/dismiss` → optimistic removal + NotificationCenter broadcast | ❌ No caller of dismiss endpoint exists | 🚨 HIGH |
+| **Suggestion CTA → action flow** | resolveScheduleID (use other-side `schedule_id` if present; else POST `/api/schedule/project-routine` to project routine) → GET `/api/schedule/by-id/:id` → 350ms delay (presentation-host workaround) → present existing `RideBoardConfirmSheet` pre-filled | Web has `RideBoardConfirmSheet` already; missing the projection step + lookup + present glue | 🚨 HIGH |
+| **Routine mode badge on routines lists** | `ProfileRoutinesSection` shows 'Driver' (teal) / 'Rider' (blue) pill per group | ❌ web `ProfilePage` + `RideBoard` routines sheet show no badge — rider routines created on iOS look identical to driver routines on web | ⚠️ MEDIUM |
+| **Add Routine pre-select** | `AddRoutinePromptCover` opens `SchedulePostPage` with mode pre-selected from `auth.isDriver` (rider-only users land on rider; multi-role can flip) | Web hard-codes driver-mode pre-selected; non-drivers must manually flip via segmented control | ⚠️ MEDIUM |
+| **Push notification opt-out for suggestions** | `notification_preferences.push_suggestions` (mig 101) — toggle on `NotificationPreferences.swift` | ❌ web `SettingsPage` `PrefServerKey` union excludes `push_suggestions`; endpoint already returns column value | ⚠️ MEDIUM |
+| **Cross-surface refresh after dismiss/action** | NotificationCenter broadcast; SuggestedRidesHero refetches everywhere; also on `scenePhase .active` + on `suggested_match` FCM push | ❌ No equivalent event bus on web | ⚠️ MEDIUM |
+| **Routine cleanup on delete (purge-routine)** | On routine delete iOS calls `POST /api/suggestions/purge-routine/:id` to clean stale suggestions | Server-side `scanForRoutine` already wired in `riderRoutines.ts` POST; DELETE path needs verification | ⚠️ MEDIUM |
+| **Driver-side suggestions (floating hero)** | `SuggestedRidesHero` in `.floating` mode on driver home — hidden when empty | ❌ Does not exist on `src/components/ride/DriverHomePage.tsx` | LOW |
+| **Routine inline edit from ProfilePage** | `ProfileRoutinesSection` edit button → `SchedulePostPage` prefilled | RideBoard has inline edit; ProfilePage has NO edit button — user must go to RideBoard to edit | LOW |
+| **UserProfilePreviewSheet on profile-card tap** | Modal preview inside `SuggestionDetailSheet` | Web has no modal preview component; existing `/profile/:id` route is full page (web-native deferral OK) | LOW |
+| **Suggested tab on RideBoard** | `GET /api/suggestions/board` endpoint exists + consumer declared, but iOS does NOT wire it yet | Web doesn't ship it either | ➖ PARITY (preserved) |
+| **Routines table schema reads** | Reads unified `driver_routines` table with `mode` column (post-103); `origin_address`/`dest_address` (102); `routine_group_id` (104); `polyline_source` (105); `mode` NOT NULL no default (106). `rider_routines` table NO LONGER EXISTS. | Web INSERTs `mode` explicitly at `SchedulePage.tsx:607`; RideBoard + ProfilePage SELECT * without filter — works correctly post-103 | ➖ PARITY (no break) |
+
+### Cross-cutting notes (apply to every slice)
+
+- **Role gate.** Every suggestion is scoped to a single `side` (rider OR driver). The card's CTA copy + color depends on `suggestion.side`, NOT the viewer's tab context. Derive from the payload — same rule as the role-per-ride memory.
+- **Migration 103 unified routines.** The `rider_routines` TABLE NO LONGER EXISTS. Any new code MUST read `driver_routines` with optional `mode` filter. Web's `SchedulePage` already INSERTs `mode` explicitly (correct post-106 NOT NULL no-default). Do NOT write `SELECT * FROM rider_routines` anywhere — it will `42P01`.
+- **iOS planning markdowns off-limits.** Hard rule landed 2026-05-30. Only `.swift` files in `ios/Tago/Features/Suggestions/`, `Schedule/`, `Profile/`, `Settings/`, plus `Core/Networking/Endpoints/Suggestion*.swift` + `Routine*.swift` + `ProjectRoutineEndpoint.swift`. NEVER read `*_PLAN.md` / `*_PROGRESS.md`.
+- **Copy strings VERBATIM from iOS.** Every label, button text, empty-state, confirm-dialog message, error toast must match the iOS source character-for-character (apostrophes `won't` / `isn't` / `Couldn't`, em-dash in `try again in a minute`, `Ride board` capitalization). Reviewer matrix MUST grep iOS source for each user-visible string and assert equality.
+- **RideSuggestion.tsx is OFF LIMITS.** It is the DRIVER push-notification accept/decline page — a completely different feature from iOS Suggestions. Do NOT touch, refactor, or share types with it. New components live under `SuggestedRide*` / `SuggestionDetailSheet` naming.
+- **Per-feature green-light cadence.** Every slice ends with lint + tests + build + tough self-review + parity matrix in the handoff. STOP and wait for Tarun's explicit "go" / "push" / "ship it" before starting the next slice.
+- **Parallel admin session lane.** `src/components/admin/`, `server/routes/admin/`, marketing files are OFF LIMITS. Slice 2 touches `SettingsPage` (non-admin) but MUST git-status-check for in-flight edits first.
+- **Tokens.ts only — no raw hex.** Driver-accent green + rider-accent blue must be sourced from `tokens.ts`; if missing, add in Slice 2 so later slices can reuse.
+- **React Query queryKey convention.** `['suggestions', 'top', side]` so dismiss + action mutations can target-invalidate. Mirror iOS cross-surface refresh semantics — single source of truth, no manual array splicing. FCM `suggested_match` foreground handler (Slice 1) invalidates the same key.
+- **Server contract is FROZEN.** iOS is in production against these endpoints. Do not change request/response shapes; if a discrepancy is found, web adapts. Verified endpoint paths: `GET /api/schedule/by-id/:id` (NOT `/api/schedule/:id`), `GET /api/suggestions/top` (server slices to 3), `POST /api/suggestions/:id/dismiss`, `POST /api/suggestions/purge-routine/:id` (ownership-checked), `POST /api/suggestions/scan-routine/:id` (fire-and-forget, already wired in `riderRoutines.ts` POST), `POST /api/schedule/project-routine`, `GET/PATCH /api/users/me/notification-preferences` (already SELECTs `push_suggestions`).
+- **Reviewer parity matrix mandatory.** Hard rule from 2026-05-30 — every slice handoff includes a 3-column iOS element / web counterpart / ✅⚠️➖ matrix, NOT prose. Bundled-feature slices (Slice 2) have one section per bundled feature.
+- **Haptics best-effort.** iOS uses `UIImpactFeedbackGenerator(.light/.medium)` on card tap + CTA tap + detail-sheet present. Web equivalent is `navigator.vibrate()` — implement as optional (no-op if unsupported, no fallback chrome).
+- **SuggestedRideCard transit-symbol map.** iOS uses `matchSignals.transitSymbolName` (server-provided SF Symbol name like `tram.fill`, `bus.fill`). Web must enumerate the mapping to Lucide (or whatever icon lib `tokens.ts` already uses) and document a fallback for unknown values. Capture the enumeration in Slice 3.
+
+### Sprint 8 slice plan
+
+Per the per-feature green-light + tough-self-review-before-handoff + reviewer parity-check hard rules. Every slice ends with lint + tests + build green + reviewer parity matrix + commit + wait for Tarun's "go" before shipping the next.
+
+#### Slice 1 — Suggestion types + API helpers + React Query hooks (schema-first foundation)
+
+Stand up the type system and data layer for suggestions **without any UI**. Add `Suggestion` / `MatchSignals` / `SuggestionSource` TypeScript types to `src/types/database.ts` matching iOS `Suggestion.swift` field-for-field. Create `src/lib/api/suggestions.ts` with `fetchTopSuggestions(side?)`, `dismissSuggestion(id)`, `projectRoutine({ routine_id, trip_date })`, `fetchScheduleById(id)` — last two added here so Slice 5 can extend without re-creating the file. Add `useSuggestions()` React Query hook with `queryKey: ['suggestions', 'top', side]`, `useDismissSuggestion()` mutation with `onSuccess` invalidation. Verify server-side fire-and-forget in `riderRoutines.ts` POST (`scanForRoutine`) is wired (it is) — DOCUMENT in a code comment. Audit `riderRoutines.ts` DELETE handler — if it does NOT call `POST /api/suggestions/purge-routine/:id`, ADD the call. Wire `src/lib/fcm.ts` foreground handler for `suggested_match` notification type to invalidate `['suggestions']`. Vitest unit tests for hooks with mocked fetch. NO UI.
+
+- **iOS reference:** [`SuggestionEndpoints.swift`](ios/Tago/Core/Networking/Endpoints/SuggestionEndpoints.swift), [`SuggestedRidesHero.swift`](ios/Tago/Features/Suggestions/SuggestedRidesHero.swift), [`ios/Tago/Models/Suggestion.swift`](ios/Tago/Models/Suggestion.swift)
+- **Web files to touch:** `src/types/database.ts`, `src/lib/api/suggestions.ts` (new), `src/hooks/useSuggestions.ts` (new), `src/lib/fcm.ts`, `server/routes/riderRoutines.ts` (audit DELETE), `src/test/hooks/useSuggestions.test.ts` (new)
+- **Server contract:** `GET /api/suggestions/top?side=rider|driver → { results: SuggestionPayload[] }` (server slices to 3). `POST /api/suggestions/:id/dismiss → { ok: true }`. `POST /api/schedule/project-routine { routine_id, trip_date: 'YYYY-MM-DD' } → { schedule_id, created }`. `GET /api/schedule/by-id/:id → ScheduledRide`. `POST /api/suggestions/purge-routine/:id → { ok }` (ownership-checked).
+- [ ] Types match iOS `Suggestion` + `MatchSignals` exactly (audit by reading `SuggestionEndpoints.swift` response decode block)
+- [ ] `useSuggestions` returns React Query patterns matching the codebase
+- [ ] `useDismissSuggestion` invalidates `['suggestions']` on success
+- [ ] `src/lib/fcm.ts` handles `suggested_match` foreground push by invalidating `['suggestions']`
+- [ ] `riderRoutines` DELETE either already calls `purge-routine` OR is wired in this slice
+- [ ] Vitest covers success / 404 / 403 paths for top + dismiss
+- [ ] `npm test --run` / `npm run lint` / `npm run build` all green
+
+#### Slice 2 — Small parity corrections: mode badge + Add-Routine pre-select + push_suggestions toggle
+
+Three independent, low-risk UI corrections bundled to avoid round-trip overhead — reviewer matrix has three explicit sections. **(1)** Add 'Driver' (teal) / 'Rider' (blue) mode pill to every routine row in `src/components/ride/ProfilePage.tsx` and `src/components/schedule/RideBoard.tsx` routines sheet — port iOS `ProfileRoutinesSection.swift` styling, sourced from `tokens.ts` (add `driverAccent` + `riderAccent` tokens if missing — no raw hex). **(2)** Change ProfilePage's 'Add Routine' button to pre-select `activeMode` based on `auth.profile.is_driver` — pass via React Router state OR prop to `SchedulePage` (which accepts `initialMode` prop, line 84 verified). **(3)** Add 'Suggested rides' toggle to `src/components/ride/SettingsPage.tsx`: widen `PrefServerKey` union to include `push_suggestions`, render toggle row, reuse existing GET/PATCH `/api/users/me/notification-preferences` endpoint (already SELECTs `push_suggestions` per `server/routes/users.ts:118,196`). Copy verbatim from iOS `NotificationPreferences.swift`. **Before touching SettingsPage, run `git status` to confirm no in-flight edits from parallel admin/marketing session** (parallel-admin-lane rule). Vitest snapshot or render tests for badge variants + toggle states.
+
+- **iOS reference:** [`ProfileRoutinesSection.swift`](ios/Tago/Features/Profile/ProfileRoutinesSection.swift), [`AddRoutinePromptCover.swift`](ios/Tago/Features/Schedule/AddRoutinePromptCover.swift), `ios/Tago/Features/Settings/NotificationPreferences.swift`
+- **Web files to touch:** `src/components/ride/ProfilePage.tsx`, `src/components/schedule/RideBoard.tsx`, `src/components/ride/SettingsPage.tsx`, `src/lib/tokens.ts` (add accents if missing), `src/test/profile/RoutinesModeBadge.test.tsx` (new), `src/test/settings/SettingsPageSuggestions.test.tsx` (extend or new)
+- **Server contract:** No new endpoints. Reads `driver_routines.mode` (NOT NULL post-103/106). Reuses `GET/PATCH /api/users/me/notification-preferences`.
+- [ ] Driver routine rows show teal 'Driver' pill; rider routine rows show blue 'Rider' pill on ProfilePage AND RideBoard sheet
+- [ ] Add Routine on ProfilePage pre-selects mode by `is_driver` via SchedulePage `initialMode` prop / nav state
+- [ ] SettingsPage 'Suggested rides' toggle reads + writes `push_suggestions` via `/api/users/me/notification-preferences`
+- [ ] Toggle copy matches iOS `NotificationPreferences.swift` verbatim
+- [ ] Tests cover both badge variants + toggle on/off
+- [ ] `git status` checked for parallel-session contamination on SettingsPage before edit
+- [ ] All three CI gates green
+- [ ] Reviewer matrix has three sections: badge / pre-select / toggle, each with iOS element / web counterpart / verdict
+
+#### Slice 3 — SuggestedRideCard component (presentational, foundation for slices 4–6)
+
+Build the visual card — port iOS `SuggestedRideCard.swift` to TypeScript/JSX. **NOTE: this slice is foundation only — no user value until Slice 4 mounts it.** Reuses `MatchSignals.classification` enum from server schema (do not reimplement). Match: classification badge (Same route / Transit dropoff / Transit pickup with `matchSignals.transitSymbolName` mapped to web equivalent icons — enumerate the SF symbol map and document fallback), dismiss X (shown when `showDismissButton` prop true), avatar+name row with 'Driver' / 'Rider' fallback, destination first-comma extraction (per iOS line 266), date/time line (Today / Tomorrow / weekday + time OR 'Anytime' for `time_flexible`), total-time, rating (star + decimal OR 'New'), full-width CTA ('Request this ride' blue for rider side / 'Offer this ride' driverAccent green for driver side), light/medium haptic via web vibration API (best-effort). Button + body onClick are no-op stubs in this slice. Tests cover all classification variants, both role variants, 'New' rating, missing-name fallback, 'Anytime' time path.
+
+- **iOS reference:** [`SuggestedRideCard.swift`](ios/Tago/Features/Suggestions/SuggestedRideCard.swift)
+- **Web files to touch:** `src/components/ride/SuggestedRideCard.tsx` (new), `src/test/ride/SuggestedRideCard.test.tsx` (new)
+- **Server contract:** N/A — consumes `Suggestion` type from Slice 1.
+- [ ] Renders all 3 classification badges identically to iOS (color + icon, transit symbol map documented)
+- [ ] Renders rider-side + driver-side CTA copy + color correctly
+- [ ] Dismiss X visible when `showDismissButton` true
+- [ ] Missing-name fallback ('Driver' / 'Rider') tested
+- [ ] 'New' rating path tested
+- [ ] 'Anytime' time-flexible path tested
+- [ ] Destination first-comma extraction tested
+- [ ] `data-testid` prop accepted on every interactive element
+- [ ] `tokens.ts` used for all colors — no raw hex
+- [ ] All three CI gates green
+- **Dependencies:** Slice 1
+
+#### Slice 4 — Rider home Suggested Rides card + dismiss flow (CRITICAL gap closure)
+
+Mount the suggestions card on `src/components/ride/RiderHomePage.tsx` — wrapper card with header 'Suggested for you' (sparkles icon + brand-color label, copy VERBATIM from iOS `SuggestedRidesHero.swift`), embedding `SuggestedRideCard`s from `useSuggestions({ side: 'rider' })`. Empty state VERBATIM from iOS `embeddedEmptyState`: large sparkles, 'No suggestions yet', "When someone posts a ride that matches yours, you'll see it here." Wire the dismiss flow: tap X → confirm dialog (web BottomSheet/Modal) with copy VERBATIM "Remove this suggestion?" / "This match won't show here anymore. You can still find the ride on the Ride board." / "Remove" / "Cancel" → `useDismissSuggestion` mutation → optimistic removal + React Query invalidation. CTA button click still no-op (Slice 5 wires action). Reviewer matrix walks every iOS element in `SuggestedRidesHero.embedded` mode AND every iOS string in the dismiss alert grepped char-for-char.
+
+- **iOS reference:** [`SuggestedRidesHero.swift`](ios/Tago/Features/Suggestions/SuggestedRidesHero.swift), [`RiderHomePage+Sections.swift`](ios/Tago/Features/RiderHome/RiderHomePage+Sections.swift)
+- **Web files to touch:** `src/components/ride/RiderHomePage.tsx`, `src/components/ride/SuggestedRidesCard.tsx` (new — the wrapper hero), `src/test/ride/SuggestedRidesCard.test.tsx` (new)
+- **Server contract:** `GET /api/suggestions/top?side=rider` + `POST /api/suggestions/:id/dismiss` via Slice 1 hooks.
+- [ ] Rider home renders the card above-the-fold (placement matches `RiderHomePage+Sections.swift` ordering)
+- [ ] Empty-state copy + icon match iOS verbatim (grep iOS source for each string)
+- [ ] Dismiss confirm dialog copy matches iOS verbatim including apostrophes + 'Ride board' capitalization
+- [ ] Optimistic removal + React Query invalidation on dismiss success
+- [ ] Map-first UX preserved on DriverHomePage (no card on driver home in this slice)
+- [ ] Vitest covers: loaded with rows, empty state, dismiss success, dismiss with 403/404
+- [ ] Reviewer matrix: every iOS element in `SuggestedRidesHero` embedded mode walked
+- [ ] All three CI gates green
+- **Dependencies:** Slice 1, Slice 3
+
+#### Slice 5 — Suggestion CTA → lazy projection → RideBoardConfirmSheet wire-through
+
+Make the 'Request this ride' / 'Offer this ride' CTA functional on both `SuggestedRideCard` (Slice 3) and (later) `SuggestionDetailSheet` (Slice 6). Port iOS `SuggestedRidesHero.openConfirmSheet` flow: **(1)** resolveScheduleID — if other-side source has `schedule_id`, use it; if routine, call `projectRoutine({ routine_id, trip_date })` from Slice 1 api helper and use returned `schedule_id`; **(2)** fetch ride via `fetchScheduleById(id)` (Slice 1 helper, hits `/api/schedule/by-id/:id` — **verified path**); **(3)** present existing `src/components/schedule/RideBoardConfirmSheet.tsx` with the resolved ride. Error copy VERBATIM from iOS `SuggestedRidesHero.swift` lines 252/254: "This match isn't ready for an action yet — try again in a minute." (`noActionableSource`) and "Couldn't open this match. Try again." (generic). On `RideBoardConfirmSheet` success, invalidate `['suggestions']`. When invoked from `SuggestionDetailSheet` (Slice 6), implement the iOS 350ms single-presentation-host delay before opening `RideBoardConfirmSheet` — document the workaround clearly.
+
+- **iOS reference:** [`SuggestedRidesHero.swift`](ios/Tago/Features/Suggestions/SuggestedRidesHero.swift), [`ProjectRoutineEndpoint.swift`](ios/Tago/Core/Networking/Endpoints/ProjectRoutineEndpoint.swift)
+- **Web files to touch:** `src/components/ride/SuggestedRideCard.tsx` (extend), `src/components/ride/SuggestedRidesCard.tsx` (extend), `src/hooks/useSuggestionAction.ts` (new), `src/test/ride/SuggestedRideAction.test.tsx` (new)
+- **Server contract:** Reuses Slice 1 helpers `projectRoutine` + `fetchScheduleById`. NO new endpoints. Paths: `POST /api/schedule/project-routine`, `GET /api/schedule/by-id/:id` (**NOT** `/api/schedule/:id` — verified `server/routes/schedule.ts:712-786`).
+- [ ] Schedule-source suggestion: CTA opens `RideBoardConfirmSheet` immediately
+- [ ] Routine-source suggestion: CTA projects routine then opens `RideBoardConfirmSheet` with projected ride
+- [ ] Error toasts match iOS copy verbatim (apostrophes + em-dash)
+- [ ] On `RideBoardConfirmSheet` success, suggestions list refetches
+- [ ] 350ms presentation-host delay implemented when invoked from a modal (for Slice 6 reuse)
+- [ ] Vitest covers: schedule path, routine projection path, `noActionableSource` error, generic error
+- [ ] Reviewer matrix walks `openConfirmSheet` flow end-to-end against iOS lines 246-256
+- [ ] All three CI gates green
+- **Dependencies:** Slice 1, Slice 3, Slice 4
+
+#### Slice 6 — SuggestionDetailSheet (sheet shell + 5-section layout + transit + match signals)
+
+Port iOS `SuggestionDetailSheet.swift` (649 lines) to a web BottomSheet-based modal. Open on tap of card body (Slice 3 stub becomes live here). Navigation title 'Suggested ride' + Close button in top-right. **SIX sections** top-to-bottom: **(1)** `tripDateBanner` — pill 'Suggested for [Today/Tomorrow/weekday]'; **(2)** `classificationBanner` — SKIPPED on direct routes (iOS line 25-27 guard); for `transit_dropoff`: "Driver drops the rider at [station]; rider takes transit the rest of the way"; `transit_pickup`: "Rider takes transit to [station]; driver picks up there" (enumerate both verbatim from iOS); **(3)** `otherUserCard` — tappable, 56x56 avatar + name + rating + chevron, navigates to `/profile/:id` (web-native upgrade vs iOS `UserProfilePreviewSheet` modal — deferred per open question); **(4)** `tripCards` — TWO cards: `tripCard(side:.their)` + `tripCard(side:.yours)`, each with `SourceSubtitle` ('From your posted ride' / 'From their posted ride' / 'From your saved routine: [name]' falling back to 'From your saved routine' when `routeName` empty), From/To/date/time rows handling 'Anytime' for `time_flexible` and per-leg reverse-geocode-on-demand with silent fallback to '—' for legacy pre-102 rows with null `origin_address`/`dest_address`; **(5)** `transitBreakdownCard` — only when classification != direct, per-leg title/subtitle rows (e.g. title 'Driver' / subtitle 'X min in the car'); **(6)** `matchSignalsCard` 'Why this match' (origin dist, dest dist, bearing diff, time diff, relevance) — ship production-visible per iOS unless Tarun flags. Bottom CTA — uses `Tokens.color.primary` (brand blue) for **BOTH sides** per iOS line 52, NOT side-aware; calls `useSuggestionAction` from Slice 5. Light haptic on present (web vibration API best-effort).
+
+- **iOS reference:** [`SuggestionDetailSheet.swift`](ios/Tago/Features/Suggestions/SuggestionDetailSheet.swift), [`SuggestedRideCard.swift`](ios/Tago/Features/Suggestions/SuggestedRideCard.swift)
+- **Web files to touch:** `src/components/ride/SuggestionDetailSheet.tsx` (new), `src/components/ride/SuggestedRideCard.tsx` (wire body onClick), `src/test/ride/SuggestionDetailSheet.test.tsx` (new)
+- **Server contract:** No new endpoints. Consumes `Suggestion` type from Slice 1; reuses Slice 5 action handler. Profile-card nav uses existing `/profile/:id` route.
+- [ ] All 6 section types render correctly with fixtures for direct + transit_dropoff + transit_pickup
+- [ ] Classification banner skipped on direct (matches iOS line 25-27 guard)
+- [ ] Classification explainer copy verbatim from iOS for BOTH transit variants (grep iOS for each string)
+- [ ] 'Anytime' time labels render correctly (`time_flexible` respected)
+- [ ] Per-leg reverse-geocode-on-demand with silent '—' fallback for legacy pre-102 routine rows
+- [ ] `SourceSubtitle` handles all 3 variants + empty-`routeName` fallback
+- [ ] Profile card chevron navigates to `/profile/:id`
+- [ ] Bottom CTA uses brand-primary blue regardless of side (NOT side-aware — matches iOS line 52)
+- [ ] Bottom CTA shares Slice 5 `useSuggestionAction` handler
+- [ ] 350ms delay applied when transitioning to `RideBoardConfirmSheet`
+- [ ] Reviewer matrix walks every `SuggestionDetailSheet` section + every edge state + every user-visible string char-for-char
+- [ ] All three CI gates green
+- **Dependencies:** Slice 1, Slice 3, Slice 4, Slice 5
+- **Contingency:** ~649 iOS source lines + 6 sections may push past the slice budget. Plan keeps it as one slice (per shape-critic feedback that splitting it costs more in test-surface duplication). If the slice grows past ~1,000 LoC during implementation, split into 6a (shell + banners + trip cards) and 6b (transit breakdown + match signals + profile card).
+
+### Open questions (need Tarun's call before or during Sprint 8)
+
+1. **Driver-side floating SuggestedRidesHero** (`.floating` mode on `DriverHomePage`) — ship in Sprint 8 or defer to Sprint 9? **Default plan: defer** since driver discovery already happens via push + ride board. Confirm OK.
+2. **Suggested tab on RideBoard** — both iOS and web do NOT wire it (endpoint exists but is orphaned on iOS too). Should web ship it FIRST as a web-native upgrade, or wait for iOS per the 'iOS is canonical' rule? **Default: wait for iOS.**
+3. **ProfilePage routine edit button** — iOS supports edit from both `ProfileRoutinesSection` AND `RoutinesSheet`; web only from RideBoard sheet. Slice 2 does NOT add ProfilePage edit. Confirm OK to defer to Sprint 9.
+4. **`UserProfilePreviewSheet`** — iOS opens modal preview when tapping profile card in `SuggestionDetailSheet`. Slice 6 navigates to `/profile/:id` as web-native upgrade. Confirm OK, or want modal preview built first?
+5. **Match signals 'Why this match' debug card** — iOS ships it production-visible to all users. **Default: match.** Want to hide behind `?debug=1` query flag instead?
+6. **Feature flag** — ship Slices 1–6 behind `VITE_FEATURE_SUGGESTIONS=true` for staged rollout, or land directly? **Default: land directly** since iOS has been in production with these endpoints.
+7. **Migration of in-flight rider users** — any rider whose iOS app dismissed/acted on suggestions will see consistent state on web after Slice 4 (server is source of truth). No backfill needed. Confirm understanding.
+8. **RoutinesSheet sync badge** ("X routine(s) synced to the board") — completeness critic flagged it as iOS UI. Is this a parity gap I should add to Slice 2's matrix, or is it already shipping on web? Quick audit needed at Slice 2 start.
+
+### Verifier deltas applied to the draft plan
+
+Folded in: (1) Completeness critic's misses — navigationTitle + Close button, SourceSubtitle copy variants with empty-name fallback, transit row title/subtitle format, haptics, 'New' rating path, missing-name 'Driver'/'Rider' fallback, destination first-comma extraction, classification explainer verbatim for both transit variants, 350ms single-presentation-host workaround, transit-symbol map enumeration — all now in slice DoDs or cross-cutting notes. (2) Server-contract verifier's correction — endpoint is `/api/schedule/by-id/:id` NOT `/api/schedule/:id` (fixed in Slice 1 + 5 server contracts and added a verified-path note). (3) Server-contract verifier's misses — `scan-routine` wired via fire-and-forget in `riderRoutines.ts` POST (documented in Slice 1) and `purge-routine` call on routine DELETE (added to Slice 1 audit step). (4) Headline kept 'max 3' (server slices to 3 per source — iOS hero comment 'up to 10' is forward-looking). (5) `SettingsPage.tsx` is the correct target (not `NotificationsPage` which is the inbox feed). (6) `SchedulePage` accepts `initialMode` prop so navigation passes state not path. (7) Shape critic's bundle suggestion — merged the `push_suggestions` toggle INTO Slice 2 with the mode badge + Add-Routine pre-select, giving one 'small parity corrections' slice with a 3-section reviewer matrix. This brings the sprint to **6 slices** (under the 7 cap). (8) FCM foreground handler for `suggested_match` added to Slice 1 per shape critic's miss.
+
+Did NOT fold in: shape critic's suggestion to merge Slices 3+4 — kept separate because Slice 3's test surface (presentational fixtures for all classification + role + rating + name + time variants) is heavyweight enough on its own that merging would balloon Slice 4 past the cap; Slice 3 is explicitly labeled 'foundation only — no user value until Slice 4'. Did NOT split Slice 6 yet — kept as one slice with a contingency note to split into 6a/6b if it exceeds ~1,000 LoC during implementation. Did NOT add a separate slice for the `ride_suggestions` table row type — read-path goes through enriched server payload only, so the row type is unneeded.
+
+### Sprint 8 summary
+
+| Status | Count |
+|---|---|
+| Not started | 6 slices |
+| In progress | 0 |
+| Done (awaiting QA) | 0 |
+| Done (verified + pushed) | 0 |
+
+### Current focus
+
+Awaiting Tarun's "go" on Slice 1 (Suggestion foundation: types + hooks + API helpers + FCM handler). No code changes have shipped from this audit yet.
+
+### Next action
+
+If Tarun greenlights Slice 1: read [`src/types/database.ts`](src/types/database.ts), [`src/hooks/useCaregivers.ts`](src/hooks/useCaregivers.ts) (as the React Query pattern reference), [`src/lib/fcm.ts`](src/lib/fcm.ts), and the full [`server/routes/suggestions.ts`](server/routes/suggestions.ts) + [`server/routes/riderRoutines.ts`](server/routes/riderRoutines.ts) end-to-end before writing any TypeScript. Confirm `riderRoutines.ts` DELETE handler's `purge-routine` parity at audit step before any UI work later.
+
+### Plain English
+
+iOS has had a "Suggested rides" feed on the rider home screen for a while now. When the matching engine finds a ride that fits the rider's saved routine or another rider's posted ride, iOS shows it in a card with a photo, name, time, distance, fare, and a button to "Request this ride" (or "Offer this ride" if it's a driver looking at it). The rider can tap an X to dismiss anything they don't want, or tap the card to see all the details before deciding. **The web app has none of this.** A web rider gets exactly zero suggestions, even when the engine is generating them server-side. They miss every match the engine surfaces unless they manually browse the Ride Board.
+
+There are also three smaller things web should fix at the same time: (1) iOS shows a little "Driver" or "Rider" tag on each routine row so users know which kind of routine they're looking at — web doesn't. (2) When a rider taps "Add Routine" on web, it pre-selects "Driver" mode even for users who aren't drivers — iOS picks the right one. (3) iOS has a notification toggle "Suggested rides" in settings — web doesn't expose it (the database column exists, the server returns it, the UI just doesn't show it).
+
+The plan is six slices. Slice 1 is foundation (types + hooks + helpers, no UI). Slice 2 bundles the three small fixes above. Slice 3 builds the visual card. Slice 4 mounts the card on the rider home with the dismiss flow — this is when the rider-facing gap closes. Slice 5 wires the "Request this ride" button so it actually opens the matched ride. Slice 6 builds the full detail sheet for the deeper-dive view. Each slice ships independently with a reviewer matrix and waits for the user's explicit "go" before the next one starts. The biggest single missing piece is **rider discovery** — Slice 4 closes it.
 
 ---
 
