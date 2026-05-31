@@ -34,6 +34,12 @@ export const SERVICES = [
   'gmaps_directions',
   'gmaps_geocoding',
   'stripe',
+  // Gemini services — added 2026-05-30 for Phase 6 quota guardrails.
+  // Each entry maps 1:1 to a Gemini model ID. The marketing-panel
+  // helper recordGeminiCall() maps model → service token.
+  'gemini_flash',
+  'gemini_pro',
+  'gemini_flash_image',
 ] as const
 
 export type Service = (typeof SERVICES)[number]
@@ -98,6 +104,57 @@ export const API_QUOTAS: Record<Service, QuotaConfig> = {
     monthly: null,
     notes: 'No quota; rate-limited at 100 read / 100 write per second.',
   },
+  gemini_flash: {
+    label: 'Gemini 2.5 Flash',
+    daily: 1500,
+    monthly: null,
+    notes: 'Story batches + poster copy. Free-tier 1500 req/day. Quota resets at UTC midnight.',
+  },
+  gemini_pro: {
+    label: 'Gemini 2.5 Pro',
+    daily: 50,
+    monthly: null,
+    notes: 'Advisor chat + calendar refresh-AI. Free-tier 50 req/day (low). Advisor auto-falls back to Flash on 429.',
+  },
+  gemini_flash_image: {
+    label: 'Gemini 2.5 Flash Image (Nano Banana)',
+    daily: 100,
+    monthly: null,
+    notes: 'Poster image generation. Free-tier 100 req/day.',
+  },
+}
+
+/**
+ * Map a Gemini model ID to the service token used in api_usage_daily.
+ * Used by the marketing-panel generators to instrument each call.
+ * Returns null for unknown model IDs (caller skips recording).
+ */
+export type GeminiModel =
+  | 'gemini-2.5-flash'
+  | 'gemini-2.5-pro'
+  | 'gemini-2.5-flash-image'
+
+export function geminiModelToService(model: string): Service | null {
+  switch (model) {
+    case 'gemini-2.5-flash':       return 'gemini_flash'
+    case 'gemini-2.5-pro':         return 'gemini_pro'
+    case 'gemini-2.5-flash-image': return 'gemini_flash_image'
+    default:                       return null
+  }
+}
+
+/**
+ * Convenience: record a single Gemini call by model ID. Wraps the
+ * common pattern of mapping model→service then incrementing.
+ * Non-blocking, fail-soft (delegates to recordApiCall).
+ */
+export async function recordGeminiCall(model: string, count: number = 1): Promise<void> {
+  const service = geminiModelToService(model)
+  if (!service) {
+    console.warn(`[apiUsage] recordGeminiCall: unknown model "${model}" — skipping`)
+    return
+  }
+  await recordApiCall(service, count)
 }
 
 /**

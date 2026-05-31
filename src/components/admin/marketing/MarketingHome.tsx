@@ -11,6 +11,7 @@ import { Link } from 'react-router-dom'
 import { useMarketingConfig, useCurrentMarketingTheme } from '@/hooks/useMarketingConfig'
 import { useMarketingEvents } from '@/hooks/useMarketingEvents'
 import { PRICING_LAST_VERIFIED, PRICING_SOURCE_URL } from '@/lib/marketing/costs'
+import { GeminiQuotaBanner } from './_shared'
 
 export default function MarketingHome() {
   const cfg = useMarketingConfig()
@@ -41,6 +42,8 @@ export default function MarketingHome() {
           on {PRICING_LAST_VERIFIED}.
         </p>
       </header>
+
+      <GeminiQuotaBanner />
 
       {reminders.length > 0 && (
         <Link

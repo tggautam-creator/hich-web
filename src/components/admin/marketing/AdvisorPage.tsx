@@ -16,7 +16,7 @@ import {
   type AdvisorThread,
 } from '@/hooks/useMarketingAdvisor'
 import { costTagline } from '@/lib/marketing/costs'
-import { NoAiCostBadge } from './_shared'
+import { NoAiCostBadge, GeminiQuotaBanner, useQuotaGate } from './_shared'
 
 export default function AdvisorPage() {
   const threadsQuery = useAdvisorThreads()
@@ -38,7 +38,9 @@ export default function AdvisorPage() {
   }
 
   return (
-    <div data-testid="admin-marketing-advisor" className="h-[calc(100vh-180px)] flex gap-4">
+    <div data-testid="admin-marketing-advisor" className="flex h-[calc(100vh-180px)] flex-col gap-3">
+      <GeminiQuotaBanner />
+      <div className="flex flex-1 gap-4 min-h-0">
       {/* Sidebar */}
       <aside className="w-64 shrink-0 flex flex-col rounded-2xl border border-border bg-white overflow-hidden">
         <header className="px-3 py-2 border-b border-border flex items-center justify-between gap-2">
@@ -110,6 +112,7 @@ export default function AdvisorPage() {
           </div>
         )}
       </div>
+      </div>
     </div>
   )
 }
@@ -173,6 +176,7 @@ function ChatPanel({ threadId }: { threadId: string }) {
   const sendMut = useSendAdvisorMessage(threadId)
   const [draft, setDraft] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
+  const sendGate = useQuotaGate('advisor-message')
 
   // Auto-scroll to bottom whenever messages change.
   useEffect(() => {
@@ -184,6 +188,11 @@ function ChatPanel({ threadId }: { threadId: string }) {
   async function handleSend() {
     const content = draft.trim()
     if (content.length < 1 || sendMut.isPending) return
+    // Note: the advisor falls back to Flash automatically when Pro
+    // 429s on the server, so we do NOT call gate.run() here — a
+    // Pro-exhausted send is not actually blocked, and forcing a
+    // dismissable alert would be annoying. Instead the gate's
+    // status is surfaced inline in the footer.
     setDraft('')
     try {
       await sendMut.mutateAsync(content)
@@ -265,7 +274,12 @@ function ChatPanel({ threadId }: { threadId: string }) {
         </div>
         <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-text-secondary">
           <span title="Cost source: src/lib/marketing/costs.ts. Pro→Flash fallback on quota.">
-            {costTagline('advisor-message')} · falls back to Flash on quota
+            {costTagline('advisor-message')} ·{' '}
+            {sendGate.quota?.status === 'exhausted'
+              ? <span className="text-warning font-semibold">Pro exhausted — using Flash fallback</span>
+              : sendGate.quota?.status === 'near'
+                ? <span className="text-warning font-semibold">Pro near limit ({sendGate.quota.remaining} left)</span>
+                : 'falls back to Flash on quota'}
           </span>
           <span>{draft.length}/4000</span>
         </div>

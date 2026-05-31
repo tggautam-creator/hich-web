@@ -16,6 +16,7 @@ import { resolve } from 'path'
 import { supabaseAdmin } from '../supabaseAdmin.ts'
 import { getServerEnv } from '../../env.ts'
 import { humanizeGeminiError } from './gemini.ts'
+import { recordGeminiCall } from '../apiUsage.ts'
 
 const IMAGE_MODEL = 'gemini-2.5-flash-image'
 const BUCKET = 'marketing-posters'
@@ -114,6 +115,7 @@ async function _generate(itemId: string): Promise<ImageGenResult> {
         responseModalities: ['Image'] as never,
       },
     })
+    void recordGeminiCall(IMAGE_MODEL).catch(() => undefined)
 
     const parts = response.candidates?.[0]?.content?.parts ?? []
     let foundBase64: string | null = null

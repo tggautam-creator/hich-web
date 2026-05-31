@@ -28,7 +28,7 @@ import {
   type PosterItemStatus,
 } from '@/hooks/useMarketingPosters'
 import { useMarketingEvents, type MarketingEvent } from '@/hooks/useMarketingEvents'
-import { StatusPill, CollapsibleBatchHeader, CopyableField, CostBadge, CostFooterNote } from './_shared'
+import { StatusPill, CollapsibleBatchHeader, CopyableField, CostBadge, CostFooterNote, GeminiQuotaBanner, useQuotaGate } from './_shared'
 import { costDisclosure } from '@/lib/marketing/costs'
 
 const LOGO_SRC = '/logo-transparent.png'
@@ -60,6 +60,8 @@ export default function PostersPage() {
           Gemini/ChatGPT or send to the API directly.
         </p>
       </header>
+
+      <GeminiQuotaBanner />
 
       <GeneratorForm onGenerate={(args) => generate.mutate(args)} isPending={generate.isPending} />
 
@@ -148,13 +150,17 @@ function GeneratorForm({
     setFounderNote(context.slice(0, 500))
   }
 
+  const gate = useQuotaGate('poster-batch')
+
   function handleSubmit() {
-    onGenerate({
-      format,
-      audience,
-      founder_note: founderNote.trim() || undefined,
-      event_tag: eventTag.trim() || undefined,
-      feature_spotlight: featureSpotlight.trim() || undefined,
+    gate.run(() => {
+      onGenerate({
+        format,
+        audience,
+        founder_note: founderNote.trim() || undefined,
+        event_tag: eventTag.trim() || undefined,
+        feature_spotlight: featureSpotlight.trim() || undefined,
+      })
     })
   }
 
@@ -274,10 +280,11 @@ function GeneratorForm({
           data-testid="generate-poster"
           type="button"
           onClick={handleSubmit}
-          disabled={isPending}
+          disabled={isPending || gate.fullyDisabled}
+          title={gate.fullyDisabled ? 'Gemini Flash quota exhausted today' : undefined}
           className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/90 disabled:opacity-50"
         >
-          {isPending ? 'Generating…' : 'Generate poster'}
+          {isPending ? 'Generating…' : gate.fullyDisabled ? 'Quota exhausted' : 'Generate poster'}
         </button>
       </div>
       <CostFooterNote />
@@ -387,28 +394,27 @@ function PosterCard({ item }: { item: PosterItem }) {
   const imageGen = useGeneratePosterImage()
   const [showPrompt, setShowPrompt] = useState(false)
   const [imgErrored, setImgErrored] = useState(false)
+  const imageGate = useQuotaGate('poster-image-gen')
 
   function setStatus(next: PosterItemStatus) {
     const target: PosterItemStatus = item.status === next ? 'pending' : next
     update.mutate({ itemId: item.id, status: target })
   }
 
+  // Empty-state + regen both pass costDisclosure to the gate so a
+  // single combined confirm shows even when the quota is in 'near'
+  // state (gate merges the two messages — no back-to-back dialogs).
   function handleGenerateImage() {
-    // Empty-state path also confirms now so the friction is symmetric
-    // with regenerate (audit flagged the asymmetry as the lowest-cost
-    // way to surprise the founder with a bill).
-    const ok = window.confirm(
-      `Generate an image for this poster?\n\n${costDisclosure('poster-image-gen')}\n\nContinue?`
+    imageGate.run(
+      () => imageGen.mutate(item.id),
+      { confirmMessage: `Generate an image for this poster?\n\n${costDisclosure('poster-image-gen')}` },
     )
-    if (!ok) return
-    imageGen.mutate(item.id)
   }
   function handleRegenerate() {
-    const ok = window.confirm(
-      `Regenerate this image?\n\n${costDisclosure('poster-image-gen')}\n\nContinue?`
+    imageGate.run(
+      () => imageGen.mutate(item.id),
+      { confirmMessage: `Regenerate this image?\n\n${costDisclosure('poster-image-gen')}` },
     )
-    if (!ok) return
-    imageGen.mutate(item.id)
   }
 
   const previewLabel = item.headline.slice(0, 40)
@@ -479,10 +485,11 @@ function PosterCard({ item }: { item: PosterItem }) {
                   data-testid={`regenerate-image-${item.id}`}
                   type="button"
                   onClick={handleRegenerate}
-                  disabled={isGeneratingImage}
+                  disabled={isGeneratingImage || imageGate.fullyDisabled}
+                  title={imageGate.fullyDisabled ? 'Gemini Flash Image quota exhausted today' : undefined}
                   className="rounded-md border border-primary/40 bg-primary/5 px-2 py-1 text-[10px] font-semibold text-primary hover:bg-primary/10 disabled:opacity-50"
                 >
-                  {isGeneratingImage ? 'Regenerating…' : 'Regenerate'}
+                  {isGeneratingImage ? 'Regenerating…' : imageGate.fullyDisabled ? 'Quota exhausted' : 'Regenerate'}
                 </button>
               </div>
             </div>
@@ -500,10 +507,11 @@ function PosterCard({ item }: { item: PosterItem }) {
                 data-testid={`generate-image-${item.id}`}
                 type="button"
                 onClick={handleGenerateImage}
-                disabled={isGeneratingImage}
+                disabled={isGeneratingImage || imageGate.fullyDisabled}
+                title={imageGate.fullyDisabled ? 'Gemini Flash Image quota exhausted today' : undefined}
                 className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white hover:bg-primary/90 disabled:opacity-50"
               >
-                {isGeneratingImage ? 'Generating image…' : 'Generate image with Gemini'}
+                {isGeneratingImage ? 'Generating image…' : imageGate.fullyDisabled ? 'Quota exhausted' : 'Generate image with Gemini'}
               </button>
             </div>
           </div>

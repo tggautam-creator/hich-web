@@ -86,6 +86,11 @@ export function useSendAdvisorMessage(threadId: string | null) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'marketing', 'advisor', 'thread', threadId] })
       void qc.invalidateQueries({ queryKey: ['admin', 'marketing', 'advisor', 'threads'] })
+      // Refresh Gemini quota banner. One advisor turn can spend
+      // multiple Gemini calls (tool-use loop iterations) — the
+      // server counts each, and we refetch so the banner reflects
+      // them within seconds instead of after the 60s poll.
+      void qc.invalidateQueries({ queryKey: ['admin', 'api-usage'] })
     },
   })
 }

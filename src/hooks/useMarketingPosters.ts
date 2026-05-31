@@ -83,6 +83,8 @@ export function useGeneratePosterBatch() {
       adminPost<GenerateResponse>('/marketing/posters/generate', args),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'marketing', 'posters'] })
+      // Refresh Gemini quota banner (Flash call counted).
+      void qc.invalidateQueries({ queryKey: ['admin', 'api-usage'] })
     },
   })
 }
@@ -116,6 +118,8 @@ export function useGeneratePosterImage() {
       adminPost<GenerateImageResponse>(`/marketing/posters/items/${itemId}/generate-image`, {}),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'marketing', 'posters'] })
+      // Refresh Gemini quota banner (Flash Image call counted).
+      void qc.invalidateQueries({ queryKey: ['admin', 'api-usage'] })
     },
   })
 }

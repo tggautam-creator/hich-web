@@ -74,6 +74,9 @@ export function useGenerateStoryBatch() {
       adminPost<GenerateResponse>('/marketing/stories/generate', { asking_for: askingFor }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'marketing', 'stories'] })
+      // Refresh Gemini quota banner — the call we just made is on
+      // Google's books even if our 60s snapshot hasn't refetched yet.
+      void qc.invalidateQueries({ queryKey: ['admin', 'api-usage'] })
     },
   })
 }

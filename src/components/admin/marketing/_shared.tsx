@@ -225,6 +225,11 @@ import {
   PRICING_SOURCE_URL,
   type CostFeature,
 } from '@/lib/marketing/costs'
+import {
+  useGeminiQuota,
+  quotaServiceForFeature,
+  type GeminiServiceQuota,
+} from '@/hooks/useGeminiQuota'
 
 interface CostBadgeProps {
   feature: CostFeature
@@ -264,6 +269,180 @@ export function NoAiCostBadge({ testid }: NoAiCostBadgeProps) {
       {NO_AI_COST_LABEL}
     </span>
   )
+}
+
+// ── GeminiQuotaBanner ─────────────────────────────────────────────
+//
+// Page-level banner showing today's Gemini usage vs free-tier
+// ceilings, per model. Renders inline on every marketing page so the
+// founder knows where they stand before clicking Generate. Refreshes
+// every 60s via useAdminApiUsage().
+
+export function GeminiQuotaBanner() {
+  const { byService, anyExhausted, anyNear, query } = useGeminiQuota()
+
+  if (query.isLoading) {
+    return (
+      <div className="rounded-lg border border-border bg-surface px-3 py-2 text-[11px] text-text-secondary">
+        Loading Gemini quota…
+      </div>
+    )
+  }
+  if (query.error) return null
+
+  const tone = anyExhausted
+    ? 'border-danger/40 bg-danger/5'
+    : anyNear
+      ? 'border-warning/40 bg-warning/5'
+      : 'border-border bg-surface'
+
+  return (
+    <section
+      data-testid="gemini-quota-banner"
+      className={`rounded-lg border px-3 py-2 text-[11px] ${tone}`}
+    >
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <span className="font-semibold text-text-primary">
+          Today's Gemini quota
+        </span>
+        <QuotaPill q={byService.gemini_flash} />
+        <QuotaPill q={byService.gemini_pro} />
+        <QuotaPill q={byService.gemini_flash_image} />
+        <span className="ml-auto text-text-secondary">
+          Resets at UTC midnight
+        </span>
+      </div>
+      {anyExhausted && (
+        <p
+          data-testid="gemini-quota-exhausted-msg"
+          className="mt-1 text-danger"
+        >
+          One or more Gemini models hit their free-tier ceiling today.
+          Buttons that use them are disabled until UTC midnight, or
+          enable billing on the GCP project for higher limits.
+        </p>
+      )}
+      {!anyExhausted && anyNear && (
+        <p
+          data-testid="gemini-quota-near-msg"
+          className="mt-1 text-warning"
+        >
+          One or more Gemini models are within 3 calls of today's free-
+          tier ceiling. Generate buttons will ask for confirmation.
+        </p>
+      )}
+    </section>
+  )
+}
+
+function QuotaPill({ q }: { q: GeminiServiceQuota }) {
+  if (q.daily_quota == null) {
+    return (
+      <span className="text-text-secondary">
+        {q.label}: <span className="text-text-primary">{q.today.toLocaleString()}</span>
+      </span>
+    )
+  }
+  const tone = q.status === 'exhausted'
+    ? 'text-danger font-semibold'
+    : q.status === 'near'
+      ? 'text-warning font-semibold'
+      : 'text-text-primary'
+  return (
+    <span
+      data-testid={`gemini-quota-pill-${q.service}`}
+      className="text-text-secondary"
+    >
+      {q.label}:{' '}
+      <span className={tone}>
+        {q.today.toLocaleString()}/{q.daily_quota.toLocaleString()}
+      </span>
+      {q.remaining != null && q.status !== 'ok' && (
+        <span className="text-text-secondary"> ({q.remaining} left)</span>
+      )}
+    </span>
+  )
+}
+
+/**
+ * Returns the disabled state + click-wrapping helper for a feature's
+ * Generate button. Single source of truth for the soft-disable logic
+ * so every page applies it the same way.
+ *
+ * Usage:
+ *   const gate = useQuotaGate('poster-batch')
+ *   <button
+ *     disabled={isPending || gate.fullyDisabled}
+ *     onClick={() => gate.run(() => mutation.mutate(args), {
+ *       confirmMessage: 'Generate poster?\n\n' + costDisclosure(...)
+ *     })}
+ *   >
+ *
+ * The confirmMessage option is the standard way to add cost-
+ * disclosure friction. The gate MERGES it with the near-quota
+ * warning when both apply, so the founder never sees back-to-back
+ * native confirms.
+ */
+export interface QuotaGateRunOptions {
+  /**
+   * Optional confirmation text. When provided, always shown to the
+   * user before the handler fires (even when the gate's own status
+   * is 'ok'). Used by buttons that always want a friction step
+   * (e.g. paid image gen). If the gate is ALSO in 'near' state, the
+   * two messages are merged into a single confirm dialog.
+   */
+  confirmMessage?: string
+}
+
+export interface QuotaGate {
+  /** Hard-disable: the model's daily quota is fully exhausted. */
+  fullyDisabled: boolean
+  /** Warn-disable: 'near' state — button still works but click() asks
+   * for a confirm. */
+  needsConfirm: boolean
+  /** Quota row for the underlying model, or null when no gate applies
+   * (e.g. unknown feature, missing data). */
+  quota: GeminiServiceQuota | null
+  /**
+   * Wrap a button's click handler. If fullyDisabled → no-op + alert.
+   * If needsConfirm or opts.confirmMessage → window.confirm with the
+   * combined message. Else runs the handler directly. The caller
+   * passes a thunk that fires the actual mutation.
+   */
+  run: (handler: () => void, opts?: QuotaGateRunOptions) => void
+}
+
+// eslint-disable-next-line react-refresh/only-export-components -- gate hook colocated with the badges that consume it
+export function useQuotaGate(feature: CostFeature): QuotaGate {
+  const svcKey = quotaServiceForFeature(feature)
+  const { byService } = useGeminiQuota()
+  const quota: GeminiServiceQuota | null = svcKey ? byService[svcKey] : null
+
+  const fullyDisabled = quota?.status === 'exhausted'
+  const needsConfirm = quota?.status === 'near'
+
+  function run(handler: () => void, opts?: QuotaGateRunOptions) {
+    if (fullyDisabled) {
+      window.alert(
+        `${quota?.label ?? 'This Gemini model'} hit its daily quota of ${quota?.daily_quota ?? '?'} calls today. Wait for UTC midnight or enable billing.`,
+      )
+      return
+    }
+    const parts: string[] = []
+    if (needsConfirm) {
+      parts.push(
+        `Only ${quota?.remaining ?? '?'} ${quota?.label ?? 'Gemini'} calls left today before quota exhaustion.`,
+      )
+    }
+    if (opts?.confirmMessage) parts.push(opts.confirmMessage)
+    if (parts.length > 0) {
+      const ok = window.confirm(`${parts.join('\n\n')}\n\nContinue?`)
+      if (!ok) return
+    }
+    handler()
+  }
+
+  return { fullyDisabled, needsConfirm, quota, run }
 }
 
 /** Footer disclaimer for the marketing-panel pages. */

@@ -20,6 +20,7 @@
  */
 import { GoogleGenAI } from '@google/genai'
 import { getServerEnv } from '../../env.ts'
+import { recordGeminiCall } from '../apiUsage.ts'
 
 let _client: GoogleGenAI | null = null
 
@@ -163,6 +164,12 @@ export async function geminiGenerate(args: GenerateArgs): Promise<GenerateResult
         : {}),
     },
   })
+  // Quota counter increment — fire-and-forget. We record AFTER the
+  // call resolves successfully so a 429 / network failure doesn't
+  // inflate the counter (the spent quota tick happened on Google's
+  // side but our counter would otherwise double-count vs reality on
+  // retries). The .catch keeps the promise chain clean.
+  void recordGeminiCall(model).catch(() => undefined)
 
   const text = response.text ?? ''
   const usage = response.usageMetadata
@@ -231,6 +238,7 @@ export async function geminiChat(args: {
       maxOutputTokens: 2048,
     },
   })
+  void recordGeminiCall(model).catch(() => undefined)
 
   const text = response.text ?? ''
   const usage = response.usageMetadata
@@ -322,6 +330,9 @@ export async function geminiChatWithTools(args: {
         automaticFunctionCalling: { disable: true } as never,
       },
     })
+    // Each tool-loop iteration is a separately-billed call. Record
+    // it as the same model — every iteration is one API hit.
+    void recordGeminiCall(model).catch(() => undefined)
 
     const usage = response.usageMetadata
     totalInput += usage?.promptTokenCount ?? 0
@@ -394,6 +405,7 @@ export async function geminiChatWithTools(args: {
           maxOutputTokens: 2048,
         },
       })
+      void recordGeminiCall(model).catch(() => undefined)
       const usage = closeout.usageMetadata
       totalInput += usage?.promptTokenCount ?? 0
       totalOutput += usage?.candidatesTokenCount ?? 0

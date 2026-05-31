@@ -33,7 +33,9 @@ import {
   CollapsibleBatchHeader,
   CostBadge,
   CostFooterNote,
+  GeminiQuotaBanner,
   onEnterOrSpace,
+  useQuotaGate,
   type AudienceVariant,
 } from './_shared'
 
@@ -48,6 +50,12 @@ export default function StoriesPage() {
   const inFlight: AudienceVariant | null = generate.isPending
     ? ((generate.variables ?? 'both') as AudienceVariant)
     : null
+  // Single-audience + both-batch both gate on Flash quota.
+  const flashGate = useQuotaGate('story-batch-both')
+
+  function dispatch(variant: AskingForFilter) {
+    flashGate.run(() => generate.mutate(variant))
+  }
 
   return (
     <div data-testid="admin-marketing-stories" className="space-y-6">
@@ -66,30 +74,30 @@ export default function StoriesPage() {
           <div className="flex items-center gap-2">
             <GenerateButton
               testid="generate-stories-riders"
-              label="Ask riders"
+              label={flashGate.fullyDisabled ? 'Quota exhausted' : 'Ask riders'}
               tone="rider"
               variant="rider"
               inFlight={inFlight}
-              disabled={generate.isPending}
-              onClick={() => generate.mutate('rider')}
+              disabled={generate.isPending || flashGate.fullyDisabled}
+              onClick={() => dispatch('rider')}
             />
             <GenerateButton
               testid="generate-stories-drivers"
-              label="Ask drivers"
+              label={flashGate.fullyDisabled ? 'Quota exhausted' : 'Ask drivers'}
               tone="driver"
               variant="driver"
               inFlight={inFlight}
-              disabled={generate.isPending}
-              onClick={() => generate.mutate('driver')}
+              disabled={generate.isPending || flashGate.fullyDisabled}
+              onClick={() => dispatch('driver')}
             />
             <GenerateButton
               testid="generate-stories-both"
-              label="Generate (both)"
+              label={flashGate.fullyDisabled ? 'Quota exhausted' : 'Generate (both)'}
               tone="both"
               variant="both"
               inFlight={inFlight}
-              disabled={generate.isPending}
-              onClick={() => generate.mutate('both')}
+              disabled={generate.isPending || flashGate.fullyDisabled}
+              onClick={() => dispatch('both')}
             />
           </div>
           <div className="flex items-center gap-1.5">
@@ -101,6 +109,7 @@ export default function StoriesPage() {
           </div>
         </div>
       </header>
+      <GeminiQuotaBanner />
       <CostFooterNote />
 
       {generate.isError && (

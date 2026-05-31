@@ -71,6 +71,8 @@ export function useRefreshAiEvents() {
       }>('/marketing/events/refresh-ai', {}),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'marketing', 'events'] })
+      // Refresh Gemini quota banner (Pro + grounding call counted).
+      void qc.invalidateQueries({ queryKey: ['admin', 'api-usage'] })
     },
   })
 }

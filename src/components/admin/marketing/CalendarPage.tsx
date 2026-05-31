@@ -20,7 +20,7 @@ import {
   type EventCategory,
   type MarketingEvent,
 } from '@/hooks/useMarketingEvents'
-import { CostBadge, CostFooterNote, NoAiCostBadge } from './_shared'
+import { CostBadge, CostFooterNote, NoAiCostBadge, GeminiQuotaBanner, useQuotaGate } from './_shared'
 
 const CATEGORY_LABELS: Record<EventCategory, { label: string; tone: string }> = {
   holiday:          { label: 'HOLIDAY',         tone: 'bg-warning/10 text-warning' },
@@ -41,6 +41,7 @@ export default function CalendarPage() {
   const seed = useSeedEvents()
   const refreshAi = useRefreshAiEvents()
   const [showAdd, setShowAdd] = useState(false)
+  const refreshGate = useQuotaGate('calendar-refresh-ai')
 
   const reminders = query.data?.reminders ?? []
   const events = query.data?.events ?? []
@@ -73,11 +74,12 @@ export default function CalendarPage() {
             <button
               data-testid="refresh-ai-events"
               type="button"
-              onClick={() => refreshAi.mutate()}
-              disabled={refreshAi.isPending}
+              onClick={() => refreshGate.run(() => refreshAi.mutate())}
+              disabled={refreshAi.isPending || refreshGate.fullyDisabled}
+              title={refreshGate.fullyDisabled ? 'Gemini Pro quota exhausted today' : undefined}
               className="rounded-lg border border-primary/40 bg-primary/5 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10 disabled:opacity-50"
             >
-              {refreshAi.isPending ? 'Asking Gemini…' : '✨ Refresh AI suggestions'}
+              {refreshAi.isPending ? 'Asking Gemini…' : refreshGate.fullyDisabled ? 'Pro quota exhausted' : '✨ Refresh AI suggestions'}
             </button>
             <CostBadge feature="calendar-refresh-ai" />
           </div>
@@ -94,6 +96,7 @@ export default function CalendarPage() {
           </div>
         </div>
       </header>
+      <GeminiQuotaBanner />
       <CostFooterNote />
 
       {seed.isSuccess && seed.data && (
