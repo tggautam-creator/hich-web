@@ -14,6 +14,7 @@
 import { supabaseAdmin } from '../supabaseAdmin.ts'
 import {
   geminiChat,
+  geminiChatWithTools,
   MODEL_SMART,
   MODEL_FAST,
   isGeminiConfigured,
@@ -24,6 +25,11 @@ import {
   buildKpiSnippet,
   type LiveKpiSnapshot,
 } from './brandContext.ts'
+import {
+  ADVISOR_TOOLS,
+  SCHEMA_DESCRIPTION,
+  dispatchToolCall,
+} from './advisorTools.ts'
 
 const ADVISOR_MODEL_DEFAULT = MODEL_SMART  // gemini-2.5-pro
 const ADVISOR_MODEL_FALLBACK = MODEL_FAST  // gemini-2.5-flash
@@ -245,13 +251,15 @@ export async function sendMessage(args: {
   // the recent slice.
   const isFirstMessage = (priorCount ?? priorRows.length) === 0
 
-  // Build system prompt — brand context always; KPIs only on first
-  // turn (subsequent turns inherit them via Gemini's own context).
-  let systemPrompt = BRAND_SYSTEM_PROMPT
+  // Build system prompt: brand context + DB schema + (KPIs only on
+  // first turn). Schema lives in the system prompt so the advisor
+  // knows what tables/columns to query via the tools — no extra
+  // prompt-tokens per tool call.
+  let systemPrompt = `${BRAND_SYSTEM_PROMPT}\n\n${SCHEMA_DESCRIPTION}`
   if (isFirstMessage) {
     try {
       const kpis = await fetchLiveKpis()
-      systemPrompt = `${BRAND_SYSTEM_PROMPT}\n\n${buildKpiSnippet(kpis)}`
+      systemPrompt = `${systemPrompt}\n\n${buildKpiSnippet(kpis)}`
     } catch (err) {
       console.warn('[marketing/advisor] KPI fetch failed; using base brand prompt only:', err)
     }
@@ -280,23 +288,33 @@ export async function sendMessage(args: {
   let modelUsed = ADVISOR_MODEL_DEFAULT
   let result: { text: string; inputTokens: number | null; outputTokens: number | null }
   try {
-    const r = await geminiChat({
+    // Use the tool-use chat so Gemini can query the database when
+    // needed. Tools defined in advisorTools.ts; dispatcher invokes
+    // them with safety (whitelist tables, scrub PII, cap rows).
+    const r = await geminiChatWithTools({
       systemPrompt,
       history,
       userPrompt: args.userContent,
+      tools: [...ADVISOR_TOOLS],
+      dispatch: dispatchToolCall,
       model: ADVISOR_MODEL_DEFAULT,
       temperature: 0.7,
     })
+    if (r.tool_calls.length > 0) {
+      console.log(
+        `[marketing/advisor] thread ${args.threadId} used ${r.tool_calls.length} tool call(s): `
+        + r.tool_calls.map((t) => t.name).join(', '),
+      )
+    }
     result = { text: r.text, inputTokens: r.inputTokens, outputTokens: r.outputTokens }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     // Quota / rate-limit fallback. Pro free-tier is ~50 req/day.
-    // Use geminiChat (not geminiGenerate) so the Flash retry inherits
-    // the SAME multi-turn history — otherwise the conversation
-    // abruptly forgets everything earlier in the thread the moment
-    // the daily Pro quota trips.
+    // Flash fallback skips tools (Flash supports them but the
+    // schema doubles the prompt cost — for fallback we prioritize
+    // getting an answer over data access).
     if (/429|quota|rate/i.test(msg)) {
-      console.warn('[marketing/advisor] Pro quota hit; falling back to Flash (history preserved):', msg)
+      console.warn('[marketing/advisor] Pro quota hit; falling back to Flash (history preserved, no tools):', msg)
       try {
         const r = await geminiChat({
           systemPrompt,

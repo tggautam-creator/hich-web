@@ -161,3 +161,122 @@ export async function geminiChat(args: {
     outputTokens: usage?.candidatesTokenCount ?? null,
   }
 }
+
+
+// ── Tool-use chat (Phase 4.1) ─────────────────────────────────────
+
+export interface ToolDeclaration {
+  name: string
+  description: string
+  parameters: {
+    type: 'object'
+    required?: string[]
+    properties: Record<string, unknown>
+  }
+}
+
+export type ToolDispatcher = (
+  name: string,
+  args: Record<string, unknown>,
+) => Promise<unknown>
+
+interface ToolCallRecord {
+  name: string
+  args: Record<string, unknown>
+  result: unknown
+}
+
+/**
+ * Multi-turn chat WITH tool use. Loops up to maxIterations times
+ * (default 5), calling the dispatcher for each function_call the
+ * model emits and feeding the result back in. Returns the final
+ * text + a transcript of every tool call (for debugging + cost
+ * tracking).
+ */
+export async function geminiChatWithTools(args: {
+  systemPrompt: string
+  history: ChatMessage[]
+  userPrompt: string
+  tools: ToolDeclaration[]
+  dispatch: ToolDispatcher
+  model?: string
+  temperature?: number
+  maxIterations?: number
+}): Promise<GenerateResult & { tool_calls: ToolCallRecord[] }> {
+  const client = getClient()
+  const model = args.model ?? MODEL_SMART
+  const maxIter = args.maxIterations ?? 5
+
+  const contents: Array<{ role: string; parts: Array<Record<string, unknown>> }> = [
+    ...args.history.map((m) => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content } as Record<string, unknown>],
+    })),
+    { role: 'user', parts: [{ text: args.userPrompt } as Record<string, unknown>] },
+  ]
+
+  const toolCalls: ToolCallRecord[] = []
+  let totalInput = 0
+  let totalOutput = 0
+  let finalText = ''
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    const response = await client.models.generateContent({
+      model,
+      contents,
+      config: {
+        systemInstruction: args.systemPrompt,
+        temperature: args.temperature ?? 0.7,
+        maxOutputTokens: 2048,
+        tools: [{ functionDeclarations: args.tools }] as never,
+      },
+    })
+
+    const usage = response.usageMetadata
+    totalInput += usage?.promptTokenCount ?? 0
+    totalOutput += usage?.candidatesTokenCount ?? 0
+
+    const parts = response.candidates?.[0]?.content?.parts ?? []
+    const functionCalls = parts
+      .map((p) => (p as { functionCall?: { name?: string; args?: Record<string, unknown> } }).functionCall)
+      .filter((fc): fc is { name: string; args: Record<string, unknown> } => Boolean(fc?.name))
+
+    if (functionCalls.length === 0) {
+      finalText = response.text ?? ''
+      break
+    }
+
+    contents.push({
+      role: 'model',
+      parts: functionCalls.map((fc) =>
+        ({ functionCall: { name: fc.name, args: fc.args ?? {} } } as Record<string, unknown>),
+      ),
+    })
+
+    const responseParts: Array<Record<string, unknown>> = []
+    for (const fc of functionCalls) {
+      let result: unknown
+      try {
+        result = await args.dispatch(fc.name, fc.args ?? {})
+      } catch (err) {
+        result = { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+      toolCalls.push({ name: fc.name, args: fc.args ?? {}, result })
+      responseParts.push({
+        functionResponse: {
+          name: fc.name,
+          response: { content: result },
+        },
+      })
+    }
+    contents.push({ role: 'function', parts: responseParts })
+  }
+
+  return {
+    text: finalText,
+    model,
+    inputTokens: totalInput || null,
+    outputTokens: totalOutput || null,
+    tool_calls: toolCalls,
+  }
+}
