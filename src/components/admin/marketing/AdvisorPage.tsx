@@ -29,7 +29,9 @@ export default function AdvisorPage() {
   }, [activeThreadId, threadsQuery.data])
 
   async function handleNewThread() {
-    const result = await createThread.mutateAsync()
+    // mutateAsync requires the arg explicitly even though the hook's
+    // mutationFn signature has it optional — pass undefined.
+    const result = await createThread.mutateAsync(undefined)
     setActiveThreadId(result.thread.id)
   }
 

@@ -276,7 +276,11 @@ adminMarketingRouter.post(
         })
         return
       }
-      res.status(200).json({ ok: true, ...result })
+      // `result` already contains an `ok` field from generatePosterBatch;
+      // spreading it after `ok: true` would trigger TS2783 (duplicate
+      // key). Just spread — `ok: true` is what `result.ok` resolves to
+      // on this success branch anyway.
+      res.status(200).json(result)
     } catch (err) {
       next(err)
     }
@@ -293,9 +297,12 @@ adminMarketingRouter.post(
   '/posters/items/:itemId/generate-image',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { itemId } = req.params
-      // Minimal UUID format check — server-side defense for typos.
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(itemId ?? '')) {
+      // req.params[k] is typed as string | string[] because Express
+      // supports catch-all params; narrow to string per the
+      // codebase pattern (see server/routes/admin/rides.ts).
+      const rawItemId = req.params['itemId']
+      const itemId = typeof rawItemId === 'string' ? rawItemId : ''
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(itemId)) {
         res.status(400).json({
           error: { code: 'INVALID_ITEM_ID', message: 'itemId must be a UUID' },
         })
@@ -393,8 +400,9 @@ adminMarketingRouter.get(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const userId = res.locals['userId'] as string
-      const { threadId } = req.params
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId ?? '')) {
+      const rawThreadId = req.params['threadId']
+      const threadId = typeof rawThreadId === 'string' ? rawThreadId : ''
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId)) {
         res.status(400).json({ error: { code: 'INVALID_THREAD_ID', message: 'threadId must be a UUID' } })
         return
       }
@@ -416,8 +424,9 @@ adminMarketingRouter.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const userId = res.locals['userId'] as string
-      const { threadId } = req.params
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId ?? '')) {
+      const rawThreadId = req.params['threadId']
+      const threadId = typeof rawThreadId === 'string' ? rawThreadId : ''
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId)) {
         res.status(400).json({ error: { code: 'INVALID_THREAD_ID', message: 'threadId must be a UUID' } })
         return
       }
@@ -445,7 +454,15 @@ adminMarketingRouter.delete(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const userId = res.locals['userId'] as string
-      const { threadId } = req.params
+      const rawThreadId = req.params['threadId']
+      const threadId = typeof rawThreadId === 'string' ? rawThreadId : ''
+      // UUID validation (parity with the other advisor routes —
+      // missing here was a low-severity finding from the Phase 4
+      // review).
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId)) {
+        res.status(400).json({ error: { code: 'INVALID_THREAD_ID', message: 'threadId must be a UUID' } })
+        return
+      }
       const { deleteThread } = await import('../../lib/marketing/advisor.ts')
       const ok = await deleteThread(threadId, userId)
       if (!ok) {

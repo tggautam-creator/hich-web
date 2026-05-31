@@ -14,7 +14,6 @@
 import { supabaseAdmin } from '../supabaseAdmin.ts'
 import {
   geminiChat,
-  geminiGenerate,
   MODEL_SMART,
   MODEL_FAST,
   isGeminiConfigured,
@@ -220,16 +219,31 @@ export async function sendMessage(args: {
     return { ok: false, error: 'thread not found or not owned by user' }
   }
 
-  // Load existing messages to seed the chat history.
-  const { data: prior } = await supabaseAdmin
+  // Load existing messages newest-first (limit 200) then reverse, so
+  // long threads keep the most-recent context Gemini cares about
+  // rather than truncating away the recent turns. Log a warning when
+  // we hit the cap so a future long-thread issue is visible in PM2.
+  const HISTORY_CAP = 200
+  // Count + fetch in one round-trip: PostgREST returns the exact count
+  // when count='exact' is set, letting us detect truncation precisely.
+  const { data: prior, count: priorCount } = await supabaseAdmin
     .from('marketing_advisor_messages')
-    .select('id, role, content, created_at')
+    .select('id, role, content, created_at', { count: 'exact' })
     .eq('thread_id', args.threadId)
-    .order('created_at', { ascending: true })
-    .limit(200)
-  const priorRows = (prior ?? []) as Array<{ role: string; content: string }>
+    .order('created_at', { ascending: false })
+    .limit(HISTORY_CAP)
+  const newestFirstRows = (prior ?? []) as Array<{ role: string; content: string }>
+  const priorRows = newestFirstRows.slice().reverse()
+  if (typeof priorCount === 'number' && priorCount > HISTORY_CAP) {
+    console.warn(
+      `[marketing/advisor] thread ${args.threadId} has ${priorCount} messages; sending only the most recent ${HISTORY_CAP} to Gemini.`,
+    )
+  }
 
-  const isFirstMessage = priorRows.length === 0
+  // isFirstMessage uses the total count, not the truncated array, so
+  // KPIs aren't re-injected on long threads where priorRows is just
+  // the recent slice.
+  const isFirstMessage = (priorCount ?? priorRows.length) === 0
 
   // Build system prompt — brand context always; KPIs only on first
   // turn (subsequent turns inherit them via Gemini's own context).
@@ -277,15 +291,19 @@ export async function sendMessage(args: {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     // Quota / rate-limit fallback. Pro free-tier is ~50 req/day.
+    // Use geminiChat (not geminiGenerate) so the Flash retry inherits
+    // the SAME multi-turn history — otherwise the conversation
+    // abruptly forgets everything earlier in the thread the moment
+    // the daily Pro quota trips.
     if (/429|quota|rate/i.test(msg)) {
-      console.warn('[marketing/advisor] Pro quota hit; falling back to Flash:', msg)
+      console.warn('[marketing/advisor] Pro quota hit; falling back to Flash (history preserved):', msg)
       try {
-        const r = await geminiGenerate({
+        const r = await geminiChat({
           systemPrompt,
+          history,
           userPrompt: args.userContent,
           model: ADVISOR_MODEL_FALLBACK,
           temperature: 0.7,
-          maxOutputTokens: 2048,
         })
         modelUsed = ADVISOR_MODEL_FALLBACK
         result = { text: r.text, inputTokens: r.inputTokens, outputTokens: r.outputTokens }
