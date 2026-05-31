@@ -480,6 +480,192 @@ adminMarketingRouter.delete(
   },
 )
 
+// ── Daily focus brief (Feature 3) ─────────────────────────────────
+//
+// Process-local rate-limit for /regenerate. Founder is a single user
+// + each regen costs ~$0.01, so a hard 60s cooldown is plenty to
+// stop accidental rapid-clicks without being annoying. Keyed by
+// userId so multiple admins in the future each get their own cap.
+const lastRegenAt = new Map<string, number>()
+const REGEN_COOLDOWN_MS = 60_000
+
+/**
+ * GET /api/admin/marketing/advisor/daily-focus
+ * Returns today's brief (PT-anchored). If no row exists AND we're
+ * after 7 AM PT, lazy-generates one — the founder shouldn't have to
+ * wait until tomorrow if the cron sweep missed. Returns 204 if no
+ * row exists AND it's before 7 AM PT (UI hides the banner).
+ */
+adminMarketingRouter.get(
+  '/advisor/daily-focus',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const {
+        generateDailyBriefing,
+      } = await import('../../lib/marketing/dailyFocusGenerator.ts')
+      // PT-anchored "today"
+      const today = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Los_Angeles',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date())
+      const { data: existing } = await supabaseAdmin
+        .from('marketing_daily_briefings').select('*')
+        .eq('for_date', today).maybeSingle()
+      const existingRow = existing as {
+        focus?: string | null
+        error?: string | null
+        dismissed_at?: string | null
+      } | null
+      // Return cached only when the brief actually has a focus + no
+      // error. Error rows fall through to regeneration so the founder
+      // isn't locked out of the brief for the rest of the day.
+      // Dismissed-but-successful rows still return cached so dismiss
+      // remains sticky for the day.
+      if (existingRow && existingRow.focus && !existingRow.error) {
+        res.status(200).json({ ok: true, brief: existing })
+        return
+      }
+      const ptHour = parseInt(new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Los_Angeles', hour: '2-digit', hour12: false,
+      }).format(new Date()), 10)
+      if (Number.isNaN(ptHour) || ptHour < 7) {
+        res.status(204).end()
+        return
+      }
+      // Lazy-generate. May take 5-15s on first request of the day.
+      // Note: this blocks the GET — acceptable trade-off for v1
+      // (founder is a single user, single request). When user volume
+      // grows, switch to 202 + poll pattern (the brief table is the
+      // shared queue).
+      const r = await generateDailyBriefing(today)
+      if (r.brief) {
+        res.status(200).json({ ok: true, brief: r.brief })
+        return
+      }
+      res.status(500).json({
+        error: { code: 'BRIEF_GEN_FAILED', message: r.reason ?? 'generation failed' },
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+/**
+ * POST /api/admin/marketing/advisor/daily-focus/start-thread
+ * Spawns an advisor thread seeded with the brief's detail as the
+ * opening assistant message. Idempotent — if a thread was already
+ * spawned for today's brief, returns the existing thread_id.
+ */
+adminMarketingRouter.post(
+  '/advisor/daily-focus/start-thread',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const rawUserId = res.locals['userId']
+      const userId = typeof rawUserId === 'string' && rawUserId.length > 0 ? rawUserId : null
+      if (!userId) {
+        res.status(401).json({
+          error: { code: 'NO_USER', message: 'No authenticated user on request.' },
+        })
+        return
+      }
+      const { startThreadFromBrief } = await import('../../lib/marketing/dailyFocusGenerator.ts')
+      const today = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Los_Angeles',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date())
+      const r = await startThreadFromBrief(today, userId)
+      if (!r.ok) {
+        res.status(500).json({
+          error: { code: 'SPAWN_FAILED', message: r.reason ?? 'spawn failed' },
+        })
+        return
+      }
+      res.status(200).json({ ok: true, thread_id: r.thread_id })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+/**
+ * POST /api/admin/marketing/advisor/daily-focus/dismiss
+ * Sets today's brief.dismissed_at = now() so the banner hides for
+ * the rest of the day.
+ */
+adminMarketingRouter.post(
+  '/advisor/daily-focus/dismiss',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const today = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Los_Angeles',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date())
+      const { count, error } = await supabaseAdmin
+        .from('marketing_daily_briefings')
+        .update({ dismissed_at: new Date().toISOString() } as never, { count: 'exact' })
+        .eq('for_date', today)
+      if (error) {
+        res.status(500).json({ error: { code: 'DISMISS_FAILED', message: error.message } })
+        return
+      }
+      // count===0 means no brief yet today — dismiss is still
+      // semantically OK (nothing to hide); UI re-fetches + sees null.
+      res.status(200).json({ ok: true, rows_updated: count ?? 0 })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+/**
+ * POST /api/admin/marketing/advisor/daily-focus/regenerate
+ * Deletes today's row + re-runs generateDailyBriefing. No rate-
+ * limit yet (founder is a single user; cost is ~$0.01/regen).
+ */
+adminMarketingRouter.post(
+  '/advisor/daily-focus/regenerate',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const rawUserId = res.locals['userId']
+      const userId = typeof rawUserId === 'string' && rawUserId.length > 0 ? rawUserId : 'unknown'
+      // 60s cooldown to prevent accidental rapid-clicks racking up
+      // Gemini token cost (~$0.01/regen). Founder is a single user
+      // so this is friction, not access control.
+      const last = lastRegenAt.get(userId) ?? 0
+      const elapsed = Date.now() - last
+      if (elapsed < REGEN_COOLDOWN_MS) {
+        const wait = Math.ceil((REGEN_COOLDOWN_MS - elapsed) / 1000)
+        res.status(429).json({
+          error: {
+            code: 'REGEN_COOLDOWN',
+            message: `Regenerate is rate-limited to once per minute. Try again in ${wait}s.`,
+          },
+        })
+        return
+      }
+      lastRegenAt.set(userId, Date.now())
+      const { generateDailyBriefing } = await import('../../lib/marketing/dailyFocusGenerator.ts')
+      const today = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Los_Angeles',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date())
+      await supabaseAdmin
+        .from('marketing_daily_briefings').delete().eq('for_date', today)
+      const r = await generateDailyBriefing(today)
+      if (r.brief) {
+        res.status(200).json({ ok: true, brief: r.brief })
+        return
+      }
+      res.status(500).json({
+        error: { code: 'BRIEF_GEN_FAILED', message: r.reason ?? 'regeneration failed' },
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
 // ── Events / Smart Calendar (Phase 5) ──────────────────────────────
 
 adminMarketingRouter.get(

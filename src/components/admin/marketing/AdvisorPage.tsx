@@ -6,6 +6,7 @@
  * Gemini 2.5 Pro by default with auto-fallback to Flash on quota.
  */
 import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   useAdvisorThreads,
   useAdvisorThread,
@@ -21,9 +22,26 @@ import { NoAiCostBadge, GeminiQuotaBanner, useQuotaGate } from './_shared'
 export default function AdvisorPage() {
   const threadsQuery = useAdvisorThreads()
   const createThread = useCreateAdvisorThread()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null)
 
-  // Auto-select most recent thread when threads load.
+  // Honor ?thread={id} when the page is deep-linked (e.g. from the
+  // DailyFocusBanner's "Talk through this" CTA, which spawns a thread
+  // and navigates here). The query param wins over the auto-select
+  // when present. We strip it after honoring so re-mounting from
+  // history doesn't lock the founder to a stale thread.
+  useEffect(() => {
+    const deepLinkId = searchParams.get('thread')
+    if (deepLinkId && deepLinkId !== activeThreadId) {
+      setActiveThreadId(deepLinkId)
+      const next = new URLSearchParams(searchParams)
+      next.delete('thread')
+      setSearchParams(next, { replace: true })
+    }
+  }, [searchParams, activeThreadId, setSearchParams])
+
+  // Auto-select most recent thread when threads load (only if no
+  // deep-link winner has been set yet).
   useEffect(() => {
     if (!activeThreadId && threadsQuery.data?.threads?.[0]) {
       setActiveThreadId(threadsQuery.data.threads[0].id)

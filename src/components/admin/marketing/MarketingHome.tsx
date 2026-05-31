@@ -12,6 +12,7 @@ import { useMarketingConfig, useCurrentMarketingTheme } from '@/hooks/useMarketi
 import { useMarketingEvents } from '@/hooks/useMarketingEvents'
 import { PRICING_LAST_VERIFIED, PRICING_SOURCE_URL } from '@/lib/marketing/costs'
 import { GeminiQuotaBanner } from './_shared'
+import DailyFocusBanner from './DailyFocusBanner'
 
 export default function MarketingHome() {
   const cfg = useMarketingConfig()
@@ -44,6 +45,8 @@ export default function MarketingHome() {
       </header>
 
       <GeminiQuotaBanner />
+
+      <DailyFocusBanner />
 
       {reminders.length > 0 && (
         <Link
