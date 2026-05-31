@@ -15,7 +15,7 @@
  *    one cron batch per day.
  */
 import { supabaseAdmin } from '../supabaseAdmin.ts'
-import { geminiGenerate, humanizeGeminiError, MODEL_FAST, isGeminiConfigured } from './gemini.ts'
+import { geminiGenerateWithFallback, humanizeGeminiError, MODEL_FAST, TEXT_FAST_CHAIN, isGeminiConfigured } from './gemini.ts'
 import { BRAND_SYSTEM_PROMPT } from './brandContext.ts'
 import {
   fetchAndClusterCorridors,
@@ -44,6 +44,10 @@ export interface StoryGenerationResult {
   item_count: number
   skipped_existing: boolean
   reason?: string
+  /** Comma-joined set of model IDs that produced this batch's stories.
+   *  Surfaces fallback events to the UI (e.g. "gemini-2.5-flash,gemini-2.0-flash"
+   *  means at least one corridor downshifted because Flash was rate-limited). */
+  model_used?: string
 }
 
 interface StoryCopy {
@@ -241,10 +245,11 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
   // failure with raw text preview, DB insert error) instead of just
   // a "N failed" count. Truncated to 800 chars total for cell sanity.
   const errors: string[] = []
+  const modelsUsed = new Set<string>()
 
   for (const corridor of corridors) {
     try {
-      const result = await geminiGenerate({
+      const result = await geminiGenerateWithFallback({
         systemPrompt: BRAND_SYSTEM_PROMPT,
         userPrompt: buildCorridorPrompt(corridor),
         temperature: 0.9,
@@ -263,7 +268,8 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
         // the output budget on internal reasoning tokens that get
         // discarded — that's what caused the truncated responses.
         thinkingBudget: 0,
-      })
+      }, TEXT_FAST_CHAIN)
+      modelsUsed.add(result.modelUsed)
       const copy = parseStoryCopy(result.text)
       if (!copy) {
         const preview = result.text ? result.text.slice(0, 200) : '(empty response)'
@@ -321,11 +327,18 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
 
   // Surface the update error so a silent RLS/network failure doesn't
   // wedge the batch at status='pending' / item_count=0 forever.
+  // Also persists the actually-fired model(s) into llm_model so the
+  // batch row reflects reality (the insert wrote MODEL_FAST as a
+  // placeholder; with the fallback chain, real models may differ).
+  const modelUsedJoined = modelsUsed.size > 0
+    ? Array.from(modelsUsed).join(',')
+    : MODEL_FAST
   const { error: updateErr } = await supabaseAdmin
     .from('marketing_story_batches')
     .update({
       item_count: inserted,
       status: inserted > 0 ? 'pending' : 'failed',
+      llm_model: modelUsedJoined,
       ...(aggregatedError ? { error: aggregatedError } : {}),
     } as never)
     .eq('id', batchId)
@@ -338,6 +351,7 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
     batch_id: batchId,
     item_count: inserted,
     skipped_existing: false,
+    model_used: modelUsedJoined,
     ...(errors.length > 0 ? { reason: `${inserted} ok, ${errors.length} failed` } : {}),
   }
 }

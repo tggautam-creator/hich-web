@@ -228,6 +228,7 @@ import {
 import {
   useGeminiQuota,
   quotaServiceForFeature,
+  quotaChainForFeature,
   type GeminiServiceQuota,
 } from '@/hooks/useGeminiQuota'
 
@@ -308,6 +309,8 @@ export function GeminiQuotaBanner() {
         <QuotaPill q={byService.gemini_flash} />
         <QuotaPill q={byService.gemini_pro} />
         <QuotaPill q={byService.gemini_flash_image} />
+        <QuotaPill q={byService.gemini_flash_2} />
+        <QuotaPill q={byService.gemini_flash_lite} />
         <span className="ml-auto text-text-secondary">
           Resets at UTC midnight
         </span>
@@ -415,23 +418,44 @@ export interface QuotaGate {
 // eslint-disable-next-line react-refresh/only-export-components -- gate hook colocated with the badges that consume it
 export function useQuotaGate(feature: CostFeature): QuotaGate {
   const svcKey = quotaServiceForFeature(feature)
+  const chainKeys = quotaChainForFeature(feature)
   const { byService } = useGeminiQuota()
   const quota: GeminiServiceQuota | null = svcKey ? byService[svcKey] : null
 
-  const fullyDisabled = quota?.status === 'exhausted'
-  const needsConfirm = quota?.status === 'near'
+  // Chain-aware gating. A feature with a fallback chain (e.g. stories,
+  // posters) only becomes fully-disabled when EVERY tier is
+  // exhausted — until then the server tries the next model on
+  // 429 and the founder gets a clean result with a fallback banner.
+  // Primary-exhausted but fallback-available → status 'near' so the
+  // button stays clickable + the confirm warns about downshift.
+  const chainQuotas = chainKeys.map((k) => byService[k]).filter(Boolean)
+  const allExhausted = chainQuotas.length > 0
+    && chainQuotas.every((q) => q.status === 'exhausted')
+  const primaryExhausted = quota?.status === 'exhausted'
+
+  const fullyDisabled = allExhausted
+  const needsConfirm = !allExhausted && (
+    quota?.status === 'near' || primaryExhausted
+  )
 
   function run(handler: () => void, opts?: QuotaGateRunOptions) {
     if (fullyDisabled) {
       window.alert(
-        `${quota?.label ?? 'This Gemini model'} hit its daily quota of ${quota?.daily_quota ?? '?'} calls today. Wait for UTC midnight or enable billing.`,
+        `All Gemini tiers for this feature hit their daily quota today. Wait for UTC midnight or enable billing on the GCP project.`,
       )
       return
     }
     const parts: string[] = []
-    if (needsConfirm) {
+    if (primaryExhausted) {
+      // Primary is at ceiling but fallback has capacity. Tell the
+      // founder which model will actually run.
+      const firstHealthy = chainQuotas.find((q) => q.status !== 'exhausted')
       parts.push(
-        `Only ${quota?.remaining ?? '?'} ${quota?.label ?? 'Gemini'} calls left today before quota exhaustion.`,
+        `${quota?.label ?? 'Primary tier'} hit its daily quota — this call will use ${firstHealthy?.label ?? 'a fallback model'} instead.`,
+      )
+    } else if (quota?.status === 'near') {
+      parts.push(
+        `Only ${quota?.remaining ?? '?'} ${quota?.label ?? 'Gemini'} calls left today before fallback kicks in.`,
       )
     }
     if (opts?.confirmMessage) parts.push(opts.confirmMessage)

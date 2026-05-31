@@ -29,7 +29,7 @@ import {
 } from '@/hooks/useMarketingPosters'
 import { useMarketingEvents, type MarketingEvent } from '@/hooks/useMarketingEvents'
 import { StatusPill, CollapsibleBatchHeader, CopyableField, CostBadge, CostFooterNote, GeminiQuotaBanner, useQuotaGate } from './_shared'
-import { costDisclosure } from '@/lib/marketing/costs'
+import { costDisclosure, fallbackBanner } from '@/lib/marketing/costs'
 
 const LOGO_SRC = '/logo-transparent.png'
 
@@ -71,8 +71,14 @@ export default function PostersPage() {
         </div>
       )}
       {generate.isSuccess && generate.data && generate.data.item_count > 0 && (
-        <div className="rounded-lg border border-success/30 bg-success/5 px-4 py-2 text-sm text-text-primary">
-          Generated 1 poster.
+        <div className="rounded-lg border border-success/30 bg-success/5 px-4 py-2 text-sm text-text-primary space-y-1">
+          <p>Generated 1 poster.</p>
+          {(() => {
+            const banner = fallbackBanner(generate.data.model_used, 'gemini-2.5-flash')
+            return banner
+              ? <p data-testid="posters-fallback-banner" className="text-xs text-warning">{banner}</p>
+              : null
+          })()}
         </div>
       )}
 

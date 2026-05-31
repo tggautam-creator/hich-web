@@ -13,11 +13,10 @@
  */
 import { supabaseAdmin } from '../supabaseAdmin.ts'
 import {
-  geminiChat,
-  geminiChatWithTools,
+  geminiChatWithToolsAndFallback,
+  TOOLS_CHAIN,
   humanizeGeminiError,
   MODEL_SMART,
-  MODEL_FAST,
   isGeminiConfigured,
   type ChatMessage,
 } from './gemini.ts'
@@ -32,8 +31,10 @@ import {
   dispatchToolCall,
 } from './advisorTools.ts'
 
+// Kept as a named constant for readability + the "chain head"
+// fallback-detection check below. The chain itself (TOOLS_CHAIN) is
+// the authoritative ordering — this is just a nickname for index 0.
 const ADVISOR_MODEL_DEFAULT = MODEL_SMART  // gemini-2.5-pro
-const ADVISOR_MODEL_FALLBACK = MODEL_FAST  // gemini-2.5-flash
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
 
@@ -191,6 +192,8 @@ export interface SendMessageResult {
   ok: boolean
   assistant_message?: AdvisorMessageRow
   error?: string
+  /** Model that actually answered (chain fallback exposed). */
+  model_used?: string
 }
 
 /**
@@ -286,55 +289,36 @@ export async function sendMessage(args: {
     .filter((m) => m.role === 'user' || m.role === 'assistant')
     .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
 
-  let modelUsed = ADVISOR_MODEL_DEFAULT
+  let modelUsed: string = ADVISOR_MODEL_DEFAULT
   let result: { text: string; inputTokens: number | null; outputTokens: number | null }
   try {
-    // Use the tool-use chat so Gemini can query the database when
-    // needed. Tools defined in advisorTools.ts; dispatcher invokes
-    // them with safety (whitelist tables, scrub PII, cap rows).
-    const r = await geminiChatWithTools({
+    // Use the tool-use chat with the TOOLS_CHAIN so Gemini can query
+    // the database when needed AND a quota hit on Pro downshifts to
+    // Flash WITHOUT dropping tool access (Flash supports function
+    // calling — the prior Phase-4 "Flash-without-tools" fallback was
+    // retired here). Tools defined in advisorTools.ts; dispatcher
+    // invokes them with safety (whitelist tables, scrub PII, cap rows).
+    const r = await geminiChatWithToolsAndFallback({
       systemPrompt,
       history,
       userPrompt: args.userContent,
       tools: [...ADVISOR_TOOLS],
       dispatch: dispatchToolCall,
-      model: ADVISOR_MODEL_DEFAULT,
       temperature: 0.7,
-    })
+    }, TOOLS_CHAIN)
     if (r.tool_calls.length > 0) {
       console.log(
-        `[marketing/advisor] thread ${args.threadId} used ${r.tool_calls.length} tool call(s): `
+        `[marketing/advisor] thread ${args.threadId} used ${r.tool_calls.length} tool call(s) via ${r.modelUsed}: `
         + r.tool_calls.map((t) => t.name).join(', '),
       )
     }
+    if (r.modelUsed !== ADVISOR_MODEL_DEFAULT) {
+      console.log(`[marketing/advisor] reply served by chain fallback (model=${r.modelUsed})`)
+    }
+    modelUsed = r.modelUsed
     result = { text: r.text, inputTokens: r.inputTokens, outputTokens: r.outputTokens }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    // Quota / rate-limit fallback. Pro free-tier is ~50 req/day.
-    // Flash fallback skips tools (Flash supports them but the
-    // schema doubles the prompt cost — for fallback we prioritize
-    // getting an answer over data access).
-    if (/429|quota|rate/i.test(msg)) {
-      console.warn('[marketing/advisor] Pro quota hit; falling back to Flash (history preserved, no tools):', msg)
-      try {
-        const r = await geminiChat({
-          systemPrompt,
-          history,
-          userPrompt: args.userContent,
-          model: ADVISOR_MODEL_FALLBACK,
-          temperature: 0.7,
-        })
-        modelUsed = ADVISOR_MODEL_FALLBACK
-        result = { text: r.text, inputTokens: r.inputTokens, outputTokens: r.outputTokens }
-      } catch (err2) {
-        return {
-          ok: false,
-          error: `Both Gemini Pro and Flash hit the same wall: ${humanizeGeminiError(err2)}`,
-        }
-      }
-    } else {
-      return { ok: false, error: humanizeGeminiError(err) }
-    }
+    return { ok: false, error: humanizeGeminiError(err) }
   }
 
   if (!result.text || result.text.trim().length === 0) {
@@ -375,10 +359,9 @@ export async function sendMessage(args: {
       console.warn('[marketing/advisor] thread bump failed:', err)
     })
 
-  // Silently log which model served the reply for cost tracking.
-  if (modelUsed === ADVISOR_MODEL_FALLBACK) {
-    console.log('[marketing/advisor] reply served by Flash fallback (Pro rate-limited)')
+  return {
+    ok: true,
+    assistant_message: assistantRow as AdvisorMessageRow,
+    model_used: modelUsed,
   }
-
-  return { ok: true, assistant_message: assistantRow as AdvisorMessageRow }
 }

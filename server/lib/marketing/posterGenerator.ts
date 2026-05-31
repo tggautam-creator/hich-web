@@ -6,7 +6,7 @@
  * structured event/feature inputs. Format-aware (story/post/A4/custom).
  */
 import { supabaseAdmin } from '../supabaseAdmin.ts'
-import { geminiGenerate, humanizeGeminiError, MODEL_FAST, isGeminiConfigured } from './gemini.ts'
+import { geminiGenerateWithFallback, humanizeGeminiError, MODEL_FAST, TEXT_FAST_CHAIN, isGeminiConfigured } from './gemini.ts'
 import { BRAND_SYSTEM_PROMPT } from './brandContext.ts'
 import {
   FORMAT_SPECS,
@@ -34,6 +34,9 @@ export interface PosterGenerationResult {
   item_count: number
   skipped_existing: boolean
   reason?: string
+  /** Model ID that actually produced this poster. Surfaces fallback
+   *  events (e.g. 'gemini-2.0-flash' when 2.5 Flash was rate-limited). */
+  model_used?: string
 }
 
 interface PosterCopy {
@@ -325,11 +328,12 @@ export async function generatePosterBatch(args: GenerateArgs): Promise<PosterGen
   const batchId = (batch as { id: string }).id
 
   let inserted = 0
+  let modelUsed: string = MODEL_FOR_POSTERS
   const errors: string[] = []
   if (themeErr) errors.push(`theme lookup failed: ${themeErr}`)
 
   try {
-    const result = await geminiGenerate({
+    const result = await geminiGenerateWithFallback({
       systemPrompt: BRAND_SYSTEM_PROMPT,
       userPrompt: buildPosterPrompt({
         theme, weekFocus, weekIndex, audience, format, angle,
@@ -339,7 +343,8 @@ export async function generatePosterBatch(args: GenerateArgs): Promise<PosterGen
       maxOutputTokens: 4096,
       responseMimeType: 'application/json',
       thinkingBudget: 0,
-    })
+    }, TEXT_FAST_CHAIN)
+    modelUsed = result.modelUsed
     const { copy, reason: parseReason } = parsePosterCopy(result.text, format === 'ig_story')
     if (!copy) {
       const preview = result.text ? result.text.slice(0, 200) : '(empty response)'
@@ -384,11 +389,14 @@ export async function generatePosterBatch(args: GenerateArgs): Promise<PosterGen
     ? (errors.join(' | ').length > 800 ? `${errors.join(' | ').slice(0, 797)}...` : errors.join(' | '))
     : null
 
+  // Persist the actually-fired model into llm_model so the batch row
+  // reflects reality after the fallback chain runs.
   const { error: updateErr } = await supabaseAdmin
     .from('marketing_poster_batches')
     .update({
       item_count: inserted,
       status: inserted > 0 ? 'pending' : 'failed',
+      llm_model: modelUsed,
       ...(aggregatedError ? { error: aggregatedError } : {}),
     } as never)
     .eq('id', batchId)
@@ -402,6 +410,7 @@ export async function generatePosterBatch(args: GenerateArgs): Promise<PosterGen
     batch_id: batchId,
     item_count: inserted,
     skipped_existing: false,
+    model_used: modelUsed,
     ...(errors.length > 0 ? { reason: `${inserted} ok, ${errors.length} failed` } : {}),
   }
 }

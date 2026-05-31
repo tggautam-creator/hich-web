@@ -38,6 +38,7 @@ import {
   useQuotaGate,
   type AudienceVariant,
 } from './_shared'
+import { fallbackBanner } from '@/lib/marketing/costs'
 
 /** "rider" → "riders", "driver" → "drivers", "both" → "both audiences". */
 function audienceLabel(a: AskingForFilter): string {
@@ -118,12 +119,20 @@ export default function StoriesPage() {
         </div>
       )}
       {generate.isSuccess && generate.data && (
-        <div className="rounded-lg border border-success/30 bg-success/5 px-4 py-2 text-sm text-text-primary">
-          {generate.data.skipped_existing
-            ? `Today's batch already exists (${generate.data.item_count} stories).`
-            : generate.data.item_count > 0
-              ? `Generated ${generate.data.item_count} stories for ${audienceLabel((generate.variables ?? 'both') as AskingForFilter)}.`
-              : `Generated empty batch for ${audienceLabel((generate.variables ?? 'both') as AskingForFilter)} — ${generate.data.reason ?? 'no eligible corridors'}.`}
+        <div className="rounded-lg border border-success/30 bg-success/5 px-4 py-2 text-sm text-text-primary space-y-1">
+          <p>
+            {generate.data.skipped_existing
+              ? `Today's batch already exists (${generate.data.item_count} stories).`
+              : generate.data.item_count > 0
+                ? `Generated ${generate.data.item_count} stories for ${audienceLabel((generate.variables ?? 'both') as AskingForFilter)}.`
+                : `Generated empty batch for ${audienceLabel((generate.variables ?? 'both') as AskingForFilter)} — ${generate.data.reason ?? 'no eligible corridors'}.`}
+          </p>
+          {(() => {
+            const banner = fallbackBanner(generate.data.model_used, 'gemini-2.5-flash')
+            return banner
+              ? <p data-testid="stories-fallback-banner" className="text-xs text-warning">{banner}</p>
+              : null
+          })()}
         </div>
       )}
 

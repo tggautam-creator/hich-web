@@ -68,6 +68,7 @@ export function useRefreshAiEvents() {
         skipped_duplicate?: number
         skipped_invalid?: number
         insert_errors?: string[]
+        model_used?: string
       }>('/marketing/events/refresh-ai', {}),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'marketing', 'events'] })

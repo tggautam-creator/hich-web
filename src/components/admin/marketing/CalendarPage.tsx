@@ -21,6 +21,7 @@ import {
   type MarketingEvent,
 } from '@/hooks/useMarketingEvents'
 import { CostBadge, CostFooterNote, NoAiCostBadge, GeminiQuotaBanner, useQuotaGate } from './_shared'
+import { fallbackBanner } from '@/lib/marketing/costs'
 
 const CATEGORY_LABELS: Record<EventCategory, { label: string; tone: string }> = {
   holiday:          { label: 'HOLIDAY',         tone: 'bg-warning/10 text-warning' },
@@ -133,6 +134,12 @@ export default function CalendarPage() {
               {refreshAi.data.insert_errors.map((e, i) => <li key={i}>• {e}</li>)}
             </ul>
           )}
+          {(() => {
+            const banner = fallbackBanner(refreshAi.data.model_used, 'gemini-2.5-pro')
+            return banner
+              ? <p data-testid="calendar-fallback-banner" className="mt-1 text-xs text-warning">{banner}</p>
+              : null
+          })()}
         </div>
       )}
       {refreshAi.isError && (

@@ -26,6 +26,11 @@ let _client: GoogleGenAI | null = null
 
 export const MODEL_FAST = 'gemini-2.5-flash'
 export const MODEL_SMART = 'gemini-2.5-pro'
+// Phase 6.x fallback tier — older/lighter models with separate
+// free-tier quota buckets. Used only by the chain helpers below;
+// individual generators never reference these constants directly.
+export const MODEL_FAST_2 = 'gemini-2.0-flash'
+export const MODEL_FAST_LITE = 'gemini-2.5-flash-lite'
 
 export function isGeminiConfigured(): boolean {
   return getServerEnv().GEMINI_API_KEY.length > 0
@@ -423,4 +428,122 @@ export async function geminiChatWithTools(args: {
     outputTokens: totalOutput || null,
     tool_calls: toolCalls,
   }
+}
+
+// ── Fallback chains (Phase 6.x — 2026-05-31) ──────────────────────
+//
+// A "chain" is an ordered list of model IDs to try in sequence on
+// 429 / RESOURCE_EXHAUSTED. The runner skips down the list on quota
+// errors only; any other error (parse, 500, network) propagates
+// immediately so we never burn retries on a real bug.
+//
+// Chains live alongside MODEL_FAST/MODEL_SMART so generators import
+// one constant instead of hard-coding the list at the call site.
+
+export type ModelChain = readonly string[]
+
+/** Used for stories + posters — Flash-tier with 2.0 + Lite fallback. */
+export const TEXT_FAST_CHAIN: ModelChain = [MODEL_FAST, MODEL_FAST_2, MODEL_FAST_LITE] as const
+/** Used for advisor (with tools) — Pro-first, Flash with tools as fallback. */
+export const TOOLS_CHAIN: ModelChain = [MODEL_SMART, MODEL_FAST] as const
+/** Used for calendar refresh-AI — Pro grounded, Flash grounded as fallback.
+ *  2.0 / Lite are intentionally excluded — googleSearch tool is stable
+ *  on the 2.5 series; falling back to 2.5 Flash preserves grounding
+ *  rather than silently dropping it. */
+export const GROUNDED_CHAIN: ModelChain = [MODEL_SMART, MODEL_FAST] as const
+
+export interface FallbackAttempt {
+  model: string
+  /** Undefined when this attempt succeeded (always the last entry). */
+  error?: string
+  /** True when error matched the quota class + we tried the next model. */
+  quotaSkip?: boolean
+}
+
+export interface GenerateWithFallbackResult extends GenerateResultWithGrounding {
+  /** Model that actually produced the returned text. */
+  modelUsed: string
+  /** Ordered attempt log — the LAST entry is always the successful (or
+   *  final-failure) attempt. Useful for telemetry + the UI banner. */
+  attempts: FallbackAttempt[]
+}
+
+/**
+ * Detects the quota-class errors we treat as "try the next model in
+ * the chain". Anything else propagates immediately. Matches the SDK
+ * error strings + the formal RESOURCE_EXHAUSTED status enum.
+ */
+export function isQuotaError(err: unknown): boolean {
+  const raw = err instanceof Error ? err.message : String(err)
+  return /429|RESOURCE_EXHAUSTED|quota|rate.?limit/i.test(raw)
+}
+
+/**
+ * Walks `chain` in order, calling geminiGenerate with each model
+ * until one succeeds or the chain is exhausted. Quota errors skip
+ * to the next; non-quota errors throw immediately. Returns the
+ * successful generation along with which model produced it.
+ *
+ * `args.model` is IGNORED — chains are the only way to pick a model
+ * here. Callers wanting a single-shot keep using geminiGenerate.
+ */
+export async function geminiGenerateWithFallback(
+  args: Omit<GenerateArgs, 'model'>,
+  chain: ModelChain,
+): Promise<GenerateWithFallbackResult> {
+  if (chain.length === 0) throw new Error('[gemini] empty fallback chain')
+  const attempts: FallbackAttempt[] = []
+  for (let i = 0; i < chain.length; i++) {
+    const model = chain[i]!
+    try {
+      const r = await geminiGenerate({ ...args, model })
+      attempts.push({ model })
+      return { ...r, modelUsed: model, attempts }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!isQuotaError(err)) {
+        attempts.push({ model, error: msg })
+        throw err
+      }
+      attempts.push({ model, error: msg, quotaSkip: true })
+      console.warn(`[gemini/fallback] ${model} quota-skipped (${i + 1}/${chain.length}): ${humanizeGeminiError(err)}`)
+    }
+  }
+  const last = attempts[attempts.length - 1]!
+  throw new Error(`All ${chain.length} models in chain hit quota. Last error from ${last.model}: ${last.error}`)
+}
+
+/**
+ * Tool-chat equivalent for the advisor. Same skip-on-quota semantics.
+ * Crucially, the fallback model KEEPS tools (Flash supports function
+ * calling) — earlier Phase-4 fallback dropped tools in exchange for
+ * survival; now we get both.
+ */
+export async function geminiChatWithToolsAndFallback(
+  args: Omit<Parameters<typeof geminiChatWithTools>[0], 'model'>,
+  chain: ModelChain,
+): Promise<Awaited<ReturnType<typeof geminiChatWithTools>> & {
+  modelUsed: string
+  attempts: FallbackAttempt[]
+}> {
+  if (chain.length === 0) throw new Error('[gemini] empty fallback chain')
+  const attempts: FallbackAttempt[] = []
+  for (let i = 0; i < chain.length; i++) {
+    const model = chain[i]!
+    try {
+      const r = await geminiChatWithTools({ ...args, model })
+      attempts.push({ model })
+      return { ...r, modelUsed: model, attempts }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!isQuotaError(err)) {
+        attempts.push({ model, error: msg })
+        throw err
+      }
+      attempts.push({ model, error: msg, quotaSkip: true })
+      console.warn(`[gemini/fallback/tools] ${model} quota-skipped (${i + 1}/${chain.length})`)
+    }
+  }
+  const last = attempts[attempts.length - 1]!
+  throw new Error(`All ${chain.length} models in tools-chain hit quota. Last error from ${last.model}: ${last.error}`)
 }

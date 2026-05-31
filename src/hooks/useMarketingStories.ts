@@ -71,7 +71,7 @@ export function useGenerateStoryBatch() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (askingFor: AskingForFilter = 'both') =>
-      adminPost<GenerateResponse>('/marketing/stories/generate', { asking_for: askingFor }),
+      adminPost<GenerateResponse & { model_used?: string }>('/marketing/stories/generate', { asking_for: askingFor }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'marketing', 'stories'] })
       // Refresh Gemini quota banner — the call we just made is on

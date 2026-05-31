@@ -43,6 +43,7 @@ interface CreateThreadResponse {
 interface SendMessageResponse {
   ok: true
   assistant_message: AdvisorMessage
+  model_used?: string
 }
 
 export function useAdvisorThreads() {

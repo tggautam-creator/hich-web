@@ -27,9 +27,14 @@ import {
   type ServiceUsage,
   type ApiUsageResponse,
 } from './useAdminApiUsage'
-import type { CostFeature } from '@/lib/marketing/costs'
+import { FEATURE_COST_ESTIMATES, type CostFeature, type GeminiTier } from '@/lib/marketing/costs'
 
-export type GeminiService = 'gemini_flash' | 'gemini_pro' | 'gemini_flash_image'
+export type GeminiService =
+  | 'gemini_flash'
+  | 'gemini_pro'
+  | 'gemini_flash_image'
+  | 'gemini_flash_2'
+  | 'gemini_flash_lite'
 
 export type QuotaStatus = 'ok' | 'near' | 'exhausted'
 
@@ -58,12 +63,29 @@ const GEMINI_SERVICES: ReadonlyArray<GeminiService> = [
   'gemini_flash',
   'gemini_pro',
   'gemini_flash_image',
+  'gemini_flash_2',
+  'gemini_flash_lite',
 ]
 
 const FALLBACK_LABEL: Record<GeminiService, string> = {
-  gemini_flash:       'Gemini Flash',
-  gemini_pro:         'Gemini Pro',
+  gemini_flash:       'Gemini 2.5 Flash',
+  gemini_pro:         'Gemini 2.5 Pro',
   gemini_flash_image: 'Gemini Flash Image',
+  gemini_flash_2:     'Gemini 2.0 Flash',
+  gemini_flash_lite:  'Gemini Flash Lite',
+}
+
+/** Maps a Gemini model ID (as used by costs.ts tiers + the server)
+ *  to the api_usage_daily service token. Lets us walk a CostFeature's
+ *  chain and check quota status for each tier in order. */
+function tierToService(tier: GeminiTier): GeminiService {
+  switch (tier) {
+    case 'gemini-2.5-flash':       return 'gemini_flash'
+    case 'gemini-2.5-pro':         return 'gemini_pro'
+    case 'gemini-2.5-flash-image': return 'gemini_flash_image'
+    case 'gemini-2.0-flash':       return 'gemini_flash_2'
+    case 'gemini-2.5-flash-lite':  return 'gemini_flash_lite'
+  }
 }
 
 /**
@@ -124,34 +146,27 @@ export function useGeminiQuota(): GeminiQuotaSnapshot {
 }
 
 /**
- * Map a CostFeature → the Gemini service whose quota gates it. Lets
- * a Generate button look up "what's my quota status?" without
- * importing the costs module's tier list.
+ * Map a CostFeature → the Gemini service of its CHAIN HEAD (i.e.
+ * the preferred tier). Kept for callers that want the primary
+ * quota's status. For chain-aware checks (all-exhausted, primary-
+ * exhausted) use quotaChainForFeature() below.
  *
- * Param is typed as CostFeature (not string) + the default branch
- * uses a `never` assertion so adding a 7th CostFeature without
- * mapping it here is a COMPILE error — not a silent no-op. The
- * costs.ts protocol ("New surfaces must be added here BEFORE wiring
- * a button") only works if this enforcement exists.
+ * Both helpers derive the chain from FEATURE_COST_ESTIMATES.tiers so
+ * adding a CostFeature without wiring its tiers list compile-fails.
  */
 export function quotaServiceForFeature(feature: CostFeature): GeminiService | null {
-  switch (feature) {
-    case 'story-batch-single-audience':
-    case 'story-batch-both':
-    case 'poster-batch':
-      return 'gemini_flash'
-    case 'poster-image-gen':
-      return 'gemini_flash_image'
-    case 'calendar-refresh-ai':
-    case 'advisor-message':
-      // Advisor falls back to Flash on Pro 429, but the user-facing
-      // gate is the Pro quota — that's what triggers the fallback.
-      return 'gemini_pro'
-    default: {
-      // Exhaustiveness check — TS errors if a new CostFeature is
-      // added to costs.ts without a case above.
-      const _exhaustive: never = feature
-      return _exhaustive
-    }
-  }
+  const chain = FEATURE_COST_ESTIMATES[feature]?.tiers
+  if (!chain || chain.length === 0) return null
+  return tierToService(chain[0]!)
+}
+
+/**
+ * The full chain of services a feature can try, in order. Length 1
+ * for single-tier features (poster-image-gen); 2-3 for everything
+ * else. Drives the chain-aware "fully disabled = ALL tiers
+ * exhausted" check in useQuotaGate.
+ */
+export function quotaChainForFeature(feature: CostFeature): GeminiService[] {
+  const chain = FEATURE_COST_ESTIMATES[feature]?.tiers ?? []
+  return chain.map(tierToService)
 }

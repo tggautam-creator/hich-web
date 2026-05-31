@@ -442,7 +442,11 @@ adminMarketingRouter.post(
         res.status(500).json({ error: { code: 'SEND_FAILED', message: result.error ?? 'send failed' } })
         return
       }
-      res.status(200).json({ ok: true, assistant_message: result.assistant_message })
+      res.status(200).json({
+        ok: true,
+        assistant_message: result.assistant_message,
+        model_used: result.model_used,
+      })
     } catch (err) {
       next(err)
     }

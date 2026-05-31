@@ -40,6 +40,13 @@ export const SERVICES = [
   'gemini_flash',
   'gemini_pro',
   'gemini_flash_image',
+  // Phase 6.x fallback tier — gemini-2.0-flash + gemini-2.5-flash-lite
+  // both have separate daily quota buckets from 2.5 Flash, so the
+  // marketing generators can chain through them when the primary
+  // model rate-limits. Tracked so /admin/api-usage shows where
+  // traffic is actually landing.
+  'gemini_flash_2',
+  'gemini_flash_lite',
 ] as const
 
 export type Service = (typeof SERVICES)[number]
@@ -122,6 +129,18 @@ export const API_QUOTAS: Record<Service, QuotaConfig> = {
     monthly: null,
     notes: 'Poster image generation. Free-tier 100 req/day.',
   },
+  gemini_flash_2: {
+    label: 'Gemini 2.0 Flash',
+    daily: 1500,
+    monthly: null,
+    notes: 'Fallback tier when 2.5 Flash is rate-limited. Separate free-tier quota bucket (1500 req/day). Resets at UTC midnight.',
+  },
+  gemini_flash_lite: {
+    label: 'Gemini 2.5 Flash Lite',
+    daily: 1500,
+    monthly: null,
+    notes: 'Last-resort fallback after 2.5 Flash + 2.0 Flash both quota-exhaust. Lower quality but separate quota bucket (1500 req/day).',
+  },
 }
 
 /**
@@ -133,12 +152,16 @@ export type GeminiModel =
   | 'gemini-2.5-flash'
   | 'gemini-2.5-pro'
   | 'gemini-2.5-flash-image'
+  | 'gemini-2.0-flash'
+  | 'gemini-2.5-flash-lite'
 
 export function geminiModelToService(model: string): Service | null {
   switch (model) {
     case 'gemini-2.5-flash':       return 'gemini_flash'
     case 'gemini-2.5-pro':         return 'gemini_pro'
     case 'gemini-2.5-flash-image': return 'gemini_flash_image'
+    case 'gemini-2.0-flash':       return 'gemini_flash_2'
+    case 'gemini-2.5-flash-lite':  return 'gemini_flash_lite'
     default:                       return null
   }
 }

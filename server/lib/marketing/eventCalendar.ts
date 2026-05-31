@@ -10,7 +10,7 @@
  * persisted per-event so the same reminder doesn't keep nagging.
  */
 import { supabaseAdmin } from '../supabaseAdmin.ts'
-import { geminiGenerate, humanizeGeminiError, MODEL_SMART, isGeminiConfigured } from './gemini.ts'
+import { geminiGenerateWithFallback, humanizeGeminiError, MODEL_SMART, GROUNDED_CHAIN, isGeminiConfigured } from './gemini.ts'
 import { BRAND_SYSTEM_PROMPT } from './brandContext.ts'
 
 export type EventCategory = 'holiday' | 'academic' | 'campus' | 'travel-trigger' | 'custom'
@@ -421,6 +421,8 @@ export async function refreshAiEventSuggestions(): Promise<{
   skipped_invalid?: number
   /** Per-event DB insert errors that aren't duplicates (e.g. RLS, schema). */
   insert_errors?: string[]
+  /** Model that actually produced the suggestions (fallback chain). */
+  model_used?: string
 }> {
   if (!isGeminiConfigured()) {
     return { ok: false, inserted: 0, skipped: 0, reason: 'GEMINI_API_KEY not configured' }
@@ -501,11 +503,11 @@ JSON object specified above.
 
   let raw: string
   let groundingUrls: string[] = []
+  let modelUsed: string = MODEL_SMART
   try {
-    const result = await geminiGenerate({
+    const result = await geminiGenerateWithFallback({
       systemPrompt: BRAND_SYSTEM_PROMPT,
       userPrompt,
-      model: MODEL_SMART,
       temperature: 0.6,
       // Bumped 4096 → 8192. Grounded mode adds preamble + the model
       // can't use JSON-mode so it spends extra tokens on whitespace.
@@ -514,11 +516,12 @@ JSON object specified above.
       maxOutputTokens: 8192,
       useGoogleSearch: true,
       thinkingBudget: 1024,
-    })
+    }, GROUNDED_CHAIN)
     raw = result.text
+    modelUsed = result.modelUsed
     if (result.groundingUrls) {
       groundingUrls = result.groundingUrls
-      console.log(`[marketing/events] AI refresh grounded on ${groundingUrls.length} source(s)`)
+      console.log(`[marketing/events] AI refresh grounded on ${groundingUrls.length} source(s) via ${modelUsed}`)
     }
   } catch (err) {
     return {
@@ -596,6 +599,7 @@ JSON object specified above.
     skipped_duplicate: skippedDuplicate,
     skipped_invalid: skippedInvalid,
     insert_errors: errors.length > 0 ? errors : undefined,
+    model_used: modelUsed,
     ...(groundingUrls.length > 0 ? { sources_count: groundingUrls.length } : {}),
   }
 }

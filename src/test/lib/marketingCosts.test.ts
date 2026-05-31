@@ -67,11 +67,12 @@ describe('costDisclosure', () => {
 })
 
 describe('costTagline', () => {
-  it('uses tier nickname for single-tier features', () => {
-    expect(costTagline('poster-batch')).toMatch(/^Flash · /)
-    expect(costTagline('calendar-refresh-ai')).toMatch(/^Pro · /)
-  })
-  it('joins tiers with → for variable-tier features', () => {
+  it('joins chain tiers with → for fallback-enabled features', () => {
+    // poster-batch now chains Flash → 2.0 Flash → Flash Lite
+    expect(costTagline('poster-batch')).toMatch(/^Flash→2\.0 Flash→Flash Lite · /)
+    // calendar-refresh-ai is Pro → Flash
+    expect(costTagline('calendar-refresh-ai')).toMatch(/^Pro→Flash · /)
+    // advisor is Pro → Flash
     expect(costTagline('advisor-message')).toMatch(/^Pro→Flash · /)
   })
 })
@@ -105,7 +106,7 @@ describe('FEATURE_COST_ESTIMATES snapshot (change-review gate)', () => {
           "includesGrounding": false,
           "maxUsd": 0.05,
           "minUsd": 0.001,
-          "rationale": "One advisor message turn. Hits Gemini Pro by default; on quota hit (~50 Pro req/day on free tier) falls back to Gemini Flash. Cost varies with tool-call rounds and conversation length.",
+          "rationale": "One advisor message turn with tool access. Hits Gemini Pro by default; on quota hit falls back to 2.5 Flash WITH TOOLS PRESERVED. Cost varies with tool-call rounds and conversation length.",
           "tiers": [
             "gemini-2.5-pro",
             "gemini-2.5-flash",
@@ -115,20 +116,23 @@ describe('FEATURE_COST_ESTIMATES snapshot (change-review gate)', () => {
           "feature": "calendar-refresh-ai",
           "includesGrounding": true,
           "maxUsd": 0.08,
-          "minUsd": 0.04,
-          "rationale": "Asks Gemini Pro to propose UC Davis student events. Uses Google Search grounding for real concert/festival dates — $0.035 grounding surcharge plus ~$0.03 in tokens.",
+          "minUsd": 0.01,
+          "rationale": "Asks Gemini Pro to propose UC Davis student events with Google Search grounding ($0.035 surcharge + ~$0.03 in tokens). On Pro quota exhaustion (~50 req/day free tier), falls back to 2.5 Flash with grounding still attached.",
           "tiers": [
             "gemini-2.5-pro",
+            "gemini-2.5-flash",
           ],
         },
         "poster-batch": {
           "feature": "poster-batch",
           "includesGrounding": false,
           "maxUsd": 0.005,
-          "minUsd": 0.001,
-          "rationale": "Generates 1 poster copy (headline + body + image prompt) via Gemini Flash. Image generation is a separate paid call.",
+          "minUsd": 0.0005,
+          "rationale": "Generates 1 poster copy (headline + body + image prompt) via Gemini Flash. Auto-falls back to 2.0 Flash or Flash Lite on quota exhaustion. Image generation is a separate paid call.",
           "tiers": [
             "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "gemini-2.5-flash-lite",
           ],
         },
         "poster-image-gen": {
@@ -145,20 +149,24 @@ describe('FEATURE_COST_ESTIMATES snapshot (change-review gate)', () => {
           "feature": "story-batch-both",
           "includesGrounding": false,
           "maxUsd": 0.02,
-          "minUsd": 0.003,
-          "rationale": "Generates up to 6 corridor stories via Gemini Flash (one per top corridor today).",
+          "minUsd": 0.001,
+          "rationale": "Generates up to 6 corridor stories via Gemini Flash. Auto-falls back to 2.0 Flash or Flash Lite on quota exhaustion.",
           "tiers": [
             "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "gemini-2.5-flash-lite",
           ],
         },
         "story-batch-single-audience": {
           "feature": "story-batch-single-audience",
           "includesGrounding": false,
           "maxUsd": 0.02,
-          "minUsd": 0.001,
-          "rationale": "Generates 1–6 corridor stories for one audience via Gemini Flash (one call per top corridor, capped at 6).",
+          "minUsd": 0.0005,
+          "rationale": "Generates 1–6 corridor stories for one audience via Gemini Flash. Auto-falls back to 2.0 Flash or Flash Lite on quota exhaustion (separate quota buckets, cheaper output).",
           "tiers": [
             "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "gemini-2.5-flash-lite",
           ],
         },
       }

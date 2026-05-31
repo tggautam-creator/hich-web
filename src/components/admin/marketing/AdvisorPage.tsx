@@ -15,7 +15,7 @@ import {
   type AdvisorMessage,
   type AdvisorThread,
 } from '@/hooks/useMarketingAdvisor'
-import { costTagline } from '@/lib/marketing/costs'
+import { costTagline, fallbackBanner } from '@/lib/marketing/costs'
 import { NoAiCostBadge, GeminiQuotaBanner, useQuotaGate } from './_shared'
 
 export default function AdvisorPage() {
@@ -244,6 +244,22 @@ function ChatPanel({ threadId }: { threadId: string }) {
             </div>
           </div>
         )}
+        {sendMut.isSuccess && sendMut.data && (() => {
+          // One-shot banner after a send completes: surface when the
+          // server's fallback chain picked a non-head model. Sits
+          // just under the most recent assistant message, dim.
+          const banner = fallbackBanner(sendMut.data.model_used, 'gemini-2.5-pro')
+          return banner
+            ? (
+              <p
+                data-testid="advisor-fallback-banner"
+                className="text-[10px] text-warning text-center"
+              >
+                {banner}
+              </p>
+            )
+            : null
+        })()}
         {sendMut.isError && (
           <div className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger">
             {sendMut.error.message}

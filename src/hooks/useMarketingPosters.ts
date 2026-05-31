@@ -74,6 +74,7 @@ interface GenerateResponse {
   item_count: number
   skipped_existing: boolean
   reason?: string
+  model_used?: string
 }
 
 export function useGeneratePosterBatch() {

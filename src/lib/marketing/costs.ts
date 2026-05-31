@@ -19,7 +19,7 @@
  *     forces a deliberate edit if estimates change.
  */
 
-export const PRICING_LAST_VERIFIED = '2026-05-30' as const
+export const PRICING_LAST_VERIFIED = '2026-05-31' as const
 export const PRICING_SOURCE_URL = 'https://ai.google.dev/pricing' as const
 
 // ── Model-level pricing ────────────────────────────────────────────
@@ -28,6 +28,8 @@ export type GeminiTier =
   | 'gemini-2.5-flash'
   | 'gemini-2.5-pro'
   | 'gemini-2.5-flash-image'
+  | 'gemini-2.0-flash'
+  | 'gemini-2.5-flash-lite'
 
 export interface GeminiTextPricing {
   /** USD per 1,000,000 input tokens. */
@@ -48,10 +50,15 @@ export const GEMINI_MODEL_PRICING: {
   'gemini-2.5-flash': GeminiTextPricing
   'gemini-2.5-pro': GeminiTextPricing
   'gemini-2.5-flash-image': GeminiImagePricing
+  'gemini-2.0-flash': GeminiTextPricing
+  'gemini-2.5-flash-lite': GeminiTextPricing
 } = {
   'gemini-2.5-flash':       { inputPerMTokens: 0.30, outputPerMTokens: 2.50, freeTierRequestsPerDay: 1500 },
   'gemini-2.5-pro':         { inputPerMTokens: 1.25, outputPerMTokens: 10.0, freeTierRequestsPerDay:   50 },
   'gemini-2.5-flash-image': { perImage: 0.039, freeTierImagesPerDay: 100 },
+  // Fallback tier — older but cheaper, separate quota buckets.
+  'gemini-2.0-flash':       { inputPerMTokens: 0.10, outputPerMTokens: 0.40, freeTierRequestsPerDay: 1500 },
+  'gemini-2.5-flash-lite':  { inputPerMTokens: 0.10, outputPerMTokens: 0.40, freeTierRequestsPerDay: 1500 },
 }
 
 /**
@@ -97,24 +104,24 @@ export interface FeatureCostEstimate {
 export const FEATURE_COST_ESTIMATES: Record<CostFeature, FeatureCostEstimate> = {
   'story-batch-single-audience': {
     feature: 'story-batch-single-audience',
-    tiers: ['gemini-2.5-flash'],
-    minUsd: 0.001, maxUsd: 0.02,
+    tiers: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite'],
+    minUsd: 0.0005, maxUsd: 0.02,
     includesGrounding: false,
-    rationale: 'Generates 1–6 corridor stories for one audience via Gemini Flash (one call per top corridor, capped at 6).',
+    rationale: 'Generates 1–6 corridor stories for one audience via Gemini Flash. Auto-falls back to 2.0 Flash or Flash Lite on quota exhaustion (separate quota buckets, cheaper output).',
   },
   'story-batch-both': {
     feature: 'story-batch-both',
-    tiers: ['gemini-2.5-flash'],
-    minUsd: 0.003, maxUsd: 0.02,
+    tiers: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite'],
+    minUsd: 0.001, maxUsd: 0.02,
     includesGrounding: false,
-    rationale: 'Generates up to 6 corridor stories via Gemini Flash (one per top corridor today).',
+    rationale: 'Generates up to 6 corridor stories via Gemini Flash. Auto-falls back to 2.0 Flash or Flash Lite on quota exhaustion.',
   },
   'poster-batch': {
     feature: 'poster-batch',
-    tiers: ['gemini-2.5-flash'],
-    minUsd: 0.001, maxUsd: 0.005,
+    tiers: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite'],
+    minUsd: 0.0005, maxUsd: 0.005,
     includesGrounding: false,
-    rationale: 'Generates 1 poster copy (headline + body + image prompt) via Gemini Flash. Image generation is a separate paid call.',
+    rationale: 'Generates 1 poster copy (headline + body + image prompt) via Gemini Flash. Auto-falls back to 2.0 Flash or Flash Lite on quota exhaustion. Image generation is a separate paid call.',
   },
   'poster-image-gen': {
     feature: 'poster-image-gen',
@@ -125,17 +132,17 @@ export const FEATURE_COST_ESTIMATES: Record<CostFeature, FeatureCostEstimate> = 
   },
   'calendar-refresh-ai': {
     feature: 'calendar-refresh-ai',
-    tiers: ['gemini-2.5-pro'],
-    minUsd: 0.04, maxUsd: 0.08,
+    tiers: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+    minUsd: 0.01, maxUsd: 0.08,
     includesGrounding: true,
-    rationale: 'Asks Gemini Pro to propose UC Davis student events. Uses Google Search grounding for real concert/festival dates — $0.035 grounding surcharge plus ~$0.03 in tokens.',
+    rationale: 'Asks Gemini Pro to propose UC Davis student events with Google Search grounding ($0.035 surcharge + ~$0.03 in tokens). On Pro quota exhaustion (~50 req/day free tier), falls back to 2.5 Flash with grounding still attached.',
   },
   'advisor-message': {
     feature: 'advisor-message',
     tiers: ['gemini-2.5-pro', 'gemini-2.5-flash'],
     minUsd: 0.001, maxUsd: 0.05,
     includesGrounding: false,
-    rationale: 'One advisor message turn. Hits Gemini Pro by default; on quota hit (~50 Pro req/day on free tier) falls back to Gemini Flash. Cost varies with tool-call rounds and conversation length.',
+    rationale: 'One advisor message turn with tool access. Hits Gemini Pro by default; on quota hit falls back to 2.5 Flash WITH TOOLS PRESERVED. Cost varies with tool-call rounds and conversation length.',
   },
 }
 
@@ -198,7 +205,44 @@ function tierNickname(tier: GeminiTier): string {
     case 'gemini-2.5-flash': return 'Flash'
     case 'gemini-2.5-pro': return 'Pro'
     case 'gemini-2.5-flash-image': return 'Flash-image'
+    case 'gemini-2.0-flash': return '2.0 Flash'
+    case 'gemini-2.5-flash-lite': return 'Flash Lite'
   }
+}
+
+/**
+ * Human label for a Gemini model ID. Used by the fallback banner so
+ * the founder sees "Gemini 2.0 Flash" instead of "gemini-2.0-flash".
+ * Unknown IDs pass through verbatim (defensive — server can't
+ * surprise us with a model we never priced).
+ */
+export function modelLabel(id: string): string {
+  switch (id) {
+    case 'gemini-2.5-pro':         return 'Gemini 2.5 Pro'
+    case 'gemini-2.5-flash':       return 'Gemini 2.5 Flash'
+    case 'gemini-2.5-flash-lite':  return 'Gemini 2.5 Flash Lite'
+    case 'gemini-2.0-flash':       return 'Gemini 2.0 Flash'
+    case 'gemini-2.5-flash-image': return 'Gemini 2.5 Flash Image'
+    default:                       return id
+  }
+}
+
+/**
+ * Returns a one-line banner explaining a fallback event, or null
+ * when no fallback fired (modelUsed === headModel). Used by every
+ * generator result toast / row subtitle. Plain text, no emoji.
+ *
+ * modelUsed may be a comma-joined set (story batches across
+ * corridors can split tiers); in that case the banner enumerates
+ * all non-head models.
+ */
+export function fallbackBanner(modelUsed: string | undefined | null, headModel: string): string | null {
+  if (!modelUsed) return null
+  const ids = modelUsed.split(',').map((s) => s.trim()).filter(Boolean)
+  if (ids.length === 0) return null
+  if (ids.every((id) => id === headModel)) return null
+  const usedLabels = Array.from(new Set(ids.map(modelLabel))).join(' + ')
+  return `Used ${usedLabels} — ${modelLabel(headModel)} was rate-limited.`
 }
 
 /**
