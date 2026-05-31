@@ -61,6 +61,17 @@ export function humanizeGeminiError(err: unknown): string {
   if (/timeout|deadline/i.test(raw)) {
     return 'Gemini API timed out. The model may be temporarily overloaded; try again in a moment.'
   }
+  // 503 UNAVAILABLE — model overload / high demand. Common on Pro
+  // during peak hours. If this surfaces it means EVERY model in the
+  // chain was overloaded simultaneously; ask the founder to retry.
+  if (/503|UNAVAILABLE|currently experiencing|overload|temporarily unavailable/i.test(raw)) {
+    return 'Gemini is overloaded across every fallback model right now. This is usually a 1-5 minute spike — try again in a moment.'
+  }
+  // 500 INTERNAL — should be rare after chain fallback already burned
+  // every option.
+  if (/500\b|INTERNAL|internal error/i.test(raw)) {
+    return 'Gemini returned an internal error across the full fallback chain. Try again in a moment; if it persists, check status.cloud.google.com.'
+  }
   // Fall through to the raw message but trim it to something readable.
   return raw.length > 300 ? `${raw.slice(0, 297)}...` : raw
 }
@@ -469,13 +480,33 @@ export interface GenerateWithFallbackResult extends GenerateResultWithGrounding 
 }
 
 /**
- * Detects the quota-class errors we treat as "try the next model in
- * the chain". Anything else propagates immediately. Matches the SDK
- * error strings + the formal RESOURCE_EXHAUSTED status enum.
+ * Detects the transient/quota-class errors we treat as "try the next
+ * model in the chain". Anything else propagates immediately so we
+ * never burn retries on a real bug.
+ *
+ * Buckets:
+ * - 429 / RESOURCE_EXHAUSTED / "quota" / "rate-limit" — free-tier
+ *   daily cap hit. The fallback model has a separate counter.
+ * - 503 / UNAVAILABLE / "overload" — Google's "this model is
+ *   currently experiencing high demand" response (common on Pro
+ *   during peak hours). The fallback model is on different hardware
+ *   so it's often the right next step.
+ * - 500 / INTERNAL — transient internal error. Worth trying the next
+ *   model since it costs nothing and the alternative is a hard fail.
+ *
+ * Renamed from "Quota" → "Retryable" would be cleaner but kept for
+ * call-site stability; the name now under-promises what it catches.
  */
 export function isQuotaError(err: unknown): boolean {
   const raw = err instanceof Error ? err.message : String(err)
-  return /429|RESOURCE_EXHAUSTED|quota|rate.?limit/i.test(raw)
+  // Quota-class
+  if (/429|RESOURCE_EXHAUSTED|quota|rate.?limit/i.test(raw)) return true
+  // Overload / transient — Google docs call this out as "retry with
+  // exponential backoff OR switch model"; chain-fallback is our
+  // version of the second option.
+  if (/503|UNAVAILABLE|overload|currently experiencing|temporarily unavailable/i.test(raw)) return true
+  if (/500\b|INTERNAL|internal error/i.test(raw)) return true
+  return false
 }
 
 /**
