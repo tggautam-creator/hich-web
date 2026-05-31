@@ -413,6 +413,8 @@ export async function refreshAiEventSuggestions(): Promise<{
   inserted: number
   skipped: number
   reason?: string
+  /** Number of Google Search source URLs the model consulted. */
+  sources_count?: number
 }> {
   if (!isGeminiConfigured()) {
     return { ok: false, inserted: 0, skipped: 0, reason: 'GEMINI_API_KEY not configured' }
@@ -429,56 +431,81 @@ export async function refreshAiEventSuggestions(): Promise<{
 
   const userPrompt = `
 Today's date: ${today}.
-I run TAGO, a UC Davis student carpool app. I need to push marketing
-1-3 weeks before any event that drives ride demand on Davis-anchored
+
+You have GOOGLE SEARCH available — USE IT to find real, current
+events. Don't rely on training-data dates that may be stale.
+
+I run TAGO, a UC Davis student carpool app. I push marketing 1-3
+weeks before any event that drives ride demand on Davis-anchored
 corridors (Davis ⇌ SoCal / Bay Area / Sacramento / Tahoe).
 
 I already have these events on my calendar between now and ${sixMonthsAhead}:
 ${existingTitlesByDate || '  (none yet)'}
 
-Suggest 5-10 ADDITIONAL events worth targeting that are NOT in the
-list above. Focus on:
-  - Long weekends / federal holidays I might have missed
-  - UC Davis-specific moments (Aggie sports, Pride, Sunrise Music
-    Festival, finals weeks I forgot)
-  - Travel triggers anchored to CA students (other festivals, ski
-    weekends, championship games, big concerts in the Bay/SoCal)
-  - Cultural moments (Halloween weekend, Valentine's, etc.)
+Search Google for 8-12 ADDITIONAL events between ${today} and
+${sixMonthsAhead} that are NOT in my list above. Prioritize:
+  - **Concerts in Sacramento, Bay Area, SoCal** that UC Davis
+    students would drive to (search "concerts Sacramento [month]
+    2026/2027", "BottleRock Napa lineup 2026", etc.)
+  - **UC Davis Aggie home games** (search "UC Davis football
+    schedule 2026", "UC Davis basketball home games 2027")
+  - **Mondavi Center / campus events** at UC Davis
+  - **Festivals** in CA that draw students (Coachella, Stagecoach,
+    Outside Lands, Sunrise Festival, EDC Vegas, etc. — verify
+    THIS year's exact dates)
+  - **Sacramento Kings / Golden 1 Center concerts** (heavy Davis
+    traffic; 20 min drive)
+  - **Lesser-known holidays** I might have missed (Indigenous
+    Peoples Day, Cesar Chavez Day, Juneteenth, Lunar New Year)
 
-Skip generic non-travel-triggering events. Skip anything already in
-my list. All event_dates MUST be between ${today} and ${sixMonthsAhead}.
+Skip generic non-travel-triggering events. Skip anything already
+in my list. All event_dates MUST be verified real dates between
+${today} and ${sixMonthsAhead} — if Google Search doesn't confirm
+a date, skip the event rather than guess.
 
-Return ONLY a JSON object (no markdown fences) with this shape:
+Output a JSON object only (no markdown fences, no prose around
+it) with this shape:
 {
   "events": [
     {
-      "title": "...",                          // ≤80 chars
+      "title": "...",                          // ≤80 chars; include venue if a concert
       "event_date": "YYYY-MM-DD",
-      "end_date": "YYYY-MM-DD" or null,        // optional multi-day
+      "end_date": "YYYY-MM-DD" or null,
       "category": "holiday" | "academic" | "campus" | "travel-trigger",
-      "location_hint": "Davis | Bay Area | SoCal | Tahoe | ..." or null,
-      "description": "1-2 sentences. Why this event drives ride demand.",
+      "location_hint": "Davis | Bay Area | SoCal | Tahoe | Sacramento | Reno | ...",
+      "description": "1-2 sentences. Why this event drives ride demand. Include venue + headliner if applicable.",
       "target_audience": "rider" | "driver" | "both"
     }
   ]
 }
 
-Be concrete. If you're not sure of an exact date, skip the event
-entirely rather than guess.
+If you can't fill 8-12 with confidence, return fewer — quality
+over quantity.
 `.trim()
 
   let raw: string
+  let groundingUrls: string[] = []
   try {
     const result = await geminiGenerate({
       systemPrompt: BRAND_SYSTEM_PROMPT,
       userPrompt,
       model: MODEL_SMART,
       temperature: 0.6,
-      maxOutputTokens: 2048,
-      responseMimeType: 'application/json',
-      thinkingBudget: 256,
+      maxOutputTokens: 4096,
+      // Enable Google Search grounding so suggestions are based on
+      // real current event listings (concert dates, festival lineups,
+      // UC Davis schedules) rather than potentially-stale training
+      // data. Note: googleSearch is incompatible with
+      // responseMimeType:'application/json' — we parse JSON out of
+      // free-form text below.
+      useGoogleSearch: true,
+      thinkingBudget: 1024,
     })
     raw = result.text
+    if (result.groundingUrls) {
+      groundingUrls = result.groundingUrls
+      console.log(`[marketing/events] AI refresh grounded on ${groundingUrls.length} source(s)`)
+    }
   } catch (err) {
     return {
       ok: false,
@@ -488,18 +515,28 @@ entirely rather than guess.
     }
   }
 
+  // Without responseMimeType=JSON the model may emit prose around
+  // the JSON object (e.g. "Based on my search, here are the events:
+  // {...} Let me know if you need more."). Robust extract: find the
+  // first '{' and last '}' that bracket a valid parseable region.
   let parsed: { events?: AiEventSuggestion[] }
   try {
     const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
     const start = cleaned.indexOf('{')
     const end = cleaned.lastIndexOf('}')
+    if (start < 0 || end < start) {
+      return {
+        ok: false, inserted: 0, skipped: 0,
+        reason: `Gemini response has no JSON object braces (grounding may have produced prose-only output). First 200 chars: ${raw.slice(0, 200)}`,
+      }
+    }
     parsed = JSON.parse(cleaned.slice(start, end + 1)) as { events?: AiEventSuggestion[] }
   } catch (err) {
     return {
       ok: false,
       inserted: 0,
       skipped: 0,
-      reason: `unparseable Gemini response: ${err instanceof Error ? err.message : String(err)}`,
+      reason: `unparseable Gemini response: ${err instanceof Error ? err.message : String(err)}. First 200 chars: ${raw.slice(0, 200)}`,
     }
   }
 
@@ -535,5 +572,10 @@ entirely rather than guess.
       inserted += 1
     }
   }
-  return { ok: true, inserted, skipped }
+  return {
+    ok: true,
+    inserted,
+    skipped,
+    ...(groundingUrls.length > 0 ? { sources_count: groundingUrls.length } : {}),
+  }
 }

@@ -97,7 +97,13 @@ export default function CalendarPage() {
       )}
       {refreshAi.isSuccess && refreshAi.data && (
         <div className="rounded-lg border border-success/30 bg-success/5 px-4 py-2 text-sm text-text-primary">
-          AI suggestions: {refreshAi.data.inserted} added, {refreshAi.data.skipped} skipped (duplicates or invalid).
+          AI suggestions: {refreshAi.data.inserted} added, {refreshAi.data.skipped} skipped (duplicates or invalid)
+          {refreshAi.data.sources_count != null && refreshAi.data.sources_count > 0 && (
+            <span className="ml-2 text-xs text-text-secondary">
+              · verified via {refreshAi.data.sources_count} live Google Search source{refreshAi.data.sources_count === 1 ? '' : 's'}
+            </span>
+          )}
+          .
         </div>
       )}
       {refreshAi.isError && (

@@ -58,7 +58,12 @@ export function useRefreshAiEvents() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: () =>
-      adminPost<{ ok: true; inserted: number; skipped: number }>('/marketing/events/refresh-ai', {}),
+      adminPost<{
+        ok: true
+        inserted: number
+        skipped: number
+        sources_count?: number
+      }>('/marketing/events/refresh-ai', {}),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'marketing', 'events'] })
     },

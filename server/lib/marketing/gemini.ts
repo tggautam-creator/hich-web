@@ -96,6 +96,23 @@ export interface GenerateArgs {
    * response).
    */
   thinkingBudget?: number
+  /**
+   * Enable Google Search grounding so the model can pull
+   * real-time web data before answering. Required for any task
+   * that needs CURRENT information (concert tour dates, festival
+   * lineups this year, news, etc.). ~$0.035 per grounded query
+   * on paid tier — use only when training-data knowledge is
+   * stale. Incompatible with responseMimeType='application/json'
+   * + responseSchema (the search tool replaces structured output);
+   * caller must parse JSON out of free-form text when both are
+   * needed.
+   */
+  useGoogleSearch?: boolean
+}
+
+export interface GenerateResultWithGrounding extends GenerateResult {
+  /** Source URLs the model consulted via Google Search (if any). */
+  groundingUrls?: string[]
 }
 
 export interface GenerateResult {
@@ -113,9 +130,20 @@ export interface GenerateResult {
  * (stories, posters, daily briefing) uses it. The advisor agent
  * passes `MODEL_SMART` explicitly.
  */
-export async function geminiGenerate(args: GenerateArgs): Promise<GenerateResult> {
+export async function geminiGenerate(args: GenerateArgs): Promise<GenerateResultWithGrounding> {
   const client = getClient()
   const model = args.model ?? MODEL_FAST
+
+  // googleSearch and responseMimeType/responseSchema are mutually
+  // exclusive in the API. When the caller enables search, we MUST
+  // drop responseMimeType — they'll parse JSON out of free-form
+  // text instead. Document this trade-off via the warning so the
+  // caller can shape their prompt accordingly.
+  if (args.useGoogleSearch && args.responseMimeType) {
+    console.warn(
+      '[gemini] useGoogleSearch ignores responseMimeType — Google Search grounding cannot be combined with structured output. Parse JSON from text manually.',
+    )
+  }
 
   const response = await client.models.generateContent({
     model,
@@ -124,20 +152,43 @@ export async function geminiGenerate(args: GenerateArgs): Promise<GenerateResult
       systemInstruction: args.systemPrompt,
       temperature: args.temperature ?? 0.85,
       maxOutputTokens: args.maxOutputTokens ?? 1024,
-      ...(args.responseMimeType ? { responseMimeType: args.responseMimeType } : {}),
+      ...(args.responseMimeType && !args.useGoogleSearch
+        ? { responseMimeType: args.responseMimeType }
+        : {}),
       ...(args.thinkingBudget !== undefined
         ? { thinkingConfig: { thinkingBudget: args.thinkingBudget } }
+        : {}),
+      ...(args.useGoogleSearch
+        ? { tools: [{ googleSearch: {} }] as never }
         : {}),
     },
   })
 
   const text = response.text ?? ''
   const usage = response.usageMetadata
+
+  // Extract grounding citations if Google Search ran. Pull from
+  // candidates[0].groundingMetadata.groundingChunks[].web.uri per
+  // the SDK shape. De-duplicated.
+  let groundingUrls: string[] | undefined
+  if (args.useGoogleSearch) {
+    const chunks = (response.candidates?.[0] as {
+      groundingMetadata?: { groundingChunks?: Array<{ web?: { uri?: string } }> }
+    } | undefined)?.groundingMetadata?.groundingChunks ?? []
+    const urls = new Set<string>()
+    for (const c of chunks) {
+      const u = c.web?.uri
+      if (typeof u === 'string' && u.length > 0) urls.add(u)
+    }
+    if (urls.size > 0) groundingUrls = Array.from(urls)
+  }
+
   return {
     text,
     model,
     inputTokens: usage?.promptTokenCount ?? null,
     outputTokens: usage?.candidatesTokenCount ?? null,
+    ...(groundingUrls ? { groundingUrls } : {}),
   }
 }
 
