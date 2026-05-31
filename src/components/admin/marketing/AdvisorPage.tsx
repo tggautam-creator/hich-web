@@ -15,6 +15,8 @@ import {
   type AdvisorMessage,
   type AdvisorThread,
 } from '@/hooks/useMarketingAdvisor'
+import { costTagline } from '@/lib/marketing/costs'
+import { NoAiCostBadge } from './_shared'
 
 export default function AdvisorPage() {
   const threadsQuery = useAdvisorThreads()
@@ -41,15 +43,18 @@ export default function AdvisorPage() {
       <aside className="w-64 shrink-0 flex flex-col rounded-2xl border border-border bg-white overflow-hidden">
         <header className="px-3 py-2 border-b border-border flex items-center justify-between gap-2">
           <p className="text-sm font-bold text-text-primary">Conversations</p>
-          <button
-            data-testid="new-thread"
-            type="button"
-            onClick={handleNewThread}
-            disabled={createThread.isPending}
-            className="rounded-md bg-primary px-2 py-1 text-[11px] font-semibold text-white hover:bg-primary/90 disabled:opacity-50"
-          >
-            + New
-          </button>
+          <div className="flex items-center gap-1">
+            <NoAiCostBadge testid="cost-badge-new-thread" />
+            <button
+              data-testid="new-thread"
+              type="button"
+              onClick={handleNewThread}
+              disabled={createThread.isPending}
+              className="rounded-md bg-primary px-2 py-1 text-[11px] font-semibold text-white hover:bg-primary/90 disabled:opacity-50"
+            >
+              + New
+            </button>
+          </div>
         </header>
         <div className="flex-1 overflow-y-auto">
           {threadsQuery.isLoading && (
@@ -98,6 +103,9 @@ export default function AdvisorPage() {
               >
                 {createThread.isPending ? 'Starting…' : 'Start new conversation'}
               </button>
+              <div className="mt-2 flex justify-center">
+                <NoAiCostBadge testid="cost-badge-start-thread" />
+              </div>
             </div>
           </div>
         )}
@@ -255,9 +263,12 @@ function ChatPanel({ threadId }: { threadId: string }) {
             Send
           </button>
         </div>
-        <p className="mt-1 text-[10px] text-text-secondary text-right">
-          {draft.length}/4000
-        </p>
+        <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-text-secondary">
+          <span title="Cost source: src/lib/marketing/costs.ts. Pro→Flash fallback on quota.">
+            {costTagline('advisor-message')} · falls back to Flash on quota
+          </span>
+          <span>{draft.length}/4000</span>
+        </div>
       </footer>
     </>
   )

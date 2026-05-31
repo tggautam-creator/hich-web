@@ -210,6 +210,81 @@ export function CopyableField({
   )
 }
 
+// ── CostBadge + NoAiCostBadge ─────────────────────────────────────
+//
+// Inline cost-disclosure primitives. Use these on any button that
+// triggers a Gemini call so the cost surfaces at click time instead
+// of buried in a doc. Source of truth: src/lib/marketing/costs.ts.
+
+import {
+  costDisclosure,
+  costTagline,
+  estimatedCost,
+  NO_AI_COST_LABEL,
+  PRICING_LAST_VERIFIED,
+  PRICING_SOURCE_URL,
+  type CostFeature,
+} from '@/lib/marketing/costs'
+
+interface CostBadgeProps {
+  feature: CostFeature
+  /** Short variant ('~$0.039') vs long ('Flash · ~$0.039 / call'). */
+  variant?: 'short' | 'tagline'
+  testid?: string
+}
+
+export function CostBadge({ feature, variant = 'short', testid }: CostBadgeProps) {
+  const label = variant === 'tagline' ? costTagline(feature) : estimatedCost(feature)
+  const tooltip = `${costDisclosure(feature)} See ${PRICING_SOURCE_URL}.`
+  return (
+    <span
+      data-testid={testid ?? `cost-badge-${feature}`}
+      title={tooltip}
+      aria-label={tooltip}
+      className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold text-text-secondary"
+    >
+      <span aria-hidden="true">⚡</span>
+      {label}
+    </span>
+  )
+}
+
+interface NoAiCostBadgeProps {
+  testid?: string
+}
+
+export function NoAiCostBadge({ testid }: NoAiCostBadgeProps) {
+  return (
+    <span
+      data-testid={testid ?? 'no-ai-cost-badge'}
+      title={`${NO_AI_COST_LABEL} — this button writes to the database only and does not call the Gemini API.`}
+      className="inline-flex items-center gap-1 rounded-full border border-border bg-white px-2 py-0.5 text-[10px] font-semibold text-text-secondary"
+    >
+      <span aria-hidden="true">·</span>
+      {NO_AI_COST_LABEL}
+    </span>
+  )
+}
+
+/** Footer disclaimer for the marketing-panel pages. */
+export function CostFooterNote() {
+  return (
+    <p className="text-[10px] text-text-secondary mt-2">
+      Cost figures are estimates only — Google's invoice is authoritative.
+      Last verified against{' '}
+      <a
+        href={PRICING_SOURCE_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline hover:no-underline"
+      >
+        ai.google.dev/pricing
+      </a>{' '}
+      on {PRICING_LAST_VERIFIED}.
+    </p>
+  )
+}
+
 // ── KeyboardActivatable wrapper helper (for the rare div-as-toggle case) ────
 
 // eslint-disable-next-line react-refresh/only-export-components -- shared keyboard helper colocated with marketing UI atoms

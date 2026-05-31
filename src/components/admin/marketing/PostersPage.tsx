@@ -28,7 +28,8 @@ import {
   type PosterItemStatus,
 } from '@/hooks/useMarketingPosters'
 import { useMarketingEvents, type MarketingEvent } from '@/hooks/useMarketingEvents'
-import { StatusPill, CollapsibleBatchHeader, CopyableField } from './_shared'
+import { StatusPill, CollapsibleBatchHeader, CopyableField, CostBadge, CostFooterNote } from './_shared'
+import { costDisclosure } from '@/lib/marketing/costs'
 
 const LOGO_SRC = '/logo-transparent.png'
 
@@ -267,7 +268,8 @@ function GeneratorForm({
         </div>
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex items-center justify-end gap-3">
+        <CostBadge feature="poster-batch" variant="tagline" />
         <button
           data-testid="generate-poster"
           type="button"
@@ -278,6 +280,7 @@ function GeneratorForm({
           {isPending ? 'Generating…' : 'Generate poster'}
         </button>
       </div>
+      <CostFooterNote />
     </section>
   )
 }
@@ -391,12 +394,18 @@ function PosterCard({ item }: { item: PosterItem }) {
   }
 
   function handleGenerateImage() {
+    // Empty-state path also confirms now so the friction is symmetric
+    // with regenerate (audit flagged the asymmetry as the lowest-cost
+    // way to surprise the founder with a bill).
+    const ok = window.confirm(
+      `Generate an image for this poster?\n\n${costDisclosure('poster-image-gen')}\n\nContinue?`
+    )
+    if (!ok) return
     imageGen.mutate(item.id)
   }
   function handleRegenerate() {
-    // Confirm because each regen call costs ~$0.04 on Gemini paid tier.
     const ok = window.confirm(
-      'Regenerate this image? Each generation hits Gemini\'s paid API. Continue?'
+      `Regenerate this image?\n\n${costDisclosure('poster-image-gen')}\n\nContinue?`
     )
     if (!ok) return
     imageGen.mutate(item.id)
@@ -485,15 +494,18 @@ function PosterCard({ item }: { item: PosterItem }) {
                 ? "Previous image couldn't load (deleted or moved). Generate a new one below."
                 : 'No image generated yet. Copy the prompt to Gemini/ChatGPT or click below to generate it via the API.'}
             </p>
-            <button
-              data-testid={`generate-image-${item.id}`}
-              type="button"
-              onClick={handleGenerateImage}
-              disabled={isGeneratingImage}
-              className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white hover:bg-primary/90 disabled:opacity-50"
-            >
-              {isGeneratingImage ? 'Generating image…' : 'Generate image with Gemini'}
-            </button>
+            <div className="flex items-center gap-2">
+              <CostBadge feature="poster-image-gen" />
+              <button
+                data-testid={`generate-image-${item.id}`}
+                type="button"
+                onClick={handleGenerateImage}
+                disabled={isGeneratingImage}
+                className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white hover:bg-primary/90 disabled:opacity-50"
+              >
+                {isGeneratingImage ? 'Generating image…' : 'Generate image with Gemini'}
+              </button>
+            </div>
           </div>
         )}
         {imageGen.isError && imageGen.variables === item.id && (

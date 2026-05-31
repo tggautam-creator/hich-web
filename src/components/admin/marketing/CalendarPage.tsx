@@ -20,6 +20,7 @@ import {
   type EventCategory,
   type MarketingEvent,
 } from '@/hooks/useMarketingEvents'
+import { CostBadge, CostFooterNote, NoAiCostBadge } from './_shared'
 
 const CATEGORY_LABELS: Record<EventCategory, { label: string; tone: string }> = {
   holiday:          { label: 'HOLIDAY',         tone: 'bg-warning/10 text-warning' },
@@ -56,34 +57,44 @@ export default function CalendarPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            data-testid="seed-events"
-            type="button"
-            onClick={() => seed.mutate()}
-            disabled={seed.isPending}
-            className="rounded-lg border border-border bg-white px-3 py-2 text-xs font-semibold text-text-secondary hover:bg-surface disabled:opacity-50"
-          >
-            {seed.isPending ? 'Seeding…' : hasAnyEvent ? 'Re-seed defaults' : 'Seed default events'}
-          </button>
-          <button
-            data-testid="refresh-ai-events"
-            type="button"
-            onClick={() => refreshAi.mutate()}
-            disabled={refreshAi.isPending}
-            className="rounded-lg border border-primary/40 bg-primary/5 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10 disabled:opacity-50"
-          >
-            {refreshAi.isPending ? 'Asking Gemini…' : '✨ Refresh AI suggestions'}
-          </button>
-          <button
-            data-testid="add-event-toggle"
-            type="button"
-            onClick={() => setShowAdd((v) => !v)}
-            className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white hover:bg-primary/90"
-          >
-            {showAdd ? 'Cancel' : '+ Add event'}
-          </button>
+          <div className="flex flex-col items-start gap-1">
+            <button
+              data-testid="seed-events"
+              type="button"
+              onClick={() => seed.mutate()}
+              disabled={seed.isPending}
+              className="rounded-lg border border-border bg-white px-3 py-2 text-xs font-semibold text-text-secondary hover:bg-surface disabled:opacity-50"
+            >
+              {seed.isPending ? 'Seeding…' : hasAnyEvent ? 'Re-seed defaults' : 'Seed default events'}
+            </button>
+            <NoAiCostBadge />
+          </div>
+          <div className="flex flex-col items-start gap-1">
+            <button
+              data-testid="refresh-ai-events"
+              type="button"
+              onClick={() => refreshAi.mutate()}
+              disabled={refreshAi.isPending}
+              className="rounded-lg border border-primary/40 bg-primary/5 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10 disabled:opacity-50"
+            >
+              {refreshAi.isPending ? 'Asking Gemini…' : '✨ Refresh AI suggestions'}
+            </button>
+            <CostBadge feature="calendar-refresh-ai" />
+          </div>
+          <div className="flex flex-col items-start gap-1">
+            <button
+              data-testid="add-event-toggle"
+              type="button"
+              onClick={() => setShowAdd((v) => !v)}
+              className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white hover:bg-primary/90"
+            >
+              {showAdd ? 'Cancel' : '+ Add event'}
+            </button>
+            <NoAiCostBadge />
+          </div>
         </div>
       </header>
+      <CostFooterNote />
 
       {seed.isSuccess && seed.data && (
         <div className="rounded-lg border border-success/30 bg-success/5 px-4 py-2 text-sm text-text-primary">

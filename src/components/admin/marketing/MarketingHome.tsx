@@ -10,6 +10,7 @@
 import { Link } from 'react-router-dom'
 import { useMarketingConfig, useCurrentMarketingTheme } from '@/hooks/useMarketingConfig'
 import { useMarketingEvents } from '@/hooks/useMarketingEvents'
+import { PRICING_LAST_VERIFIED, PRICING_SOURCE_URL } from '@/lib/marketing/costs'
 
 export default function MarketingHome() {
   const cfg = useMarketingConfig()
@@ -25,6 +26,19 @@ export default function MarketingHome() {
         <p className="text-sm text-text-secondary">
           Daily story queue, poster ideas, smart calendar, and your AI
           marketing advisor — all in one place.
+        </p>
+        <p className="mt-1 text-[11px] text-text-secondary">
+          Buttons that call Gemini show an estimated per-click cost.
+          Figures last verified against{' '}
+          <a
+            href={PRICING_SOURCE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:no-underline"
+          >
+            ai.google.dev/pricing
+          </a>{' '}
+          on {PRICING_LAST_VERIFIED}.
         </p>
       </header>
 

@@ -31,6 +31,8 @@ import {
   GenerateButton,
   StatusPill,
   CollapsibleBatchHeader,
+  CostBadge,
+  CostFooterNote,
   onEnterOrSpace,
   type AudienceVariant,
 } from './_shared'
@@ -60,36 +62,46 @@ export default function StoriesPage() {
           </p>
         </div>
         {/* Button order matches PostersPage: rider, driver, both. */}
-        <div className="flex items-center gap-2">
-          <GenerateButton
-            testid="generate-stories-riders"
-            label="Ask riders"
-            tone="rider"
-            variant="rider"
-            inFlight={inFlight}
-            disabled={generate.isPending}
-            onClick={() => generate.mutate('rider')}
-          />
-          <GenerateButton
-            testid="generate-stories-drivers"
-            label="Ask drivers"
-            tone="driver"
-            variant="driver"
-            inFlight={inFlight}
-            disabled={generate.isPending}
-            onClick={() => generate.mutate('driver')}
-          />
-          <GenerateButton
-            testid="generate-stories-both"
-            label="Generate (both)"
-            tone="both"
-            variant="both"
-            inFlight={inFlight}
-            disabled={generate.isPending}
-            onClick={() => generate.mutate('both')}
-          />
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex items-center gap-2">
+            <GenerateButton
+              testid="generate-stories-riders"
+              label="Ask riders"
+              tone="rider"
+              variant="rider"
+              inFlight={inFlight}
+              disabled={generate.isPending}
+              onClick={() => generate.mutate('rider')}
+            />
+            <GenerateButton
+              testid="generate-stories-drivers"
+              label="Ask drivers"
+              tone="driver"
+              variant="driver"
+              inFlight={inFlight}
+              disabled={generate.isPending}
+              onClick={() => generate.mutate('driver')}
+            />
+            <GenerateButton
+              testid="generate-stories-both"
+              label="Generate (both)"
+              tone="both"
+              variant="both"
+              inFlight={inFlight}
+              disabled={generate.isPending}
+              onClick={() => generate.mutate('both')}
+            />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <CostBadge feature="story-batch-single-audience" testid="cost-badge-stories-single" />
+            <span className="text-[10px] text-text-secondary">single audience</span>
+            <span className="text-text-secondary">·</span>
+            <CostBadge feature="story-batch-both" testid="cost-badge-stories-both" />
+            <span className="text-[10px] text-text-secondary">both</span>
+          </div>
         </div>
       </header>
+      <CostFooterNote />
 
       {generate.isError && (
         <div className="rounded-lg border border-danger/30 bg-danger/5 px-4 py-2 text-sm text-danger">
