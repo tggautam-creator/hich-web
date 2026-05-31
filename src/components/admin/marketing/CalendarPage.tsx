@@ -133,7 +133,24 @@ export default function CalendarPage() {
 
       <section>
         <h2 className="text-sm font-bold text-text-primary mb-2">
-          Upcoming events ({events.length})
+          Events ({events.length})
+          {(() => {
+            // Server returns events from -14d to +400d. Split the
+            // header counts so "Upcoming (N)" doesn't lie when the
+            // list also contains a recently-finished holiday.
+            const todayIso = new Date().toLocaleDateString('sv-SE', {
+              timeZone: 'America/Los_Angeles',
+            })
+            const upcoming = events.filter((e) => e.event_date >= todayIso).length
+            const recent = events.length - upcoming
+            if (events.length === 0) return null
+            return (
+              <span className="ml-2 text-[11px] font-normal text-text-secondary">
+                — {upcoming} upcoming
+                {recent > 0 && <> · {recent} recently past</>}
+              </span>
+            )
+          })()}
         </h2>
         {query.isLoading && <p className="text-sm text-text-secondary">Loading…</p>}
         {query.error && (

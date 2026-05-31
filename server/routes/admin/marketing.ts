@@ -483,8 +483,15 @@ adminMarketingRouter.get(
   async (_req: Request, res: Response, next: NextFunction) => {
     try {
       const { listUpcomingEvents, getEventsNeedingReminder } = await import('../../lib/marketing/eventCalendar.ts')
+      // daysAhead: 400 covers a full academic year + summer
+      // commencement (longest seeded event chain ends 2027-06-12,
+      // ~13 months out). Earlier value of 180 silently hid 15 of the
+      // 23 seeded events because the window stopped at 2026-11-26.
+      // includeRecentlyPast: 14 keeps recently-finished multi-day
+      // events visible (e.g. Memorial Day weekend) so the founder can
+      // still post a retrospective if they missed the lead-time.
       const [events, reminders] = await Promise.all([
-        listUpcomingEvents({ daysAhead: 180, includeRecentlyPast: 14, limit: 200 }),
+        listUpcomingEvents({ daysAhead: 400, includeRecentlyPast: 14, limit: 200 }),
         getEventsNeedingReminder(),
       ])
       res.status(200).json({ ok: true, events, reminders })

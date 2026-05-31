@@ -107,13 +107,30 @@ function GeneratorForm({
   const [selectedEventId, setSelectedEventId] = useState<string>('')
 
   const eventsQuery = useMarketingEvents()
-  // Upcoming + same-day events, soonest first. Capped at 30 so the
-  // dropdown stays usable when the calendar fills up.
+  // Upcoming + still-ongoing events, soonest first. Capped at 30 so
+  // the dropdown stays usable when the calendar fills up.
+  //
+  // todayIso is computed in PT (America/Los_Angeles), not UTC —
+  // marketing_events.event_date is a Postgres DATE seeded with
+  // California-local calendar dates. Using UTC here meant any event
+  // whose date equals today (PT) silently dropped from the dropdown
+  // anytime after ~5pm PT, exactly the evening posting window when
+  // the founder loads context. Sweden's en-CA-equivalent locale
+  // "sv-SE" formats as YYYY-MM-DD which lexicographically compares
+  // correctly against the DB column.
+  //
+  // The filter consults end_date (falling back to event_date) so
+  // multi-day events still in their final days — like Memorial Day
+  // weekend on its Monday — stay pickable instead of disappearing
+  // mid-event. This matches the server's includeRecentlyPast: 14
+  // intent ("post a retrospective if you missed the lead-time").
   const upcomingEvents = useMemo(() => {
     const all = eventsQuery.data?.events ?? []
-    const todayIso = new Date().toISOString().slice(0, 10)
+    const todayIso = new Date().toLocaleDateString('sv-SE', {
+      timeZone: 'America/Los_Angeles',
+    })
     return all
-      .filter((e) => e.event_date >= todayIso)
+      .filter((e) => (e.end_date ?? e.event_date) >= todayIso)
       .sort((a, b) => a.event_date.localeCompare(b.event_date))
       .slice(0, 30)
   }, [eventsQuery.data])
