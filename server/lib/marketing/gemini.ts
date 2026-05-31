@@ -220,6 +220,12 @@ export async function geminiChatWithTools(args: {
   let totalOutput = 0
   let finalText = ''
 
+  // Accumulate any "narration" text the model emits alongside tool
+  // calls (Gemini sometimes says "Let me look that up..." in a text
+  // part next to a functionCall part). Useful for the close-out path
+  // and as a fallback if the model never produces a tool-free turn.
+  let narration = ''
+
   for (let iter = 0; iter < maxIter; iter++) {
     const response = await client.models.generateContent({
       model,
@@ -229,6 +235,11 @@ export async function geminiChatWithTools(args: {
         temperature: args.temperature ?? 0.7,
         maxOutputTokens: 2048,
         tools: [{ functionDeclarations: args.tools }] as never,
+        // Disable automatic function calling — we run the dispatcher
+        // manually so the SDK's auto-loop (default-on for
+        // CallableTool, no-op for declaration-only tools today) would
+        // double-invoke if Google ever broadens it.
+        automaticFunctionCalling: { disable: true } as never,
       },
     })
 
@@ -241,8 +252,19 @@ export async function geminiChatWithTools(args: {
       .map((p) => (p as { functionCall?: { name?: string; args?: Record<string, unknown> } }).functionCall)
       .filter((fc): fc is { name: string; args: Record<string, unknown> } => Boolean(fc?.name))
 
+    // Capture any text parts in this turn — they survive even when
+    // the same turn also has functionCall parts.
+    const turnText = parts
+      .map((p) => (p as { text?: string }).text ?? '')
+      .filter(Boolean)
+      .join('\n')
+      .trim()
+    if (turnText) narration += (narration ? '\n\n' : '') + turnText
+
+    console.log(`[gemini/tools] iter ${iter + 1}/${maxIter} → ${functionCalls.length} fn call(s)${turnText ? `, ${turnText.length} chars narration` : ''}`)
+
     if (functionCalls.length === 0) {
-      finalText = response.text ?? ''
+      finalText = (response.text ?? '').trim() || narration
       break
     }
 
@@ -269,7 +291,37 @@ export async function geminiChatWithTools(args: {
         },
       })
     }
-    contents.push({ role: 'function', parts: responseParts })
+    // Gemini's SDK accepts ONLY 'user' or 'model' as Content.role.
+    // The tool-result turn is the client acting as the user with a
+    // functionResponse part — not a separate 'function' role. Using
+    // 'function' silently drops the turn → next iteration has no
+    // grounding → loop exhausts → empty response.
+    contents.push({ role: 'user', parts: responseParts })
+  }
+
+  // Loop exhausted maxIter without a tool-free turn. Force a final
+  // close-out call WITHOUT tools so the model has to write text.
+  // Guarantees the user always sees an answer.
+  if (!finalText) {
+    console.warn(`[gemini/tools] maxIterations(${maxIter}) hit without final text; forcing tool-less close-out call`)
+    try {
+      const closeout = await client.models.generateContent({
+        model,
+        contents,
+        config: {
+          systemInstruction: args.systemPrompt,
+          temperature: args.temperature ?? 0.7,
+          maxOutputTokens: 2048,
+        },
+      })
+      const usage = closeout.usageMetadata
+      totalInput += usage?.promptTokenCount ?? 0
+      totalOutput += usage?.candidatesTokenCount ?? 0
+      finalText = (closeout.text ?? '').trim() || narration
+    } catch (err) {
+      console.error('[gemini/tools] close-out call failed:', err)
+      finalText = narration || ''
+    }
   }
 
   return {
