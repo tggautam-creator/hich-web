@@ -12,6 +12,8 @@ import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
 import JourneyDrawer from '@/components/ride/JourneyDrawer'
 import type { TransitInfoData } from '@/components/ride/JourneyDrawer'
+import MultiRiderSubtitle from '@/components/ride/MultiRiderSubtitle'
+import { useShareDetails } from '@/lib/shareDetails'
 import type { Ride, User, GeoPoint } from '@/types/database'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -372,6 +374,19 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
   const isActive = ride?.status === 'active'
   const isCoordinating = ride?.status === 'coordinating'
 
+  // Sprint 9 Slice 5 SURFACE B — MultiRiderSubtitle pill. Fires only
+  // during the live phases (coordinating + active) per the Slice 5
+  // spec; idle states (requested/completed/cancelled) don't need it.
+  // Hook returns null on 404 (pre-097 backfill miss) → pill silently
+  // hides via the otherRidersCount=0 short-circuit in the component.
+  const { data: shareDetails } = useShareDetails(rideId, {
+    enabled:
+      typeof rideId === 'string' &&
+      (ride?.status === 'coordinating' || ride?.status === 'active'),
+  })
+  const otherRidersCount = shareDetails?.co_riders?.length ?? 0
+  const sharedPhase: 'enroute' | 'active' = isActive ? 'active' : 'enroute'
+
   // Journey progress (0-100)
   const progress = (totalDistanceKm && routeDistanceKm != null)
     ? Math.min(100, Math.max(0, Math.round((1 - routeDistanceKm / totalDistanceKm) * 100)))
@@ -502,13 +517,20 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
             </div>
           )}
 
-          <div>
+          <div className="flex flex-col gap-1">
             <p className="text-sm font-semibold text-text-primary">{driver?.full_name ?? 'Driver'}</p>
             {isCoordinating && ride.pickup_note && (
               <p className="text-xs text-text-secondary truncate max-w-[180px]">Walk to pickup: {ride.pickup_note}</p>
             )}
             {isActive && ride.destination_name && (
               <p className="text-xs text-text-secondary truncate max-w-[180px]">→ {ride.destination_name}</p>
+            )}
+            {/* Sprint 9 Slice 5 SURFACE B — Shared trip/ride pill */}
+            {otherRidersCount > 0 && (
+              <MultiRiderSubtitle
+                otherRidersCount={otherRidersCount}
+                phase={sharedPhase}
+              />
             )}
           </div>
         </div>

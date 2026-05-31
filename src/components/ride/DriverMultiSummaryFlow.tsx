@@ -5,19 +5,55 @@ import { useAuthStore } from '@/stores/authStore'
 import { formatCents } from '@/lib/fare'
 import type { Ride, User } from '@/types/database'
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+/**
+ * Sprint 9 Slice 5 SURFACE A — driver-side multi-ride trip-complete panel.
+ *
+ * Replaces the prior stepper UX (which walked the driver rider-by-rider
+ * with inline rating) with the iOS hero-then-list pattern from
+ * `ios/Tago/Features/DriverHome/DriverMultiRidePage+TripComplete.swift`
+ * lines 60-255:
+ *
+ *   ┌──────────────────────────────────────┐
+ *   │  ← Trip complete                     │
+ *   │     All riders dropped off           │
+ *   ├──────────────────────────────────────┤
+ *   │                                      │
+ *   │           ✓ ($25.00)                 │
+ *   │      All riders dropped off          │
+ *   │            $25.00                    │
+ *   │         from 3 riders                │
+ *   │                                      │
+ *   │   PER-RIDER SUMMARY                  │
+ *   │   ┌──────────────────────────────┐   │
+ *   │   │ 👤 Alex   Sacramento  $8.50 ›│   │
+ *   │   │ 👤 Bee    Davis       $7.50 ›│   │
+ *   │   │ 👤 Cee    Berkeley    $9.00 ›│   │
+ *   │   └──────────────────────────────┘   │
+ *   │                                      │
+ *   │   [        Done        ]             │
+ *   └──────────────────────────────────────┘
+ *
+ * Per-rider rows are tappable → opens that rider's RideSummaryPage at
+ * `/ride/summary/{rideId}` where Sprint 2's inline rating + tip flow
+ * lives (so rating is no longer inline on this page — it's per-ride).
+ * Done → `/home/driver`.
+ */
 
 interface CompletedRide {
-  ride: Ride
-  rider: Pick<User, 'id' | 'full_name' | 'avatar_url' | 'rating_avg'>
-  rated: boolean
+  ride: Pick<Ride, 'id' | 'rider_id' | 'fare_cents' | 'destination_name'>
+  rider: Pick<User, 'id' | 'full_name' | 'avatar_url'>
 }
 
 interface DriverMultiSummaryFlowProps {
   'data-testid'?: string
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
+function initials(name: string | null | undefined): string {
+  if (name == null) return '?'
+  const trimmed = name.trim()
+  if (trimmed.length === 0) return '?'
+  return trimmed.charAt(0).toUpperCase()
+}
 
 export default function DriverMultiSummaryFlow({
   'data-testid': testId = 'driver-multi-summary',
@@ -29,21 +65,15 @@ export default function DriverMultiSummaryFlow({
 
   const [completedRides, setCompletedRides] = useState<CompletedRide[]>([])
   const [loading, setLoading] = useState(true)
-  const [currentStep, setCurrentStep] = useState(0) // index into completedRides
-  const [ratingStars, setRatingStars] = useState(0)
-  const [submittingRating, setSubmittingRating] = useState(false)
-  const [phase, setPhase] = useState<'summary' | 'rate'>('summary')
 
-  // ── Fetch completed rides ───────────────────────────────────────────────
   const fetchData = useCallback(async () => {
     if (!scheduleId || !currentUserId) return
 
     const { data: rides } = await supabase
       .from('rides')
-      .select('*')
+      .select('id, rider_id, fare_cents, destination_name, driver_id, status')
       .eq('schedule_id', scheduleId)
       .eq('status', 'completed')
-      .or('driver_id.eq.' + currentUserId)
       .order('ended_at', { ascending: true })
 
     if (!rides || rides.length === 0) {
@@ -51,46 +81,34 @@ export default function DriverMultiSummaryFlow({
       return
     }
 
-    const riderIds = rides.map((r) => r.rider_id).filter(Boolean) as string[]
+    // Filter to rides this driver actually drove.
+    const myRides = (rides as { id: string; rider_id: string | null; fare_cents: number | null; destination_name: string | null; driver_id: string | null; status: string }[])
+      .filter((r) => r.driver_id === currentUserId && r.rider_id != null)
+
+    const riderIds = [...new Set(myRides.map((r) => r.rider_id as string))]
     const { data: users } = await supabase
       .from('users')
-      .select('id, full_name, avatar_url, rating_avg')
-      .in('id', [...new Set(riderIds)])
+      .select('id, full_name, avatar_url')
+      .in('id', riderIds)
 
-    const userLookup: Record<string, Pick<User, 'id' | 'full_name' | 'avatar_url' | 'rating_avg'>> = {}
-    for (const u of users ?? []) {
+    const userLookup: Record<string, Pick<User, 'id' | 'full_name' | 'avatar_url'>> = {}
+    for (const u of (users ?? []) as Pick<User, 'id' | 'full_name' | 'avatar_url'>[]) {
       userLookup[u.id] = u
     }
 
-    // Check which rides have been rated by the driver
-    const { data: ratings } = await supabase
-      .from('ride_ratings')
-      .select('ride_id')
-      .in('ride_id', rides.map((r) => r.id))
-      .eq('rater_id', currentUserId)
-
-    const ratedRideIds = new Set((ratings ?? []).map((r: { ride_id: string }) => r.ride_id))
-
-    const items: CompletedRide[] = rides
-      .filter((r) => r.rider_id)
-      .map((r) => ({
-        ride: r,
-        rider: userLookup[r.rider_id!] ?? { id: r.rider_id!, full_name: 'Rider', avatar_url: null, rating_avg: null },
-        rated: ratedRideIds.has(r.id),
-      }))
+    const items: CompletedRide[] = myRides.map((r) => ({
+      ride: {
+        id: r.id,
+        rider_id: r.rider_id as string,
+        fare_cents: r.fare_cents,
+        destination_name: r.destination_name,
+      },
+      rider:
+        userLookup[r.rider_id as string] ??
+        { id: r.rider_id as string, full_name: 'Rider', avatar_url: null },
+    }))
 
     setCompletedRides(items)
-
-    // Skip to first unrated ride
-    const firstUnrated = items.findIndex((i) => !i.rated)
-    if (firstUnrated >= 0) {
-      setCurrentStep(firstUnrated)
-      setPhase('summary')
-    } else {
-      // All rated — show final summary
-      setCurrentStep(items.length)
-    }
-
     setLoading(false)
   }, [scheduleId, currentUserId])
 
@@ -98,39 +116,12 @@ export default function DriverMultiSummaryFlow({
     void fetchData()
   }, [fetchData])
 
-  // ── Submit rating ─────────────────────────────────────────────────────
-  const handleRate = useCallback(async () => {
-    const current = completedRides[currentStep]
-    if (!current || ratingStars < 1 || submittingRating) return
-
-    setSubmittingRating(true)
-    const token = (await supabase.auth.getSession()).data.session?.access_token
-    await fetch(`/api/rides/${current.ride.id}/rate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token ?? ''}`,
-      },
-      body: JSON.stringify({ stars: ratingStars }),
-    })
-
-    setSubmittingRating(false)
-    setRatingStars(0)
-
-    // Move to next ride or finish
-    const next = currentStep + 1
-    if (next < completedRides.length) {
-      setCurrentStep(next)
-      setPhase('summary')
-    } else {
-      setCurrentStep(completedRides.length) // final summary
-    }
-  }, [completedRides, currentStep, ratingStars, submittingRating])
-
-  // ── Loading ────────────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div data-testid={testId} className="flex min-h-dvh items-center justify-center bg-surface">
+      <div
+        data-testid={testId}
+        className="flex min-h-dvh items-center justify-center bg-surface"
+      >
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
       </div>
     )
@@ -138,12 +129,16 @@ export default function DriverMultiSummaryFlow({
 
   if (completedRides.length === 0) {
     return (
-      <div data-testid={testId} className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-surface px-6">
+      <div
+        data-testid={testId}
+        className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-surface px-6"
+      >
         <p className="text-center text-text-secondary">No completed rides found</p>
         <button
           type="button"
           onClick={() => navigate('/home/driver', { replace: true })}
           className="rounded-2xl bg-primary px-6 py-3 font-semibold text-white"
+          data-testid="back-home-button"
         >
           Back to Home
         </button>
@@ -151,162 +146,143 @@ export default function DriverMultiSummaryFlow({
     )
   }
 
-  // ── Final summary (all rated) ─────────────────────────────────────────
-  if (currentStep >= completedRides.length) {
-    const totalEarned = completedRides.reduce((sum, cr) => {
-      const fare = cr.ride.fare_cents ?? 0
-      const platformFee = Math.round(fare * 0.15)
-      return sum + (fare - platformFee)
-    }, 0)
+  const totalCents = completedRides.reduce((acc, cr) => acc + (cr.ride.fare_cents ?? 0), 0)
+  const ridersLabel = completedRides.length === 1 ? '1 rider' : `${completedRides.length} riders`
 
-    return (
-      <div data-testid={testId} className="flex min-h-dvh flex-col items-center justify-center bg-surface px-6">
-        <div className="rounded-3xl bg-white p-6 shadow-sm w-full max-w-sm text-center">
-          <div className="text-4xl mb-3">🎉</div>
-          <h2 className="text-xl font-bold text-text-primary mb-2">Trip Complete!</h2>
-          <p className="text-sm text-text-secondary mb-4">
-            You completed {completedRides.length} rides this trip
-          </p>
+  return (
+    <div data-testid={testId} className="flex min-h-dvh flex-col bg-surface">
+      {/* Header — mirrors iOS tripCompleteHeader (lines 60-93) */}
+      <div
+        className="flex items-center gap-3 border-b border-border bg-white px-4 py-3"
+        style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)' }}
+      >
+        <button
+          type="button"
+          onClick={() => navigate('/home/driver', { replace: true })}
+          aria-label="Back"
+          data-testid="trip-complete-back"
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-surface text-text-primary active:scale-95 transition-transform"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+        </button>
+        <div className="flex flex-col">
+          <h1 className="text-base font-bold text-text-primary">Trip complete</h1>
+          <p className="text-xs text-text-secondary">All riders dropped off</p>
+        </div>
+      </div>
 
-          <div className="rounded-2xl bg-success/5 p-4 mb-4">
-            <p className="text-xs text-text-secondary">Total Earnings</p>
-            <p className="text-2xl font-bold text-success">{formatCents(totalEarned)}</p>
+      {/* Scrolling content */}
+      <div className="flex flex-1 flex-col gap-5 overflow-y-auto px-6 py-5">
+        {/* Hero — mirrors iOS tripCompleteHero (lines 95-135) */}
+        <section
+          data-testid="trip-complete-hero"
+          className="flex flex-col items-center gap-2 rounded-3xl bg-white px-4 py-6 shadow-sm"
+        >
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-success/15">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              className="h-8 w-8 text-success"
+              aria-hidden="true"
+            >
+              {/* SF Symbol "checkmark.seal.fill" equivalent */}
+              <path d="M12 1l3 2 3.5-1L19 5l3 2-1 3.5 1 3.5-3 2-.5 3.5-3.5-1-3 2-3-2-3.5 1L5 15l-3-2 1-3.5L2 6l3-2 .5-3.5L9 1.5 12 1zm-1.2 14.2l5.6-5.6L15 8.2l-4.2 4.2L9 10.6 7.6 12l3.2 3.2z" />
+            </svg>
           </div>
+          <h2 className="text-[22px] font-extrabold tracking-tight text-text-primary">
+            All riders dropped off
+          </h2>
+          <p
+            data-testid="trip-complete-total"
+            className="text-[36px] font-extrabold tracking-tight text-text-primary tabular-nums"
+          >
+            {formatCents(totalCents)}
+          </p>
+          <p className="text-xs text-text-secondary">from {ridersLabel}</p>
+        </section>
 
-          {/* Per-rider breakdown */}
-          <div className="space-y-2 mb-6">
-            {completedRides.map((cr) => {
-              const fare = cr.ride.fare_cents ?? 0
-              const earned = fare - Math.round(fare * 0.15)
+        {/* Per-rider list — mirrors iOS perRiderList (lines 137-173) */}
+        <section className="flex flex-col gap-2">
+          <h3 className="px-2 text-[11px] font-extrabold uppercase tracking-wider text-text-secondary">
+            PER-RIDER SUMMARY
+          </h3>
+          <div className="overflow-hidden rounded-2xl bg-white shadow-sm">
+            {completedRides.map((cr, idx) => {
+              const isLast = idx === completedRides.length - 1
               return (
-                <div key={cr.ride.id} className="flex items-center justify-between rounded-xl bg-surface px-3 py-2">
-                  <span className="text-sm text-text-primary">{cr.rider.full_name}</span>
-                  <span className="text-sm font-semibold text-success">{formatCents(earned)}</span>
+                <div key={cr.ride.id} className="flex flex-col">
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/ride/summary/${cr.ride.id}`)}
+                    data-testid={`trip-complete-row-${cr.ride.id}`}
+                    className="flex items-center gap-3 px-4 py-3 text-left active:bg-surface transition-colors"
+                  >
+                    {/* Avatar — iOS tripCompleteAvatar (lines 209-236) */}
+                    {cr.rider.avatar_url != null && cr.rider.avatar_url.length > 0 ? (
+                      <img
+                        src={cr.rider.avatar_url}
+                        alt=""
+                        className="h-10 w-10 shrink-0 rounded-full object-cover"
+                      />
+                    ) : (
+                      <div
+                        aria-hidden="true"
+                        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-sm font-bold text-primary"
+                      >
+                        {initials(cr.rider.full_name)}
+                      </div>
+                    )}
+
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="truncate text-sm font-bold text-text-primary">
+                        {cr.rider.full_name ?? 'Rider'}
+                      </span>
+                      {cr.ride.destination_name != null && cr.ride.destination_name.length > 0 && (
+                        <span className="truncate text-xs text-text-secondary">
+                          {cr.ride.destination_name}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-2">
+                      {cr.ride.fare_cents != null && (
+                        <span className="text-sm font-bold text-success tabular-nums">
+                          {formatCents(cr.ride.fare_cents)}
+                        </span>
+                      )}
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="h-3 w-3 text-text-secondary"
+                        aria-hidden="true"
+                      >
+                        <path d="M9 18l6-6-6-6" />
+                      </svg>
+                    </div>
+                  </button>
+                  {!isLast && <div className="ml-[60px] border-t border-border" />}
                 </div>
               )
             })}
           </div>
+        </section>
 
-          <button
-            type="button"
-            onClick={() => navigate('/home/driver', { replace: true })}
-            className="w-full rounded-2xl bg-primary py-3 font-semibold text-white"
-            data-testid="done-button"
-          >
-            Done
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  // ── Current ride summary / rating ────────────────────────────────────
-  const current = completedRides[currentStep]!
-  const fare = current.ride.fare_cents ?? 0
-  const platformFee = Math.round(fare * 0.15)
-  const driverEarns = fare - platformFee
-  const initial = current.rider.full_name?.[0]?.toUpperCase() ?? '?'
-
-  if (phase === 'summary') {
-    return (
-      <div data-testid={testId} className="flex min-h-dvh flex-col items-center justify-center bg-surface px-6">
-        <div className="rounded-3xl bg-white p-6 shadow-sm w-full max-w-sm">
-          {/* Progress */}
-          <p className="text-xs text-text-secondary text-center mb-4">
-            Ride {currentStep + 1} of {completedRides.length}
-          </p>
-
-          {/* Rider info */}
-          <div className="flex items-center gap-3 mb-4">
-            {current.rider.avatar_url ? (
-              <img src={current.rider.avatar_url} alt="" className="h-12 w-12 rounded-full object-cover" />
-            ) : (
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary font-bold text-lg">
-                {initial}
-              </div>
-            )}
-            <div>
-              <p className="font-semibold text-text-primary">{current.rider.full_name}</p>
-              {current.rider.rating_avg != null && (
-                <p className="text-xs text-text-secondary">★ {current.rider.rating_avg.toFixed(1)}</p>
-              )}
-            </div>
-          </div>
-
-          {/* Fare breakdown */}
-          <div className="rounded-2xl bg-surface p-4 space-y-2 mb-4">
-            <div className="flex justify-between text-sm">
-              <span className="text-text-secondary">Ride fare</span>
-              <span className="text-text-primary">{formatCents(fare)}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-text-secondary">Platform fee (15%)</span>
-              <span className="text-danger">-{formatCents(platformFee)}</span>
-            </div>
-            <div className="border-t border-border pt-2 flex justify-between text-sm font-bold">
-              <span className="text-text-primary">You earned</span>
-              <span className="text-success">{formatCents(driverEarns)}</span>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => {
-              if (current.rated) {
-                // Skip rating, move to next
-                const next = currentStep + 1
-                if (next < completedRides.length) {
-                  setCurrentStep(next)
-                } else {
-                  setCurrentStep(completedRides.length)
-                }
-              } else {
-                setPhase('rate')
-              }
-            }}
-            className="w-full rounded-2xl bg-primary py-3 font-semibold text-white"
-            data-testid="continue-button"
-          >
-            {current.rated ? 'Next' : 'Rate Rider'}
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  // ── Rate phase ────────────────────────────────────────────────────────
-  return (
-    <div data-testid={testId} className="flex min-h-dvh flex-col items-center justify-center bg-surface px-6">
-      <div className="rounded-3xl bg-white p-6 shadow-sm w-full max-w-sm text-center">
-        <p className="text-xs text-text-secondary mb-2">
-          Ride {currentStep + 1} of {completedRides.length}
-        </p>
-        <h2 className="text-lg font-bold text-text-primary mb-1">Rate {current.rider.full_name}</h2>
-        <p className="text-sm text-text-secondary mb-6">How was your experience?</p>
-
-        {/* Stars */}
-        <div className="flex justify-center gap-3 mb-6">
-          {[1, 2, 3, 4, 5].map((star) => (
-            <button
-              key={star}
-              type="button"
-              onClick={() => setRatingStars(star)}
-              className={`text-3xl transition-transform ${star <= ratingStars ? 'text-warning scale-110' : 'text-border'}`}
-              data-testid={`star-${star}`}
-            >
-              ★
-            </button>
-          ))}
-        </div>
-
+        {/* Done button */}
         <button
           type="button"
-          onClick={() => void handleRate()}
-          disabled={ratingStars < 1 || submittingRating}
-          className="w-full rounded-2xl bg-primary py-3 font-semibold text-white disabled:opacity-50"
-          data-testid="submit-rating-button"
+          onClick={() => navigate('/home/driver', { replace: true })}
+          data-testid="done-button"
+          className="w-full rounded-2xl bg-primary py-3 text-base font-bold text-white active:scale-[0.99] transition-transform"
         >
-          {submittingRating ? 'Submitting…' : 'Submit Rating'}
+          Done
         </button>
       </div>
     </div>

@@ -100,6 +100,14 @@ vi.mock('@/components/ride/QrScanner', () => ({
   ),
 }))
 
+// Sprint 9 Slice 5 SURFACE B — RiderActiveRidePage now calls useShareDetails
+// to drive the MultiRiderSubtitle pill. Stub it as solo (no co-riders) so the
+// pill silently hides and these existing tests (which assert behavior unrelated
+// to multi-rider state) don't need to wrap with QueryClientProvider.
+vi.mock('@/lib/shareDetails', () => ({
+  useShareDetails: () => ({ data: null, isLoading: false, error: null }),
+}))
+
 // ── Navigate mock ─────────────────────────────────────────────────────────────
 
 const { mockNavigate } = vi.hoisted(() => ({ mockNavigate: vi.fn() }))
