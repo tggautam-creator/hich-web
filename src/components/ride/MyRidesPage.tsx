@@ -6,6 +6,8 @@ import { useAuthStore } from '@/stores/authStore'
 import BottomNav from '@/components/ui/BottomNav'
 import AppIcon from '@/components/ui/AppIcon'
 import type { ScheduledRide } from '@/components/schedule/boardTypes'
+import TodaysAnytimeBanner from '@/components/ride/TodaysAnytimeBanner'
+import { isAnytimeToday, bannerDestinationHeadline } from '@/lib/anytime'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -35,6 +37,7 @@ interface ActiveRide {
   destination_name: string | null
   trip_date: string | null
   trip_time: string | null
+  time_flexible?: boolean | null
   created_at: string
   my_role: 'rider' | 'driver'
   other_user: OtherUser | null
@@ -384,6 +387,20 @@ export default function MyRidesPage({
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-4 py-4 pb-24">
+        {(() => {
+          const todays = rides.filter((r) => isAnytimeToday(r))
+          if (todays.length === 0) return null
+          const first = todays[0]
+          return (
+            <div className="mb-3">
+              <TodaysAnytimeBanner
+                rideCount={todays.length}
+                firstRideHeadline={first ? bannerDestinationHeadline(first) : null}
+                onTap={() => {}}
+              />
+            </div>
+          )
+        })()}
         {loading && (
           <div className="flex items-center justify-center py-12">
             <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
