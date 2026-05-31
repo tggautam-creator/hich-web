@@ -96,14 +96,29 @@ export default function CalendarPage() {
         </div>
       )}
       {refreshAi.isSuccess && refreshAi.data && (
-        <div className="rounded-lg border border-success/30 bg-success/5 px-4 py-2 text-sm text-text-primary">
-          AI suggestions: {refreshAi.data.inserted} added, {refreshAi.data.skipped} skipped (duplicates or invalid)
-          {refreshAi.data.sources_count != null && refreshAi.data.sources_count > 0 && (
-            <span className="ml-2 text-xs text-text-secondary">
-              · verified via {refreshAi.data.sources_count} live Google Search source{refreshAi.data.sources_count === 1 ? '' : 's'}
-            </span>
+        <div className="rounded-lg border border-success/30 bg-success/5 px-4 py-2 text-sm text-text-primary space-y-1">
+          <p>
+            AI suggestions: <span className="font-semibold">{refreshAi.data.inserted} added</span>
+            {refreshAi.data.skipped > 0 && (
+              <>
+                {', '}
+                {(refreshAi.data.skipped_duplicate ?? 0) > 0 && `${refreshAi.data.skipped_duplicate} duplicate`}
+                {(refreshAi.data.skipped_duplicate ?? 0) > 0 && (refreshAi.data.skipped_invalid ?? 0) > 0 && ', '}
+                {(refreshAi.data.skipped_invalid ?? 0) > 0 && `${refreshAi.data.skipped_invalid} invalid (bad date / out-of-range)`}
+              </>
+            )}
+            {refreshAi.data.sources_count != null && refreshAi.data.sources_count > 0 && (
+              <span className="ml-2 text-xs text-text-secondary">
+                · verified via {refreshAi.data.sources_count} Google Search source{refreshAi.data.sources_count === 1 ? '' : 's'}
+              </span>
+            )}
+            .
+          </p>
+          {refreshAi.data.insert_errors && refreshAi.data.insert_errors.length > 0 && (
+            <ul className="mt-1 text-xs text-danger">
+              {refreshAi.data.insert_errors.map((e, i) => <li key={i}>• {e}</li>)}
+            </ul>
           )}
-          .
         </div>
       )}
       {refreshAi.isError && (
@@ -245,6 +260,27 @@ function EventRow({ event }: { event: MarketingEvent }) {
         </p>
         {event.description && (
           <p className="text-xs text-text-secondary line-clamp-2">{event.description}</p>
+        )}
+        {event.source_urls && event.source_urls.length > 0 && (
+          <p className="text-[10px] text-text-secondary">
+            Sources:{' '}
+            {event.source_urls.slice(0, 3).map((u, i) => (
+              <span key={i}>
+                {i > 0 && ' · '}
+                <a
+                  href={u}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline"
+                >
+                  [{hostnameOf(u) || 'link'}]
+                </a>
+              </span>
+            ))}
+            {event.source_urls.length > 3 && (
+              <span className="text-text-secondary"> +{event.source_urls.length - 3}</span>
+            )}
+          </p>
         )}
       </div>
       <div className="flex flex-col gap-1 shrink-0 opacity-70 group-hover:opacity-100 transition-opacity">
@@ -453,4 +489,12 @@ function monthShort(dateStr: string): string {
 function dayOf(dateStr: string): string {
   const d = new Date(dateStr + 'T00:00:00')
   return String(d.getDate())
+}
+
+function hostnameOf(url: string): string | null {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return null
+  }
 }

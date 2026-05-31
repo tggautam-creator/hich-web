@@ -25,6 +25,8 @@ export interface MarketingEvent {
   notes: string | null
   linked_story_batch_ids: string[]
   linked_poster_item_ids: string[]
+  /** Google Search citation URLs (Phase 5.1; empty for seeded/manual). */
+  source_urls: string[] | null
   created_at: string
   updated_at: string
 }
@@ -63,6 +65,9 @@ export function useRefreshAiEvents() {
         inserted: number
         skipped: number
         sources_count?: number
+        skipped_duplicate?: number
+        skipped_invalid?: number
+        insert_errors?: string[]
       }>('/marketing/events/refresh-ai', {}),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin', 'marketing', 'events'] })

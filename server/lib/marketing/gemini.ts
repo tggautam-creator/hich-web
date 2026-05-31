@@ -100,12 +100,11 @@ export interface GenerateArgs {
    * Enable Google Search grounding so the model can pull
    * real-time web data before answering. Required for any task
    * that needs CURRENT information (concert tour dates, festival
-   * lineups this year, news, etc.). ~$0.035 per grounded query
-   * on paid tier — use only when training-data knowledge is
-   * stale. Incompatible with responseMimeType='application/json'
-   * + responseSchema (the search tool replaces structured output);
-   * caller must parse JSON out of free-form text when both are
-   * needed.
+   * lineups this year, news, etc.). Cost: $0.035 per grounded
+   * query (grounding fee) PLUS the normal per-token output cost
+   * (~$0.03 for a typical refresh on 2.5-pro). Total ~$0.07/refresh.
+   * Incompatible with responseMimeType — caller must parse JSON
+   * out of free-form text when grounding is on.
    */
   useGoogleSearch?: boolean
 }
@@ -134,14 +133,15 @@ export async function geminiGenerate(args: GenerateArgs): Promise<GenerateResult
   const client = getClient()
   const model = args.model ?? MODEL_FAST
 
-  // googleSearch and responseMimeType/responseSchema are mutually
-  // exclusive in the API. When the caller enables search, we MUST
-  // drop responseMimeType — they'll parse JSON out of free-form
-  // text instead. Document this trade-off via the warning so the
-  // caller can shape their prompt accordingly.
+  // googleSearch + responseMimeType/responseSchema are mutually
+  // exclusive in the API. Throw fail-fast rather than warn —
+  // silent-drop would let a future caller (e.g. storyGenerator)
+  // accidentally enable grounding + lose JSON-mode + produce
+  // malformed output in prod. JSDoc on the field already documents
+  // the constraint; this matches it.
   if (args.useGoogleSearch && args.responseMimeType) {
-    console.warn(
-      '[gemini] useGoogleSearch ignores responseMimeType — Google Search grounding cannot be combined with structured output. Parse JSON from text manually.',
+    throw new TypeError(
+      '[gemini] useGoogleSearch is incompatible with responseMimeType. Drop responseMimeType and parse JSON out of free-form text in the caller.',
     )
   }
 
