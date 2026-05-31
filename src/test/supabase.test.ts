@@ -161,6 +161,7 @@ describe('database types — row aliases', () => {
       reminder_today_sent: false,
       caregiver_id: null,
       caregiver_fare_cents: null,
+      trip_id: null,
     }
     expect(ride.fare_cents).not.toBeNull()
     expect(Number.isInteger(ride.fare_cents)).toBe(true)

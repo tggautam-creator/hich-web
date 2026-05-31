@@ -7008,3 +7008,222 @@ ridesRouter.get(
     }
   },
 )
+
+// ── GET /api/rides/:rideId/share-details ─────────────────────────────────────
+/**
+ * v1.3 F17 Sprint 9 Slice 2 — canonical multi-rider trip settlement payload.
+ *
+ * Returns trip + segments + co-riders + per-rider shares for any ride that
+ * has a `trip_id`. Supports BOTH active and completed phases — during
+ * the active phase `shares[]` may be partial or empty (a rider not yet
+ * dropped off has no row yet) and `segments[]` may include an open
+ * segment with `ended_at = null`.
+ *
+ * Gating mirrors RLS policies in migration 097 (lines 110-117, 146-159,
+ * 207-208): caller must be the trip's `driver_id` OR a `rider_id` on any
+ * of the trip's rides. Service-role `supabaseAdmin` bypasses RLS so the
+ * gate is enforced here in the handler — same pattern as the
+ * counterparty-contact endpoint above.
+ *
+ * Returns 404 ONLY when `ride.trip_id IS NULL` (pre-097 backfill miss).
+ * Returns 403 on non-participant. Math is NOT recomputed — values are
+ * read verbatim from `ride_rider_shares` (written by computeRiderTotals
+ * at /end). The endpoint is read-only.
+ *
+ * Co-rider list includes EVERY rider ever on the trip (matches iOS
+ * `CoRidersFetcher` read scope) — including those already dropped off —
+ * but excludes the caller themselves so they don't see themselves in
+ * their own co-rider list.
+ */
+ridesRouter.get(
+  '/:rideId/share-details',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = res.locals['userId'] as string
+      const rideId = String(req.params['rideId'] ?? '')
+      if (!rideId) {
+        res.status(400).json({ error: { code: 'INVALID_PARAMS', message: 'rideId required' } })
+        return
+      }
+
+      // 1. Fetch the ride row to resolve trip_id.
+      const { data: rideRowRaw, error: rideErr } = await supabaseAdmin
+        .from('rides')
+        .select('id, trip_id')
+        .eq('id', rideId)
+        .single()
+
+      if (rideErr || !rideRowRaw) {
+        res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+        return
+      }
+
+      const tripId = (rideRowRaw as { trip_id: string | null }).trip_id
+      if (tripId == null) {
+        // Pre-097 backfill miss — UI surfaces this as a silent graceful hide.
+        res.status(404).json({
+          error: { code: 'TRIP_NOT_FOUND', message: 'Ride is not part of a trip yet' },
+        })
+        return
+      }
+
+      // 2. Fetch trip + every ride on this trip in parallel.
+      const [tripResult, tripRidesResult] = await Promise.all([
+        supabaseAdmin
+          .from('trips')
+          .select('id, kind, started_at, ended_at, gps_distance_metres, gas_cost_cents, time_cost_cents, driver_id')
+          .eq('id', tripId)
+          .single(),
+        supabaseAdmin
+          .from('rides')
+          .select('id, rider_id, destination_name')
+          .eq('trip_id', tripId),
+      ])
+
+      if (tripResult.error || !tripResult.data) {
+        res.status(404).json({ error: { code: 'TRIP_NOT_FOUND', message: 'Trip not found' } })
+        return
+      }
+      // Distinguish "trip ride lookup failed" (500) from "trip has no
+      // rides" (impossible — every trip has ≥ 1 ride by construction, but
+      // empty data + null error is the in-band success signal). A silent
+      // `?? []` here would route a DB error through the participant gate
+      // below and 403 a legitimate rider, which is a worse failure mode
+      // than a clean 500 they can retry.
+      if (tripRidesResult.error || tripRidesResult.data == null) {
+        res.status(500).json({
+          error: { code: 'INTERNAL_ERROR', message: 'Failed to fetch trip riders' },
+        })
+        return
+      }
+      const trip = tripResult.data as {
+        id: string
+        kind: 'instant' | 'board'
+        started_at: string | null
+        ended_at: string | null
+        gps_distance_metres: number
+        gas_cost_cents: number
+        time_cost_cents: number
+        driver_id: string
+      }
+      const tripRides = tripRidesResult.data as {
+        id: string
+        rider_id: string | null
+        destination_name: string | null
+      }[]
+
+      // 3. Participant gate — caller must be driver OR a rider on this trip.
+      const riderIds = tripRides
+        .map((r) => r.rider_id)
+        .filter((id): id is string => id != null)
+      const isParty = trip.driver_id === userId || riderIds.includes(userId)
+      if (!isParty) {
+        res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Not a participant on this trip' } })
+        return
+      }
+
+      // 4. Fetch segments + shares + co-rider profiles in parallel.
+      const coRiderIds = riderIds.filter((id) => id !== userId)
+      const [segmentsResult, sharesResult, profilesResult] = await Promise.all([
+        supabaseAdmin
+          .from('ride_segments')
+          .select('segment_index, started_at, ended_at, distance_meters, active_rider_ids, gas_cost_cents, time_cost_cents')
+          .eq('trip_id', tripId)
+          .order('segment_index', { ascending: true }),
+        supabaseAdmin
+          .from('ride_rider_shares')
+          .select('rider_id, base_share_cents, caregiver_share_cents, companion_share_cents, total_cents, segments_in_count, payment_status')
+          .eq('trip_id', tripId),
+        coRiderIds.length > 0
+          ? supabaseAdmin
+              .from('users')
+              .select('id, full_name, avatar_url')
+              .in('id', coRiderIds)
+          : Promise.resolve({ data: [] as { id: string; full_name: string | null; avatar_url: string | null }[], error: null }),
+      ])
+
+      // Same logic as the tripRidesResult check above: a DB error here
+      // coalesced to `?? []` would silently return success-with-empty,
+      // indistinguishable from a legitimate active-phase "no shares yet"
+      // state. Surface real errors as 500 so the client retries.
+      if (segmentsResult.error) {
+        res.status(500).json({
+          error: { code: 'INTERNAL_ERROR', message: 'Failed to fetch trip segments' },
+        })
+        return
+      }
+      if (sharesResult.error) {
+        res.status(500).json({
+          error: { code: 'INTERNAL_ERROR', message: 'Failed to fetch trip shares' },
+        })
+        return
+      }
+      // profilesResult never errors when coRiderIds is empty (we wrap
+      // it in a Promise.resolve above), and when it's non-empty a DB
+      // error here would only cost us names + avatars — not a hard
+      // failure for the rest of the payload. Soft-degrade to empty
+      // profiles (rider_id still surfaces; UI falls back to "Rider").
+
+      const segments = (segmentsResult.data ?? []) as {
+        segment_index: number
+        started_at: string
+        ended_at: string | null
+        distance_meters: number
+        active_rider_ids: string[]
+        gas_cost_cents: number
+        time_cost_cents: number
+      }[]
+
+      const shares = (sharesResult.data ?? []) as {
+        rider_id: string
+        base_share_cents: number
+        caregiver_share_cents: number
+        companion_share_cents: number
+        total_cents: number
+        segments_in_count: number
+        payment_status: 'pending' | 'paid' | 'processing' | 'failed'
+      }[]
+
+      const profileMap = new Map(
+        ((profilesResult.data ?? []) as { id: string; full_name: string | null; avatar_url: string | null }[])
+          .map((p) => [p.id, p]),
+      )
+
+      // 5. Co-rider list: one entry per non-caller rider on the trip.
+      //    Includes riders already dropped off (matches iOS CoRidersFetcher).
+      const coRiders = tripRides
+        .filter((r) => r.rider_id != null && r.rider_id !== userId)
+        .map((r) => {
+          const profile = profileMap.get(r.rider_id as string)
+          return {
+            rider_id: r.rider_id as string,
+            full_name: profile?.full_name ?? null,
+            avatar_url: profile?.avatar_url ?? null,
+            destination_name: r.destination_name,
+          }
+        })
+
+      console.log(
+        `[rides/share-details] caller=${userId.slice(0, 8)}… trip=${tripId.slice(0, 8)}… riders=${riderIds.length} segments=${segments.length} shares=${shares.length}`,
+      )
+
+      res.status(200).json({
+        trip: {
+          id: trip.id,
+          kind: trip.kind,
+          started_at: trip.started_at,
+          ended_at: trip.ended_at,
+          gps_distance_metres: trip.gps_distance_metres,
+          gas_cost_cents: trip.gas_cost_cents,
+          time_cost_cents: trip.time_cost_cents,
+        },
+        segments,
+        co_riders: coRiders,
+        shares,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)

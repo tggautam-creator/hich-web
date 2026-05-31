@@ -413,6 +413,11 @@ export type Database = {
            *  500 / 800 cents) added to rider charge + driver
            *  earnings. NULL when no caregiver attached. */
           caregiver_fare_cents: number | null
+          /** v1.3 F17 — mig 097. FK to the parent `trips` row.
+           *  Nullable transitionally during the 098 backfill; new
+           *  rides get this set immediately by the server. The
+           *  `share-details` endpoint 404s when this is null. */
+          trip_id: string | null
         }
         Insert: {
           id?: string
@@ -467,6 +472,7 @@ export type Database = {
           reminder_today_sent?: boolean
           caregiver_id?: string | null
           caregiver_fare_cents?: number | null
+          trip_id?: string | null
         }
         Update: {
           id?: string
@@ -521,6 +527,176 @@ export type Database = {
           reminder_today_sent?: boolean
           caregiver_id?: string | null
           caregiver_fare_cents?: number | null
+          trip_id?: string | null
+        }
+        Relationships: never[]
+      }
+
+      // ── trips ───────────────────────────────────────────────────────────────
+      // v1.3 F17 (mig 097). Parent of multi-rider trips — one trip row per
+      // driver-trip, multiple rides rows point at it via rides.trip_id.
+      // Server-derived: created on /start + /end via getOrCreateTripForRide.
+      // Web clients READ only via /api/rides/:id/share-details (Sprint 9 S2).
+      trips: {
+        Row: {
+          id: string
+          driver_id: string
+          schedule_id: string | null
+          kind: 'instant' | 'board'
+          status: 'pending' | 'active' | 'completed' | 'cancelled'
+          started_at: string | null
+          ended_at: string | null
+          origin: GeoPoint | null
+          origin_name: string | null
+          destination: GeoPoint | null
+          destination_name: string | null
+          route_polyline: string | null
+          gps_distance_metres: number
+          gas_cost_cents: number
+          time_cost_cents: number
+          gas_price_per_gallon_cents: number | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          driver_id: string
+          schedule_id?: string | null
+          kind?: 'instant' | 'board'
+          status?: 'pending' | 'active' | 'completed' | 'cancelled'
+          started_at?: string | null
+          ended_at?: string | null
+          origin?: GeoPoint | null
+          origin_name?: string | null
+          destination?: GeoPoint | null
+          destination_name?: string | null
+          route_polyline?: string | null
+          gps_distance_metres?: number
+          gas_cost_cents?: number
+          time_cost_cents?: number
+          gas_price_per_gallon_cents?: number | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          driver_id?: string
+          schedule_id?: string | null
+          kind?: 'instant' | 'board'
+          status?: 'pending' | 'active' | 'completed' | 'cancelled'
+          started_at?: string | null
+          ended_at?: string | null
+          origin?: GeoPoint | null
+          origin_name?: string | null
+          destination?: GeoPoint | null
+          destination_name?: string | null
+          route_polyline?: string | null
+          gps_distance_metres?: number
+          gas_cost_cents?: number
+          time_cost_cents?: number
+          gas_price_per_gallon_cents?: number | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: never[]
+      }
+
+      // ── ride_segments ──────────────────────────────────────────────────────
+      // v1.3 F17 (mig 097). Per-segment cost breakdown. A segment is a
+      // continuous stretch during which the set of active riders does not
+      // change. Bounded by QR scans.
+      ride_segments: {
+        Row: {
+          id: string
+          trip_id: string
+          segment_index: number
+          started_at: string
+          ended_at: string | null
+          distance_meters: number
+          duration_seconds: number
+          active_rider_ids: string[]
+          gas_cost_cents: number
+          time_cost_cents: number
+        }
+        Insert: {
+          id?: string
+          trip_id: string
+          segment_index: number
+          started_at: string
+          ended_at?: string | null
+          distance_meters?: number
+          duration_seconds?: number
+          active_rider_ids?: string[]
+          gas_cost_cents?: number
+          time_cost_cents?: number
+        }
+        Update: {
+          id?: string
+          trip_id?: string
+          segment_index?: number
+          started_at?: string
+          ended_at?: string | null
+          distance_meters?: number
+          duration_seconds?: number
+          active_rider_ids?: string[]
+          gas_cost_cents?: number
+          time_cost_cents?: number
+        }
+        Relationships: never[]
+      }
+
+      // ── ride_rider_shares ──────────────────────────────────────────────────
+      // v1.3 F17 (mig 097). Per-rider settlement rollup. Charged + driver-
+      // Connect-transferred at this rider's dropoff scan (not at trip end).
+      // total_cents = max(base_minimum, base_share) + caregiver_share + companion_share.
+      ride_rider_shares: {
+        Row: {
+          id: string
+          trip_id: string
+          ride_id: string
+          rider_id: string
+          driver_id: string
+          base_share_cents: number
+          caregiver_share_cents: number
+          companion_share_cents: number
+          total_cents: number
+          segments_in_count: number
+          finalized_at: string | null
+          charged_at: string | null
+          payment_status: 'pending' | 'paid' | 'processing' | 'failed'
+          payment_intent_id: string | null
+        }
+        Insert: {
+          id?: string
+          trip_id: string
+          ride_id: string
+          rider_id: string
+          driver_id: string
+          base_share_cents?: number
+          caregiver_share_cents?: number
+          companion_share_cents?: number
+          total_cents?: number
+          segments_in_count?: number
+          finalized_at?: string | null
+          charged_at?: string | null
+          payment_status?: 'pending' | 'paid' | 'processing' | 'failed'
+          payment_intent_id?: string | null
+        }
+        Update: {
+          id?: string
+          trip_id?: string
+          ride_id?: string
+          rider_id?: string
+          driver_id?: string
+          base_share_cents?: number
+          caregiver_share_cents?: number
+          companion_share_cents?: number
+          total_cents?: number
+          segments_in_count?: number
+          finalized_at?: string | null
+          charged_at?: string | null
+          payment_status?: 'pending' | 'paid' | 'processing' | 'failed'
+          payment_intent_id?: string | null
         }
         Relationships: never[]
       }
