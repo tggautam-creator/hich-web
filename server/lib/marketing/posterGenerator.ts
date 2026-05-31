@@ -6,7 +6,7 @@
  * structured event/feature inputs. Format-aware (story/post/A4/custom).
  */
 import { supabaseAdmin } from '../supabaseAdmin.ts'
-import { geminiGenerate, MODEL_FAST, isGeminiConfigured } from './gemini.ts'
+import { geminiGenerate, humanizeGeminiError, MODEL_FAST, isGeminiConfigured } from './gemini.ts'
 import { BRAND_SYSTEM_PROMPT } from './brandContext.ts'
 import {
   FORMAT_SPECS,
@@ -369,7 +369,7 @@ export async function generatePosterBatch(args: GenerateArgs): Promise<PosterGen
       }
     }
   } catch (err) {
-    const msg = `audience=${audience} format=${format}: Gemini call threw → ${err instanceof Error ? err.message : String(err)}`
+    const msg = `audience=${audience} format=${format}: ${humanizeGeminiError(err)}`
     console.error(`[marketing/posters] ${msg}`)
     errors.push(msg)
   }

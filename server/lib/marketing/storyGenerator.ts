@@ -15,7 +15,7 @@
  *    one cron batch per day.
  */
 import { supabaseAdmin } from '../supabaseAdmin.ts'
-import { geminiGenerate, MODEL_FAST, isGeminiConfigured } from './gemini.ts'
+import { geminiGenerate, humanizeGeminiError, MODEL_FAST, isGeminiConfigured } from './gemini.ts'
 import { BRAND_SYSTEM_PROMPT } from './brandContext.ts'
 import {
   fetchAndClusterCorridors,
@@ -305,7 +305,7 @@ export async function generateStoryBatch(args: GenerateArgs): Promise<StoryGener
       }
       inserted += 1
     } catch (err) {
-      const msg = `${corridor.corridor}: Gemini call threw → ${err instanceof Error ? err.message : String(err)}`
+      const msg = `${corridor.corridor}: ${humanizeGeminiError(err)}`
       console.error(`[marketing/stories] ${msg}`)
       errors.push(msg)
     }

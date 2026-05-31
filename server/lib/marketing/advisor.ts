@@ -15,6 +15,7 @@ import { supabaseAdmin } from '../supabaseAdmin.ts'
 import {
   geminiChat,
   geminiChatWithTools,
+  humanizeGeminiError,
   MODEL_SMART,
   MODEL_FAST,
   isGeminiConfigured,
@@ -326,16 +327,21 @@ export async function sendMessage(args: {
         modelUsed = ADVISOR_MODEL_FALLBACK
         result = { text: r.text, inputTokens: r.inputTokens, outputTokens: r.outputTokens }
       } catch (err2) {
-        const msg2 = err2 instanceof Error ? err2.message : String(err2)
-        return { ok: false, error: `Gemini Pro+Flash both failed: ${msg2}` }
+        return {
+          ok: false,
+          error: `Both Gemini Pro and Flash hit the same wall: ${humanizeGeminiError(err2)}`,
+        }
       }
     } else {
-      return { ok: false, error: `Gemini call threw: ${msg}` }
+      return { ok: false, error: humanizeGeminiError(err) }
     }
   }
 
   if (!result.text || result.text.trim().length === 0) {
-    return { ok: false, error: 'Gemini returned empty response' }
+    return {
+      ok: false,
+      error: 'The advisor replied with no text. This can happen on a borderline quota state or when the model gets stuck. Try a slightly different question or wait a moment.',
+    }
   }
 
   const { data: assistantRow, error: insertAsstErr } = await supabaseAdmin

@@ -30,6 +30,35 @@ export function isGeminiConfigured(): boolean {
   return getServerEnv().GEMINI_API_KEY.length > 0
 }
 
+/**
+ * Phase 5 — turn raw Gemini errors into UX-friendly messages.
+ * Quota 429s are the dominant failure on free tier; surface them
+ * clearly so the admin knows "wait for UTC midnight" not "code bug".
+ */
+export function humanizeGeminiError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err)
+  // 429 quota exhausted (free tier)
+  if (/429|RESOURCE_EXHAUSTED|quota|rate.?limit/i.test(raw)) {
+    // Try to extract the retry-after delay if present.
+    const retryMatch = raw.match(/retry in (\d+(?:\.\d+)?)s/i)
+    const retryHint = retryMatch
+      ? ` Retry in ${Math.ceil(Number(retryMatch[1]!))}s.`
+      : ' Free-tier quota resets at UTC midnight, or enable billing on the GCP project for higher limits.'
+    return `Gemini API quota reached.${retryHint}`
+  }
+  if (/PERMISSION_DENIED|403/.test(raw)) {
+    return 'Gemini API rejected the request (permission denied). Check that the API key is valid and the Generative Language API is enabled on the project.'
+  }
+  if (/UNAUTHENTICATED|401|invalid.+credentials/i.test(raw)) {
+    return 'Gemini API key is invalid or expired. Check GEMINI_API_KEY in .env.prod.'
+  }
+  if (/timeout|deadline/i.test(raw)) {
+    return 'Gemini API timed out. The model may be temporarily overloaded; try again in a moment.'
+  }
+  // Fall through to the raw message but trim it to something readable.
+  return raw.length > 300 ? `${raw.slice(0, 297)}...` : raw
+}
+
 function getClient(): GoogleGenAI {
   if (_client) return _client
   const apiKey = getServerEnv().GEMINI_API_KEY

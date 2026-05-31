@@ -13,6 +13,7 @@
 import { GoogleGenAI } from '@google/genai'
 import { supabaseAdmin } from '../supabaseAdmin.ts'
 import { getServerEnv } from '../../env.ts'
+import { humanizeGeminiError } from './gemini.ts'
 
 const IMAGE_MODEL = 'gemini-2.5-flash-image'
 const BUCKET = 'marketing-posters'
@@ -96,7 +97,7 @@ async function _generate(itemId: string): Promise<ImageGenResult> {
     }
     imageBytes = Buffer.from(foundBase64, 'base64')
   } catch (err) {
-    return { ok: false, error: `Gemini image call threw: ${err instanceof Error ? err.message : String(err)}` }
+    return { ok: false, error: humanizeGeminiError(err) }
   }
 
   // Upload with mime-derived extension + contentType so a JPEG/WebP

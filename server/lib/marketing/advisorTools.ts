@@ -51,6 +51,7 @@ export const ALLOWED_TABLES = [
   'marketing_poster_items',
   'marketing_advisor_threads',
   'marketing_daily_briefings',
+  'marketing_events',
   // Admin observability (no PII)
   'audit_log',
 ] as const
@@ -164,6 +165,15 @@ You can read these tables. Common columns listed; not exhaustive
 
 **marketing_daily_briefings** — pre-generated daily focus banners.
   Columns: id, for_date, focus, detail, dismissed_at
+
+**marketing_events** — smart-calendar events Tago wants to target.
+  Columns: id, title, event_date, end_date, category, location_hint,
+  description, target_audience, source, target_lead_time_days,
+  reminder_dismissed_at, notes, created_at
+  category: 'holiday' | 'academic' | 'campus' | 'travel-trigger' | 'custom'
+  source: 'seeded' | 'ai_suggested' | 'manual'
+  When the user asks "what should I target this week", query this
+  table for events within next 14 days, ordered by event_date.
 
 **audit_log** — admin actions (campaigns sent, refunds, etc).
   Columns: id, admin_user_id, action_type, target_user_id,

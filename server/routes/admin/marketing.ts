@@ -475,3 +475,136 @@ adminMarketingRouter.delete(
     }
   },
 )
+
+// ── Events / Smart Calendar (Phase 5) ──────────────────────────────
+
+adminMarketingRouter.get(
+  '/events',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { listUpcomingEvents, getEventsNeedingReminder } = await import('../../lib/marketing/eventCalendar.ts')
+      const [events, reminders] = await Promise.all([
+        listUpcomingEvents({ daysAhead: 180, includeRecentlyPast: 14, limit: 200 }),
+        getEventsNeedingReminder(),
+      ])
+      res.status(200).json({ ok: true, events, reminders })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+adminMarketingRouter.post(
+  '/events/seed',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { seedEvents } = await import('../../lib/marketing/eventCalendar.ts')
+      const result = await seedEvents()
+      res.status(200).json({ ok: true, ...result })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+adminMarketingRouter.post(
+  '/events/refresh-ai',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { refreshAiEventSuggestions } = await import('../../lib/marketing/eventCalendar.ts')
+      const result = await refreshAiEventSuggestions()
+      if (!result.ok) {
+        res.status(500).json({
+          error: { code: 'AI_REFRESH_FAILED', message: result.reason ?? 'AI refresh failed' },
+        })
+        return
+      }
+      // result already has ok: true on this branch.
+      res.status(200).json(result)
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+adminMarketingRouter.post(
+  '/events',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const raw = (req.body ?? {}) as Record<string, unknown>
+      const title = typeof raw['title'] === 'string' ? raw['title'].slice(0, 200) : ''
+      const eventDate = typeof raw['event_date'] === 'string' ? raw['event_date'] : ''
+      if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) {
+        res.status(400).json({
+          error: { code: 'INVALID_PAYLOAD', message: 'title + event_date (YYYY-MM-DD) required' },
+        })
+        return
+      }
+      const { addManualEvent } = await import('../../lib/marketing/eventCalendar.ts')
+      const result = await addManualEvent({
+        title,
+        event_date: eventDate,
+        end_date: typeof raw['end_date'] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw['end_date']) ? raw['end_date'] : undefined,
+        category: typeof raw['category'] === 'string' ? (raw['category'] as never) : undefined,
+        location_hint: typeof raw['location_hint'] === 'string' ? raw['location_hint'] : undefined,
+        description: typeof raw['description'] === 'string' ? raw['description'] : undefined,
+        target_audience: typeof raw['target_audience'] === 'string' ? (raw['target_audience'] as never) : undefined,
+        target_lead_time_days: typeof raw['target_lead_time_days'] === 'number' ? raw['target_lead_time_days'] : undefined,
+        notes: typeof raw['notes'] === 'string' ? raw['notes'] : undefined,
+      })
+      if (!result.ok) {
+        res.status(500).json({ error: { code: 'CREATE_FAILED', message: result.error ?? 'create failed' } })
+        return
+      }
+      res.status(200).json({ ok: true, event: result.event })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+adminMarketingRouter.patch(
+  '/events/:eventId/dismiss',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const rawEventId = req.params['eventId']
+      const eventId = typeof rawEventId === 'string' ? rawEventId : ''
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(eventId)) {
+        res.status(400).json({ error: { code: 'INVALID_EVENT_ID', message: 'eventId must be a UUID' } })
+        return
+      }
+      const { dismissReminder } = await import('../../lib/marketing/eventCalendar.ts')
+      const result = await dismissReminder(eventId)
+      if (!result.ok) {
+        res.status(500).json({ error: { code: 'DISMISS_FAILED', message: result.error ?? 'dismiss failed' } })
+        return
+      }
+      res.status(200).json({ ok: true })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+adminMarketingRouter.delete(
+  '/events/:eventId',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const rawEventId = req.params['eventId']
+      const eventId = typeof rawEventId === 'string' ? rawEventId : ''
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(eventId)) {
+        res.status(400).json({ error: { code: 'INVALID_EVENT_ID', message: 'eventId must be a UUID' } })
+        return
+      }
+      const { deleteEvent } = await import('../../lib/marketing/eventCalendar.ts')
+      const result = await deleteEvent(eventId)
+      if (!result.ok) {
+        res.status(500).json({ error: { code: 'DELETE_FAILED', message: result.error ?? 'delete failed' } })
+        return
+      }
+      res.status(200).json({ ok: true })
+    } catch (err) {
+      next(err)
+    }
+  },
+)

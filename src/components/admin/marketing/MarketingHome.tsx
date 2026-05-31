@@ -9,21 +9,41 @@
  */
 import { Link } from 'react-router-dom'
 import { useMarketingConfig, useCurrentMarketingTheme } from '@/hooks/useMarketingConfig'
+import { useMarketingEvents } from '@/hooks/useMarketingEvents'
 
 export default function MarketingHome() {
   const cfg = useMarketingConfig()
   const themeQuery = useCurrentMarketingTheme()
+  const eventsQuery = useMarketingEvents()
   const theme = themeQuery.data?.theme ?? null
+  const reminders = eventsQuery.data?.reminders ?? []
 
   return (
     <div data-testid="admin-marketing-home" className="space-y-6">
       <header>
         <h1 className="text-2xl font-bold text-text-primary">Marketing panel</h1>
         <p className="text-sm text-text-secondary">
-          Daily story queue, poster ideas, and your AI marketing
-          advisor — all in one place.
+          Daily story queue, poster ideas, smart calendar, and your AI
+          marketing advisor — all in one place.
         </p>
       </header>
+
+      {reminders.length > 0 && (
+        <Link
+          to="/admin/marketing/calendar"
+          data-testid="home-reminder-banner"
+          className="block rounded-lg border border-warning/40 bg-warning/5 px-4 py-3 hover:bg-warning/10 transition-colors"
+        >
+          <p className="text-sm font-semibold text-warning">
+            ⚠ {reminders.length} event{reminders.length === 1 ? '' : 's'} needing attention
+          </p>
+          <p className="text-xs text-text-secondary mt-0.5">
+            {reminders.slice(0, 3).map((r) => r.title).join(' · ')}
+            {reminders.length > 3 && ` · +${reminders.length - 3} more`}
+            <span className="ml-2 text-warning">→ view calendar</span>
+          </p>
+        </Link>
+      )}
 
       <ConfigBanner
         loading={cfg.isLoading}
@@ -119,6 +139,21 @@ export default function MarketingHome() {
                 1 themed feed-post copy per day, grounded in this
                 month's theme + this week's feature focus. Paste into
                 your Canva templates.
+              </p>
+            </Link>
+          </li>
+          <li>
+            <Link
+              to="/admin/marketing/calendar"
+              className="block rounded-lg border border-primary/30 bg-primary/5 p-3 hover:bg-primary/10 transition-colors"
+            >
+              <p className="font-semibold text-primary">
+                Smart calendar →
+              </p>
+              <p className="text-xs text-text-secondary mt-0.5">
+                Events Tago should target — federal holidays, UC Davis
+                academic milestones, Picnic Day, Coachella weekends, etc.
+                AI suggests new ones; reminders fire 1 week before.
               </p>
             </Link>
           </li>
