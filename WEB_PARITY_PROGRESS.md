@@ -19,7 +19,7 @@ iOS has added 22 migrations (086–107), 22 new endpoints, and entire new Featur
 | 2 | **Caregivers** | mig 089, 091, 092, 093, iOS surface much wider than originally scoped (Profile + Auth + Schedule + RideBoard + Driver UX + 3 DesignSystem components + repository, no Endpoints/ files — iOS goes direct via Supabase SDK) | ✅ audit complete 2026-05-30 — see [Sprint 6](#sprint-6--caregivers-v12-parity) below |
 | 3 | **Vehicle + user accessibility** | mig 087 (user-profile expansion: bio/gender/school/major/grad-year), 088 (accessibility profile), 090 (vehicle wheelchair_capable + trunk_size) | ✅ audit complete 2026-05-30 — see [Sprint 7](#sprint-7--accessibility--user-profile-v12-parity) below |
 | 4 | **Rider routines + Suggestions** | mig 099–106, `Features/Suggestions/`, `Features/Schedule/Routines*`, `Features/Profile/ProfileRoutinesSection`, suggestion + project-routine + sync-routine endpoints | ✅ audit complete 2026-05-30 — see [Sprint 8](#sprint-8--suggestions--rider-routines-v13-parity) below |
-| 5 | **Trips & segments (split fare)** | mig 097, 098, trips endpoints, `Features/Rides/` | ⏳ pending |
+| 5 | **Trips & segments (split fare)** | mig 097, 098, `Features/Rides/`, `Features/MultiRider/`, `Features/DriverHome/DriverMultiRidePage+TripComplete`, `server/lib/trips.ts` + `server/lib/segments.ts`, no dedicated endpoint yet (iOS reads Supabase direct via `CoRidersFetcher`) | ✅ audit complete 2026-05-30 — see [Sprint 9](#sprint-9--trips--segments-split-fare-foundation-v13-parity) below |
 | 6 | **Board redesign + Smart geo-match** | `docs/BOARD_REDESIGN_PLAN.md`, `SMART_SEARCH_PLAN.md`, `Features/RideBoard/`, board endpoints | ⏳ pending (coordinate with parallel session) |
 | 7 | **Ride safety + forensics (admin)** | mig 094, 095, 096, `Features/Safety/`, `Features/AdminCampaign/` | ⏳ pending |
 | 8 | **Endpoint coverage audit** | all 72 endpoints in `ios/Core/Networking/Endpoints/` | ⏳ pending |
@@ -38,23 +38,262 @@ For every stage:
 
 ### Currently pending decisions
 
-- **Stages 1–4 audits landed**. Stages 5–9 still queued.
-- **Sprint 8 (Suggestions + rider routines v1.3)** — ✅ Audit complete 2026-05-30. 6-slice plan landed below; no code yet. Headline: chasm-sized rider-side gap — iOS ships full Suggested Rides home hero + detail sheet + dismiss + lazy-routine action flow, web ships ZERO of it. Sprint 8 also bundles small parity corrections (mode badge on routine rows, Add-Routine pre-select, push_suggestions toggle).
-- **Sprint 7 (accessibility / user profile)** — ✅ Slices 1–5 shipped + pushed (CI green 2026-05-30). Slice 6 (UserProfilePreviewCard polish) is the only remaining piece; parked unless surface emerges.
-- **Sprint 6 (caregivers)** — ✅ Slices 1–6 shipped + pushed (CI green 2026-05-30). Slice 5's server response will light up on web + iOS once Vercel auto-deploy + EC2 PM2 pick up the new build.
+- **Stages 1–5 audits landed**. Stages 6–9 still queued.
+- **Sprint 9 (Trips & segments v1.3)** — ✅ Audit complete 2026-05-30. 5-slice plan landed below; no code yet. Headline: web missing the **entire trip-summary fare-split layer** (no Your Share card, no driver per-rider Trip Earnings card with caregiver-fee badges, no MultiRiderSubtitle pill on rider drawer, no TodaysAnytimeBanner) AND **no server endpoint exposes `ride_rider_shares` / `ride_segments` yet** — Sprint 9 starts with the server contract.
+- **Sprint 8 (Suggestions + rider routines v1.3)** — ✅ Audit complete 2026-05-30. 6-slice plan landed; no code yet. Headline: chasm-sized rider-side gap — iOS ships full Suggested Rides home hero + detail sheet + dismiss + lazy-routine action flow, web ships ZERO of it. Open question #9: rider-home Waymo redesign blocks Slice 4's natural placement.
+- **Sprint 7 (accessibility / user profile)** — ✅ Slices 1–5 shipped + pushed (CI green 2026-05-30). Slice 6 (UserProfilePreviewCard polish) parked.
+- **Sprint 6 (caregivers)** — ✅ Slices 1–6 shipped + pushed. Slice 5's server response lights up on web + iOS once Vercel + EC2 PM2 pick up the new build.
 - **Sprint 5 (Reports v2 polish)** — ⏳ Not started. Notifications-drift slice is highest blast radius; awaiting "go".
 
 ### Current focus
 
-Stage 4 audit just landed. All Sprint 6 + Sprint 7 (except Slice 6 polish) are on `origin/main`.
+Stage 5 audit just landed. Stages 1–5 of the multi-stage iOS-parity audit are all complete; 5 numbered sprints (Sprints 5–9) wait on user "go" before any code lands.
 
 ### Next action
 
 Tarun decides:
-1. **Sprint 8 Slice 1** (Suggestions foundation: types + hooks + API helpers + FCM handler) — unblocks every later slice in Sprint 8.
-2. **Sprint 5 Slice 1** (Reports v2 notifications drift — bounded slice, fixes a broken UX today).
-3. Run **Stage 5 audit** (Trips & segments / split fare) — next in the audit pipeline.
-4. Resolve any **open questions** in Sprint 8 (driver-side floating hero, Suggested tab on RideBoard, match-signals debug card visibility, feature-flag rollout).
+1. **Sprint 9 Slice 1** (TodaysAnytimeBanner — zero-server-dependency early win on MyRidesPage).
+2. **Sprint 9 Slice 2** (Server: `GET /api/rides/:id/share-details` — foundation for Slices 3–5).
+3. **Sprint 8 Slice 1** (Suggestions foundation: types + hooks + API helpers + FCM handler).
+4. **Sprint 5 Slice 1** (Reports v2 notifications drift — bounded, fixes a broken UX).
+5. Run **Stage 6 audit** (Board redesign + Smart geo-match — but parallel admin session is mid-flight here; coordinate first).
+6. Push the unpushed audit doc commits + the 2 parallel-admin commits (currently 3+ commits ahead of origin).
+
+---
+
+## Sprint 9 — Trips & segments (split-fare foundation) v1.3 parity
+
+**Audit-first mode.** Stage 5 of the multi-stage iOS-parity audit completed 2026-05-30 with no code changes. This section is the side-by-side findings + slice plan. Nothing here is shipped on the web app yet.
+
+### Headline
+
+As of 2026-05-30, iOS has shipped the F17 Trips & Segments stack end-to-end (migrations 097/098): Rides tab with stacked-rider group cards, `MultiRiderListSection` in driver drawers, `MultiRiderSubtitle` pill on rider drawer, per-rider Trip Earnings + Your Share cards on `RideSummaryPage` with caregiver-fee badges and waiver-detection, multi-rider trip-completion panel, and a `TodaysAnytimeBanner` above the role filter. Web has solid 1:1 parity on the Rides-tab list/group/posted/routines/empty-state surfaces and on `DriverMultiRidePage` live operations (web actually **exceeds iOS** with proximity-sorted pickup ordering + GPS-weak banner), but is missing the **entire trip-summary fare-split layer**: no Your Share card, no per-rider Trip Earnings card with caregiver-fee badges or waiver-detection, no `MultiRiderSubtitle` pill on the rider drawer, no `TodaysAnytimeBanner`.
+
+Crucially, **there is no server endpoint exposing `ride_rider_shares` / `ride_segments` to any client yet** — iOS reads directly from Supabase via RLS-gated SELECT in `CoRidersFetcher`. Sprint 9 starts with a server contract before touching UI. The rest of the slices ship the lowest-risk standalone surface first (TodaysAnytimeBanner, zero server dependency) and split the largest driver-summary work into two halves so no single slice exceeds an ~800 LoC budget.
+
+### Files read end-to-end during the audit
+
+**iOS source-of-truth surface (~2,000 lines):**
+
+Rides tab:
+- [`ios/Tago/Features/Rides/RidesTabPage.swift`](ios/Tago/Features/Rides/RidesTabPage.swift) — main container; segmented role filter; Active / Posted-awaiting-match / Routines sections; empty state; PostTripFAB.
+- [`ios/Tago/Features/Rides/RidesTabViewModel.swift`](ios/Tago/Features/Rides/RidesTabViewModel.swift) — `statusBadge` mapping (mirrors web `MyRidesPage.tsx:69-85`).
+- [`ios/Tago/Features/Rides/MyRideCard.swift`](ios/Tago/Features/Rides/MyRideCard.swift) — single-ride card.
+- [`ios/Tago/Features/Rides/MyRideGroupCard.swift`](ios/Tago/Features/Rides/MyRideGroupCard.swift) — multi-rider driver group with stacked avatars + combined names ("Alice & Bob +2") + per-rider chips + "Tap to manage riders →" affordance.
+- [`ios/Tago/Features/Rides/TodaysAnytimeBanner.swift`](ios/Tago/Features/Rides/TodaysAnytimeBanner.swift) — anytime-ride day-of banner with three copy variants + warning stroke (opacity 0.32) + fill overlay (opacity 0.06).
+- [`ios/Tago/Features/Rides/RoutineSummaryRow.swift`](ios/Tago/Features/Rides/RoutineSummaryRow.swift)
+
+Multi-rider:
+- [`ios/Tago/Features/MultiRider/MultiRiderListSection.swift`](ios/Tago/Features/MultiRider/MultiRiderListSection.swift) — driver drawer section with conditional header copy ("{N} aboard · {total} on this trip" vs "{total} riders on this trip") + 3 status pill labels (En route / Aboard / Dropped off) + "Trip earnings so far" footer.
+- [`ios/Tago/Features/MultiRider/MultiRiderSubtitle.swift`](ios/Tago/Features/MultiRider/MultiRiderSubtitle.swift) — rider-drawer capsule pill with phase-aware copy: "Shared trip · N others on this route" (coordinating phase) / "Shared ride · N others aboard" (active phase). `person.2.fill` icon, primary-color background at 10% opacity.
+- [`ios/Tago/Features/MultiRider/CoRider.swift`](ios/Tago/Features/MultiRider/CoRider.swift) — co-rider model.
+- [`ios/Tago/Features/MultiRider/CoRidersFetcher.swift`](ios/Tago/Features/MultiRider/CoRidersFetcher.swift) — RLS-gated Supabase-direct SELECT against `ride_segments` + `trips`. Returns ALL riders ever on the trip (including those already dropped off), excluding the caller.
+
+Driver multi-rider completion:
+- [`ios/Tago/Features/DriverHome/DriverMultiRidePage+TripComplete.swift`](ios/Tago/Features/DriverHome/DriverMultiRidePage+TripComplete.swift) — hero-then-list completion panel: checkmark hero + "All riders dropped off" (both hero copy AND subtitle) + total earnings (27pt green) + "PER-RIDER SUMMARY" label (heavy weight, tracked) + tappable rows + Done button.
+
+Per-rider summary cards (on `RideSummaryPage.swift`):
+- Rider "Your share" card (lines 274-276, 982-1057, 1042-1046) — three-way segment label grammar: "Solo · X.X mi" (0 others), "With 1 other · X.X mi" (1 other), "With N others · X.X mi" (2+ others). Then base share / caregiver seat / companion seat / "Your total" rows.
+- Driver "Trip earnings" card (lines 1073-1155, 1242-1260) — per-rider rows with avatar + name + "To: {dest}" + distance shared + "+caregiver $X" badge (when `caregiver_share_cents > 0`); waiver-detection edge case showing "Caregiver seat fee waived by driver" + heart icon when `persistedTotal <= baseSum`.
+
+**Server + migrations (~944 lines):**
+
+- [`supabase/migrations/097_trips_and_segments.sql`](supabase/migrations/097_trips_and_segments.sql) (218 lines) — `trips` table + `ride_segments` + `ride_rider_shares` + columns added to `rides` (trip_id, segment_id, is_first_segment, is_last_segment); RLS policies (lines 110-117, 146-159, 207-208).
+- [`supabase/migrations/098_backfill_trips.sql`](supabase/migrations/098_backfill_trips.sql) (95 lines) — backfills each historical ride to its own trip row (multi-rider history gets multiple trip rows, no shared parent).
+- [`server/lib/trips.ts`](server/lib/trips.ts) (221 lines) — `getOrCreateTripForRide()` called from `/start` and `/end` handlers.
+- [`server/lib/segments.ts`](server/lib/segments.ts) (411 lines) — `computeRiderTotals` (server-canonical fare split math; folds `caregiver_share_cents` in per Sprint 6).
+- [`server/routes/rides.ts`](server/routes/rides.ts) — `/start` calls `getOrCreateTripForRide` (line ~3845), `/end` calls it again (line ~4034) + `computeRiderTotals` finalizes shares. **No `/share-details` endpoint exists yet.**
+
+**Web user-facing surface (audit result):**
+
+At parity:
+- [`src/components/ride/MyRidesPage.tsx`](src/components/ride/MyRidesPage.tsx) — Active / Posted-awaiting-match / Routines sections + segmented role filter with counts (`MyRidesPage.tsx:319-518`). `listItems` folding logic for stacked-rider groups (`MyRidesPage.tsx:524-619`).
+- [`src/components/ride/DriverMultiRidePage.tsx`](src/components/ride/DriverMultiRidePage.tsx) — driver live operations view (web exceeds iOS with proximity-sorted pickup ordering + GPS-weak banner).
+- [`src/components/ride/MultiDriverMap.tsx`](src/components/ride/MultiDriverMap.tsx) — multi-rider map.
+- [`src/components/ride/DriverGroupChatPage.tsx`](src/components/ride/DriverGroupChatPage.tsx) — group chat (wired from `DriverMultiRidePage`).
+
+Missing entirely:
+- ❌ No `TodaysAnytimeBanner` on `MyRidesPage` (anytime label only appears inline on the posted-schedule row at `MyRidesPage.tsx:438`).
+- ❌ No `MultiRiderSubtitle` pill on `RiderActiveRidePage` (rider has zero visual cue they're on a shared trip).
+- ❌ No "Your share" card on `RideSummaryPage` for riders — only single fare total displayed.
+- ❌ No driver "Trip earnings" card with per-rider breakdown + caregiver-fee badge + waiver detection (`DriverMultiSummaryFlow.tsx` shows per-rider rating + final total but no `caregiver_share` breakout, no per-rider distance-shared, no waiver copy).
+- ❌ `DriverMultiSummaryFlow.tsx` is a **stepper** that walks rider-by-rider — iOS uses hero-then-list pattern.
+- ❌ No `GET /api/rides/:id/share-details` endpoint.
+
+### Side-by-side parity matrix
+
+| Surface | iOS | Web | Severity |
+|---|---|---|---|
+| **Rides tab role filter** | Segmented picker with conditional "• N" bullet suffix (Unicode •) only when count > 0 | Segmented filter with counts present | ➖ PARITY (verify Unicode bullet in reviewer) |
+| **Rides tab three sections + empty state** | Active / Posted / Routines rendered conditionally; role-aware empty state | Same three sections + same empty state | ➖ PARITY |
+| **`MyRideGroupCard`** | Stacked avatars, "Name1 & Name2 +N", worst-status badge, per-rider chips, "Tap to manage riders →" affordance, "You are the driver · N riders" fallback | Same `listItems` folding logic with stacked avatars + per-rider chips | ➖ PARITY (verify affordance + fallback verbatim) |
+| **`TodaysAnytimeBanner`** | Sun-icon banner with three copy variants (single / multi / destination-missing fallback) + trailing chevron + dual warning overlay (stroke 0.32, fill 0.06) | No equivalent | ⚠️ MEDIUM — tied to 9AM server push (mig 059); iOS shows in-app reinforcement, web only relies on push |
+| **`MultiRiderSubtitle` pill** | Capsule pill: "Shared trip · N others on this route" (enroute) → "Shared ride · N others aboard" (active); `person.2.fill` icon, primary at 10% opacity | Not rendered on `RiderActiveRidePage` | 🚨 HIGH — rider has no visual cue they're on a shared trip; requires `/share-details` endpoint |
+| **`MultiRiderListSection` in driver drawer** | Header "{N} aboard · {total} on this trip" / "{total} riders on this trip"; status pills (En route / Aboard / Dropped off); "Trip earnings so far" footer | Web has full-page `DriverMultiRidePage` but lacks drawer integration + earnings-so-far footer + conditional header copy | LOW — acceptable as web-native full-page variant for Sprint 9; deferred |
+| **Rider "Your share" card** | Renders only when share exists AND segments not empty; per-segment "Solo · X.X mi" / "With 1 other" / "With N others" grammar + base/caregiver/companion line items + "Your total" | Single fare total only; no per-segment breakdown, no line items | 🚨 **CRITICAL** — requires `/share-details` |
+| **Driver "Trip earnings" card** | Per-rider rows with avatar + name + "To: {dest}" + distance shared + "+caregiver $X" badge + waiver-detection edge case "Caregiver seat fee waived by driver" with heart icon | Per-rider rating + final total only; no caregiver break-out, no waiver copy | 🚨 HIGH — requires `/share-details` + redesign of driver final-summary surface |
+| **Multi-rider trip-completion panel** | Hero + "All riders dropped off" (both hero AND subtitle) + total earnings (27pt green) + "PER-RIDER SUMMARY" label + tappable rows + Done button | `DriverMultiSummaryFlow.tsx` is a stepper walking rider-by-rider | ⚠️ MEDIUM — per "copy iOS UX first": replace stepper with hero-then-list, keep deep-link drill-in as web-native upgrade |
+| **Group Chat entry on multi-rider trips** | Outline button at bottom of `DriverMultiRidePage` when `riders.count > 1` | `DriverGroupChatPage` wired from `DriverMultiRidePage` | ➖ PARITY |
+| **Server endpoint for trip + segments + shares** | iOS reads Supabase direct via RLS-gated SELECT in `CoRidersFetcher` | No equivalent; web has no direct-read path and no REST endpoint | 🚨 **CRITICAL** — must add `GET /api/rides/:id/share-details` (active + completed phases) |
+| **Server-derived trip creation (trip_id read-only)** | Trips created server-side via `getOrCreateTripForRide()` in `/start` + `/end` handlers; `trip.kind = 'board' if schedule_id else 'instant'` | Same backend, no client action needed | ➖ PARITY (web MUST NOT POST/PATCH/DELETE trips) |
+
+### Cross-cutting notes (apply to every slice)
+
+- **Server contract — trips/segments/shares are server-canonical reads.** `/share-details` returns precomputed values from `ride_rider_shares` (written by `computeRiderTotals` at `/end`). Web MUST consume `base_share_cents` / `caregiver_share_cents` / `companion_share_cents` / `total_cents` verbatim. Web IS allowed to derive PRESENTATIONAL helpers (distance-shared per rider from `segments[].distance_meters`, solo-vs-shared label from `active_rider_ids.length`, per-segment per-rider split as `totalCents / denom` — same client-side pattern iOS uses at `RideSummaryPage.swift:1040`) but **never re-derive canonical money values**.
+- **Server contract — `trip_id` is read-only on the wire.** Trips are server-derived inside `getOrCreateTripForRide()` called from `/start` and `/end` handlers (`rides.ts:3845-3851, 4034-4036`). Web client MUST NOT POST/PATCH/DELETE trips or segments. `trip_id` may be null on pre-097 backfilled rides — `/share-details` returns 404 in that case and the UI gracefully hides (per Slice 3 DoD).
+- **Server contract — `/share-details` supports both active and completed phases** (Slice 2 DoD). During active phase, `shares[]` may be partial or empty (a rider not yet dropped off has no row yet). UI consumers (Slice 5 SURFACE B) MUST handle empty `shares[]` without throwing.
+- **Copy is verbatim from iOS `.swift` files** for every label, headline, empty state, pill, and badge in Slices 1, 3, 4, 5. No web-only copywriting permitted in this sprint. Specific verbatim sets to match: `TodaysAnytimeBanner` three copy variants (Slice 1), three segment grammar variants (Slice 3), caregiver-waiver copy + heart icon (Slice 4), "Shared trip/ride · N others on this route/aboard" (Slice 5 SURFACE B), "All riders dropped off" + "PER-RIDER SUMMARY" (Slice 5 SURFACE A).
+- **All colors via `src/lib/tokens.ts`** — no raw hex anywhere in the new banners, cards, badges, pills, or hero. iOS tone colors (warning=orange, success=green, primary=brand-blue, neutral=gray) map onto the existing token palette.
+- **All `*_cents` fields stay as integers in TypeScript types** per CLAUDE.md money rule; only the formatter at render time converts to dollars. Never store fare values as floats.
+- **Every new component must accept `data-testid`** (CLAUDE.md convention) and ideally match the iOS accessibility ID where one exists (e.g. `rides-anytime-today-banner`, `rideSummary.yourShareCard`, `rideSummary.tripEarningsCard`, `multiRide.subtitle`).
+- **NO new analytics events in this sprint** unless iOS has a matching PostHog/event call in the source files for the same surface. If a follow-up iOS analytics audit reveals events for trip-summary surfaces, add as a Sprint 10 polish slice — do not bundle into Slices 3/4/5.
+
+### Sprint 9 slice plan
+
+Per the per-feature green-light + tough-self-review-before-handoff + reviewer parity-check hard rules. Every slice ends with lint + tests + build green + reviewer parity matrix + commit + wait for Tarun's "go" before shipping the next.
+
+#### Slice 1 — Web: `TodaysAnytimeBanner` on `MyRidesPage` (zero-server-dependency early win)
+
+Add a banner component to `src/components/ride/MyRidesPage.tsx` rendered above the role-filter segmented control when the user has at least one active ride with `time_flexible=true` AND `trip_date` equals today's local-tz date. THREE verbatim copy variants from `TodaysAnytimeBanner.swift:61-74`: **(1)** single-ride "Today's the day!" + "Your anytime ride to {dest_address} is scheduled today.", **(2)** multi-ride "Today's the day — {N} anytime rides" + "Open Tago when you're ready to head out.", **(3)** destination-missing fallback "Today's the day!" + "Your anytime ride is scheduled today. Open Tago when you're ready to head out." Sun icon (warning tint), trailing right chevron affordance, warning-tinted background composed of TWO overlays per iOS lines 98/102: stroke at `tokens.warning` at opacity 0.32 lineWidth 1 + fill at `tokens.warning` at opacity 0.06. `data-testid='rides-anytime-today-banner'` matching iOS accessibility ID. Tap is a no-op for v1 (iOS also relies on user opening the relevant card next). Date comparison via the user's local tz, NOT UTC. Component lives in its own file to minimize `MyRidesPage` merge surface (flag at slice-kickoff per parallel-admin lane rule — insertion point should be a single one-liner).
+
+- **iOS reference:** [`TodaysAnytimeBanner.swift`](ios/Tago/Features/Rides/TodaysAnytimeBanner.swift), [`RidesTabPage.swift`](ios/Tago/Features/Rides/RidesTabPage.swift)
+- **Web files to touch:** `src/components/ride/MyRidesPage.tsx`, `src/components/ride/TodaysAnytimeBanner.tsx` (new), `src/lib/anytime.ts` (new — local-tz today predicate), `src/test/ride/TodaysAnytimeBanner.test.tsx` (new)
+- **Server contract:** No new server contract. Consumes existing `GET /api/rides/active` fields: `time_flexible` (boolean), `trip_date` (date), `schedule.dest_address`. All already returned by `rides.ts:5814-5817`.
+- [ ] Banner renders for `time_flexible=true` rides scheduled today, hidden otherwise
+- [ ] All three verbatim copy variants (single / multi / fallback) correct vs `TodaysAnytimeBanner.swift` lines 61-74
+- [ ] Trailing chevron present and warning stroke + fill overlay composition matches iOS opacity values
+- [ ] Local-tz comparison correct across midnight + DST edge cases (Vitest with fake-timers)
+- [ ] All colors via `src/lib/tokens.ts`, zero raw hex
+- [ ] `data-testid='rides-anytime-today-banner'` matches iOS accessibility ID
+- [ ] `MyRidesPage` insertion is a single one-liner above the role filter (minimizes merge surface vs parallel sessions)
+- [ ] `npm test` passes, `npm run lint` zero errors, `npm run build` succeeds
+- [ ] Reviewer parity matrix against `TodaysAnytimeBanner.swift` attached to handoff
+
+#### Slice 2 — Server: `GET /api/rides/:id/share-details` endpoint (supports BOTH active and completed phases)
+
+Add a single read endpoint returning canonical settlement payload for ANY ride that has a `trip_id` (active or completed). Payload: `{ trip: {id, kind, started_at, ended_at, gps_distance_metres, gas_cost_cents, time_cost_cents}, segments: [{segment_index, started_at, ended_at, distance_meters, active_rider_ids, gas_cost_cents, time_cost_cents}], co_riders: [{rider_id, full_name, avatar_url, destination_name}], shares: [{rider_id, base_share_cents, caregiver_share_cents, companion_share_cents, total_cents, segments_in_count, payment_status}] }`. RLS-equivalent gating: 403 unless caller is `driver_id` on the trip OR `rider_id` on any of the trip's rides (mirrors RLS in `097:110-117, 146-159, 207-208`). Reads from `ride_rider_shares` + `ride_segments` + `trips` — does NOT call `computeRiderTotals` (math is finalized server-side at `/end`).
+
+**Active-phase semantics:** `shares[]` MAY be empty or partial (a rider not yet dropped off has no row yet — handle gracefully), `segments[]` includes all segments including the currently-open one with `ended_at=null`. `co_riders` includes EVERY rider ever on the trip (including those who already completed), NOT just those overlapping with caller in a segment — iOS `CoRidersFetcher` reads the full set. Returns 404 if `ride.trip_id IS NULL` (pre-097 backfill miss). Pre-097 backfilled historical multi-rider rides each got their own `trip` row, so they'll return 200 with a single-rider `shares[]` and a single-segment `segments[]` — acceptable degraded summary, no special marker.
+
+- **iOS reference:** [`CoRidersFetcher.swift`](ios/Tago/Features/MultiRider/CoRidersFetcher.swift), `ios/Tago/Features/RiderHome/RideSummaryPage.swift`, [`DriverMultiRidePage+TripComplete.swift`](ios/Tago/Features/DriverHome/DriverMultiRidePage+TripComplete.swift)
+- **Web files to touch:** `server/routes/rides.ts`, `server/lib/segments.ts` (read-only import), `src/test/server/rides.shareDetails.test.ts` (new)
+- **Server contract:** `GET /api/rides/:id/share-details → 200 { trip: {id: UUID, kind: 'instant'|'board', started_at: ISO8601, ended_at: ISO8601|null, gps_distance_metres: number, gas_cost_cents: number, time_cost_cents: number}, segments: [{segment_index: number, started_at: ISO8601, ended_at: ISO8601|null, distance_meters: number, active_rider_ids: UUID[], gas_cost_cents: number, time_cost_cents: number}], co_riders: [{rider_id: UUID, full_name: string, avatar_url: string|null, destination_name: string|null}], shares: [{rider_id: UUID, base_share_cents: number, caregiver_share_cents: number, companion_share_cents: number, total_cents: number, segments_in_count: number, payment_status: 'pending'|'paid'|'processing'|'failed'}] }`. 403 on non-participant. 404 ONLY when `ride.trip_id IS NULL`. Auth: `validateJwt`. READ-ONLY — no write surface.
+- [ ] Endpoint returns 200 with full payload for COMPLETED multi-rider ride
+- [ ] Endpoint returns 200 with possibly-partial `shares[]` for ACTIVE multi-rider ride (Slice 5 SURFACE B requires this)
+- [ ] Endpoint returns 200 with single-rider `shares[]` for solo trip (consumers use `shares.length` to detect solo vs multi)
+- [ ] Returns 403 for non-participants (Vitest with mocked auth)
+- [ ] Returns 404 when `ride.trip_id IS NULL` (pre-097 backfill miss path)
+- [ ] Co-rider list omits the caller themselves
+- [ ] Co-rider list includes riders who have already been dropped off (matches iOS `CoRidersFetcher` read scope)
+- [ ] Mid-trip ride with no shares row yet: `shares[] = []` for that rider (does NOT 500)
+- [ ] `npm test` passes, `npm run lint` zero errors, `npm run build` succeeds
+
+#### Slice 3 — Web: "Your share" card on `RideSummaryPage` (rider) + shared `useShareDetails` React Query hook
+
+Create `src/lib/shareDetails.ts` exporting a React Query hook `useShareDetails(rideId, { enabled })` and typed response interfaces — built generic enough to be consumed unchanged by Slice 5 SURFACE B's `MultiRiderSubtitle` pill. Then add a Glass "Your share" card to `src/components/ride/RideSummaryPage.tsx` that renders when `/share-details` returns `shares.length >= 2` AND `segments.length > 0` AND viewer is a rider (matches dual-guard in `RideSummaryPage.swift:274-276`).
+
+Header: `person.2`-equivalent icon + "Your share" + "{segments_in_count} leg(s)". Per-segment rows computed from `segments[]` filtered to those whose `active_rider_ids` includes viewer, with THREE verbatim grammar variants from `RideSummaryPage.swift:1042-1046`: **"Solo · X.X mi"** (0 others), **"With 1 other · X.X mi"** (1 other, singular), **"With N others · X.X mi"** (2+ others, plural). Per-segment per-rider share derived presentationally as `totalCents / denom` (iOS does this client-side at line 1040 — same pattern allowed on web; this is presentation math, NOT canonical fare math). Totals rows: "Base share" (always), "Caregiver seat" (only if `caregiver_share_cents > 0`), "Companion seat" (only if `companion_share_cents > 0`), "Your total" bold. Solo trip (`shares.length=1`) → card hidden. Pre-097 ride returning 404 from `/share-details` → card hidden (NOT a thrown error — silent graceful degradation).
+
+- **iOS reference:** `ios/Tago/Features/RiderHome/RideSummaryPage.swift`, [`CoRidersFetcher.swift`](ios/Tago/Features/MultiRider/CoRidersFetcher.swift)
+- **Web files to touch:** `src/components/ride/RideSummaryPage.tsx`, `src/lib/shareDetails.ts` (new — React Query hook + types, designed for reuse by Slice 5 with `{ enabled }` gate), `src/test/ride/RideSummaryPage.yourShare.test.tsx` (new)
+- **Server contract:** Consumes `GET /api/rides/:id/share-details` from Slice 2. No new server work.
+- [ ] Card renders for rider on completed multi-rider trip with correct per-segment labels (all three grammar variants tested)
+- [ ] Card hidden for solo trips (`shares.length=1`)
+- [ ] Card hidden when viewer is driver
+- [ ] Card hidden on 404 (pre-097 backfill miss) — graceful degradation, no thrown error in console
+- [ ] Caregiver / companion line items only render when their cents > 0
+- [ ] Per-segment per-rider share derivation matches iOS computation pattern (presentational, not canonical)
+- [ ] All colors via `tokens.ts`, no raw hex; every interactive element has `data-testid`
+- [ ] Vitest snapshot + behavior tests for solo / 2-rider / 3-rider / 404 / caregiver-only / companion-only variants
+- [ ] `useShareDetails` hook accepts `{ enabled: boolean }` option so Slice 5 can gate by phase without forking
+- [ ] Reviewer parity matrix against `RideSummaryPage.swift` attached to handoff
+- **Dependencies:** Slice 2
+
+#### Slice 4 — Web: "Trip earnings" card on `RideSummaryPage` driver branch (per-rider breakdown + caregiver-fee badge + waiver detection)
+
+Add a sibling "Trip earnings" card on `src/components/ride/RideSummaryPage.tsx` that renders when viewer is the driver AND `/share-details` returns `shares.length >= 2`. Header: `person.3`-equivalent icon + "Trip earnings" + "{N} rider(s)". Per-rider rows from `/share-details.shares` joined to `co_riders`: avatar (44x44 circle, initials fallback), name, "To: {destination_name}", distance shared (computed client-side from segments where rider in `active_rider_ids`), **"+caregiver $X" badge** when `caregiver_share_cents > 0` (icon + `tokens.primary` color), trailing earnings "+${total_cents/100}" in heavy green.
+
+**Caregiver-fee-waived edge case** from iOS `RideSummaryPage.swift:1242-1260`: when `total_cents <= base_share_cents + per-rider gas_share + per-rider time_share` (i.e. driver waived the caregiver fee), render **"Caregiver seat fee waived by driver"** with `heart.fill` icon INSTEAD of the +caregiver badge. Footer divider + "Total earnings" label + summed total in heavy green. Per-rider row tappable → opens `/ride/{ride_id}/summary` (web-native deep-link upgrade on top of iOS `fullScreenCover`). **Slice 4 DOES NOT replace `DriverMultiSummaryFlow.tsx`** — that redesign is Slice 5 to keep this slice bounded.
+
+- **iOS reference:** `ios/Tago/Features/RiderHome/RideSummaryPage.swift` (lines 1073-1155, 1242-1260), [`DriverMultiRidePage+TripComplete.swift`](ios/Tago/Features/DriverHome/DriverMultiRidePage+TripComplete.swift)
+- **Web files to touch:** `src/components/ride/RideSummaryPage.tsx`, `src/test/ride/RideSummaryPage.tripEarnings.test.tsx` (new)
+- **Server contract:** Consumes `GET /api/rides/:id/share-details` from Slice 2. Distance-shared per rider derived client-side from `segments[].active_rider_ids` and `segments[].distance_meters` (read-only computation, NOT fare math).
+- [ ] Card renders for driver on completed multi-rider trip with all co-riders surfaced
+- [ ] "+caregiver $X" badge renders iff `caregiver_share_cents > 0` AND waiver predicate is false
+- [ ] "Caregiver seat fee waived by driver" + `heart.fill` renders when waiver predicate is true (per iOS lines 1242-1260)
+- [ ] Total earnings = sum of `shares.total_cents`
+- [ ] Per-rider row routes to `/ride/{ride_id}/summary` on click (verify existing route accepts any participant `ride_id`, not just viewer's own)
+- [ ] All colors via `tokens.ts`, no raw hex
+- [ ] Vitest tests for 2-rider, 3-rider, 2-rider-with-caregiver, 2-rider-with-waived-caregiver variants
+- [ ] Reviewer parity matrix against `RideSummaryPage.swift` (1073-1155, 1242-1260) attached to handoff
+- **Dependencies:** Slice 2
+
+#### Slice 5 — Web: Redesign `DriverMultiSummaryFlow` to iOS hero-then-list + `MultiRiderSubtitle` pill on `RiderActiveRidePage`
+
+TWO related surfaces bundled because they share the same data source (`/share-details`) and the same reviewer-parity scope (multi-rider read surfaces).
+
+**SURFACE A — `DriverMultiSummaryFlow.tsx` replacement:** replace the existing stepper with the iOS hero-then-list pattern from `DriverMultiRidePage+TripComplete.swift:60-255`: checkmark hero + "All riders dropped off" as both hero copy AND subtitle + total earnings (large green) + "PER-RIDER SUMMARY" label (heavy, tracked) + tappable per-rider rows with avatar, name, destination, trailing earnings, dividers between rows + Done button. Tappable rows route to `/ride/{ride_id}/summary` (Slice 4's deep-link).
+
+**SURFACE B — `MultiRiderSubtitle` pill on `RiderActiveRidePage.tsx`** (and `JourneyDrawer` if separate): render a capsule pill via the Slice 3 `useShareDetails` hook with `{ enabled: ride.status in ['coordinating','active'] }`. Two verbatim copy variants from `MultiRiderSubtitle.swift:22-30`: enroute phase **"Shared trip · {N} others on this route"**, active phase **"Shared ride · {N} others aboard"**. `person.2.fill` equivalent icon, `tokens.primary` background at 10% opacity. Hidden when `co_riders.length < 1` OR `/share-details` 404s.
+
+- **iOS reference:** [`DriverMultiRidePage+TripComplete.swift`](ios/Tago/Features/DriverHome/DriverMultiRidePage+TripComplete.swift), [`MultiRiderSubtitle.swift`](ios/Tago/Features/MultiRider/MultiRiderSubtitle.swift), `ios/Tago/Features/RiderHome/RiderActiveRideState.swift`
+- **Web files to touch:** `src/components/ride/DriverMultiSummaryFlow.tsx`, `src/components/ride/RiderActiveRidePage.tsx`, `src/components/ride/JourneyDrawer.tsx` (if used by rider), `src/test/ride/DriverMultiSummaryFlow.heroList.test.tsx` (new), `src/test/ride/RiderActiveRidePage.multiRiderSubtitle.test.tsx` (new)
+- **Server contract:** Consumes `GET /api/rides/:id/share-details` from Slice 2 (active-phase support is what makes Surface B work — already in Slice 2's DoD).
+- [ ] `DriverMultiSummaryFlow` rendered as iOS hero-then-list (not stepper); "All riders dropped off" present as both hero AND subtitle copy; "PER-RIDER SUMMARY" label in heavy weight
+- [ ] Per-rider rows tappable, route to `/ride/{ride_id}/summary`; dividers between rows match iOS
+- [ ] `MultiRiderSubtitle` pill renders "Shared trip · N others on this route" during coordinating phase and "Shared ride · N others aboard" during active phase (verbatim vs `MultiRiderSubtitle.swift:22-30`)
+- [ ] Pill hidden for solo trips (`co_riders.length=0`) and on `/share-details` 404
+- [ ] Pill updates on ride status realtime broadcast
+- [ ] Colors via `tokens.ts` at 10% opacity for pill background, no raw hex anywhere
+- [ ] Vitest tests: hero-then-list rendering vs stepper, pill copy variants for solo / 2-on-trip / 4-on-trip + phase transitions
+- [ ] Reviewer parity matrix against `DriverMultiRidePage+TripComplete.swift` AND `MultiRiderSubtitle.swift` attached to handoff
+- **Dependencies:** Slice 2, Slice 3
+
+### Open questions (need Tarun's call before or during Sprint 9)
+
+1. **Does the existing `/ride/{ride_id}/summary` route accept any participant `ride_id`** (not just the viewer's own)? Slice 4's per-rider row deep-link assumes yes; if not, Slice 4 DoD must add "allow any participant ride_id on the summary route" as an explicit sub-task.
+2. **`/share-details` refresh logic in Slice 5 SURFACE B** (`MultiRiderSubtitle` pill) — poll on every ride status broadcast, or cache once and refresh only on explicit events (e.g. status transition coordinating→active)? iOS `CoRidersFetcher` fetches once on bootstrap and does not refresh live — same approach acceptable on web, but Realtime subscription is the more web-native option.
+3. **Should the redesigned Slice 5 SURFACE A driver hero-then-list display `payment_status` per rider** as a "pending payment" badge (web-native upgrade)? iOS does not currently show this. `/share-details` exposes the field — answer is presentational only. **Default: do NOT show it in Sprint 9** to preserve iOS parity; revisit as Sprint 10 polish.
+4. **`TodaysAnytimeBanner` on iOS is reinforced by the 9AM push notification** from migration 059. Does the web user receive the same push (FCM web), and should the banner suppress itself if the push was acknowledged? **Default for Sprint 9: always render regardless of push state** (iOS does the same — banner is in-app reinforcement of the push, not a substitute).
+5. **DEFERRED to Sprint 10** (cut from Sprint 9 to keep ≤5 slices): `MultiRiderListSection` drawer integration + "Trip earnings so far" footer on driver's active-ride drawer overlay (web currently has this as a standalone `DriverMultiRidePage` view, which is web-native and acceptable for now). Severity LOW per parity matrix.
+6. **DEFERRED to Sprint 10 backlog:** decide whether the web-only `DriverMultiRidePage` proximity-sorted pickup ordering + GPS-weak banner should be ported back to iOS, or whether it stays as a web-native enhancement. Currently web exceeds iOS here — not a parity gap, but worth a deliberate decision.
+
+### Verifier deltas applied to the draft plan
+
+RESEQUENCED per shape critic: `TodaysAnytimeBanner` promoted from Slice 5 to Slice 1 because it has zero server dependency and is the smallest/lowest-risk surface — gives an early win before the server-contract chain begins. Original Slice 1 (server endpoint) became Slice 2; original Slice 2 (Your Share card) became Slice 3; original Slice 3 (Driver Trip Earnings) was SPLIT per shape critic into Slice 4 (add Trip Earnings card to `RideSummaryPage` driver branch — bounded mirror of Slice 3) and Slice 5 (redesign `DriverMultiSummaryFlow` to iOS hero-then-list pattern). Slice 5 BUNDLES the `MultiRiderSubtitle` pill (originally Slice 4) with the `DriverMultiSummaryFlow` redesign because both consume `/share-details` and share the multi-rider reviewer-parity scope — keeps the sprint at **5 slices total** (within 3-6 bound).
+
+Folded in from completeness critic: all three `TodaysAnytimeBanner` copy variants (single/multi/destination-missing-fallback) + trailing chevron + dual warning overlay composition; full "Shared trip/ride · N others on this route/aboard" verbatim labels (not truncated); all three segment grammar variants with explicit singular vs plural; caregiver-fee-waived edge case ("Caregiver seat fee waived by driver" + heart icon) which the original plan missed entirely; conditional header copy and three status pill labels for `MultiRiderListSection`; "Tap to manage riders" affordance and "You are the driver · N riders" fallback for `MyRideGroupCard`; Unicode bullet separator for `RidesTabPage` role filter.
+
+Folded in from server-contract verifier: `/share-details` explicitly supports BOTH active and completed phases; 404 condition reworded from "ride is completed" to "trip_id IS NULL"; mid-trip ride with no shares row yet returns `shares[] = []` (does NOT 500); `co_riders` includes EVERY rider ever on the trip (matches iOS `CoRidersFetcher`); pre-097 backfilled rides return 404 silently with UI graceful-hide.
+
+Folded in from shape critic: Slice 3 split into Slice 4 (Trip Earnings on `RideSummaryPage`) + Slice 5 (`DriverMultiSummaryFlow` redesign) — keeps each within ~800 LoC budget; shared `useShareDetails` hook lives in Slice 3 with `{ enabled }` option for Slice 5 reuse; open question about REPLACE-vs-LAYER for `DriverMultiSummaryFlow` was baked into Slice 5 scope as REPLACE (iOS-canonical, deep-link drill-in is the web-native upgrade) per CLAUDE.md "copy iOS UX first" rule; cross-cutting notes trimmed to sprint-specific contracts only (universal CLAUDE.md/MEMORY rules removed); Slice 1 DoD explicitly notes single-one-liner insertion to minimize merge surface with parallel sessions.
+
+Did NOT fold in: shape critic's analytics-events slice (added a cross-cutting note + open question deferring iOS analytics audit to Sprint 10); completeness critic flag about `myOfferID` field added 2026-05-27 (out of Trips & Segments scope, belongs in a separate offer-mechanics sprint); completeness critic redundancy note about `iosReferenceFiles` files appearing in both Slice 3 and Slice 4 (different surfaces in the same `.swift` file — lines 982-1057 vs 1073-1155 — consolidating loses slice-by-slice traceability).
+
+### Sprint 9 summary
+
+| Status | Count |
+|---|---|
+| Not started | 5 slices |
+| In progress | 0 |
+| Done (awaiting QA) | 0 |
+| Done (verified + pushed) | 0 |
+
+### Current focus
+
+Awaiting Tarun's "go" on Slice 1 (`TodaysAnytimeBanner` — zero server dependency, smallest surface in the sprint). No code changes have shipped from this audit yet.
+
+### Next action
+
+If Tarun greenlights Slice 1: read [`src/components/ride/MyRidesPage.tsx`](src/components/ride/MyRidesPage.tsx) end-to-end + [`src/lib/tokens.ts`](src/lib/tokens.ts) for the warning palette + the iOS [`TodaysAnytimeBanner.swift`](ios/Tago/Features/Rides/TodaysAnytimeBanner.swift) end-to-end. Confirm `MyRidesPage` insertion point with `git status` (per parallel-admin lane rule) before any edits land.
+
+### Plain English
+
+iOS riders see two things web riders don't when they're on a shared ride (you and someone else in the same car going different places): a small badge on their drawer that says "Shared trip · 1 other on this route" so they know they're not alone, and after the ride a card called "Your share" that breaks down their fare into "Solo · 3 mi" / "With 1 other · 2 mi" / etc. so they understand exactly why they were charged what they were charged. iOS drivers see a different thing: a "Trip earnings" card that lists every rider, what each one paid them, and a "+caregiver $5" badge if a rider's caregiver came along. None of this exists on web. Also: iOS shows a "Today's the day!" banner on the rides tab when a rider has an anytime ride scheduled for today — web has nothing.
+
+The web app also doesn't have a server endpoint that exposes any of this data — the iOS app reads it directly from the Supabase database using its own database connection. So Sprint 9 starts by building the endpoint (`GET /api/rides/:id/share-details`) and then four UI pieces consume it: rider's "Your share" card, driver's "Trip earnings" card with the caregiver badge, the rider-drawer "Shared trip" pill, and a redesign of the driver's multi-rider summary screen to match the iOS hero-then-list pattern instead of the current step-through.
+
+Five slices, ordered so the first one ("Today's the day!" banner) has zero server dependency and ships immediately, then the server endpoint goes in, then the three UI consumers follow in order of payoff. **Awaiting your "go" on Slice 1.**
 
 ---
 
