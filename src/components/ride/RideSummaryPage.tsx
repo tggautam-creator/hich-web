@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { useShareDetails } from '@/lib/shareDetails'
 import YourShareCard from '@/components/ride/YourShareCard'
+import TripEarningsCard from '@/components/ride/TripEarningsCard'
 import { supabase } from '@/lib/supabase'
 import { formatCents, calculateFare, estimateStripeFee } from '@/lib/fare'
 import { colors as tokenColors } from '@/lib/tokens'
@@ -287,14 +288,14 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
 
   const isDriver = profile?.id === ride?.driver_id
 
-  // Sprint 9 Slice 3 — pull the multi-rider settlement payload for the
-  // "Your share" card (rider-side). Disabled for drivers (driver gets
-  // the "Trip earnings" card in Slice 4 against the same hook).
+  // Sprint 9 Slice 3 + 4 — pull the multi-rider settlement payload.
+  // Enabled for BOTH rider (Your share card) and driver (Trip earnings
+  // card). Same hook, same query key — React Query dedupes.
   const { data: shareDetails } = useShareDetails(rideId, {
-    enabled: typeof rideId === 'string' && !isDriver,
+    enabled: typeof rideId === 'string',
   })
   // Render the rider "Your share" card only when:
-  //  - viewer is a rider (gate above),
+  //  - viewer is a rider (gate),
   //  - /share-details returned a payload (not 404 / pre-097 backfill),
   //  - viewer's own settlement row exists in shares[],
   //  - there's at least one segment to render the per-leg breakdown.
@@ -308,6 +309,13 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
     shareDetails != null &&
     viewerShare != null &&
     (shareDetails.segments?.length ?? 0) > 0
+  // Sprint 9 Slice 4 — driver "Trip earnings" card. Renders when the
+  // viewer is the driver AND there are 2+ riders on the trip. Mirrors
+  // iOS RideSummaryPage.swift:281-283 gate.
+  const showTripEarningsCard =
+    isDriver &&
+    shareDetails != null &&
+    (shareDetails.co_riders?.length ?? 0) >= 2
 
   // Refresh profile to get latest wallet_balance after fare transfer
   useEffect(() => { void refreshProfile() }, [refreshProfile])
@@ -929,6 +937,18 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
           viewerId={profile.id}
           share={viewerShare}
           segments={shareDetails!.segments}
+        />
+      )}
+
+      {/* Sprint 9 Slice 4 — driver's "Trip earnings" card (multi-rider only).
+          Renders above the fare breakdown to mirror iOS ordering
+          (RideSummaryPage.swift:281-283 → 284). Silent-hide for solo
+          trips, riders, and pre-097 backfilled rides. */}
+      {showTripEarningsCard && shareDetails != null && (
+        <TripEarningsCard
+          coRiders={shareDetails.co_riders}
+          shares={shareDetails.shares}
+          segments={shareDetails.segments}
         />
       )}
 

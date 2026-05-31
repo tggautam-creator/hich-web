@@ -7192,12 +7192,16 @@ ridesRouter.get(
 
       // 5. Co-rider list: one entry per non-caller rider on the trip.
       //    Includes riders already dropped off (matches iOS CoRidersFetcher).
+      //    `ride_id` surfaced so the driver-side "Trip earnings" card
+      //    (Sprint 9 Slice 4) can deep-link each per-rider row to that
+      //    rider's specific /ride/summary/:id view.
       const coRiders = tripRides
         .filter((r) => r.rider_id != null && r.rider_id !== userId)
         .map((r) => {
           const profile = profileMap.get(r.rider_id as string)
           return {
             rider_id: r.rider_id as string,
+            ride_id: r.id,
             full_name: profile?.full_name ?? null,
             avatar_url: profile?.avatar_url ?? null,
             destination_name: r.destination_name,

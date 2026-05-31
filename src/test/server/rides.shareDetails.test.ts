@@ -268,6 +268,7 @@ describe('GET /api/rides/:rideId/share-details', () => {
     expect(res.body.co_riders).toEqual([
       {
         rider_id: RIDER_B,
+        ride_id: RIDE_B_ID,
         full_name: 'Bee Carpooler',
         avatar_url: null,
         destination_name: 'Davis',

@@ -45,6 +45,10 @@ export interface ShareDetailsSegment {
 
 export interface ShareDetailsCoRider {
   rider_id: string
+  /** Per-rider rideId — surfaced so the driver "Trip earnings" card can
+   *  deep-link each per-rider row to that rider's /ride/summary/:id view
+   *  (Sprint 9 Slice 4). */
+  ride_id: string
   full_name: string | null
   avatar_url: string | null
   destination_name: string | null
