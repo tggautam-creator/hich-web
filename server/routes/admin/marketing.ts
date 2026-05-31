@@ -345,3 +345,116 @@ adminMarketingRouter.patch(
     }
   },
 )
+
+// ── Advisor (Phase 4) ──────────────────────────────────────────────
+
+/**
+ * Chat-based marketing advisor agent. Per-admin threads with
+ * persisted history, brand context auto-loaded, KPIs injected on
+ * the first message of each thread. RLS scopes threads + messages
+ * to the calling admin.
+ */
+adminMarketingRouter.get(
+  '/advisor/threads',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = res.locals['userId'] as string
+      const { listThreads } = await import('../../lib/marketing/advisor.ts')
+      const threads = await listThreads(userId)
+      res.status(200).json({ ok: true, threads })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+adminMarketingRouter.post(
+  '/advisor/threads',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = res.locals['userId'] as string
+      const raw = (req.body ?? {}) as { title?: unknown }
+      const title = typeof raw.title === 'string' ? raw.title.slice(0, 100) : undefined
+      const { createThread } = await import('../../lib/marketing/advisor.ts')
+      const thread = await createThread(userId, title)
+      if (!thread) {
+        res.status(500).json({ error: { code: 'CREATE_FAILED', message: 'thread create failed' } })
+        return
+      }
+      res.status(200).json({ ok: true, thread })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+adminMarketingRouter.get(
+  '/advisor/threads/:threadId',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = res.locals['userId'] as string
+      const { threadId } = req.params
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId ?? '')) {
+        res.status(400).json({ error: { code: 'INVALID_THREAD_ID', message: 'threadId must be a UUID' } })
+        return
+      }
+      const { getThreadWithMessages } = await import('../../lib/marketing/advisor.ts')
+      const result = await getThreadWithMessages(threadId, userId)
+      if (!result) {
+        res.status(404).json({ error: { code: 'THREAD_NOT_FOUND', message: 'thread not found' } })
+        return
+      }
+      res.status(200).json({ ok: true, ...result })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+adminMarketingRouter.post(
+  '/advisor/threads/:threadId/messages',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = res.locals['userId'] as string
+      const { threadId } = req.params
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId ?? '')) {
+        res.status(400).json({ error: { code: 'INVALID_THREAD_ID', message: 'threadId must be a UUID' } })
+        return
+      }
+      const raw = (req.body ?? {}) as { content?: unknown }
+      const content = typeof raw.content === 'string' ? raw.content.slice(0, 4000) : ''
+      if (content.trim().length < 1) {
+        res.status(400).json({ error: { code: 'EMPTY_MESSAGE', message: 'content required' } })
+        return
+      }
+      const { sendMessage } = await import('../../lib/marketing/advisor.ts')
+      const result = await sendMessage({ threadId, userId, userContent: content })
+      if (!result.ok) {
+        res.status(500).json({ error: { code: 'SEND_FAILED', message: result.error ?? 'send failed' } })
+        return
+      }
+      res.status(200).json({ ok: true, assistant_message: result.assistant_message })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+adminMarketingRouter.delete(
+  '/advisor/threads/:threadId',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = res.locals['userId'] as string
+      const { threadId } = req.params
+      const { deleteThread } = await import('../../lib/marketing/advisor.ts')
+      const ok = await deleteThread(threadId, userId)
+      if (!ok) {
+        res.status(500).json({ error: { code: 'DELETE_FAILED', message: 'thread delete failed' } })
+        return
+      }
+      res.status(200).json({ ok: true })
+    } catch (err) {
+      next(err)
+    }
+  },
+)

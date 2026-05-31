@@ -123,11 +123,20 @@ export default function MarketingHome() {
             </Link>
           </li>
           <li>
-            <span className="font-semibold text-text-primary">
-              Marketing advisor (Phase 3+) —
-            </span>{' '}
-            Chat with an agent that knows everything about Tago.
-            Daily morning focus + weekly Slack strategy review.
+            <Link
+              to="/admin/marketing/advisor"
+              className="block rounded-lg border border-primary/30 bg-primary/5 p-3 hover:bg-primary/10 transition-colors"
+            >
+              <p className="font-semibold text-primary">
+                Marketing advisor →
+              </p>
+              <p className="text-xs text-text-secondary mt-0.5">
+                Chat with an agent that knows everything about Tago —
+                brand voice, features, live KPIs, monthly theme. Daily
+                focus + weekly Slack review coming in a follow-up
+                phase.
+              </p>
+            </Link>
           </li>
         </ul>
       </section>
