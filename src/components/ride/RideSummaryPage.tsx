@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
+import { useShareDetails } from '@/lib/shareDetails'
+import YourShareCard from '@/components/ride/YourShareCard'
 import { supabase } from '@/lib/supabase'
 import { formatCents, calculateFare, estimateStripeFee } from '@/lib/fare'
 import { colors as tokenColors } from '@/lib/tokens'
@@ -284,6 +286,28 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
   const [defaultTipCard, setDefaultTipCard] = useState<SavedCard | null>(null)
 
   const isDriver = profile?.id === ride?.driver_id
+
+  // Sprint 9 Slice 3 — pull the multi-rider settlement payload for the
+  // "Your share" card (rider-side). Disabled for drivers (driver gets
+  // the "Trip earnings" card in Slice 4 against the same hook).
+  const { data: shareDetails } = useShareDetails(rideId, {
+    enabled: typeof rideId === 'string' && !isDriver,
+  })
+  // Render the rider "Your share" card only when:
+  //  - viewer is a rider (gate above),
+  //  - /share-details returned a payload (not 404 / pre-097 backfill),
+  //  - viewer's own settlement row exists in shares[],
+  //  - there's at least one segment to render the per-leg breakdown.
+  // Mirrors iOS RideSummaryPage.swift:274-276 dual-guard.
+  const viewerShare =
+    shareDetails?.shares != null && profile?.id != null
+      ? shareDetails.shares.find((s) => s.rider_id === profile.id) ?? null
+      : null
+  const showYourShareCard =
+    !isDriver &&
+    shareDetails != null &&
+    viewerShare != null &&
+    (shareDetails.segments?.length ?? 0) > 0
 
   // Refresh profile to get latest wallet_balance after fare transfer
   useEffect(() => { void refreshProfile() }, [refreshProfile])
@@ -894,6 +918,19 @@ export default function RideSummaryPage({ 'data-testid': testId }: RideSummaryPa
           </div>
         )}
       </div>
+
+      {/* Sprint 9 Slice 3 — rider's "Your share" card (multi-rider only).
+          Renders above the fare breakdown to mirror iOS ordering
+          (RideSummaryPage.swift:274-276 → 284). Silent-hide for solo
+          trips, drivers, pre-097 backfilled rides, and active phase
+          before the viewer's shares row is written. */}
+      {showYourShareCard && profile?.id != null && viewerShare != null && (
+        <YourShareCard
+          viewerId={profile.id}
+          share={viewerShare}
+          segments={shareDetails!.segments}
+        />
+      )}
 
       {/* ── Fare breakdown (tappable) ────────────────────────────────────── */}
       <div className="mx-6 mt-4">
