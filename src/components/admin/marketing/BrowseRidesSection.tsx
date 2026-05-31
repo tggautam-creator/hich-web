@@ -170,9 +170,20 @@ function RideCard({ ride }: { ride: RideForStory }) {
               </span>
             )}
           </div>
-          <p className="text-xs text-text-primary mt-1 truncate">
-            {ride.route_name}
+          <p
+            data-testid="ride-route"
+            className="text-xs text-text-primary mt-1 flex items-center gap-1.5"
+            title={`${ride.origin_address} → ${ride.dest_address}`}
+          >
+            <span className="truncate flex-1 min-w-0">{shortLoc(ride.origin_address)}</span>
+            <span className="text-text-secondary shrink-0">→</span>
+            <span className="truncate flex-1 min-w-0">{shortLoc(ride.dest_address)}</span>
           </p>
+          {hasMeaningfulRouteName(ride.route_name, ride.origin_address, ride.dest_address) && (
+            <p className="text-[10px] text-text-secondary italic mt-0.5 truncate">
+              "{ride.route_name}"
+            </p>
+          )}
           <p className="text-[11px] text-text-secondary mt-0.5">
             {dateLabel(ride.trip_date, ride.days_until)} · {timeLabel(ride.trip_time)} {ride.time_type}
           </p>
@@ -300,6 +311,60 @@ function dateLabel(iso: string, daysUntil: number): string {
   return d.toLocaleDateString(undefined, {
     weekday: 'short', month: 'short', day: 'numeric',
   })
+}
+
+/**
+ * Compact an address down to the most useful chunk for the card.
+ * Strategy: drop the trailing ", USA" and ", CA <zip>" if present,
+ * keep the first 1-2 comma-separated parts (typically business
+ * name + city, or street + city). Falls back to the raw string
+ * truncated when the input doesn't comma-split cleanly.
+ *
+ *   "UC Davis Memorial Union, Davis CA 95616, USA" → "UC Davis Memorial Union, Davis"
+ *   "San Francisco International Airport (SFO), San Francisco, CA" → "San Francisco International Airport (SFO)"
+ *   "Davis, CA, USA" → "Davis"
+ *
+ * The full address is still surfaced in a `title` tooltip on the
+ * parent <p> so the founder can hover to see the canonical form.
+ */
+function shortLoc(addr: string): string {
+  if (!addr) return '(unset)'
+  const cleaned = addr
+    .replace(/,\s*USA\s*$/i, '')
+    .replace(/,\s*[A-Z]{2}\s+\d{5}(-\d{4})?\s*$/i, '')   // ", CA 95616"
+    .replace(/,\s*[A-Z]{2}\s*$/i, '')                     // ", CA"
+    .trim()
+  const parts = cleaned.split(',').map((p) => p.trim()).filter(Boolean)
+  if (parts.length === 0) return addr.slice(0, 40)
+  if (parts.length === 1) return parts[0]!.slice(0, 50)
+  // Keep first chunk (usually venue or street) + first locality.
+  return `${parts[0]}, ${parts[1]}`.slice(0, 60)
+}
+
+/**
+ * The poster's own `route_name` label is sometimes useful ("Daily
+ * Davis ↔ SAC commute") and sometimes a generic placeholder
+ * ("Home", "Home <—> School") that adds nothing once we show the
+ * real addresses. This filters out the noise so the secondary line
+ * only appears when it actually conveys something.
+ */
+function hasMeaningfulRouteName(routeName: string, origin: string, dest: string): boolean {
+  if (!routeName) return false
+  const lower = routeName.trim().toLowerCase()
+  if (lower.length === 0) return false
+  // Generic placeholders most users leave behind.
+  const GENERIC = new Set([
+    'home', 'school', 'work', 'home-school', 'home <—> school',
+    'home <-> school', 'home to school', 'school to home',
+    'home and back', 'commute',
+  ])
+  if (GENERIC.has(lower)) return false
+  // If the route_name is just a sub-string of either address, skip
+  // (e.g. route_name="Davis" when origin is "Davis, CA").
+  const origLower = origin.toLowerCase()
+  const destLower = dest.toLowerCase()
+  if (origLower.includes(lower) && destLower.includes(lower)) return false
+  return true
 }
 
 function timeLabel(t: string): string {
