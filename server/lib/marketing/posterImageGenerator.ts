@@ -11,6 +11,8 @@
  * 100 images/day on free tier.
  */
 import { GoogleGenAI } from '@google/genai'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
 import { supabaseAdmin } from '../supabaseAdmin.ts'
 import { getServerEnv } from '../../env.ts'
 import { humanizeGeminiError } from './gemini.ts'
@@ -19,6 +21,37 @@ const IMAGE_MODEL = 'gemini-2.5-flash-image'
 const BUCKET = 'marketing-posters'
 
 let _client: GoogleGenAI | null = null
+
+/**
+ * Real Tago logo PNG, base64-encoded, loaded once + cached. We pass
+ * this to gemini-2.5-flash-image as a reference inlineData part so
+ * the model composites OUR actual brand mark onto every generated
+ * poster instead of drawing a synthetic "T". Without this, Nano
+ * Banana tends to invent its own letterform that looks nothing like
+ * tagorides.com.
+ *
+ * Source: `public/logo-transparent.png` (512x512 RGBA, ~84 KB).
+ * Lookup is best-effort: if the file is missing in some runtime
+ * (e.g. a build that pruned `public/`), we log + fall back to a
+ * text-only call so generation still works rather than 500ing.
+ */
+let _logoCache: { data: string; mimeType: 'image/png' } | null = null
+
+function loadLogoPart(): { data: string; mimeType: 'image/png' } | null {
+  if (_logoCache) return _logoCache
+  try {
+    const path = resolve(process.cwd(), 'public', 'logo-transparent.png')
+    const buf = readFileSync(path)
+    _logoCache = { data: buf.toString('base64'), mimeType: 'image/png' }
+    return _logoCache
+  } catch (err) {
+    console.warn(
+      '[marketing/poster-image] logo PNG missing — falling back to text-only call:',
+      err instanceof Error ? err.message : String(err),
+    )
+    return null
+  }
+}
 
 function getClient(): GoogleGenAI {
   if (_client) return _client
@@ -63,9 +96,20 @@ async function _generate(itemId: string): Promise<ImageGenResult> {
   let foundMime: 'image/png' | 'image/jpeg' | 'image/webp' = 'image/png'
   try {
     const client = getClient()
+    // Always lead with the real Tago logo so Nano Banana composites
+    // OUR mark, not a hallucinated "T". Fall back to text-only when
+    // the PNG can't be loaded (logged in loadLogoPart()).
+    const logo = loadLogoPart()
+    const requestParts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> =
+      logo
+        ? [
+            { inlineData: { data: logo.data, mimeType: logo.mimeType } },
+            { text: row.image_prompt },
+          ]
+        : [{ text: row.image_prompt }]
     const response = await client.models.generateContent({
       model: IMAGE_MODEL,
-      contents: [{ role: 'user', parts: [{ text: row.image_prompt }] }],
+      contents: [{ role: 'user', parts: requestParts }],
       config: {
         responseModalities: ['Image'] as never,
       },

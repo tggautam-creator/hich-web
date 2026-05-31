@@ -14,7 +14,7 @@
  *  - Drops the hardcoded $0.04 price string (we don't want to
  *    drift when Google changes pricing)
  */
-import { useState, useId } from 'react'
+import { useState, useId, useMemo } from 'react'
 import {
   useMarketingPosterBatches,
   useGeneratePosterBatch,
@@ -27,7 +27,10 @@ import {
   type PosterItem,
   type PosterItemStatus,
 } from '@/hooks/useMarketingPosters'
+import { useMarketingEvents, type MarketingEvent } from '@/hooks/useMarketingEvents'
 import { StatusPill, CollapsibleBatchHeader, CopyableField } from './_shared'
+
+const LOGO_SRC = '/logo-transparent.png'
 
 const FORMAT_OPTIONS: ReadonlyArray<{ key: PosterFormat; label: string; dims: string }> = [
   { key: 'ig_story', label: 'Instagram Story', dims: '9:16 · 1080×1920' },
@@ -101,6 +104,31 @@ function GeneratorForm({
   const [founderNote, setFounderNote] = useState('')
   const [eventTag, setEventTag] = useState('')
   const [featureSpotlight, setFeatureSpotlight] = useState('')
+  const [selectedEventId, setSelectedEventId] = useState<string>('')
+
+  const eventsQuery = useMarketingEvents()
+  // Upcoming + same-day events, soonest first. Capped at 30 so the
+  // dropdown stays usable when the calendar fills up.
+  const upcomingEvents = useMemo(() => {
+    const all = eventsQuery.data?.events ?? []
+    const todayIso = new Date().toISOString().slice(0, 10)
+    return all
+      .filter((e) => e.event_date >= todayIso)
+      .sort((a, b) => a.event_date.localeCompare(b.event_date))
+      .slice(0, 30)
+  }, [eventsQuery.data])
+
+  function applyEvent(eventId: string) {
+    setSelectedEventId(eventId)
+    if (!eventId) return
+    const ev = upcomingEvents.find((e) => e.id === eventId)
+    if (!ev) return
+    setEventTag(ev.title.slice(0, 500))
+    const context = buildEventContext(ev)
+    // Replace the founder note so it's clear the picker drove it.
+    // The founder can still edit the textarea afterwards.
+    setFounderNote(context.slice(0, 500))
+  }
 
   function handleSubmit() {
     onGenerate({
@@ -133,6 +161,47 @@ function GeneratorForm({
         onChange={(v) => setAudience(v as PosterAudience)}
         options={AUDIENCE_OPTIONS.map((o) => ({ value: o.key, label: o.label }))}
       />
+
+      <div>
+        <label htmlFor="event-picker" className="block text-xs font-semibold uppercase tracking-wide text-text-secondary mb-1">
+          Pull from Smart Calendar{' '}
+          <span className="font-normal normal-case text-text-secondary">(optional)</span>
+        </label>
+        <select
+          id="event-picker"
+          data-testid="poster-event-picker"
+          value={selectedEventId}
+          onChange={(e) => applyEvent(e.target.value)}
+          disabled={eventsQuery.isLoading}
+          className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary disabled:opacity-50"
+        >
+          <option value="">— No event (manual) —</option>
+          {upcomingEvents.map((e) => (
+            <option key={e.id} value={e.id}>
+              {formatEventOption(e)}
+            </option>
+          ))}
+        </select>
+        <p className="mt-1 text-[10px] text-text-secondary">
+          Pick an event to auto-fill the Event / Occasion field and seed the note with the event context. You can still edit either field after.
+        </p>
+        {eventsQuery.isError && (
+          <p className="mt-1 text-[10px] text-danger">Couldn't load events: {eventsQuery.error.message}</p>
+        )}
+        {selectedEventId && (
+          <p className="mt-1 text-[10px] text-primary">
+            Loaded context from <span className="font-semibold">{upcomingEvents.find((e) => e.id === selectedEventId)?.title}</span>
+            {' · '}
+            <button
+              type="button"
+              onClick={() => { setSelectedEventId(''); setFounderNote(''); setEventTag('') }}
+              className="underline hover:no-underline"
+            >
+              clear
+            </button>
+          </p>
+        )}
+      </div>
 
       <div>
         <label htmlFor="founder-note" className="block text-xs font-semibold uppercase tracking-wide text-text-secondary mb-1">
@@ -441,9 +510,10 @@ function PosterCard({ item }: { item: PosterItem }) {
             Image prompt ({item.image_prompt.length} chars)
           </button>
           {showPrompt && (
-            <div className="mt-2">
+            <div className="mt-2 space-y-2">
+              <LogoCopyChip />
               <CopyableField
-                label="Image prompt (paste into Gemini/ChatGPT/Midjourney)"
+                label="Image prompt (paste into Gemini/ChatGPT/Midjourney — also attach the logo above)"
                 value={item.image_prompt}
                 testid={`poster-image-prompt-${item.id}`}
                 multiline
@@ -481,6 +551,83 @@ function AudienceBadge({ audience }: { audience: PosterAudience }) {
       : 'bg-text-secondary/10 text-text-secondary'
   const label = audience === 'both' ? 'BOTH SIDES' : audience.toUpperCase() + 'S'
   return <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${tone}`}>{label}</span>
+}
+
+function formatEventOption(e: MarketingEvent): string {
+  const dateLabel = new Date(`${e.event_date}T12:00:00`).toLocaleDateString(undefined, {
+    month: 'short', day: 'numeric',
+  })
+  const categoryLabel = e.category === 'travel-trigger' ? 'travel'
+    : e.category === 'academic' ? 'acad'
+    : e.category
+  return `${dateLabel} · ${e.title} · ${categoryLabel}`
+}
+
+function buildEventContext(e: MarketingEvent): string {
+  const dateLabel = new Date(`${e.event_date}T12:00:00`).toLocaleDateString(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric',
+  })
+  const lines: string[] = [`${dateLabel} — ${e.title}`]
+  if (e.description?.trim()) lines.push(e.description.trim())
+  if (e.location_hint?.trim()) lines.push(`Location/angle: ${e.location_hint.trim()}`)
+  if (e.target_audience && e.target_audience !== 'both') {
+    lines.push(`Lean for: ${e.target_audience}s`)
+  }
+  return lines.join('\n')
+}
+
+/**
+ * Tiny strip rendered alongside the image-prompt expansion. Shows
+ * the real Tago logo + a "download" affordance + a "copy" affordance
+ * so the founder can drag it into Gemini/ChatGPT (the chat UIs let
+ * you drop an image into the composer) without hunting for the file.
+ */
+function LogoCopyChip() {
+  const [copied, setCopied] = useState(false)
+  async function copyLogoToClipboard() {
+    try {
+      const res = await fetch(LOGO_SRC)
+      const blob = await res.blob()
+      if (typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) {
+        throw new Error('Clipboard image copy not supported in this browser — use the download button instead.')
+      }
+      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })])
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch (err) {
+      window.alert(`Couldn't copy logo: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  return (
+    <div className="flex items-center gap-3 rounded-md border border-dashed border-border bg-white px-3 py-2">
+      <img
+        src={LOGO_SRC}
+        alt="Tago logo"
+        className="h-10 w-10 object-contain"
+        draggable
+      />
+      <div className="flex-1 text-[11px] text-text-secondary leading-snug">
+        Attach this real logo when pasting the prompt into Gemini/ChatGPT/Midjourney so the model uses our actual brand mark.
+      </div>
+      <div className="flex flex-col gap-1">
+        <button
+          type="button"
+          data-testid="copy-logo"
+          onClick={copyLogoToClipboard}
+          className="rounded-md border border-border bg-white px-2 py-1 text-[10px] font-semibold text-text-primary hover:bg-surface"
+        >
+          {copied ? 'Copied ✓' : 'Copy image'}
+        </button>
+        <a
+          href={LOGO_SRC}
+          download="tago-logo.png"
+          className="rounded-md border border-border bg-white px-2 py-1 text-[10px] font-semibold text-text-primary hover:bg-surface text-center"
+        >
+          Download
+        </a>
+      </div>
+    </div>
+  )
 }
 
 function FormatBadge({ format }: { format: PosterFormat }) {

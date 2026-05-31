@@ -182,6 +182,7 @@ function ChatPanel({ threadId }: { threadId: string }) {
     } catch (err) {
       // Restore draft so the user can edit + retry.
       setDraft(content)
+      // eslint-disable-next-line no-console
       console.warn('[advisor] send failed:', err)
     }
   }

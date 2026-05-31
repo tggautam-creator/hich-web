@@ -167,8 +167,14 @@ What the image must depict:
   actual map of Davis CA — image models render maps as illegible
   squiggles. Subtle dot-grid, light gradient, or single iconic
   graphic only.
-- The transparent "T" TAGO logo prominently placed
-  (top center for stories/posts, top left for A4).
+- IMPORTANT: composite the REAL Tago logo that is attached as a
+  reference image with this prompt — do NOT redraw, invent, or
+  reinterpret it. Use the attached PNG exactly as-is (it is a
+  transparent-background brand mark), placed top center for
+  stories/posts and top left for A4. Preserve aspect ratio and
+  brand colors of the source PNG. If the runtime cannot accept an
+  attached image, render a clean rounded square containing the
+  letter "T" in primary blue #00A8F3 as the fallback brand mark.
 - The actual headline you wrote in clean modern sans-serif, large.
 - The CTA "REGISTER AT: tagorides.com" near the bottom.
 - The tagline "Tag Along. Go Smarter." in small text at the
