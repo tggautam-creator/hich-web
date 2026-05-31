@@ -140,6 +140,69 @@ adminMarketingRouter.post(
 )
 
 /**
+ * GET /api/admin/marketing/stories/rides
+ * Per-ride story picker — returns upcoming ride_schedules in the
+ * next `days` window (default 7), segregated rider vs driver and
+ * sorted ascending by trip_date. Used by the "Browse rides for
+ * story ideas" section on StoriesPage.
+ */
+adminMarketingRouter.get(
+  '/stories/rides',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { listRidesForStories } = await import('../../lib/marketing/storyFromRide.ts')
+      const daysRaw = typeof req.query['days'] === 'string' ? parseInt(req.query['days'], 10) : 7
+      const days = Number.isFinite(daysRaw) && daysRaw >= 1 ? Math.min(30, daysRaw) : 7
+      const audRaw = typeof req.query['audience'] === 'string' ? req.query['audience'] : 'both'
+      const audience: 'rider' | 'driver' | 'both' =
+        audRaw === 'rider' || audRaw === 'driver' ? audRaw : 'both'
+      const result = await listRidesForStories({ daysAhead: days, audience })
+      res.status(200).json({ ok: true, ...result })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+/**
+ * POST /api/admin/marketing/stories/from-ride/:rideId
+ * Per-ride story-idea generator — calls Gemini Flash with the
+ * specific ride's context (route, name, date, seats, note) and
+ * returns 3 distinct story angles. Ephemeral — does NOT persist
+ * to marketing_story_items; the founder copies what they want.
+ */
+adminMarketingRouter.post(
+  '/stories/from-ride/:rideId',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const rawRideId = req.params['rideId']
+      const rideId = typeof rawRideId === 'string' ? rawRideId : ''
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rideId)) {
+        res.status(400).json({ error: { code: 'INVALID_RIDE_ID', message: 'rideId must be a UUID' } })
+        return
+      }
+      const { generateStoriesFromRide } = await import('../../lib/marketing/storyFromRide.ts')
+      const result = await generateStoriesFromRide(rideId)
+      if (!result.ok) {
+        res.status(500).json({
+          error: { code: 'STORY_GEN_FAILED', message: result.reason ?? 'generation failed' },
+          ride: result.ride,
+        })
+        return
+      }
+      res.status(200).json({
+        ok: true,
+        ideas: result.ideas,
+        ride: result.ride,
+        model_used: result.model_used,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+/**
  * PATCH /api/admin/marketing/stories/items/:itemId
  * Update an item's lifecycle status. Body: { status: 'pending' |
  * 'copied' | 'posted' | 'skipped' }. Stamps acted_at on first non-

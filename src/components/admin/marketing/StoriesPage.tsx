@@ -39,6 +39,7 @@ import {
   type AudienceVariant,
 } from './_shared'
 import { fallbackBanner } from '@/lib/marketing/costs'
+import BrowseRidesSection from './BrowseRidesSection'
 
 /** "rider" → "riders", "driver" → "drivers", "both" → "both audiences". */
 function audienceLabel(a: AskingForFilter): string {
@@ -60,57 +61,74 @@ export default function StoriesPage() {
 
   return (
     <div data-testid="admin-marketing-stories" className="space-y-6">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-text-primary">
-            Daily story queue
-          </h1>
-          <p className="text-sm text-text-secondary">
-            6 Instagram-story copies per day, generated from the ride
-            board. Copy → paste → post.
-          </p>
-        </div>
-        {/* Button order matches PostersPage: rider, driver, both. */}
-        <div className="flex flex-col items-end gap-2">
-          <div className="flex items-center gap-2">
-            <GenerateButton
-              testid="generate-stories-riders"
-              label={flashGate.fullyDisabled ? 'Quota exhausted' : 'Ask riders'}
-              tone="rider"
-              variant="rider"
-              inFlight={inFlight}
-              disabled={generate.isPending || flashGate.fullyDisabled}
-              onClick={() => dispatch('rider')}
-            />
-            <GenerateButton
-              testid="generate-stories-drivers"
-              label={flashGate.fullyDisabled ? 'Quota exhausted' : 'Ask drivers'}
-              tone="driver"
-              variant="driver"
-              inFlight={inFlight}
-              disabled={generate.isPending || flashGate.fullyDisabled}
-              onClick={() => dispatch('driver')}
-            />
-            <GenerateButton
-              testid="generate-stories-both"
-              label={flashGate.fullyDisabled ? 'Quota exhausted' : 'Generate (both)'}
-              tone="both"
-              variant="both"
-              inFlight={inFlight}
-              disabled={generate.isPending || flashGate.fullyDisabled}
-              onClick={() => dispatch('both')}
-            />
-          </div>
-          <div className="flex items-center gap-1.5">
-            <CostBadge feature="story-batch-single-audience" testid="cost-badge-stories-single" />
-            <span className="text-[10px] text-text-secondary">single audience</span>
-            <span className="text-text-secondary">·</span>
-            <CostBadge feature="story-batch-both" testid="cost-badge-stories-both" />
-            <span className="text-[10px] text-text-secondary">both</span>
-          </div>
-        </div>
+      <header>
+        <h1 className="text-2xl font-bold text-text-primary">
+          Daily story queue
+        </h1>
+        <p className="text-sm text-text-secondary">
+          Pick a specific ride below to brainstorm story angles, or
+          let the daily cron pre-generate corridor batches at 7 AM PT.
+        </p>
       </header>
+
       <GeminiQuotaBanner />
+
+      {/* Primary path — per-ride picker. */}
+      <BrowseRidesSection />
+
+      {/* Secondary path — pre-aggregated corridor batches from the cron. */}
+      <section className="rounded-2xl border border-border bg-white p-5 space-y-4">
+        <header className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h2 className="text-sm font-bold text-text-primary">
+              Cron-generated corridor batches
+            </h2>
+            <p className="text-xs text-text-secondary">
+              The 7 AM PT cron clusters yesterday's ride board into the
+              top 6 corridors and writes one story per corridor. Use this
+              as a fallback when you don't have a specific ride in mind.
+            </p>
+          </div>
+          <div className="flex flex-col items-end gap-2">
+            <div className="flex items-center gap-2">
+              <GenerateButton
+                testid="generate-stories-riders"
+                label={flashGate.fullyDisabled ? 'Quota exhausted' : 'Ask riders'}
+                tone="rider"
+                variant="rider"
+                inFlight={inFlight}
+                disabled={generate.isPending || flashGate.fullyDisabled}
+                onClick={() => dispatch('rider')}
+              />
+              <GenerateButton
+                testid="generate-stories-drivers"
+                label={flashGate.fullyDisabled ? 'Quota exhausted' : 'Ask drivers'}
+                tone="driver"
+                variant="driver"
+                inFlight={inFlight}
+                disabled={generate.isPending || flashGate.fullyDisabled}
+                onClick={() => dispatch('driver')}
+              />
+              <GenerateButton
+                testid="generate-stories-both"
+                label={flashGate.fullyDisabled ? 'Quota exhausted' : 'Generate (both)'}
+                tone="both"
+                variant="both"
+                inFlight={inFlight}
+                disabled={generate.isPending || flashGate.fullyDisabled}
+                onClick={() => dispatch('both')}
+              />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <CostBadge feature="story-batch-single-audience" testid="cost-badge-stories-single" />
+              <span className="text-[10px] text-text-secondary">single audience</span>
+              <span className="text-text-secondary">·</span>
+              <CostBadge feature="story-batch-both" testid="cost-badge-stories-both" />
+              <span className="text-[10px] text-text-secondary">both</span>
+            </div>
+          </div>
+        </header>
+      </section>
       <CostFooterNote />
 
       {generate.isError && (
