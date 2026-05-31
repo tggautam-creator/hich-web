@@ -666,6 +666,172 @@ adminMarketingRouter.post(
   },
 )
 
+// ── Weekly Slack review (Feature 4) ───────────────────────────────
+
+const lastReviewActionAt = new Map<string, number>()
+const REVIEW_COOLDOWN_MS = 60_000
+
+/**
+ * GET /api/admin/marketing/weekly-review
+ * Returns the most recent weekly review row + the last 4 weeks for
+ * history sparkline. `current` is the row for last week (Monday →
+ * Sunday). Returns ok with null current when no review has been
+ * generated yet.
+ */
+adminMarketingRouter.get(
+  '/weekly-review',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { lastWeekMondayPt } = await import('../../lib/marketing/weeklyReviewGenerator.ts')
+      const weekStart = lastWeekMondayPt()
+      const { data: current } = await supabaseAdmin
+        .from('marketing_weekly_reviews').select('*')
+        .eq('for_week_starting', weekStart).maybeSingle()
+      const { data: history } = await supabaseAdmin
+        .from('marketing_weekly_reviews')
+        .select('id, for_week_starting, generated_at, summary, slack_sent_at, slack_response_status, error')
+        .order('for_week_starting', { ascending: false }).limit(8)
+      res.status(200).json({
+        ok: true,
+        current: current ?? null,
+        history: history ?? [],
+        week_starting: weekStart,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+/**
+ * POST /api/admin/marketing/weekly-review/generate
+ * Manual trigger — generates last week's review now (or returns the
+ * cached row if it already exists with no error). 60s cooldown.
+ */
+adminMarketingRouter.post(
+  '/weekly-review/generate',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const rawUserId = res.locals['userId']
+      const userId = typeof rawUserId === 'string' && rawUserId.length > 0 ? rawUserId : 'unknown'
+      const last = lastReviewActionAt.get(`gen:${userId}`) ?? 0
+      const elapsed = Date.now() - last
+      if (elapsed < REVIEW_COOLDOWN_MS) {
+        const wait = Math.ceil((REVIEW_COOLDOWN_MS - elapsed) / 1000)
+        res.status(429).json({
+          error: {
+            code: 'REVIEW_COOLDOWN',
+            message: `Generate is rate-limited to once per minute. Try again in ${wait}s.`,
+          },
+        })
+        return
+      }
+      lastReviewActionAt.set(`gen:${userId}`, Date.now())
+      const { generateWeeklyReview, lastWeekMondayPt } = await import('../../lib/marketing/weeklyReviewGenerator.ts')
+      const weekStart = lastWeekMondayPt()
+      // Force regen by deleting first.
+      await supabaseAdmin
+        .from('marketing_weekly_reviews').delete().eq('for_week_starting', weekStart)
+      const r = await generateWeeklyReview(weekStart)
+      if (r.review) {
+        res.status(200).json({ ok: true, review: r.review })
+        return
+      }
+      res.status(500).json({
+        error: { code: 'REVIEW_GEN_FAILED', message: r.reason ?? 'generation failed' },
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+/**
+ * POST /api/admin/marketing/weekly-review/send
+ * Manual Slack send for last week's review. Idempotent — re-send
+ * is a no-op if already sent successfully. 60s cooldown.
+ */
+adminMarketingRouter.post(
+  '/weekly-review/send',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const rawUserId = res.locals['userId']
+      const userId = typeof rawUserId === 'string' && rawUserId.length > 0 ? rawUserId : 'unknown'
+      const last = lastReviewActionAt.get(`send:${userId}`) ?? 0
+      const elapsed = Date.now() - last
+      if (elapsed < REVIEW_COOLDOWN_MS) {
+        const wait = Math.ceil((REVIEW_COOLDOWN_MS - elapsed) / 1000)
+        res.status(429).json({
+          error: { code: 'SEND_COOLDOWN', message: `Try again in ${wait}s.` },
+        })
+        return
+      }
+      lastReviewActionAt.set(`send:${userId}`, Date.now())
+      const { sendWeeklyReviewToSlack, lastWeekMondayPt } = await import('../../lib/marketing/weeklyReviewGenerator.ts')
+      const r = await sendWeeklyReviewToSlack(lastWeekMondayPt())
+      if (r.ok || r.review) {
+        res.status(r.ok ? 200 : 500).json({
+          ok: r.ok,
+          status: r.status,
+          body: r.body,
+          review: r.review,
+        })
+        return
+      }
+      res.status(500).json({
+        error: { code: 'SEND_FAILED', message: r.body || 'send failed' },
+        status: r.status,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+/**
+ * POST /api/admin/marketing/weekly-review/test-webhook
+ * Posts a tiny ping message to SLACK_MARKETING_WEBHOOK_URL so the
+ * founder can verify the URL is wired without waiting until Monday.
+ */
+adminMarketingRouter.post(
+  '/weekly-review/test-webhook',
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { getServerEnv } = await import('../../env.ts')
+      const { postToSlackUrl } = await import('../../lib/slackWebhook.ts')
+      const { SLACK_MARKETING_WEBHOOK_URL } = getServerEnv()
+      if (!SLACK_MARKETING_WEBHOOK_URL) {
+        res.status(400).json({
+          error: {
+            code: 'NO_WEBHOOK_URL',
+            message: 'SLACK_MARKETING_WEBHOOK_URL is not set in the server env.',
+          },
+        })
+        return
+      }
+      const r = await postToSlackUrl(SLACK_MARKETING_WEBHOOK_URL, {
+        text: 'Tago marketing webhook test — ' + new Date().toISOString(),
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: '*Marketing webhook test* — if you can read this, the weekly recap will land here every Monday morning.',
+            },
+          },
+        ],
+      })
+      res.status(r.status === 200 ? 200 : 500).json({
+        ok: r.status === 200,
+        status: r.status,
+        body: r.body,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
 // ── Events / Smart Calendar (Phase 5) ──────────────────────────────
 
 adminMarketingRouter.get(

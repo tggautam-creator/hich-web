@@ -8,6 +8,7 @@ import { dispatchSuggestionNotifications, expireStaleSuggestions, runSuggestionB
 import { tryGenerateDailyStories } from './lib/marketing/storyGenerator.ts'
 import { tryGenerateDailyPoster } from './lib/marketing/posterGenerator.ts'
 import { tryGenerateDailyBriefing } from './lib/marketing/dailyFocusGenerator.ts'
+import { tryGenerateAndSendWeeklyReview } from './lib/marketing/weeklyReviewGenerator.ts'
 
 const env = getServerEnv()
 const { PORT, STRIPE_SECRET_KEY, SUPABASE_URL, FIREBASE_SERVICE_ACCOUNT_PATH } = env
@@ -90,7 +91,7 @@ async function runReminderSweep(reason: string): Promise<void> {
 
   try {
     console.log(`[cron/fallback] Starting reminder sweep (${reason})`)
-    const [reminders, expiry, missed, safetyNet, sync, dunning, snooze, staleOnline, offerExpiry, suggestBackstop, suggestPushes, suggestExpired, marketingStories, marketingPosters, marketingBrief] = await Promise.all([
+    const [reminders, expiry, missed, safetyNet, sync, dunning, snooze, staleOnline, offerExpiry, suggestBackstop, suggestPushes, suggestExpired, marketingStories, marketingPosters, marketingBrief, marketingWeekly] = await Promise.all([
       checkUpcomingRides(),
       expireStaleRequests(),
       expireMissedRides(),
@@ -187,8 +188,16 @@ async function runReminderSweep(reason: string): Promise<void> {
         console.error(`[cron/fallback] marketing brief failed: ${msg}`)
         return { generated: false, reason: 'error' }
       }),
+      // 2026-05-31 — Feature 4: weekly Slack review. Monday-only +
+      // after 9 AM PT gate. Generates last week's recap + posts to
+      // SLACK_MARKETING_WEBHOOK_URL. Idempotent on both steps.
+      tryGenerateAndSendWeeklyReview().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[cron/fallback] marketing weekly review failed: ${msg}`)
+        return { generated: false, sent: false, reason: 'error' }
+      }),
     ])
-    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, sync: users=${sync.users} inserted=${sync.inserted}, dunning: scanned=${dunning.scanned} nudged=${dunning.nudged}, snooze: cleared=${snooze.cleared} notified=${snooze.notified}, staleOnline: cleared=${staleOnline.cleared} notified=${staleOnline.notified}, offerExpiry: checked=${offerExpiry.checked} expired=${offerExpiry.expired}, suggestions: backstop=${suggestBackstop.scanned}/${suggestBackstop.inserted} pushes=${suggestPushes.pushed}/${suggestPushes.deferred}/${suggestPushes.suppressed} expired=${suggestExpired.deleted}, marketingStories: ${marketingStories.generated ? 'generated' : 'skipped'}/${marketingStories.reason}, marketingPosters: ${marketingPosters.generated ? 'generated' : 'skipped'}/${marketingPosters.reason}, marketingBrief: ${marketingBrief.generated ? 'generated' : 'skipped'}/${marketingBrief.reason}`)
+    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, sync: users=${sync.users} inserted=${sync.inserted}, dunning: scanned=${dunning.scanned} nudged=${dunning.nudged}, snooze: cleared=${snooze.cleared} notified=${snooze.notified}, staleOnline: cleared=${staleOnline.cleared} notified=${staleOnline.notified}, offerExpiry: checked=${offerExpiry.checked} expired=${offerExpiry.expired}, suggestions: backstop=${suggestBackstop.scanned}/${suggestBackstop.inserted} pushes=${suggestPushes.pushed}/${suggestPushes.deferred}/${suggestPushes.suppressed} expired=${suggestExpired.deleted}, marketingStories: ${marketingStories.generated ? 'generated' : 'skipped'}/${marketingStories.reason}, marketingPosters: ${marketingPosters.generated ? 'generated' : 'skipped'}/${marketingPosters.reason}, marketingBrief: ${marketingBrief.generated ? 'generated' : 'skipped'}/${marketingBrief.reason}, marketingWeekly: ${marketingWeekly.generated ? 'generated' : 'skipped'}+${marketingWeekly.sent ? 'sent' : 'unsent'}/${marketingWeekly.reason}`)
   } catch (err) {
     console.error('[cron/fallback] Failed reminder sweep:', err)
   } finally {

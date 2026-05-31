@@ -114,3 +114,33 @@ function warnOnce(): void {
 export function _resetWarnLatchForTests(): void {
   warnedMissingUrl = false
 }
+
+/**
+ * Phase 6 — generalised webhook poster that takes an explicit URL.
+ * Used by the marketing weekly review (different webhook from the
+ * alerts channel: SLACK_MARKETING_WEBHOOK_URL vs
+ * SLACK_ALERTS_WEBHOOK_URL). Returns the HTTP status code so the
+ * caller can record it. Returns 0 when the URL is empty (no-op
+ * mirrors the postToSlack behaviour) so callers can distinguish
+ * "missing config" from "Slack returned 500".
+ */
+export async function postToSlackUrl(
+  url: string,
+  message: SlackMessage,
+): Promise<{ status: number; body: string }> {
+  if (!url) return { status: 0, body: 'no webhook URL configured' }
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(message),
+    })
+    const body = await res.text().catch(() => '<no body>')
+    return { status: res.status, body }
+  } catch (err) {
+    return {
+      status: 0,
+      body: `network error: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+}

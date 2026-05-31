@@ -188,8 +188,23 @@ export default function MarketingHome() {
               <p className="text-xs text-text-secondary mt-0.5">
                 Chat with an agent that knows everything about Tago —
                 brand voice, features, live KPIs, monthly theme. Daily
-                focus + weekly Slack review coming in a follow-up
-                phase.
+                focus banner above and weekly Slack recap are now
+                wired in.
+              </p>
+            </Link>
+          </li>
+          <li>
+            <Link
+              to="/admin/marketing/weekly-review"
+              className="block rounded-lg border border-primary/30 bg-primary/5 p-3 hover:bg-primary/10 transition-colors"
+            >
+              <p className="font-semibold text-primary">
+                Weekly Slack review →
+              </p>
+              <p className="text-xs text-text-secondary mt-0.5">
+                Auto-posts a recap of last Mon–Sun to the marketing
+                Slack channel every Monday at 9 AM PT. Preview,
+                regenerate, or send manually here.
               </p>
             </Link>
           </li>
