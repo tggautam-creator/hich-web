@@ -13,6 +13,7 @@
  * auto-retries via `state.pendingAcceptOfferId`.
  */
 
+import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
@@ -47,6 +48,17 @@ interface BoardOffer {
   proposed_dropoff_name: string | null
   proposed_fare_cents: number | null
   proposed_eta_minutes: number | null
+  /** v1.3 Sprint 10 Slice 1 — mig 083 transit-handoff metadata.
+   *  Populated by the driver when their proposed dropoff is a transit
+   *  station and the rider continues to their final destination by
+   *  transit (BART / bus / etc.). Server returns these fields per
+   *  schedule.ts:5150-5153; iOS mirrors via `proposedTransit*` on
+   *  BoardOfferEndpoints.swift:69-72. When `proposed_transit_line_name`
+   *  is null the card renders the standard pickup → dropoff timeline. */
+  proposed_transit_line_name?: string | null
+  proposed_transit_walk_minutes?: number | null
+  proposed_transit_to_dest_minutes?: number | null
+  proposed_transit_total_minutes?: number | null
   driver: OfferDriver
   vehicle: OfferVehicle | null
 }
@@ -90,6 +102,102 @@ interface RestoredAcceptState {
   // the returnTo route as `state.confirmState` (when `fromTab` is
   // set, which we always set here). Nested shape is what we sent.
   confirmState?: { pendingAcceptOfferId?: string }
+}
+
+// v1.3 Sprint 10 Slice 1 — transit hand-off "drop you here" stop row.
+// Mirrors iOS `BoardOfferAcceptPage.transitStop()` + `transitLegPills()`
+// at ios/Tago/Features/RideBoard/BoardOfferAcceptPage.swift:653-728.
+// Renders the station as the headline (the physical place the rider needs
+// to navigate to) with an EXPLICIT "DRIVER DROPS YOU HERE" eyebrow so the
+// hand-off chain reads unambiguously: driver's job ends at the station;
+// rider continues on transit from there. The pill row is filtered + ordered
+// walk → transit → total so the rider scans times left-to-right.
+interface TransitStopRowProps {
+  stationName: string
+  lineName: string
+  destName: string
+  walkMinutes: number | null
+  transitMinutes: number | null
+  totalMinutes: number | null
+}
+
+function TransitStopRow({
+  stationName,
+  lineName,
+  destName,
+  walkMinutes,
+  transitMinutes,
+  totalMinutes,
+}: TransitStopRowProps) {
+  // Inline SVG glyphs — mirrors iOS SF Symbols (figure.walk, tram, clock).
+  // Inline (vs an icon library) keeps the slice dependency-free and matches
+  // the existing project convention used throughout RiderHomePage / DriverHomePage.
+  const tramGlyph = (
+    <svg viewBox="0 0 24 24" fill="currentColor" className="h-3 w-3" aria-hidden="true">
+      <path d="M7 4h10a2 2 0 012 2v9a3 3 0 01-3 3H8a3 3 0 01-3-3V6a2 2 0 012-2zm0 4v5h10V8H7zm1 8h2l-1 2H7l1-2zm6 0h2l1 2h-2l-1-2z" />
+    </svg>
+  )
+  const walkGlyph = (
+    <svg viewBox="0 0 24 24" fill="currentColor" className="h-3 w-3" aria-hidden="true">
+      <path d="M13 5.5a2 2 0 100-4 2 2 0 000 4zm-3.5 16l1-4.5L8 14v-4l3.5-1.5c.4-.2.8-.3 1.2-.3.7 0 1.3.4 1.6 1l1 1.5c.5.7 1.4 1.2 2.3 1.4v2c-1.3-.2-2.5-.8-3.3-1.7l-.6 3 2.6 2.5v6h-2v-4.5l-2.6-2.5-1 5H9l.5-3z" />
+    </svg>
+  )
+  const clockGlyph = (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  )
+
+  const pills: { key: string; glyph: ReactNode; label: string }[] = []
+  if (walkMinutes != null && walkMinutes > 0) {
+    pills.push({ key: 'walk', glyph: walkGlyph, label: `${walkMinutes} min walk` })
+  }
+  if (transitMinutes != null && transitMinutes > 0) {
+    pills.push({ key: 'transit', glyph: tramGlyph, label: `${transitMinutes} min ride` })
+  }
+  if (totalMinutes != null && totalMinutes > 0) {
+    pills.push({ key: 'total', glyph: clockGlyph, label: `~${totalMinutes} min total` })
+  }
+  return (
+    <div className="flex items-start gap-3" data-testid="board-offer-transit-stop">
+      {/* Warning-tinted tram glyph circle (iOS line 688-697) */}
+      <span
+        aria-hidden="true"
+        className="mt-1 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-warning/15 text-warning"
+      >
+        {tramGlyph}
+      </span>
+      <div className="flex min-w-0 flex-col gap-0.5">
+        {/* Eyebrow — verbatim against iOS line 663 */}
+        <span className="text-[9px] font-extrabold tracking-wider text-warning">
+          DRIVER DROPS YOU HERE
+        </span>
+        {/* Station name — headline (iOS line 667-670) */}
+        <span className="text-[15px] font-extrabold text-textPrimary">
+          {stationName}
+        </span>
+        {/* Subtitle — "Then take {line} to {destName}" verbatim against iOS line 672 */}
+        <span className="text-xs font-semibold text-textSecondary">
+          Then take {lineName} to {destName}
+        </span>
+        {/* Leg pills — walk → ride → total (iOS lines 700-728) */}
+        {pills.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1.5" data-testid="board-offer-transit-pills">
+            {pills.map((pill) => (
+              <span
+                key={pill.key}
+                className="inline-flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-semibold text-textPrimary/85"
+              >
+                {pill.glyph}
+                <span>{pill.label}</span>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 async function fetchOffers(scheduleId: string): Promise<{ offers: BoardOffer[]; posted: PostedBlock | null }> {
@@ -337,11 +445,31 @@ export default function BoardOfferAcceptPage() {
                       <span className="text-textPrimary">Pickup: {offer.proposed_pickup_name}</span>
                     </div>
                   )}
-                  {offer.proposed_dropoff_name && (
-                    <div className="flex items-start gap-2">
-                      <span className="mt-1 h-2 w-2 flex-shrink-0 rounded-full bg-primary" />
-                      <span className="text-textPrimary">Drop: {offer.proposed_dropoff_name}</span>
-                    </div>
+                  {/* v1.3 Sprint 10 Slice 1 — when the driver's offer involves
+                      a transit hand-off (proposed_transit_line_name non-null),
+                      REPLACE the standard "Drop: {station}" row with the
+                      iOS transitStop() card pattern: warning eyebrow + station
+                      name + "Then take {line} to {destName}" subtitle + walk /
+                      ride / total minute pills. Mirrors
+                      ios/Tago/Features/RideBoard/BoardOfferAcceptPage.swift
+                      lines 653-728. Falls back to the standard Drop row when
+                      transit metadata is absent (the common non-transit case). */}
+                  {offer.proposed_transit_line_name && offer.proposed_dropoff_name ? (
+                    <TransitStopRow
+                      stationName={offer.proposed_dropoff_name}
+                      lineName={offer.proposed_transit_line_name}
+                      destName={posted?.dropoff_name ?? 'your destination'}
+                      walkMinutes={offer.proposed_transit_walk_minutes ?? null}
+                      transitMinutes={offer.proposed_transit_to_dest_minutes ?? null}
+                      totalMinutes={offer.proposed_transit_total_minutes ?? null}
+                    />
+                  ) : (
+                    offer.proposed_dropoff_name && (
+                      <div className="flex items-start gap-2">
+                        <span className="mt-1 h-2 w-2 flex-shrink-0 rounded-full bg-primary" />
+                        <span className="text-textPrimary">Drop: {offer.proposed_dropoff_name}</span>
+                      </div>
+                    )
                   )}
                 </div>
 
