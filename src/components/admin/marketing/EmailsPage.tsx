@@ -124,6 +124,8 @@ function TemplateEditor({
   const [fromName, setFromName] = useState('')
   const [replyTo, setReplyTo] = useState('')
   const [isActive, setIsActive] = useState(true)
+  const [triggerEvent, setTriggerEvent] = useState('manual')
+  const [delayHours, setDelayHours] = useState(0)
 
   useEffect(() => {
     const t = detail.data?.template
@@ -135,6 +137,8 @@ function TemplateEditor({
       setFromName(t.from_name)
       setReplyTo(t.reply_to ?? '')
       setIsActive(t.is_active)
+      setTriggerEvent(t.trigger_event ?? 'manual')
+      setDelayHours(t.delay_hours ?? 0)
     }
   }, [detail.data?.template])
 
@@ -149,8 +153,10 @@ function TemplateEditor({
       || fromName !== original.from_name
       || (replyTo || null) !== (original.reply_to ?? null)
       || isActive !== original.is_active
+      || triggerEvent !== (original.trigger_event ?? 'manual')
+      || delayHours !== (original.delay_hours ?? 0)
     )
-  }, [name, subject, body, fromEmail, fromName, replyTo, isActive, original])
+  }, [name, subject, body, fromEmail, fromName, replyTo, isActive, triggerEvent, delayHours, original])
 
   // Auto-clear the test-send result after 4s so the button can re-run.
   useEffect(() => {
@@ -180,6 +186,8 @@ function TemplateEditor({
       from_email: fromEmail, from_name: fromName,
       reply_to: replyTo.trim() || null,
       is_active: isActive,
+      trigger_event: triggerEvent,
+      delay_hours: delayHours,
     })
   }
 
@@ -271,6 +279,28 @@ function TemplateEditor({
               value={replyTo}
               onChange={(e) => setReplyTo(e.target.value)}
               placeholder="(defaults to From)"
+              className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-text-primary"
+            />
+          </Field>
+          <Field label="Trigger event">
+            <select
+              data-testid="field-trigger-event"
+              value={triggerEvent}
+              onChange={(e) => setTriggerEvent(e.target.value)}
+              className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-text-primary"
+            >
+              <option value="manual">Manual (admin only)</option>
+              <option value="onboarding_completed">Onboarding completed</option>
+            </select>
+          </Field>
+          <Field label="Delay after trigger (hours)">
+            <input
+              data-testid="field-delay-hours"
+              type="number"
+              min={0}
+              max={720}
+              value={delayHours}
+              onChange={(e) => setDelayHours(Math.max(0, Math.min(720, parseInt(e.target.value, 10) || 0)))}
               className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-text-primary"
             />
           </Field>

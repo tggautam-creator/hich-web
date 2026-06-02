@@ -116,8 +116,19 @@ export function markdownToHtml(md: string): string {
  * back to system fonts so the founder voice still feels human even
  * without web fonts.
  */
-export function wrapInEmailShell(html: string, title: string): string {
+export interface EmailShellOptions {
+  unsubscribeUrl?: string
+}
+
+export function wrapInEmailShell(
+  html: string,
+  title: string,
+  opts?: EmailShellOptions,
+): string {
   const safeTitle = escapeHtml(title)
+  const unsubLine = opts?.unsubscribeUrl
+    ? `<br><a href="${escapeHtml(opts.unsubscribeUrl)}" style="color:#6b7280;text-decoration:underline;">Unsubscribe from these lifecycle emails</a> · Transactional ride / payment / safety messages are unaffected.`
+    : ''
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -137,7 +148,7 @@ ${html}
 </tr>
 <tr>
 <td style="padding:16px 32px 32px 32px;border-top:1px solid #f3f4f6;font-size:12px;color:#6b7280;">
-You're receiving this because you signed up for Tago at tagorides.com. Reply to this email and we'll see it.
+You're receiving this because you signed up for Tago at tagorides.com. Reply to this email and we'll see it.${unsubLine}
 </td>
 </tr>
 </table>

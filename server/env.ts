@@ -66,6 +66,10 @@ export function getServerEnv() {
     // admin keeps working.
     GEMINI_API_KEY: process.env['GEMINI_API_KEY'] ?? '',
     SLACK_MARKETING_WEBHOOK_URL: process.env['SLACK_MARKETING_WEBHOOK_URL'] ?? '',
+    // 2026-06-02 — lifecycle email v2. Used to build the public
+    // unsubscribe link inside outbound HTML. Defaults to the prod
+    // domain; override per env in .env.dev / .env.prod.
+    PUBLIC_BASE_URL: process.env['PUBLIC_BASE_URL'] ?? 'https://www.tagorides.com',
     PORT: process.env['PORT'] ? parseInt(process.env['PORT'], 10) : 3001,
   }
 }

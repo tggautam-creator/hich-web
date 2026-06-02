@@ -25,6 +25,7 @@ interface CandidateRow {
   id: string
   email: string | null
   full_name: string | null
+  onboarding_completed_at: string | null
 }
 
 /**
@@ -44,36 +45,73 @@ export async function trySweepWelcomeEmails(): Promise<{
   failed: number
   reason: string
 }> {
+  // v2 — load the template so trigger_event + delay_hours
+  // are respected. A paused template (is_active=false) or a
+  // non-onboarding trigger no-ops the sweep.
+  const { data: tplRaw } = await supabaseAdmin
+    .from('email_templates').select('*').eq('key', TEMPLATE_KEY).maybeSingle()
+  const tpl = tplRaw as
+    | null
+    | { is_active: boolean; trigger_event: string; delay_hours: number }
+  if (!tpl) return { attempted: 0, sent: 0, failed: 0, reason: 'no_template' }
+  if (!tpl.is_active) return { attempted: 0, sent: 0, failed: 0, reason: 'paused' }
+  if (tpl.trigger_event !== 'onboarding_completed') {
+    return { attempted: 0, sent: 0, failed: 0, reason: `trigger=${tpl.trigger_event}` }
+  }
+
+  // Apply delay_hours: only pick users whose onboarding_completed_at
+  // is at least delay_hours ago. Falls back to "right now" so a
+  // freshly onboarded user with NULL timestamp (pre-117 backfill
+  // miss) is still considered eligible.
+  const cutoffIso = new Date(
+    Date.now() - (tpl.delay_hours ?? 0) * 60 * 60 * 1000,
+  ).toISOString()
+
   // Fetch a window of candidates. We over-fetch slightly to give
   // the in-app idempotency filter room (the SQL guard does the rest).
   const { data: candidates, error: candErr } = await supabaseAdmin
     .from('users')
-    .select('id, email, full_name')
+    .select('id, email, full_name, onboarding_completed_at')
     .eq('onboarding_completed', true)
     .not('email', 'is', null)
     .ilike('email', '%.edu')
+    .lte('onboarding_completed_at', cutoffIso)
     .order('created_at', { ascending: false })
     .limit(WELCOME_BATCH_LIMIT * 4)
   if (candErr) {
     return { attempted: 0, sent: 0, failed: 0, reason: `candidate query failed: ${candErr.message}` }
   }
-  const rows = (candidates ?? []) as CandidateRow[]
+  // Cast via unknown because the generated Supabase types haven't
+  // been regenerated for the new onboarding_completed_at column
+  // added in migration 117.
+  const rows = ((candidates ?? []) as unknown) as CandidateRow[]
   if (rows.length === 0) return { attempted: 0, sent: 0, failed: 0, reason: 'no_candidates' }
 
-  // Filter out already-sent users in one batch query. Pulling all
-  // distinct user_ids that already have a successful welcome send.
+  // Filter out already-sent users + opted-out users in one batch.
   const userIds = rows.map((r) => r.id)
-  const { data: existingRaw } = await supabaseAdmin
-    .from('email_sends')
-    .select('user_id')
-    .eq('template_key', TEMPLATE_KEY)
-    .eq('status', 'sent')
-    .eq('is_test', false)
-    .in('user_id', userIds)
+  const [existingRaw, optOutRaw] = await Promise.all([
+    supabaseAdmin
+      .from('email_sends')
+      .select('user_id')
+      .eq('template_key', TEMPLATE_KEY)
+      .eq('status', 'sent')
+      .eq('is_test', false)
+      .in('user_id', userIds),
+    supabaseAdmin
+      .from('email_opt_outs')
+      .select('user_id, template_key')
+      .in('user_id', userIds)
+      .or(`template_key.is.null,template_key.eq.${TEMPLATE_KEY}`),
+  ])
   const sentSet = new Set(
-    ((existingRaw ?? []) as { user_id: string }[]).map((r) => r.user_id),
+    ((existingRaw.data ?? []) as { user_id: string }[]).map((r) => r.user_id),
   )
-  const eligible = rows.filter((r) => !sentSet.has(r.id)).slice(0, WELCOME_BATCH_LIMIT)
+  const optOutSet = new Set(
+    ((optOutRaw.data ?? []) as { user_id: string }[]).map((r) => r.user_id),
+  )
+  const eligible = rows
+    .filter((r) => !sentSet.has(r.id) && !optOutSet.has(r.id))
+    .slice(0, WELCOME_BATCH_LIMIT)
   if (eligible.length === 0) return { attempted: 0, sent: 0, failed: 0, reason: 'all_sent' }
 
   let sent = 0

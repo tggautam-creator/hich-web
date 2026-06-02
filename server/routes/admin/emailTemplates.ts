@@ -104,6 +104,18 @@ adminEmailTemplatesRouter.patch(
       if (typeof body['from_name'] === 'string') patch.from_name = (body['from_name'] as string).slice(0, 200)
       if (typeof body['reply_to'] === 'string') patch.reply_to = (body['reply_to'] as string).slice(0, 200) || null
       if (typeof body['is_active'] === 'boolean') patch.is_active = body['is_active'] as boolean
+      if (typeof body['trigger_event'] === 'string') {
+        // Validate against the allowed list — adding a new trigger
+        // is a code change (the sweep dispatcher) not a free-form
+        // admin field.
+        const ALLOWED_TRIGGERS = ['manual', 'onboarding_completed']
+        const v = body['trigger_event'] as string
+        if (ALLOWED_TRIGGERS.includes(v)) patch.trigger_event = v
+      }
+      if (typeof body['delay_hours'] === 'number' && Number.isFinite(body['delay_hours'] as number)) {
+        const h = body['delay_hours'] as number
+        patch.delay_hours = Math.max(0, Math.min(24 * 30, Math.floor(h)))  // 0..30 days
+      }
       const r = await updateTemplate(key, patch, updatedBy)
       if (!r.ok) {
         res.status(400).json({ error: { code: 'UPDATE_FAILED', message: r.reason ?? 'update failed' } })

@@ -17,6 +17,8 @@ export interface EmailTemplateRow {
   reply_to: string | null
   variables: string[]
   is_active: boolean
+  trigger_event: string
+  delay_hours: number
   created_at: string
   updated_at: string
   updated_by: string | null
@@ -89,6 +91,8 @@ export interface TemplatePatch {
   from_name?: string
   reply_to?: string | null
   is_active?: boolean
+  trigger_event?: string
+  delay_hours?: number
 }
 
 export function useUpdateEmailTemplate(key: string) {

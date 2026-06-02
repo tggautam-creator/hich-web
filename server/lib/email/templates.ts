@@ -17,6 +17,8 @@ import { supabaseAdmin } from '../supabaseAdmin.ts'
 import { getResendClient, isAllowedFromAddress } from '../resend.ts'
 import { recordApiCall } from '../apiUsage.ts'
 import { markdownToHtml, wrapInEmailShell } from './markdownToHtml.ts'
+import { generateUnsubscribeToken } from './unsubscribeTokens.ts'
+import { getServerEnv } from '../../env.ts'
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -31,9 +33,25 @@ export interface EmailTemplateRow {
   reply_to: string | null
   variables: string[]
   is_active: boolean
+  /** v2 — which lifecycle moment fires this template. 'manual' =
+   *  admin only. 'onboarding_completed' = current welcome flow.
+   *  Adding a new value requires a code change in the sweep. */
+  trigger_event: string
+  /** v2 — minimum hours between the trigger event and the send. */
+  delay_hours: number
   created_at: string
   updated_at: string
   updated_by: string | null
+}
+
+export interface EmailOptOutRow {
+  id: string
+  user_id: string
+  /** NULL = global opt-out (all lifecycle emails). */
+  template_key: string | null
+  reason: string | null
+  source: string
+  created_at: string
 }
 
 export interface EmailSendRow {
@@ -73,7 +91,7 @@ export async function listTemplates(): Promise<EmailTemplateRow[]> {
 
 export async function updateTemplate(
   key: string,
-  patch: Partial<Pick<EmailTemplateRow, 'name' | 'subject' | 'body_markdown' | 'from_email' | 'from_name' | 'reply_to' | 'is_active' | 'variables'>>,
+  patch: Partial<Pick<EmailTemplateRow, 'name' | 'subject' | 'body_markdown' | 'from_email' | 'from_name' | 'reply_to' | 'is_active' | 'variables' | 'trigger_event' | 'delay_hours'>>,
   updatedBy: string | null,
 ): Promise<{ ok: boolean; template?: EmailTemplateRow; reason?: string }> {
   // Server-side allowlist enforcement on the From-address so a
@@ -122,12 +140,48 @@ export function substitute(
 export function renderTemplate(
   template: EmailTemplateRow,
   vars: TemplateVars,
+  opts?: { unsubscribeUrl?: string },
 ): { subject: string; html: string; markdown: string } {
   const subject = substitute(template.subject, vars, template.variables)
   const markdown = substitute(template.body_markdown, vars, template.variables)
   const innerHtml = markdownToHtml(markdown)
-  const html = wrapInEmailShell(innerHtml, subject)
+  const html = wrapInEmailShell(innerHtml, subject, opts)
   return { subject, html, markdown }
+}
+
+// ── Opt-out / unsubscribe ─────────────────────────────────────────
+
+/**
+ * Returns true when the user has either a global opt-out (NULL
+ * template_key) OR a scoped opt-out for this specific template.
+ * Belt-and-suspenders check; the sweep's WHERE clause already
+ * excludes opted-out users but this protects ad-hoc sendTemplated()
+ * calls (e.g. a future "resend to user X" admin button).
+ */
+async function isOptedOut(userId: string, templateKey: string): Promise<boolean> {
+  const { data, error } = await supabaseAdmin
+    .from('email_opt_outs')
+    .select('id, template_key')
+    .eq('user_id', userId)
+    .or(`template_key.is.null,template_key.eq.${templateKey}`)
+    .limit(1)
+  if (error) {
+    console.warn('[email/opt-out] lookup error:', error.message)
+    return false  // fail-open: don't block sends on a flaky DB query
+  }
+  return (data ?? []).length > 0
+}
+
+/**
+ * Builds the public unsubscribe URL for a (user, template) pair.
+ * Reads PUBLIC_BASE_URL from env so dev (localhost) and prod
+ * (www.tagorides.com) both emit valid links.
+ */
+function buildUnsubscribeUrl(userId: string, templateKey: string): string {
+  const env = getServerEnv() as { PUBLIC_BASE_URL?: string }
+  const base = (env.PUBLIC_BASE_URL ?? 'https://www.tagorides.com').replace(/\/+$/, '')
+  const token = generateUnsubscribeToken({ userId, templateKey, scope: 'single' })
+  return `${base}/api/email/unsubscribe?token=${encodeURIComponent(token)}`
 }
 
 // ── Send orchestration ────────────────────────────────────────────
@@ -179,9 +233,28 @@ export async function sendTemplated(opts: SendOptions): Promise<SendResult> {
       .eq('status', 'sent')
       .maybeSingle()
     if (existing) return { ok: false, reason: 'already_sent' }
+    // v2 — opt-out check. Test sends skip this so admins can still
+    // preview templates to themselves.
+    if (await isOptedOut(opts.userId, opts.templateKey)) {
+      // Record the skipped attempt so admins can see "tried to send
+      // X to user Y but they opted out" in the recent-sends list.
+      await supabaseAdmin
+        .from('email_sends')
+        .insert({
+          user_id: opts.userId,
+          template_key: opts.templateKey,
+          recipient_email: opts.recipientEmail,
+          status: 'skipped',
+          error: 'recipient opted out',
+        } as never)
+      return { ok: false, reason: 'already_sent' }  // expose as "no-send"
+    }
   }
 
-  const { subject, html } = renderTemplate(tpl, opts.vars)
+  const unsubscribeUrl = opts.isTest
+    ? undefined  // test sends to admin shouldn't show an unsub link
+    : buildUnsubscribeUrl(opts.userId, opts.templateKey)
+  const { subject, html } = renderTemplate(tpl, opts.vars, { unsubscribeUrl })
 
   // Insert queued row first so the ledger has a trace of the attempt
   // even if Resend fails outright.

@@ -23,6 +23,7 @@ import { adminRouter } from './routes/admin/index.ts'
 import { opsRouter } from './routes/ops.ts'
 import { vehicleRouter } from './routes/vehicle.ts'
 import { reportRouter } from './routes/report.ts'
+import { emailPublicRouter } from './routes/email.ts'
 import { accountRouter } from './routes/account.ts'
 import { usersRouter } from './routes/users.ts'
 import { caregiversRouter } from './routes/caregivers.ts'
@@ -139,6 +140,11 @@ app.use('/api/gas-price', gasPriceRouter)
 app.use('/api/addresses', addressesRouter)
 app.use('/api/vehicle', vehicleRouter)
 app.use('/api/report', reportRouter)
+// 2026-06-02 — public lifecycle email routes (unsubscribe). No JWT —
+// email-client link clicks don't carry session cookies; security via
+// HMAC-signed token. Mounted BEFORE admin so /api/email is reachable
+// without auth middleware running.
+app.use('/api/email', emailPublicRouter)
 // Operator-only token-gated maintenance endpoints (was `/api/admin/*` pre-2026-05-17).
 app.use('/api/ops', opsRouter)
 // Team admin panel — JWT + users.is_admin = true. Slice 0.3 of ADMIN_PLAN.md.
