@@ -1,10 +1,13 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { AdvancedMarker } from '@vis.gl/react-google-maps'
 import type { ScheduledRide } from './boardTypes'
 import { formatDate, formatTripSchedule } from './boardHelpers'
 import { searchPlaces, getPlaceCoordinates } from '@/lib/places'
 import type { PlaceSuggestion } from '@/lib/places'
 import { supabase } from '@/lib/supabase'
 import { estimateScheduleFare } from '@/lib/fareEstimate'
+import RideMapPrimitive from '@/components/map/RideMapPrimitive'
+import RideBoardTransitStationRow from './RideBoardTransitStationRow'
 
 export interface RequestEnrichment {
   pickup_lat?: number
@@ -79,6 +82,12 @@ export default function RideBoardConfirmSheet({
   }
   const [transitSuggestions, setTransitSuggestions] = useState<TransitSuggestion[]>([])
   const [loadingTransit, setLoadingTransit] = useState(false)
+  // v1.3 Sprint 10 Slice 4 — peeked station id (one of the
+  // suggestion's `station_lat-station_lng` composite keys). null in
+  // overview mode; set when the rider taps a station row. Cleared when
+  // a fresh `/api/transit/preview` returns (the ride or destination
+  // changed) and when the rider commits via "Use this stop".
+  const [peekedStationKey, setPeekedStationKey] = useState<string | null>(null)
 
   // Reset/prefill state when ride changes
   useEffect(() => {
@@ -91,6 +100,7 @@ export default function RideBoardConfirmSheet({
     setUseDriverDestination(true)
     setNote('')
     setTransitSuggestions([])
+    setPeekedStationKey(null)
 
     if (!initialEnrichment) return
 
@@ -161,6 +171,10 @@ export default function RideBoardConfirmSheet({
         if (!cancelled && res.ok) {
           const data = (await res.json()) as { suggestions: TransitSuggestion[] }
           setTransitSuggestions(data.suggestions ?? [])
+          // Reset peek when the suggestion set changes — a stale peek
+          // pointing at a no-longer-listed station would render zero
+          // pins on the mini-map.
+          setPeekedStationKey(null)
         }
       } catch {
         // Silently fail — transit suggestions are optional
@@ -525,41 +539,186 @@ export default function RideBoardConfirmSheet({
                     </div>
                   )}
 
+                  {/* v1.3 Sprint 10 Slice 4 — transit mini-map + numbered
+                      station rows with peek state. Mirrors iOS
+                      RideBoardTransitMiniMap (180pt) +
+                      RideBoardConfirmDestinationSection.transitRow
+                      (lines 199-343). Overview state: numbered station
+                      pins + rider dest + driver origin + driver dest
+                      context pins. Peek state: only peeked station +
+                      rider dest (camera tightens via bounds-fit).
+                      Commit happens via "Use this stop" on the peeked
+                      card — tap-to-peek does NOT commit. */}
                   {selectedPlace && !loadingTransit && transitSuggestions.length > 0 && (
                     <div className="mt-3" data-testid="transit-suggestions">
                       <p className="text-xs text-text-secondary font-medium mb-2">Transit stops on this route</p>
-                      <div className="space-y-1.5">
-                        {transitSuggestions.map((ts) => (
-                          <button
-                            key={`${ts.station_lat}-${ts.station_lng}`}
-                            type="button"
-                            onClick={() => {
-                              setSelectedPlace({
-                                placeId: '',
-                                mainText: ts.station_name,
-                                secondaryText: `${ts.walk_to_station_minutes} min walk + ${ts.transit_to_dest_minutes} min transit`,
-                                fullAddress: ts.station_name,
-                                lat: ts.station_lat,
-                                lng: ts.station_lng,
-                              })
-                              setQuery(ts.station_name)
-                              setTransitSuggestions([])
-                            }}
-                            className="w-full flex items-center gap-2.5 rounded-xl bg-surface border border-border/50 px-3 py-2 text-left active:bg-border/30"
-                            data-testid="transit-suggestion-item"
-                          >
-                            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-primary text-xs font-bold shrink-0">
-                              T
+                      {(() => {
+                        // Identify the peeked station (or null when in overview).
+                        const peeked = peekedStationKey != null
+                          ? transitSuggestions.find(
+                              (s) => `${s.station_lat}-${s.station_lng}` === peekedStationKey,
+                            ) ?? null
+                          : null
+
+                        // Bounds points + AdvancedMarker children change per
+                        // mode. Both modes render through the shared
+                        // `RideMapPrimitive` (Slice 3).
+                        const isPeekMode = peeked != null
+                        const boundsPoints: Array<{ lat: number; lng: number }> = isPeekMode
+                          ? [
+                              { lat: peeked.station_lat, lng: peeked.station_lng },
+                              ...(selectedPlace.lat != null && selectedPlace.lng != null
+                                ? [{ lat: selectedPlace.lat, lng: selectedPlace.lng }]
+                                : []),
+                            ]
+                          : [
+                              ...transitSuggestions.map((s) => ({ lat: s.station_lat, lng: s.station_lng })),
+                              ...(selectedPlace.lat != null && selectedPlace.lng != null
+                                ? [{ lat: selectedPlace.lat, lng: selectedPlace.lng }]
+                                : []),
+                              ...(ride?.driver_origin_lat != null && ride.driver_origin_lng != null
+                                ? [{ lat: ride.driver_origin_lat, lng: ride.driver_origin_lng }]
+                                : []),
+                              ...(ride?.driver_dest_lat != null && ride.driver_dest_lng != null
+                                ? [{ lat: ride.driver_dest_lat, lng: ride.driver_dest_lng }]
+                                : []),
+                            ]
+                        return (
+                          <>
+                            <RideMapPrimitive
+                              data-testid="transit-mini-map"
+                              className="rounded-2xl overflow-hidden border border-border mb-2"
+                              height="180px"
+                              defaultZoom={12}
+                              defaultCenter={
+                                transitSuggestions[0]
+                                  ? { lat: transitSuggestions[0].station_lat, lng: transitSuggestions[0].station_lng }
+                                  : undefined
+                              }
+                              boundsPoints={boundsPoints}
+                            >
+                              {/* Station pins — numbered. In peek mode only the
+                                  peeked station renders so the camera tightens
+                                  on it + rider dest. */}
+                              {(isPeekMode ? [peeked] : transitSuggestions).map((s, displayIdx) => {
+                                const realIdx = isPeekMode
+                                  ? transitSuggestions.findIndex(
+                                      (t) => t.station_lat === s.station_lat && t.station_lng === s.station_lng,
+                                    )
+                                  : displayIdx
+                                const isThisPeeked = peeked != null
+                                  && peeked.station_lat === s.station_lat
+                                  && peeked.station_lng === s.station_lng
+                                return (
+                                  <AdvancedMarker
+                                    key={`${s.station_lat}-${s.station_lng}`}
+                                    position={{ lat: s.station_lat, lng: s.station_lng }}
+                                    zIndex={isThisPeeked ? 10 : 1}
+                                  >
+                                    <div
+                                      data-testid={`transit-mini-map-station-${realIdx}`}
+                                      className={[
+                                        'flex h-7 w-7 items-center justify-center rounded-full border-2 border-white shadow-md text-xs font-bold text-white transition-transform',
+                                        isThisPeeked ? 'bg-primary scale-125' : 'bg-primary',
+                                      ].join(' ')}
+                                    >
+                                      {realIdx + 1}
+                                    </div>
+                                  </AdvancedMarker>
+                                )
+                              })}
+
+                              {/* Rider destination pin — always present (overview
+                                  + peek). Anchors the auto-fit so the rider
+                                  sees the spatial relationship station ↔ dest. */}
+                              {selectedPlace.lat != null && selectedPlace.lng != null && (
+                                <AdvancedMarker
+                                  position={{ lat: selectedPlace.lat, lng: selectedPlace.lng }}
+                                  zIndex={5}
+                                >
+                                  <div
+                                    data-testid="transit-mini-map-rider-dest"
+                                    className="flex h-5 w-5 items-center justify-center rounded-full bg-danger border-2 border-white shadow text-[8px] font-bold text-white"
+                                  >
+                                    D
+                                  </div>
+                                </AdvancedMarker>
+                              )}
+
+                              {/* Driver origin + destination context pins —
+                                  only in overview mode (peek mode drops them
+                                  so the camera tightens on station+rider dest). */}
+                              {!isPeekMode && ride?.driver_origin_lat != null && ride.driver_origin_lng != null && (
+                                <AdvancedMarker
+                                  position={{ lat: ride.driver_origin_lat, lng: ride.driver_origin_lng }}
+                                  zIndex={3}
+                                >
+                                  <div
+                                    data-testid="transit-mini-map-driver-origin"
+                                    className="flex h-5 w-5 items-center justify-center rounded-full bg-success border-2 border-white shadow text-[8px] font-bold text-white"
+                                  >
+                                    P
+                                  </div>
+                                </AdvancedMarker>
+                              )}
+                              {!isPeekMode && ride?.driver_dest_lat != null && ride.driver_dest_lng != null && (
+                                <AdvancedMarker
+                                  position={{ lat: ride.driver_dest_lat, lng: ride.driver_dest_lng }}
+                                  zIndex={0}
+                                >
+                                  <div
+                                    data-testid="transit-mini-map-driver-dest"
+                                    className="h-3 w-3 rounded-full bg-text-secondary/60 border-2 border-white shadow"
+                                  />
+                                </AdvancedMarker>
+                              )}
+                            </RideMapPrimitive>
+
+                            {/* Station rows — numbered, tap-to-peek, peeked
+                                row shows "Use this stop" CTA. */}
+                            <div className="space-y-1.5">
+                              {transitSuggestions.map((ts, idx) => {
+                                const key = `${ts.station_lat}-${ts.station_lng}`
+                                const isThisPeeked = peekedStationKey === key
+                                return (
+                                  <RideBoardTransitStationRow
+                                    key={key}
+                                    index={idx}
+                                    stationName={ts.station_name}
+                                    walkToStationMinutes={ts.walk_to_station_minutes}
+                                    transitToDestMinutes={ts.transit_to_dest_minutes}
+                                    totalRiderMinutes={ts.total_rider_minutes}
+                                    isPeeked={isThisPeeked}
+                                    onTapPeek={() => {
+                                      // Tap toggles peek for that row;
+                                      // tapping the already-peeked row
+                                      // collapses back to overview.
+                                      setPeekedStationKey((prev) => (prev === key ? null : key))
+                                    }}
+                                    onCommit={() => {
+                                      // Commit: swap selectedPlace to the
+                                      // station + clear suggestions (the
+                                      // pre-Slice-4 tap behaviour, now
+                                      // gated behind an explicit CTA).
+                                      setSelectedPlace({
+                                        placeId: '',
+                                        mainText: ts.station_name,
+                                        secondaryText: `${ts.walk_to_station_minutes} min walk + ${ts.transit_to_dest_minutes} min transit`,
+                                        fullAddress: ts.station_name,
+                                        lat: ts.station_lat,
+                                        lng: ts.station_lng,
+                                      })
+                                      setQuery(ts.station_name)
+                                      setTransitSuggestions([])
+                                      setPeekedStationKey(null)
+                                    }}
+                                  />
+                                )
+                              })}
                             </div>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-xs font-medium text-text-primary truncate">{ts.station_name}</p>
-                              <p className="text-[10px] text-text-secondary">
-                                {ts.walk_to_station_minutes} min walk · {ts.transit_to_dest_minutes} min transit · {ts.total_rider_minutes} min total
-                              </p>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
+                          </>
+                        )
+                      })()}
                     </div>
                   )}
                   {selectedPlace && loadingTransit && (
