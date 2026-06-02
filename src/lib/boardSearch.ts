@@ -12,7 +12,30 @@
 import { supabase } from '@/lib/supabase'
 import type { ScheduledRide } from '@/components/schedule/boardTypes'
 
-export type BoardSearchMatchType = 'direct' | 'transit_handoff' | 'endpoint'
+/**
+ * v1.2.1 S2.1 (2026-05-21) — added `reverse_transit_handoff` to the
+ * union. iOS source: `BoardSearchEndpoint.swift::BoardSearchMatchType`
+ * (line 103). Server emits this match type when the rider's pickup is
+ * off-route but their destination IS on it — the rider takes transit
+ * to a station along the driver's route, meets the driver there, and
+ * continues to the destination together. Inverse of `transit_handoff`
+ * (driver-drops-rider-then-rider-takes-transit). UI consumers must
+ * branch on this case to render the "Meet via transit" badge + pre-fill
+ * the rider's pickup (not destination) with the station coords.
+ */
+export type BoardSearchMatchType =
+  | 'direct'
+  | 'transit_handoff'
+  | 'reverse_transit_handoff'
+  | 'endpoint'
+
+/**
+ * Discriminator for which way the transit hand-off runs. Mirrors iOS
+ * `BoardSearchTransitDirection` (BoardSearchEndpoint.swift:110-116).
+ * Defaults to `'forward'` when the server response omits the field —
+ * matches iOS's backward-compat decode at line 175/205.
+ */
+export type BoardSearchTransitDirection = 'forward' | 'reverse'
 
 /// One transit-leg option (rendered as e.g. "BART Yellow Line · 28 min").
 /// Populated by the server's `computeTransitDropoffSuggestions` engine,
@@ -28,8 +51,16 @@ export interface BoardSearchTransitOption {
   total_minutes: number
 }
 
-/// Handoff details for `match_type === 'transit_handoff'` — null for
-/// direct + endpoint matches.
+/// Handoff details for `match_type === 'transit_handoff'` or
+/// `match_type === 'reverse_transit_handoff'` — null for direct + endpoint
+/// matches.
+///
+/// Field semantics flip per `direction` (v1.2.1 S2.1):
+///   • forward: `transit_to_dest_minutes` = transit FROM station TO
+///     rider's destination (the last leg after the driver drops them).
+///   • reverse: `transit_to_dest_minutes` = transit FROM rider's pickup
+///     TO the station (the first leg before the driver picks them up).
+/// `total_rider_minutes` is full trip time either way.
 export interface BoardSearchTransitHandoff {
   station_name: string
   station_place_id: string
@@ -40,6 +71,9 @@ export interface BoardSearchTransitHandoff {
   transit_to_dest_minutes: number
   total_rider_minutes: number
   transit_option: BoardSearchTransitOption | null
+  /** Optional on the wire — older servers omit. Defaults to `'forward'`
+   *  at the consumer per the iOS backward-compat pattern. */
+  direction?: BoardSearchTransitDirection
 }
 
 /// A single result row. Inherits everything on `ScheduledRide` plus

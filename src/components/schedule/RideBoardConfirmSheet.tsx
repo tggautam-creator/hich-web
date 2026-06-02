@@ -21,10 +21,25 @@ export interface RequestEnrichment {
   dropoff_at_driver_destination?: boolean
 }
 
+/**
+ * v1.2.1 S2.1 — proposed transit hand-off context the parent surface
+ * (RideBoard / RideBoardHome) hands to the confirm sheet so it can
+ * render a Proposed Handoff Card with direction-aware copy. Forward
+ * = driver drops rider at the station; reverse = rider takes transit
+ * to the station and meets driver there.
+ */
+export interface ProposedHandoffContext {
+  station_name: string
+  direction: 'forward' | 'reverse'
+}
+
 interface RideBoardConfirmSheetProps {
   ride: ScheduledRide | null
   isRequesting: boolean
   initialEnrichment?: RequestEnrichment | null
+  /** Surfaces the direction-aware Proposed Handoff Card. Mirrors iOS
+   *  RideBoardConfirmSheet.swift:421-472. */
+  proposedHandoff?: ProposedHandoffContext | null
   onConfirm: (enrichment: RequestEnrichment) => void
   onCancel: () => void
 }
@@ -33,6 +48,7 @@ export default function RideBoardConfirmSheet({
   ride,
   isRequesting,
   initialEnrichment,
+  proposedHandoff = null,
   onConfirm,
   onCancel,
 }: RideBoardConfirmSheetProps) {
@@ -291,6 +307,46 @@ export default function RideBoardConfirmSheet({
               )}
             </div>
           </div>
+
+          {/* v1.2.1 S2.1 — Proposed Handoff Card. Mirrors iOS
+              RideBoardConfirmSheet.swift:421-472. Direction-aware copy
+              + tint: forward = warning ("Driver drops you at X — you
+              continue by transit"), reverse = primary ("You take
+              transit to X — driver picks you up there"). The actual
+              pickup / destination fields are still pre-filled via
+              `initialEnrichment` lower down — this card is the
+              hero context cue. Hidden when proposedHandoff is null. */}
+          {proposedHandoff && (
+            <div
+              data-testid="proposed-handoff-card"
+              data-direction={proposedHandoff.direction}
+              className={
+                proposedHandoff.direction === 'reverse'
+                  ? 'mb-4 rounded-2xl border border-primary/30 bg-primary/5 px-3 py-2.5'
+                  : 'mb-4 rounded-2xl border border-warning/30 bg-warning/5 px-3 py-2.5'
+              }
+            >
+              <p
+                className={
+                  proposedHandoff.direction === 'reverse'
+                    ? 'text-[10px] font-extrabold uppercase tracking-wider text-primary'
+                    : 'text-[10px] font-extrabold uppercase tracking-wider text-warning'
+                }
+              >
+                Transit hand-off
+              </p>
+              <p className="mt-0.5 text-sm font-bold text-text-primary">
+                {proposedHandoff.direction === 'reverse'
+                  ? `You take transit to ${proposedHandoff.station_name}`
+                  : `Driver drops you at ${proposedHandoff.station_name}`}
+              </p>
+              <p className="mt-0.5 text-xs text-text-secondary">
+                {proposedHandoff.direction === 'reverse'
+                  ? 'Driver picks you up there and continues to your destination.'
+                  : 'You continue by transit from there to your destination.'}
+              </p>
+            </div>
+          )}
 
           {/* Route summary */}
           <div className="rounded-2xl bg-surface p-3 mb-4 space-y-1.5">

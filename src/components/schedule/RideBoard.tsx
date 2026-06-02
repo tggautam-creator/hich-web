@@ -7,7 +7,7 @@ import BottomSheet from '@/components/ui/BottomSheet'
 import RideBoardSearchBar from './RideBoardSearchBar'
 import RideBoardCard from './RideBoardCard'
 import RideBoardConfirmSheet from './RideBoardConfirmSheet'
-import type { RequestEnrichment } from './RideBoardConfirmSheet'
+import type { RequestEnrichment, ProposedHandoffContext } from './RideBoardConfirmSheet'
 import RideBoardEmptyState from './RideBoardEmptyState'
 import PostRideFAB from './PostRideFAB'
 import RideBoardFilterSheet from './RideBoardFilterSheet'
@@ -68,6 +68,10 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
   const [detailRide, setDetailRide] = useState<ScheduledRide | null>(null)
   const [confirmRide, setConfirmRide] = useState<ScheduledRide | null>(null)
   const [confirmInitialEnrichment, setConfirmInitialEnrichment] = useState<RequestEnrichment | null>(null)
+  // v1.2.1 S2.1 — surfaces the direction-aware Proposed Handoff Card
+  // in the confirm sheet when the auto-open path came from a smart-
+  // search transit-handoff result. null when no handoff context.
+  const [confirmProposedHandoff, setConfirmProposedHandoff] = useState<ProposedHandoffContext | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [requestingId, setRequestingId] = useState<string | null>(null)
   const [requestError, setRequestError] = useState<string | null>(null)
@@ -194,6 +198,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
 
     setConfirmRide(ride)
     setConfirmInitialEnrichment(null)
+    setConfirmProposedHandoff(null)
     setRequestError(null)
   }, [isDriver, navigate])
 
@@ -288,6 +293,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
           setRequestingId(null)
           setConfirmRide(null)
           setConfirmInitialEnrichment(null)
+          setConfirmProposedHandoff(null)
           navigate('/payment/add', {
             state: {
               returnTo: '/rides/board',
@@ -309,6 +315,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
         setRequestingId(null)
         setConfirmRide(null)
         setConfirmInitialEnrichment(null)
+        setConfirmProposedHandoff(null)
         return
       }
 
@@ -318,6 +325,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       setSuccessMessage(isDriverPost ? 'Request sent! They\'ll see it in their notifications.' : 'Offer sent! They\'ll see it in their notifications.')
       setConfirmRide(null)
       setConfirmInitialEnrichment(null)
+      setConfirmProposedHandoff(null)
       setRequestingId(null)
       setTimeout(() => setSuccessMessage(null), 3000)
     } catch {
@@ -325,6 +333,7 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       setRequestingId(null)
       setConfirmRide(null)
       setConfirmInitialEnrichment(null)
+      setConfirmProposedHandoff(null)
     }
   }, [confirmRide, navigate, activeNavTab])
 
@@ -364,6 +373,11 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
         station_name: string
         station_lat: number
         station_lng: number
+        /** v1.2.1 S2.1 — direction discriminator. 'forward' (default)
+         *  = driver drops rider at the station; pre-fill destination.
+         *  'reverse' = rider takes transit to the station to meet the
+         *  driver; pre-fill pickup. */
+        direction?: 'forward' | 'reverse'
       } | null
     }
     const incoming = (location.state as AutoOpenState | null) ?? null
@@ -372,13 +386,41 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
     const matched = rides.find((r) => r.id === openId)
     if (!matched) return
     const handoff = incoming?.proposedHandoff ?? null
-    if (handoff && matched.mode === 'rider') {
+    const direction = handoff?.direction ?? 'forward'
+    // Reverse handoff is rider-as-actor: a driver-mode post where the
+    // rider takes transit to the station and the driver picks them up
+    // there. Forward handoff is the existing rider-mode-post path.
+    // Both routes pre-fill the confirm sheet — only the WHICH-field
+    // (pickup vs destination) flips per direction.
+    if (handoff && direction === 'reverse') {
+      // Reverse: station = rider's PICKUP point. Confirm sheet opens
+      // regardless of matched.mode — server's reverse_transit_handoff
+      // can surface on either mode depending on the search direction.
+      setConfirmRide(matched)
+      setConfirmInitialEnrichment({
+        pickup_lat: handoff.station_lat,
+        pickup_lng: handoff.station_lng,
+        pickup_name: handoff.station_name,
+        destination_flexible: false,
+      })
+      setConfirmProposedHandoff({
+        station_name: handoff.station_name,
+        direction: 'reverse',
+      })
+    } else if (handoff && matched.mode === 'rider') {
+      // Forward: rider-mode post (rider posted, driver responding from
+      // search) — station = the dropoff point (driver drops rider at
+      // station; rider takes transit the rest of the way).
       setConfirmRide(matched)
       setConfirmInitialEnrichment({
         destination_lat: handoff.station_lat,
         destination_lng: handoff.station_lng,
         destination_name: handoff.station_name,
         destination_flexible: false,
+      })
+      setConfirmProposedHandoff({
+        station_name: handoff.station_name,
+        direction: 'forward',
       })
     } else {
       setDetailRide(matched)
@@ -1054,8 +1096,13 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
         ride={confirmRide}
         isRequesting={requestingId === confirmRide?.id}
         initialEnrichment={confirmInitialEnrichment}
+        proposedHandoff={confirmProposedHandoff}
         onConfirm={(enrichment) => { void handleConfirmRequest(enrichment) }}
-        onCancel={() => { setConfirmRide(null); setConfirmInitialEnrichment(null) }}
+        onCancel={() => {
+          setConfirmRide(null)
+          setConfirmInitialEnrichment(null)
+          setConfirmProposedHandoff(null)
+        }}
       />
 
       {/* ── Filter + sort sheet ───────────────────────────────────────────── */}

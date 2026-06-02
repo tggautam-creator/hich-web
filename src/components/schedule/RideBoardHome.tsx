@@ -510,8 +510,10 @@ export default function RideBoardHome() {
               // the detail / confirm sheet for that specific ride. When
               // the match was a transit handoff the browse page reads
               // `state.proposedHandoff` and pre-fills the offer with
-              // `proposed_dropoff_*` (full parity with iOS — see
-              // `RideBoardConfirmViewModel.proposedHandoff`).
+              // `proposed_dropoff_*` (forward) or `proposed_pickup_*`
+              // (reverse, v1.2.1 S2.1 — rider takes transit to meet
+              // driver at the station). Full parity with iOS — see
+              // `RideBoardConfirmViewModel.proposedHandoff`.
               navigate('/rides/board/browse', {
                 state: {
                   openRideId: r.id,
@@ -520,6 +522,7 @@ export default function RideBoardHome() {
                         station_name: r.transit_handoff.station_name,
                         station_lat: r.transit_handoff.station_lat,
                         station_lng: r.transit_handoff.station_lng,
+                        direction: r.transit_handoff.direction ?? 'forward',
                       }
                     : null,
                 },
@@ -734,7 +737,9 @@ function BoardResultCard({
   )
 }
 
-function MatchBadge({
+// Exported for unit testing the v1.2.1 S2.1 reverse-handoff variant
+// without standing up the full RideBoardHome search + autocomplete UI.
+export function MatchBadge({
   matchType,
   handoff,
 }: {
@@ -756,6 +761,23 @@ function MatchBadge({
       </div>
     )
   }
+  // v1.2.1 S2.1 (2026-05-21) — reverse hand-off: rider takes transit
+  // TO a station on the route, then meets the driver. Different tint
+  // from the forward (warning) variant so users can scan the list and
+  // know at a glance which direction the hand-off goes. Mirrors iOS
+  // RideBoardHomePage.swift:842-849 — primary tint, "Meet via transit"
+  // copy verbatim, optional total minutes appended.
+  if (matchType === 'reverse_transit_handoff') {
+    const total = handoff?.total_rider_minutes
+    return (
+      <div
+        data-testid="board-match-badge-reverse"
+        className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-1 text-xs font-bold text-primary"
+      >
+        🚶 Meet via transit{total ? ` · ~${formatMinutes(total)} total` : ''}
+      </div>
+    )
+  }
   return (
     <div className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-1 text-xs font-bold text-primary">
       ⌖ Nearby
@@ -763,20 +785,40 @@ function MatchBadge({
   )
 }
 
-function TransitHandoffCard({ handoff }: { handoff: BoardSearchTransitHandoff }) {
+// Exported for unit testing the v1.2.1 S2.1 direction-aware copy
+// (forward warning tint vs reverse primary tint + leg framing flip)
+// without standing up the full RideBoardHome search + autocomplete UI.
+export function TransitHandoffCard({ handoff }: { handoff: BoardSearchTransitHandoff }) {
+  // v1.2.1 S2.1 — direction-aware copy + tint. Forward = warning tint
+  // + "Drop at X". Reverse = primary tint + "Take transit to X to meet
+  // driver." Same chrome (rounded card + tinted border + tinted bg) so
+  // both render visually consistent in the result list. Mirrors iOS
+  // RideBoardHomePage.swift::transitHandoffCard (889-947).
+  const isReverse = handoff.direction === 'reverse'
+  const containerClass = isReverse
+    ? 'mt-2 rounded-xl border border-primary/30 bg-primary/5 p-3'
+    : 'mt-2 rounded-xl border border-warning/30 bg-warning/5 p-3'
+  const headline = isReverse
+    ? `Take transit to ${handoff.station_name}`
+    : `Drop at ${handoff.station_name}`
+  // Forward: transit goes FROM station TO dest. Reverse: transit goes
+  // FROM rider's pickup TO station. Same field (transit_to_dest_minutes)
+  // but the framing flips per direction.
+  const legDescription = handoff.transit_option
+    ? isReverse
+      ? `${handoff.transit_option.line_name} · ${formatMinutes(handoff.transit_to_dest_minutes)} from your pickup`
+      : `${handoff.transit_option.line_name} · ${formatMinutes(handoff.transit_to_dest_minutes)} to your destination`
+    : null
+  const breakdown = isReverse
+    ? `Walk ${handoff.walk_to_station_minutes} min · transit ${formatMinutes(handoff.transit_to_dest_minutes)} · ~${formatMinutes(handoff.total_rider_minutes)} total + ride with driver`
+    : `Walk ${handoff.walk_to_station_minutes} min · ride ${formatMinutes(handoff.transit_to_dest_minutes)} · ~${formatMinutes(handoff.total_rider_minutes)} total`
   return (
-    <div className="mt-2 rounded-xl border border-warning/30 bg-warning/5 p-3">
-      <div className="text-sm font-bold text-textPrimary">
-        Drop at {handoff.station_name}
-      </div>
+    <div className={containerClass} data-testid="board-transit-handoff-card">
+      <div className="text-sm font-bold text-textPrimary">{headline}</div>
       {handoff.transit_option ? (
         <>
-          <div className="text-xs text-textSecondary">
-            {handoff.transit_option.line_name} · {formatMinutes(handoff.transit_to_dest_minutes)} to your destination
-          </div>
-          <div className="mt-0.5 text-[11px] text-textSecondary/85">
-            Walk {handoff.walk_to_station_minutes} min · ride {formatMinutes(handoff.transit_to_dest_minutes)} · ~{formatMinutes(handoff.total_rider_minutes)} total
-          </div>
+          <div className="text-xs text-textSecondary">{legDescription}</div>
+          <div className="mt-0.5 text-[11px] text-textSecondary/85">{breakdown}</div>
         </>
       ) : (
         <div className="text-xs text-textSecondary">
