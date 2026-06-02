@@ -20,7 +20,7 @@ iOS has added 22 migrations (086–107), 22 new endpoints, and entire new Featur
 | 3 | **Vehicle + user accessibility** | mig 087 (user-profile expansion: bio/gender/school/major/grad-year), 088 (accessibility profile), 090 (vehicle wheelchair_capable + trunk_size) | ✅ audit complete 2026-05-30 — see [Sprint 7](#sprint-7--accessibility--user-profile-v12-parity) below |
 | 4 | **Rider routines + Suggestions** | mig 099–106, `Features/Suggestions/`, `Features/Schedule/Routines*`, `Features/Profile/ProfileRoutinesSection`, suggestion + project-routine + sync-routine endpoints | ✅ audit complete 2026-05-30 — see [Sprint 8](#sprint-8--suggestions--rider-routines-v13-parity) below |
 | 5 | **Trips & segments (split fare)** | mig 097, 098, `Features/Rides/`, `Features/MultiRider/`, `Features/DriverHome/DriverMultiRidePage+TripComplete`, `server/lib/trips.ts` + `server/lib/segments.ts`, no dedicated endpoint yet (iOS reads Supabase direct via `CoRidersFetcher`) | ✅ audit complete 2026-05-30 — see [Sprint 9](#sprint-9--trips--segments-split-fare-foundation-v13-parity) below |
-| 6 | **Board redesign + Smart geo-match** | `docs/BOARD_REDESIGN_PLAN.md`, `SMART_SEARCH_PLAN.md`, `Features/RideBoard/`, board endpoints | ⏳ pending (coordinate with parallel session) |
+| 6 | **Board redesign + Smart geo-match** | 25 `Features/RideBoard/` .swift files, board endpoints (`BoardOfferEndpoints`, `BoardSearchEndpoint`, `BoardRequestActionEndpoints`, `ScheduleBoardEndpoint`), migrations 072 + 075 + 078 + 083 (smart polylines + transit details), parallel-session coordination cleared (no `RideBoard/` activity from them in 14d) | ✅ audit complete 2026-06-01 — see [Sprint 10](#sprint-10--board-redesign--smart-geo-match-v13-parity) below |
 | 7 | **Ride safety + forensics (admin)** | mig 094, 095, 096, `Features/Safety/`, `Features/AdminCampaign/` | ⏳ pending |
 | 8 | **Endpoint coverage audit** | all 72 endpoints in `ios/Core/Networking/Endpoints/` | ⏳ pending |
 | 9 | **Re-walk Tier 2 polish from 2026-05-12** | copy / sort / filter / banner items | ⏳ pending |
@@ -38,26 +38,275 @@ For every stage:
 
 ### Currently pending decisions
 
-- **Stages 1–5 audits landed**. Stages 6–9 still queued.
-- **Sprint 9 (Trips & segments v1.3)** — ✅ Audit complete 2026-05-30. 5-slice plan landed below; no code yet. Headline: web missing the **entire trip-summary fare-split layer** (no Your Share card, no driver per-rider Trip Earnings card with caregiver-fee badges, no MultiRiderSubtitle pill on rider drawer, no TodaysAnytimeBanner) AND **no server endpoint exposes `ride_rider_shares` / `ride_segments` yet** — Sprint 9 starts with the server contract.
-- **Sprint 8 (Suggestions + rider routines v1.3)** — ✅ Audit complete 2026-05-30. 6-slice plan landed; no code yet. Headline: chasm-sized rider-side gap — iOS ships full Suggested Rides home hero + detail sheet + dismiss + lazy-routine action flow, web ships ZERO of it. Open question #9: rider-home Waymo redesign blocks Slice 4's natural placement.
+- **Stages 1–6 audits landed**. Stages 7–9 still queued.
+- **Sprint 10 (Board redesign + Smart geo-match v1.3)** — ✅ Audit complete 2026-06-01. 6-slice plan landed below; no code yet. Headline: web Board is wire-compatible on every server endpoint but iOS has pulled ahead on 5 load-bearing surfaces: (1) `proposed_transit_*` dropped at web type boundary on offer card, (2) `reverse_transit_handoff` match-type dark on web, (3) transit-station picker is text-only (iOS ships mini-map + peek), (4) no `PosterProfilePreviewSheet` on avatar tap, (5) no `CaregiverPickerSection` on Board confirm + no `my_offer_id` Withdraw on `RideBoardCard`. `FareEducatorInlineCard` deferred to Sprint 11 (called out in open questions).
+- **Sprint 9 (Trips & segments v1.3)** — ✅ All 5 slices shipped locally (commits `a6a31d3`, `71db876`, `b245760`, `1999f75`, `3dbb4b8`). Awaiting QA + push.
+- **Sprint 8 (Suggestions + rider routines v1.3)** — ✅ Audit complete 2026-05-30. 6-slice plan landed; no code yet. Open question #9: rider-home Waymo redesign blocks Slice 4's natural placement.
 - **Sprint 7 (accessibility / user profile)** — ✅ Slices 1–5 shipped + pushed (CI green 2026-05-30). Slice 6 (UserProfilePreviewCard polish) parked.
-- **Sprint 6 (caregivers)** — ✅ Slices 1–6 shipped + pushed. Slice 5's server response lights up on web + iOS once Vercel + EC2 PM2 pick up the new build.
+- **Sprint 6 (caregivers)** — ✅ Slices 1–6 shipped + pushed.
 - **Sprint 5 (Reports v2 polish)** — ⏳ Not started. Notifications-drift slice is highest blast radius; awaiting "go".
 
 ### Current focus
 
-Stage 5 audit just landed. Stages 1–5 of the multi-stage iOS-parity audit are all complete; 5 numbered sprints (Sprints 5–9) wait on user "go" before any code lands.
+Stage 6 audit just landed. Stages 1–6 of the multi-stage iOS-parity audit are now complete; 6 numbered sprints (Sprints 5–10) wait on user direction. Sprint 9 has all 5 slices shipped locally and is the most ready-to-push artifact.
 
 ### Next action
 
 Tarun decides:
-1. **Sprint 9 Slice 1** (TodaysAnytimeBanner — zero-server-dependency early win on MyRidesPage).
-2. **Sprint 9 Slice 2** (Server: `GET /api/rides/:id/share-details` — foundation for Slices 3–5).
-3. **Sprint 8 Slice 1** (Suggestions foundation: types + hooks + API helpers + FCM handler).
-4. **Sprint 5 Slice 1** (Reports v2 notifications drift — bounded, fixes a broken UX).
-5. Run **Stage 6 audit** (Board redesign + Smart geo-match — but parallel admin session is mid-flight here; coordinate first).
-6. Push the unpushed audit doc commits + the 2 parallel-admin commits (currently 3+ commits ahead of origin).
+1. **Push Sprint 9** to origin (all 5 slices green, all reviewer matrices attached, awaiting only QA + "ship it").
+2. **Sprint 10 Slice 1** (zero-dep `proposed_transit_*` render on `BoardOfferAcceptPage` — ~150 LoC, smallest possible win).
+3. **Sprint 8 Slice 1** (Suggestions foundation).
+4. **Sprint 5 Slice 1** (Reports v2 notifications drift — bounded UX fix).
+5. Run **Stage 7 audit** (Ride safety + forensics — admin-side, light on user-facing parity).
+6. Resolve **Sprint 10 open questions** (Slice 4 sizing, Slice 5 self-preview, Slice 6 empty-caregivers behavior, FareEducator promotion).
+
+---
+
+## Sprint 10 — Board redesign + Smart geo-match v1.3 parity
+
+**Audit-first mode.** Stage 6 of the multi-stage iOS-parity audit completed 2026-06-01 with no code changes. This section is the side-by-side findings + slice plan. Nothing here is shipped on the web app yet.
+
+### Headline
+
+As of 2026-06-01 the web Board ships a functional twin of the iOS browse-and-confirm loop and is wire-compatible on every server endpoint (mig 072 `ride_offers`, mig 078 polyline smart-match, mig 083 `transit_details`, v1.2.1 S2.1 reverse handoff, mig 086 caregivers), but iOS has pulled ahead on **five load-bearing surfaces** verified against the `.swift` source:
+
+1. **`BoardOfferAcceptPage` offer card** does NOT render `proposed_transit_line_name` / walk / transit / total minutes the server already returns (mig 083).
+2. **`reverse_transit_handoff` match type** is dropped at the web type boundary (`boardSearch.ts`); smart-search→confirm hand-off never pre-fills `proposed_pickup_*`.
+3. **`RideBoardConfirmSheet` station picker** is a flat text button row where iOS ships a 180pt MapKit mini-map with numbered pins + tap-to-peek + 'Use this stop'.
+4. **`PosterProfilePreviewSheet`** on avatar tap (v1.2 F18.1, endpoint live at `server/routes/users.ts:338`).
+5. **`RideBoardConfirmSheet` has no `CaregiverPickerSection`** (real F7.2 gap — `caregiver_id` never reaches request enrichment from the Board flow) AND `RideBoardCard` Withdraw branch reads `ride_id` only (never `my_offer_id`, so driver-side outgoing-offer withdraw is dark on web).
+
+Sprint 10 ships **6 tight slices** in dependency order, sized for safe per-feature green-light cadence: smallest/zero-dep first (`proposed_transit_*` on offer card), then reverse-handoff contract, then a pure refactor extracting the existing `TransitSuggestionCard` map primitive, then the confirm-sheet mini-map + peek built on that primitive, then `PosterProfilePreviewSheet`, then `CaregiverPickerSection` + `my_offer_id` Withdraw. `FareEducatorInlineCard` is deferred to Sprint 11 (see openQuestions).
+
+### Files read end-to-end during the audit
+
+**iOS source-of-truth surface (25 RideBoard `.swift` files + 9 endpoint structs):**
+
+Wall + search:
+- [`RideBoardPage.swift`](ios/Tago/Features/RideBoard/RideBoardPage.swift), [`+Actions`](ios/Tago/Features/RideBoard/RideBoardPage+Actions.swift), [`RideBoardHomePage.swift`](ios/Tago/Features/RideBoard/RideBoardHomePage.swift), [`RideBoardViewModel.swift`](ios/Tago/Features/RideBoard/RideBoardViewModel.swift), [`RideBoardSearchBar.swift`](ios/Tago/Features/RideBoard/RideBoardSearchBar.swift), [`RideBoardFilterSheet.swift`](ios/Tago/Features/RideBoard/RideBoardFilterSheet.swift), [`RideBoardFilters.swift`](ios/Tago/Features/RideBoard/RideBoardFilters.swift), [`RideBoardEmptyState.swift`](ios/Tago/Features/RideBoard/RideBoardEmptyState.swift), [`RideBoardCityChipStrip.swift`](ios/Tago/Features/RideBoard/RideBoardCityChipStrip.swift), [`RideBoardCityPresets.swift`](ios/Tago/Features/RideBoard/RideBoardCityPresets.swift), [`RideBoardRecentSearchStore.swift`](ios/Tago/Features/RideBoard/RideBoardRecentSearchStore.swift), [`RideBoardCard.swift`](ios/Tago/Features/RideBoard/RideBoardCard.swift)
+
+Confirm + detail flow:
+- [`RideBoardConfirmSheet.swift`](ios/Tago/Features/RideBoard/RideBoardConfirmSheet.swift), [`RideBoardConfirmViewModel.swift`](ios/Tago/Features/RideBoard/RideBoardConfirmViewModel.swift), [`RideBoardConfirmPickupSection.swift`](ios/Tago/Features/RideBoard/RideBoardConfirmPickupSection.swift), [`RideBoardConfirmDestinationSection.swift`](ios/Tago/Features/RideBoard/RideBoardConfirmDestinationSection.swift), [`RideBoardDetailSheet.swift`](ios/Tago/Features/RideBoard/RideBoardDetailSheet.swift), [`+Actions`](ios/Tago/Features/RideBoard/RideBoardDetailSheet+Actions.swift), [`RideBoardHelpers.swift`](ios/Tago/Features/RideBoard/RideBoardHelpers.swift), [`RideBoardGlass.swift`](ios/Tago/Features/RideBoard/RideBoardGlass.swift), [`RequestEnrichment.swift`](ios/Tago/Features/RideBoard/RequestEnrichment.swift)
+
+Offer / transit / preview:
+- [`BoardOfferAcceptPage.swift`](ios/Tago/Features/RideBoard/BoardOfferAcceptPage.swift), [`RideBoardOfferSections.swift`](ios/Tago/Features/RideBoard/RideBoardOfferSections.swift), [`RideBoardTransitMiniMap.swift`](ios/Tago/Features/RideBoard/RideBoardTransitMiniMap.swift), [`PosterProfilePreviewSheet.swift`](ios/Tago/Features/RideBoard/PosterProfilePreviewSheet.swift)
+
+Endpoints:
+- [`BoardOfferEndpoints.swift`](ios/Tago/Core/Networking/Endpoints/BoardOfferEndpoints.swift), [`BoardRequestActionEndpoints.swift`](ios/Tago/Core/Networking/Endpoints/BoardRequestActionEndpoints.swift), [`BoardSearchEndpoint.swift`](ios/Tago/Core/Networking/Endpoints/BoardSearchEndpoint.swift), [`ScheduleBoardEndpoint.swift`](ios/Tago/Core/Networking/Endpoints/ScheduleBoardEndpoint.swift), [`ScheduleManageEndpoints.swift`](ios/Tago/Core/Networking/Endpoints/ScheduleManageEndpoints.swift), [`ScheduleRequestEndpoint.swift`](ios/Tago/Core/Networking/Endpoints/ScheduleRequestEndpoint.swift), [`ScheduleNotifyEndpoint.swift`](ios/Tago/Core/Networking/Endpoints/ScheduleNotifyEndpoint.swift), [`ComputeScheduleRouteEndpoint.swift`](ios/Tago/Core/Networking/Endpoints/ComputeScheduleRouteEndpoint.swift), [`GetScheduleByIDEndpoint.swift`](ios/Tago/Core/Networking/Endpoints/GetScheduleByIDEndpoint.swift)
+
+**Server + migrations:**
+
+- [`supabase/migrations/072_ride_offers_for_board.sql`](supabase/migrations/072_ride_offers_for_board.sql) — `ride_offers` table foundation
+- [`supabase/migrations/075_ride_offers_unique_schedule_driver.sql`](supabase/migrations/075_ride_offers_unique_schedule_driver.sql)
+- [`supabase/migrations/078_smart_search_polylines.sql`](supabase/migrations/078_smart_search_polylines.sql) — smart-geo-match foundation
+- [`supabase/migrations/082_users_last_known_location.sql`](supabase/migrations/082_users_last_known_location.sql) — smart-match seeding
+- [`supabase/migrations/083_ride_offers_transit_details.sql`](supabase/migrations/083_ride_offers_transit_details.sql) — transit-handoff payloads
+- [`server/routes/schedule.ts`](server/routes/schedule.ts) — board handlers (search by `/board`, `ride_offers`, `board-search`, `smart`)
+- [`server/lib/boardSearch.ts`](server/lib/boardSearch.ts) (server-side smart-match scoring)
+
+**Web user-facing surface (audit result):**
+
+At parity (no Sprint 10 work):
+- [`src/components/schedule/RideBoard.tsx`](src/components/schedule/RideBoard.tsx) — wall of posts, realtime, filters
+- [`src/components/schedule/RideBoardHome.tsx`](src/components/schedule/RideBoardHome.tsx) — smart-search entry + recent searches
+- [`src/components/schedule/RideBoardCard.tsx`](src/components/schedule/RideBoardCard.tsx) — ♿ mobility-aid pill (Sprint 7 Slice 4 `2b3913e`)
+- [`src/components/ride/BoardOfferAcceptPage.tsx`](src/components/ride/BoardOfferAcceptPage.tsx) — caregiver waiver banner (Sprint 6 Slice 5 `8a44be2`)
+- `RideBoardFilterSheet.tsx` accessibility filter, FROM/TO/WHEN inputs, `MatchBadge` for `direct`/`transit_handoff`/`endpoint`
+
+Missing entirely (Sprint 10 scope):
+- ❌ No `proposed_transit_*` rendering on offer card (HIGH)
+- ❌ No `reverse_transit_handoff` type / badge / confirm pickup pre-fill (HIGH)
+- ❌ Confirm sheet transit station picker is text-only (HIGH — Uber-bar violation)
+- ❌ No `PosterProfilePreviewSheet` on avatar tap (MEDIUM)
+- ❌ No `CaregiverPickerSection` on Board confirm + no `my_offer_id` Withdraw branch (HIGH + MEDIUM)
+- ❌ No `FareEducatorInlineCard` on detail sheet (MEDIUM — deferred to Sprint 11)
+
+### Side-by-side parity matrix
+
+| Surface | iOS | Web | Severity |
+|---|---|---|---|
+| `BoardOfferAcceptPage` offer card — transit leg metadata | `transitStop()` + `transitLegPills()` (lines 653-728) render line name + walk/transit/total | `BoardOffer` interface drops the 4 `proposed_transit_*` fields entirely | 🚨 HIGH |
+| Reverse-handoff match type (driver pickup at transit station) | `match_type='reverse_transit_handoff'` with `transit_handoff.direction='reverse'` (v1.2.1 S2.1); "Meet via transit" badge; confirm sheet pre-fills `proposed_pickup_*` | `boardSearch.ts` union is `direct|transit_handoff|endpoint` — reverse dropped at type boundary; no badge, no pre-fill | 🚨 HIGH |
+| Confirm sheet — transit mini-map + station peek | 180pt MapKit mini-map with numbered station pins + context pins + tap-to-peek + 'Use this stop' CTA | `RideBoardConfirmSheet.tsx` renders flat button row of up to 5 stations — no map, no peek, no commit | 🚨 HIGH (Uber-bar violation) |
+| `PosterProfilePreviewSheet` on avatar tap (F18.1) | Tap poster/driver avatar → sheet seeds from snapshot, fetches `/api/users/:id/public-profile`, shows bio + school + vehicle + member-since + accessibility pills | No equivalent; avatars decorative | ⚠️ MEDIUM |
+| Confirm sheet — `CaregiverPickerSection` (F7.2) | `RideBoardConfirmSheet.swift:54-115` mounts inline, gated on `hasAccessibilityNeeds && needsWheelchair && !caregivers.isEmpty`; `caregiver_id` + `distance_km` reach `/api/schedule/request` | No picker on Board confirm; `RequestEnrichment` missing both fields. Picker IS shipped (Sprint 6 Slice 3) — just never mounted in Board flow | 🚨 HIGH |
+| `RideBoardCard` — driver outgoing-offer Withdraw | `offerSentRow` (lines 445-453): "Offer Sent" badge + Withdraw button when `alreadyRequested && my_offer_id`; calls `POST /api/schedule/board/offers/:offerId/withdraw` | `RideBoardCard.tsx:160-167` Withdraw branch reads `ride_id` only (rider-side withdraw); no `my_offer_id` branch | ⚠️ MEDIUM |
+| `RideBoardDetailSheet` — `FareEducatorInlineCard` | Always mounted below action buttons (except poster's own post); per-surface tracker via `FareEducatorTracker.Surface` | Grep `FareEducator` in `src/` → zero hits | ⚠️ MEDIUM (deferred to Sprint 11) |
+| `RideBoardHome` — recent searches + hero + mode pills | `recentSearchesSection` (640-691), animated `heroTitle`, two-pill mode chip row | Ships recent recall + mode toggle + inputs; some polish gaps in hero animation + mode pill treatment | LOW (defer) |
+| Mobility-aid pill + Accessibility filter + Caregiver-waiver banner on `BoardOfferAcceptPage` | F5.2 + F5.3 + F14.2 | All three already shipped on web (Sprint 6 Slice 5 + Sprint 7 Slice 4) | ➖ PARITY |
+| City chip strip + realtime polling fallback | `RideBoardCityChipStrip` with 8 city presets + 'All' + re-tap-to-clear; 30s polling fallback in `RideBoardViewModel.startRealtimeIfNeeded()` | Free-text search only (no city chips); realtime present, no explicit polling fallback | LOW (defer) |
+
+### Cross-cutting notes (apply to every slice)
+
+- **Role-per-ride hard rule** (memory `feedback_role_per_ride.md`): rider vs driver branching in `RideBoardConfirmSheet` / `RideBoardCard` / `BoardOfferAcceptPage` must derive role from `rides.rider_id` / `driver_id` (or `schedule.mode` for board), never from tab/sub-app/nav context. Slices 2, 4, 6 all touch role-conditional rendering. **Special call-out for Slice 2:** a reverse-handoff result is rider-as-actor on a rider-post — `RideBoard.tsx::handleStartRequest` must NOT trip `/become-driver` gate. Add the test explicitly.
+- **No iOS planning markdowns** (hard rule, `CLAUDE.md` + memory `feedback_no_ios_planning_docs.md`). Reading order for every slice: iOS `.swift` files in `iosReferenceFiles` → migrations 072/075/078/082/083/086 → `server/routes/schedule.ts` + `users.ts` → web counterpart. Skip every `ios/*_PLAN.md` / `ios/*_PROGRESS.md` / `docs/*_PLAN.md`.
+- **AUDIT before creating new infra** (memory `feedback_audit_before_creating.md`). Slice 3 is the operational expression — extract existing `TransitSuggestionCard` map block instead of building `RideBoardTransitMiniMap` from scratch. Slice 6's caregiver picker REUSES the existing `CaregiverPickerSection` from `SchedulePage.tsx:920-925` (Sprint 6 Slice 3). Slice 5 will grep `src/components/profile/` for parallel-session activity before mounting new files.
+- **Copy-verbatim rule**: every user-visible string on new slices must match iOS `.swift` source character-for-character. Slice 1 "Take <line> · walk Xm · transit Ym · total Zm", Slice 2 "Meet via transit" + Proposed Handoff Card direction-aware copy, Slice 4 "Use this stop", Slice 6 caregiver gating copy — all need string-grep verification against iOS source in the reviewer pass.
+- **Per-feature green-light cadence** (memory `feedback_per_feature_green_light.md`): after each slice — lint + full `npm run build` + tests + reviewer parity matrix + plain-English summary in handoff — STOP and wait for Tarun's explicit "go" / "push" / "ship it" before starting the next slice. Do not chain slices.
+- **Parallel session lanes** (memory `project_parallel_admin_session.md` + `feedback_parallel_webapp_session.md`). Sprint 10 touches `src/components/schedule/`, `src/components/ride/`, `src/components/profile/`, `src/components/map/`, `src/lib/`, `src/test/`. Admin session owns `src/components/admin/`, `server/routes/admin/`, marketing files. Webapp session owns caregivers/onboarding/profile WIP (current `git status` shows their `WheelchairSection.tsx` WIP + `VehicleRegistrationPage.tsx` / `VehicleEditPage.tsx` — all theirs). **Slice 5 explicitly re-greps `/components/profile/` at kickoff** before adding `UserProfilePreviewSheet` / `Card`.
+- **Design tokens only** (`CLAUDE.md`): every color in new components from `src/lib/tokens.ts`. Slice 3's `RideMapPrimitive` (new) and Slice 5's `UserProfilePreviewCard` (new) are the easiest places for raw hex to slip in. Verify with `git diff` grep for `#[0-9a-fA-F]{3,6}` before each commit.
+- **Money in cents always**: `proposed_fare_cents`, `caregiver_fare_cents`, `estimated_fare_cents` stay as integer cents end-to-end. Slice 1's transit row shows minutes (integer), not money, but the fare cell above it must keep cents → dollars formatting via existing fare-display helpers.
+- **Commit-locally-never-push** (memory `feedback_commit_locally_never_push.md` + `feedback_commit_only_not_push.md`): as each slice's gates go green, commit immediately (no `Co-Authored-By` trailer per `feedback_no_coauthored_by.md`), then wait for explicit "push" / "ship it". Pre-commit gate is strict (memory `feedback_pre_commit_gates_strict.md`): lint + full `npm run build` (NOT `npx tsc -b` alone) + tests + `git diff --cached` on the same line as `git add` to defend against parallel-session contamination (memory `feedback_diff_cached_after_add.md`).
+- **Reviewer parity-check before slice handoff** (`CLAUDE.md` hard rule 2026-05-30): every slice handoff message must contain a 3-column iOS↔web matrix (iOS element / web counterpart / ✅⚠️➖ verdict) covering every user-visible element on the touched iOS source files — not just a prose recap. **Slice 3 is the only allowed exception** (pure refactor, no user-visible parity surface) and the handoff must explicitly note "N/A — no user-visible parity surface" per the mandatory-exception clause.
+- **Plain-English summary** (memory `feedback_plain_english_summary.md`): every slice handoff includes a "Plain English" section in non-technical language describing what shipped + what's next. Technical detail goes in a separate section.
+
+### Sprint 10 slice plan
+
+Per the per-feature green-light + reviewer parity-check + tough-self-review hard rules. Every slice ends with lint + tests + build green + reviewer parity matrix + commit + wait for Tarun's "go" before the next.
+
+#### Slice 1 — Render `proposed_transit_*` on `BoardOfferAcceptPage` offer card
+
+Smallest, zero-dependency, highest-value slice. Extend the web `BoardOffer` interface to include `proposed_transit_line_name`, `proposed_transit_walk_minutes`, `proposed_transit_to_dest_minutes`, `proposed_transit_total_minutes` (server returns them per mig 083, verified at `schedule.ts:4983-4984`). Render an inline transit-leg row on each offer card mirroring iOS `transitStop()` + `transitLegPills()` copy + ordering (walk → transit → total). ~150 LoC including tests.
+
+- **iOS reference:** `BoardOfferAcceptPage.swift` (`transitStop` 653-686, `transitLegPills` 700-728), `BoardOfferEndpoints.swift` (BoardOffer struct with `proposed_transit_*` fields), `ios/Tago/Models/BoardOffer.swift`
+- **Web files to touch:** `src/components/ride/BoardOfferAcceptPage.tsx` (extend `BoardOffer` interface, render transit row when `proposed_transit_line_name` non-null), `src/test/ride/BoardOfferAcceptPage.transitDetails.test.tsx` (new)
+- **Server contract:** `GET /api/schedule/board/schedule/:scheduleId/offers` returns `offers[].proposed_transit_line_name` (string|null), `proposed_transit_walk_minutes` (int|null), `proposed_transit_to_dest_minutes` (int|null), `proposed_transit_total_minutes` (int|null). **No server changes** — only widen client interface and render.
+- [ ] `BoardOffer` interface declares all 4 `proposed_transit_*` fields
+- [ ] Offer card renders "Take {line_name} · walk Xm · transit Ym · total Zm" row when `line_name` present; hidden when null
+- [ ] Visual matches iOS drawer copy + ordering (walk → transit → total) character-for-character
+- [ ] vitest: test asserts decode + render when fields present and absent
+- [ ] All 3 gates green
+- [ ] Reviewer parity matrix posted (every iOS user-visible element on `transitStop`+`transitLegPills` enumerated ✅/⚠️/➖)
+
+#### Slice 2 — Surface `reverse_transit_handoff` end-to-end (contract + badge + pickup pre-fill)
+
+Widen web `BoardSearchResult` union to include `reverse_transit_handoff`, add `direction='forward'|'reverse'` to `TransitHandoff`, render "Meet via transit" `MatchBadge` on `RideBoardHome` for reverse results, and extend `setConfirmInitialEnrichment` to pre-fill `proposed_pickup_lat/lng/name` (station coords) when `direction='reverse'`. Wire `RideBoardConfirmSheet` to surface the direction-aware Proposed Handoff Card iOS already ships. **Also handle the role-gate edge case:** a reverse-handoff result on a rider-post where the viewer is the rider-actor must NOT trip `/become-driver` routing in `RideBoard.tsx::handleStartRequest`.
+
+Narrow framing: `TransitHandoffCard` already renders `line_name` (`RideBoardHome.tsx:775-778`) — only the `MatchBadge` variant + type union + confirm pre-fill are gaps.
+
+- **iOS reference:** `RideBoardHomePage.swift` (matchBadge switch 819-947 incl. `.reverseTransitHandoff` case), `RideBoardViewModel.swift` (selectedMatchTypeLabel + handoff direction), `RideBoardConfirmViewModel.swift` (proposed_pickup overrides on reverse handoff), `RideBoardConfirmSheet.swift` (Proposed Handoff Card 421-472), `BoardSearchEndpoint.swift` (`TransitHandoff.direction` enum + `reverse_transit_handoff` match_type)
+- **Web files to touch:** `src/lib/boardSearch.ts` (add `reverse_transit_handoff` to `BoardSearchMatchType`, add `direction` to `TransitHandoff`), `src/components/schedule/RideBoardHome.tsx` (`MatchBadge` reverse variant; nav state carries pickup coords), `src/components/schedule/RideBoard.tsx` (`handleStartRequest` must NOT trip `/become-driver` for reverse-handoff rider-actor; `setConfirmInitialEnrichment` reads `handoff.direction` and writes `pickup_lat/lng/name` when reverse), `src/components/schedule/RideBoardConfirmSheet.tsx` (Proposed Handoff Card with direction-aware copy: "You take transit from {pickup} to {station}" for reverse), `src/test/schedule/RideBoardHome.reverseHandoff.test.tsx` (new), `src/test/schedule/RideBoard.reverseHandoffRouting.test.tsx` (new — role-gate edge case)
+- **Server contract:** `POST /api/schedule/board/search` returns `results[].match_type ∈ {direct, transit_handoff, reverse_transit_handoff, endpoint}` and `results[].transit_handoff.direction ∈ {forward, reverse}` (v1.2.1 S2.1, verified live). Confirm submits via `POST /api/schedule/board/offers` carrying `proposed_pickup_lat/lng/name` for reverse — same endpoint as forward, different fields populated.
+- [ ] `BoardSearchMatchType` union includes `'reverse_transit_handoff'` and `TransitHandoff` has `direction: 'forward'|'reverse'`
+- [ ] `RideBoardHome` renders "Meet via transit" badge (primary tint) for reverse results with `total_rider_minutes`
+- [ ] Tapping a reverse-handoff result routes to confirm sheet WITHOUT tripping `/become-driver` gate when viewer is rider-actor
+- [ ] Confirm sheet pre-fills pickup coords + shows direction-aware Proposed Handoff Card
+- [ ] vitest covers decoded badge text, confirm enrichment pickup pre-fill, and rider-actor routing
+- [ ] All 3 gates green
+- [ ] Reviewer parity matrix posted
+
+#### Slice 3 — Extract reusable `RideMapPrimitive` from `TransitSuggestionCard` (pure refactor)
+
+**Pure refactor, zero behavior change.** Lift the inline map block from `src/components/ride/TransitSuggestionCard.tsx` (Map + AdvancedMarker + useMap + MapBoundsFitter, lines ~79-300) into a shared primitive at `src/components/map/RideMapPrimitive.tsx` that takes pins (numbered + context), an optional polyline, and a bounds-fit mode (`overview` | `peek`). Re-wire `TransitSuggestionCard` to consume the primitive — its rendered output MUST be pixel-identical before and after. This is the AUDIT-before-create discipline (memory `feedback_audit_before_creating.md`). Slice 4 depends on this primitive. ~100 LoC of pure refactor + render-equivalence snapshot test.
+
+- **iOS reference:** `RideBoardTransitMiniMap.swift` (camera fit modes + numbered pins — informs the primitive's API surface, not the implementation)
+- **Web files to touch:** `src/components/map/RideMapPrimitive.tsx` (new — exported shared component), `src/components/ride/TransitSuggestionCard.tsx` (refactor to consume `RideMapPrimitive`; visual output unchanged), `src/test/components/map/RideMapPrimitive.test.tsx` (new), `src/test/ride/TransitSuggestionCard.equivalence.test.tsx` (new — snapshot ensures no visual regression)
+- **Server contract:** None. Pure refactor.
+- [ ] `RideMapPrimitive` accepts `pins` (with optional numbered label), `polyline`, and `bounds-fit` mode props
+- [ ] `TransitSuggestionCard` rendered output unchanged (snapshot test passes)
+- [ ] Zero raw hex — all colors via `src/lib/tokens.ts`
+- [ ] All 3 gates green
+- [ ] Reviewer matrix: **N/A — no user-visible parity surface in this slice (refactor only)**. Note exemption in handoff per CLAUDE.md mandatory-exception clause.
+- **Dependencies:** Slice 2 (light coupling — both touch confirm-sheet adjacent code; sequence to avoid merge churn)
+
+#### Slice 4 — Transit mini-map + station peek in `RideBoardConfirmSheet`
+
+Replace the flat transit-station button row with a 180px `RideMapPrimitive` (from Slice 3) showing numbered station pins + context pins (rider dest, driver origin/dest), a station list with walk/transit/total per row, tap-to-peek that tightens the map to selected station + rider dest, and a "Use this stop" button on the peeked card. Mirror iOS `RideBoardTransitMiniMap` + `RideBoardConfirmDestinationSection`. Highest-visibility native-first gap. Sized at ~600 LoC including tests. **If it runs hot, the openQuestion split (4a map only, 4b peek + 'Use this stop') is the pre-planned escape hatch** — confirm with Tarun at slice kickoff.
+
+- **iOS reference:** `RideBoardTransitMiniMap.swift` (entire file — camera fit modes, peek vs overview), `RideBoardConfirmDestinationSection.swift` (station list, peek state, 'Use this stop' 199-343), `RideBoardConfirmViewModel.swift` (`transitSuggestions` state, `peekedStationID`)
+- **Web files to touch:** `src/components/schedule/RideBoardConfirmSheet.tsx` (lift transit suggestion state, embed `RideMapPrimitive`, peek state machine), `src/components/schedule/RideBoardTransitStationRow.tsx` (new — numbered icon + walk/transit/total + chevron), `src/test/schedule/RideBoardConfirmSheet.transitMiniMap.test.tsx` (new — mocks `/api/transit/preview`, asserts list render + peek transition + 'Use this stop' commit)
+- **Server contract:** `POST /api/transit/preview` body `{driver_origin_lat/lng, driver_dest_lat/lng, rider_dest_lat/lng}` returns `{suggestions: [{station_name, station_place_id, station_lat, station_lng, walk_to_station_minutes, transit_to_dest_minutes, total_rider_minutes, transit_option?: {line_name, duration_minutes, walk_minutes, total_minutes}}]}` — existing endpoint, no server work.
+- [ ] Map renders inside confirm sheet at 180px with numbered station markers (1/2/3) + rider dest + driver origin/dest pins
+- [ ] Tapping a station row highlights row, tightens camera to that station + rider dest, shows "Use this stop" CTA
+- [ ] "Use this stop" commits station coords as `proposed_dropoff_*` and wires into existing offer submit
+- [ ] Hidden when driver destination unselected; loading spinner while `/api/transit/preview` pending
+- [ ] All colors via `tokens.ts` (verified via `git diff` grep for raw hex before commit)
+- [ ] All 3 gates green; reviewer parity matrix enumerates every iOS element from `RideBoardTransitMiniMap` + `RideBoardConfirmDestinationSection`
+- **Dependencies:** Slice 3 (consumes `RideMapPrimitive`), Slice 2 (reverse-handoff direction so the map renders reverse-direction context pins symmetrically)
+
+#### Slice 5 — `PosterProfilePreviewSheet` on avatar tap
+
+Ship web `UserProfilePreviewCard` + `UserProfilePreviewSheet` components. Tap poster avatar on `RideBoardCard` or driver avatar on `BoardOfferAcceptPage` → bottom-sheet renders. Seed instantly from poster snapshot (name, avatar, rating, accessibility flags, `waive_caregiver_fee`), fetch `GET /api/users/:id/public-profile` in background to fill bio / school / vehicle / member-since. **Pre-flight check:** grep `src/components/profile/` for parallel-session activity at slice kickoff (the parallel webapp session lane owns caregivers/onboarding/profile per memory; `WheelchairSection.tsx` untracked at session start is theirs).
+
+- **iOS reference:** `PosterProfilePreviewSheet.swift`, `UserProfilePreviewSheet.swift`, `UserProfilePreviewCard.swift` (waive_caregiver_fee pill at line 124), `RideBoardPage.swift` (posterPreview state 55-60, sheet presentation 249-255)
+- **Web files to touch:** `src/components/profile/UserProfilePreviewSheet.tsx` (new — reuses `BottomSheet`), `src/components/profile/UserProfilePreviewCard.tsx` (new), `src/lib/publicProfile.ts` (new — fetcher), `src/components/schedule/RideBoardCard.tsx` (make avatar tappable when `!isOwn`, mount sheet on tap), `src/components/ride/BoardOfferAcceptPage.tsx` (make driver avatar tappable, mount sheet), `src/test/profile/UserProfilePreviewSheet.test.tsx` (new)
+- **Server contract:** `GET /api/users/:id/public-profile` returns full public profile (bio, school, vehicle make/model/year, member_since, has_accessibility_needs, needs_wheelchair, waive_caregiver_fee, rating_avg, rating_count) — verified live at `server/routes/users.ts:338`. No server work.
+- [ ] Tapping non-own `RideBoardCard` avatar opens `BottomSheet` seeded from poster snapshot (no loading flash)
+- [ ] Background fetch fills bio/school/vehicle/member-since; spinner only on fields that didn't seed
+- [ ] Same sheet opens from `BoardOfferAcceptPage` driver avatar
+- [ ] Sheet shows accessibility flag pill + caregiver-waiver pill when relevant — same icons/tokens as iOS
+- [ ] Pre-flight grep confirms no parallel-session edits on `/components/profile/` at kickoff (stash-isolate if needed)
+- [ ] vitest covers seed + background-fetch + error-state
+- [ ] All 3 gates green; reviewer parity matrix
+- **Dependencies:** Slice 1 (both touch `BoardOfferAcceptPage` — sequence to avoid merge conflicts)
+
+#### Slice 6 — `CaregiverPickerSection` in `RideBoardConfirmSheet` + `my_offer_id` Withdraw branch on `RideBoardCard`
+
+Two symmetric reads of fields the server already returns.
+
+**(a) Mount the existing reusable `CaregiverPickerSection`** (Sprint 6 Slice 3, used by `SchedulePage.tsx:920-925`) into `RideBoardConfirmSheet` on the rider-on-driver-post branch, gated on `hasAccessibilityNeeds && needsWheelchair && !caregivers.isEmpty`. Extend `RequestEnrichment` with `caregiver_id` + `distance_km` and forward them in the `POST /api/schedule/request` payload. Mirror iOS `RideBoardConfirmSheet.swift:54-115` + `RideBoardConfirmViewModel.swift:635`.
+
+**(b) On `RideBoardCard`**, add Offer Sent badge + Withdraw button branch when `ride.my_offer_id` is populated and `!ride.ride_id` (driver has outgoing pending offer on a rider-post). Calls `POST /api/schedule/board/offers/:offerId/withdraw`.
+
+**Critical correction:** the earlier draft proposed a "caregiver-waiver banner" here — verification confirms iOS `RideBoardConfirmSheet` has ZERO `waive`/`waiver` references; dropped that subscope.
+
+- **iOS reference:** `RideBoardConfirmSheet.swift` (caregiverSectionVisible 54-115, gateThenSubmit 697-722), `RideBoardConfirmViewModel.swift` (selectedCaregiverID + enrichment.caregiverID 635, distance_km handling), `RideBoardCard.swift` (offerSentRow 445-453, 582-603; inlineActionRow alreadyRequested branch), `RideBoardPage+Actions.swift` (withdrawOffer(offerID) handler), `BoardOfferEndpoints.swift` (`WithdrawBoardOfferEndpoint`)
+- **Web files to touch:** `src/components/schedule/RideBoardConfirmSheet.tsx` (mount `CaregiverPickerSection` on rider-on-driver-post branch with gating predicate), `src/lib/scheduleBoard.ts` (extend `RequestEnrichment` with `caregiver_id` + `distance_km`), `src/components/schedule/RideBoardCard.tsx` (add Offer Sent badge + Withdraw branch when `my_offer_id && !ride_id`), `src/components/schedule/RideBoard.tsx` (wire `withdrawOffer` action calling `POST /api/schedule/board/offers/:offerId/withdraw`; widen `ScheduledRide` type to declare `my_offer_id`), `src/test/schedule/RideBoardConfirmSheet.caregiverPicker.test.tsx` (new), `src/test/schedule/RideBoardCard.withdrawOffer.test.tsx` (new)
+- **Server contract:** `POST /api/schedule/request` accepts `caregiver_id` + `distance_km` in enrichment (already wired for Schedule flow per Sprint 6 Slice 3 — board flow uses same endpoint). `GET /api/schedule/board` returns enriched `ride.my_offer_id` (verified at `schedule.ts:544`). `POST /api/schedule/board/offers/:offerId/withdraw` returns `{offer_id, status: 'withdrawn'}` per mig 072 + v1.2.1 S2.
+- [ ] `CaregiverPickerSection` mounts in confirm sheet on rider-on-driver-post branch with correct gating
+- [ ] `caregiver_id` + `distance_km` reach the `POST /api/schedule/request` payload (asserted via test on the fetch body)
+- [ ] `RideBoardCard` renders Offer Sent badge + Withdraw button when `ride.my_offer_id && !ride.ride_id`
+- [ ] Withdraw success refetches board + clears `my_offer_id` locally
+- [ ] vitest covers both surfaces incl. negative cases (no caregivers → no picker, no `my_offer_id` → no Offer Sent row)
+- [ ] All 3 gates green; reviewer parity matrix
+- **Dependencies:** Slice 5 (touches `RideBoardCard` avatar wiring — sequence to avoid conflicts)
+
+### Open questions (need Tarun's call before or during Sprint 10)
+
+1. **Slice 4 sizing** — if the mini-map + peek + 'Use this stop' grows past ~600 LoC including tests, split into 4a (map render only, no peek state) and 4b (peek + 'Use this stop' commit). Sprint cap goes to seven slices in that case. Confirm at slice 4 kickoff whether to pre-split or grow-and-see.
+2. **Slice 5 self-preview** — should the avatar on the rider's own posts (`isOwn=true`) also open the preview sheet (self-preview, useful for QA + "how others see me") or stay non-tappable to match iOS? iOS `RideBoardCard.swift:175-220` gates `posterAvatar` tap on `!isOwn`. **Default: match iOS** (non-tappable on own posts) unless Tarun wants the web-native upgrade.
+3. **Slice 6 empty-caregivers behavior** — does iOS suppress `CaregiverPickerSection` when rider has `has_accessibility_needs=true` but no caregivers attached (showing nothing vs an "Add a caregiver" CTA)? iOS gating predicate at `RideBoardConfirmSheet.swift:54-115` is `hasAccessibilityNeeds && needsWheelchair && !caregivers.isEmpty` — confirm behavior matches when the array is empty (silent suppression, not a CTA).
+4. **Sprint 11 candidates** pulled from this audit's defer pile: **(a)** `RideBoardCityChipStrip` with re-tap-to-clear (low-impact polish); **(b)** realtime polling fallback if ops sees stuck-card reports (defer until evidence); **(c)** `RideBoardHome` hero-title animation + mode-pill visual treatment polish; **(d)** `FareEducatorInlineCard` + `FareEducatorTracker` on `RideBoardDetailSheet` — promoted to MEDIUM severity per shape-critic but bound to Sprint 11 because Sprint 10 is already at six slices. **Tarun confirm if FareEducator should pre-empt one of the lower-value Sprint 10 slices instead.**
+5. **Slice 3 refactor risk** — `TransitSuggestionCard` has a non-trivial `cardRefs` scroll-sync mechanism (line 108) that may not lift cleanly into `RideMapPrimitive`. If extraction reveals coupling that can't be cleanly broken, fall back to creating a thinner `RideMapPrimitive` that handles only pins + bounds-fit, and leave scroll-sync inside `TransitSuggestionCard`. Reviewer pass at end of Slice 3 must confirm zero behavior change.
+
+### Verifier deltas applied to the draft plan
+
+**Added Slice 6's `CaregiverPickerSection` subscope** because completeness critic + shape critic both flagged it: iOS `RideBoardConfirmSheet.swift:54-115` + `RideBoardConfirmViewModel.swift:635` mount the picker and fold `caregiver_id` into enrichment, while web `RideBoardConfirmSheet` has no picker. Verified by direct grep of iOS `.swift` files. Promoted from MEDIUM to HIGH severity in the matrix.
+
+**Dropped the previous Slice 5(a) "caregiver-waiver banner on `RideBoardConfirmSheet`"** that was in the draft. Shape critic flagged it as inventing a feature; my own verification (grep `waive`/`waiver` across `RideBoardConfirmSheet.swift` + `RideBoardOfferSections.swift` + `RideBoardConfirmViewModel.swift`) returned zero matches — banner only exists on iOS in `BoardOfferAcceptPage` and `UserProfilePreviewCard`. Building it on the confirm sheet would violate the "copy from iOS as close as possible" hard rule.
+
+**Added Slice 3 (pure refactor extracting `RideMapPrimitive` from existing `TransitSuggestionCard`)** because shape critic correctly flagged the AUDIT-before-create violation in the original Slice 3 plan (which proposed building `RideBoardTransitMiniMap` from scratch). Verified `TransitSuggestionCard.tsx` ships `@vis.gl` Map + AdvancedMarker + MapBoundsFitter at lines 79-300. Slice 3 becomes the dependency for the now-Slice-4 confirm-sheet mini-map.
+
+**Resequenced per shape critic:** original Slice 2 (`proposed_transit_*` offer card render) promoted to Slice 1 — zero dependencies, ~150 LoC, smallest, highest-value. Original Slice 1 (reverse-handoff) becomes Slice 2 because it requires confirm-sheet pickup pre-fill + role-gate handling.
+
+**Narrowed Slice 2 (reverse-handoff) framing** per shape critic: removed the "web `TransitHandoffCard` only shows total minutes" claim — verified `RideBoardHome.tsx:775-778` already renders `line_name` + walk/ride/total. The real gap is the `MatchBadge` variant + type union + confirm pre-fill, not the handoff card itself. Added an explicit DoD test for the rider-as-actor `/become-driver` gate edge case shape critic raised.
+
+**Promoted `FareEducatorInlineCard`** from LOW (deferred polish) to MEDIUM in the matrix per shape critic — iOS `RideBoardDetailSheet.swift:93` mounts it always (except own posts). Did NOT add it as a Sprint 10 slice because (a) Sprint 10 is already at six slices, (b) it's lower-value than the booking-loop slices already scoped, (c) it's self-contained enough to ship cleanly in Sprint 11. Called out explicitly in openQuestion #4.
+
+**Did NOT fold in** completeness critic's miss about the iOS `.reverseTransitHandoff` enum case "not existing" — verified the case IS named in iOS source per the 2026-05-21 comment at `RideBoardHomePage.swift:837-842`. The gap is on web (`boardSearch.ts` type union missing the variant), not on iOS. Slice 2 framing is correct.
+
+**Did NOT fold in** completeness critic's miss about iOS `RideBoardCityChipStrip` and recent-search UI elements — these are LOW severity polish per shape critic and deferred to Sprint 11. Sprint 10 caps at six slices.
+
+**Did NOT fold in** completeness critic's miss about `RideBoardConfirmSheet` `PermissionsRequiredSheet` (location + push gate). Verified web `RideBoardConfirmSheet.tsx` already does permissions gating via existing infra (`gateThenSubmit` pattern). Not a parity gap; not added as a slice.
+
+**Dropped Mobility-aid pill, Accessibility filter, and `BoardOfferAcceptPage` `CaregiverWaiverBanner` rows** from active scope per all three verifiers — already shipped on web (Sprint 6 Slice 5 + Sprint 7 Slice 4). Kept the rows in the parity matrix tagged PARITY for auditable record but no Sprint 10 work attached.
+
+**Server contract verifier (SHIP_AS_IS)** — no contract corrections needed. All slice `serverContract` fields verified live at the cited line numbers (`schedule.ts:544` `my_offer_id`, `schedule.ts:4983-4984` `proposed_transit_*`, `users.ts:338` public-profile route, `schedule.ts:1418/1427/2006/2226/2423/2609` reverse_transit_handoff, mig 086 caregivers).
+
+**Added pre-flight parallel-session grep to Slice 5 DoD** per shape critic — Slice 5 touches `src/components/profile/` which is the active parallel webapp session lane (current `git status` shows their `WheelchairSection.tsx` WIP). Crosscutting note made explicit.
+
+### Sprint 10 summary
+
+| Status | Count |
+|---|---|
+| Not started | 6 slices |
+| In progress | 0 |
+| Done (awaiting QA) | 0 |
+| Done (verified + pushed) | 0 |
+
+### Current focus
+
+Awaiting Tarun's "go" on Slice 1 (`proposed_transit_*` render on `BoardOfferAcceptPage` offer card — smallest, zero-dependency, ~150 LoC). No code changes have shipped from this audit yet.
+
+### Next action
+
+If Tarun greenlights Slice 1: read [`ios/Tago/Features/RideBoard/BoardOfferAcceptPage.swift`](ios/Tago/Features/RideBoard/BoardOfferAcceptPage.swift) (focus on `transitStop()` + `transitLegPills()` at 653-728), [`ios/Tago/Core/Networking/Endpoints/BoardOfferEndpoints.swift`](ios/Tago/Core/Networking/Endpoints/BoardOfferEndpoints.swift) (BoardOffer struct shape), then web [`src/components/ride/BoardOfferAcceptPage.tsx`](src/components/ride/BoardOfferAcceptPage.tsx) (current `BoardOffer` interface) end-to-end before any TypeScript. Confirm `git status` is clean of parallel-session WIP on `BoardOfferAcceptPage.tsx` at slice kickoff.
+
+### Plain English
+
+The Ride Board on web works — riders can search, see results, request rides, accept offers, all the basics. But iOS has gotten a bunch of polish on top that web is missing: (1) when a rider gets an offer where the driver is going to drop them at a transit station for the last leg, iOS shows the transit line name and walk + transit + total minutes right on the offer card; web shows the price + ETA only. (2) iOS has a new "reverse handoff" feature where a rider can take transit to meet the driver at a station (instead of the driver coming to them), and the smart-search highlights these matches with a "Meet via transit" badge; web's smart-search doesn't know this feature exists yet. (3) When picking which transit station to use, iOS shows a little map with numbered pins and lets you tap to peek; web shows a flat list of buttons. (4) Tapping the poster's photo opens a profile preview sheet on iOS; web's photos are decorative. (5) On the rider's "confirm this ride" sheet there's no way to attach a caregiver (a feature web already has on the regular request flow but forgot to mount on the Board), and a driver can't withdraw their own offer from the Board cards — they can only do it from a different screen.
+
+Six slices, dependency-ordered. The first slice is the smallest (just rendering 4 extra text fields the server already sends), the trickiest is Slice 4 (the mini-map), and Slice 3 is a pure refactor to make Slice 4 cleaner. Sprint 10 sticks to six slices to keep the cadence sane; one more "fare-educator" surface from the audit is deferred to Sprint 11 unless Tarun wants it pulled in.
 
 ---
 
