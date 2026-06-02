@@ -195,6 +195,21 @@ export default function MarketingHome() {
           </li>
           <li>
             <Link
+              to="/admin/marketing/emails"
+              className="block rounded-lg border border-primary/30 bg-primary/5 p-3 hover:bg-primary/10 transition-colors"
+            >
+              <p className="font-semibold text-primary">
+                Lifecycle emails →
+              </p>
+              <p className="text-xs text-text-secondary mt-0.5">
+                Edit the welcome email + future drips. Changes take
+                effect on the next send — no deploy needed. Test-send
+                to your own inbox before flipping live.
+              </p>
+            </Link>
+          </li>
+          <li>
+            <Link
               to="/admin/marketing/weekly-review"
               className="block rounded-lg border border-primary/30 bg-primary/5 p-3 hover:bg-primary/10 transition-colors"
             >

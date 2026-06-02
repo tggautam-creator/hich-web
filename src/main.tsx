@@ -52,6 +52,7 @@ const AdminMarketingPosters = lazy(() => import('@/components/admin/marketing/Po
 const AdminMarketingAdvisor = lazy(() => import('@/components/admin/marketing/AdvisorPage'))
 const AdminMarketingCalendar = lazy(() => import('@/components/admin/marketing/CalendarPage'))
 const AdminMarketingWeeklyReview = lazy(() => import('@/components/admin/marketing/WeeklyReviewPage'))
+const AdminMarketingEmails = lazy(() => import('@/components/admin/marketing/EmailsPage'))
 const CampaignDetailPage = lazy(() => import('@/components/campaign/CampaignDetailPage'))
 
 // ── Onboarding ───────────────────────────────────────────────────────────────
@@ -269,6 +270,7 @@ createRoot(rootEl).render(
                   <Route path="/admin/marketing/advisor"  element={<Suspense fallback={<FormPageSkeleton />}><AdminMarketingAdvisor /></Suspense>} />
                   <Route path="/admin/marketing/calendar" element={<Suspense fallback={<ListPageSkeleton />}><AdminMarketingCalendar /></Suspense>} />
                   <Route path="/admin/marketing/weekly-review" element={<Suspense fallback={<FormPageSkeleton />}><AdminMarketingWeeklyReview /></Suspense>} />
+                  <Route path="/admin/marketing/emails" element={<Suspense fallback={<FormPageSkeleton />}><AdminMarketingEmails /></Suspense>} />
                   <Route path="/admin/settings"   element={<Placeholder name="Admin settings — future" />} />
                 </Route>
               </Route>
