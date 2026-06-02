@@ -1,10 +1,9 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
-import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
-import { useMap } from '@vis.gl/react-google-maps'
+import { AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
-import { RoutePolyline, MapBoundsFitter, decodePolyline } from '@/components/map/RoutePreview'
+import { RoutePolyline, decodePolyline } from '@/components/map/RoutePreview'
+import RideMapPrimitive from '@/components/map/RideMapPrimitive'
 import { calculateFare, formatCents } from '@/lib/fare'
-import { MAP_ID } from '@/lib/mapConstants'
 
 // ── Types (exported for reuse by DriverDestinationCard) ──────────────────────
 
@@ -71,17 +70,6 @@ interface TransitSuggestionCardProps {
   driverDestName?: string | null
   driverRoutePolyline?: string | null
   'data-testid'?: string
-}
-
-// ── Renderless helper: pan map to selected station ───────────────────────────
-
-function SelectedStationFocus({ lat, lng }: { lat: number; lng: number }) {
-  const map = useMap()
-  useEffect(() => {
-    if (!map) return
-    map.panTo({ lat, lng })
-  }, [map, lat, lng])
-  return null
 }
 
 // ── Transit Suggestion Picker (driver view: pick from suggestions) ───────────
@@ -218,115 +206,109 @@ export function TransitSuggestionPicker({
 
       {/* ── Route preview map ─────────────────────────────────────────── */}
       {driverRoutePolyline && (
-        <div data-testid="route-preview-map" className="shrink-0 rounded-2xl overflow-hidden border border-border mb-2" style={{ height: '180px' }}>
-          <Map
-            mapId={MAP_ID}
-            defaultZoom={12}
-            defaultCenter={suggestions[0] ? { lat: suggestions[0].station_lat, lng: suggestions[0].station_lng } : { lat: 38.5, lng: -121.7 }}
-            gestureHandling="greedy"
-            disableDefaultUI
-            clickableIcons={false}
-            className="h-full w-full"
-          >
-            {/* Driver's route polyline */}
-            <RoutePolyline encodedPath={driverRoutePolyline} color="#4F46E5" weight={4} fitBounds={false} />
+        <RideMapPrimitive
+          data-testid="route-preview-map"
+          className="shrink-0 rounded-2xl overflow-hidden border border-border mb-2"
+          height="180px"
+          defaultZoom={12}
+          defaultCenter={suggestions[0] ? { lat: suggestions[0].station_lat, lng: suggestions[0].station_lng } : { lat: 38.5, lng: -121.7 }}
+          boundsPoints={boundsPoints}
+          // Pan to selected station, or to the rider's destination when "direct"
+          // is picked. Both branches were previously rendered as
+          // SelectedStationFocus children of <Map>; the primitive now owns
+          // the pan-to behavior via this single prop.
+          panTo={
+            typeof selectedIdx === 'number' && suggestions[selectedIdx]
+              ? { lat: suggestions[selectedIdx].station_lat, lng: suggestions[selectedIdx].station_lng }
+              : selectedIdx === 'direct' && hasRiderDest
+                ? { lat: riderDestLat, lng: riderDestLng }
+                : null
+          }
+        >
+          {/* Driver's route polyline */}
+          <RoutePolyline encodedPath={driverRoutePolyline} color="#4F46E5" weight={4} fitBounds={false} />
 
-            {/* Fit bounds to all markers */}
-            <MapBoundsFitter points={boundsPoints} />
+          {/* Pickup marker */}
+          {pickupLat != null && pickupLng != null && (
+            <AdvancedMarker position={{ lat: pickupLat, lng: pickupLng }}>
+              <div className="flex flex-col items-center">
+                <div className="bg-success text-white rounded-full px-1.5 py-0.5 text-[9px] font-bold shadow mb-0.5">PICKUP</div>
+                <div className="h-3 w-3 rounded-full bg-success border-2 border-white shadow" />
+              </div>
+            </AdvancedMarker>
+          )}
 
-            {/* Pickup marker */}
-            {pickupLat != null && pickupLng != null && (
-              <AdvancedMarker position={{ lat: pickupLat, lng: pickupLng }}>
-                <div className="flex flex-col items-center">
-                  <div className="bg-success text-white rounded-full px-1.5 py-0.5 text-[9px] font-bold shadow mb-0.5">PICKUP</div>
-                  <div className="h-3 w-3 rounded-full bg-success border-2 border-white shadow" />
-                </div>
-              </AdvancedMarker>
-            )}
-
-            {/* Station markers */}
-            {suggestions.map((s, idx) => (
-              <AdvancedMarker
-                key={s.station_place_id}
-                position={{ lat: s.station_lat, lng: s.station_lng }}
-                onClick={() => setSelectedIdx(idx)}
-                zIndex={selectedIdx === idx ? 10 : 1}
+          {/* Station markers */}
+          {suggestions.map((s, idx) => (
+            <AdvancedMarker
+              key={s.station_place_id}
+              position={{ lat: s.station_lat, lng: s.station_lng }}
+              onClick={() => setSelectedIdx(idx)}
+              zIndex={selectedIdx === idx ? 10 : 1}
+            >
+              <div
+                data-testid={`station-marker-${idx}`}
+                className={`flex h-7 w-7 items-center justify-center rounded-full border-2 border-white shadow-md text-xs font-bold text-white transition-transform ${
+                  selectedIdx === idx ? 'bg-primary scale-125' : 'bg-text-secondary scale-100'
+                }`}
               >
-                <div
-                  data-testid={`station-marker-${idx}`}
-                  className={`flex h-7 w-7 items-center justify-center rounded-full border-2 border-white shadow-md text-xs font-bold text-white transition-transform ${
-                    selectedIdx === idx ? 'bg-primary scale-125' : 'bg-text-secondary scale-100'
-                  }`}
-                >
-                  {idx + 1}
+                {idx + 1}
+              </div>
+            </AdvancedMarker>
+          ))}
+
+          {/* Rider destination marker — tap to select "take all the way" */}
+          {riderDestLat != null && riderDestLng != null && (
+            <AdvancedMarker
+              position={{ lat: riderDestLat, lng: riderDestLng }}
+              zIndex={selectedIdx === 'direct' ? 11 : 2}
+              onClick={() => setSelectedIdx('direct')}
+            >
+              <div className="flex flex-col items-center">
+                <div className={`bg-danger text-white rounded-full px-1.5 py-0.5 text-[9px] font-bold shadow mb-0.5 transition-transform ${selectedIdx === 'direct' ? 'scale-110' : ''}`}>
+                  {riderDestName ? riderDestName.slice(0, 12) : 'RIDER DEST'}
                 </div>
-              </AdvancedMarker>
-            ))}
+                <div className={`rounded-full bg-danger border-2 border-white shadow transition-all ${selectedIdx === 'direct' ? 'h-5 w-5 ring-4 ring-danger/30' : 'h-3 w-3'}`} />
+              </div>
+            </AdvancedMarker>
+          )}
 
-            {/* Rider destination marker — tap to select "take all the way" */}
-            {riderDestLat != null && riderDestLng != null && (
-              <AdvancedMarker
-                position={{ lat: riderDestLat, lng: riderDestLng }}
-                zIndex={selectedIdx === 'direct' ? 11 : 2}
-                onClick={() => setSelectedIdx('direct')}
-              >
-                <div className="flex flex-col items-center">
-                  <div className={`bg-danger text-white rounded-full px-1.5 py-0.5 text-[9px] font-bold shadow mb-0.5 transition-transform ${selectedIdx === 'direct' ? 'scale-110' : ''}`}>
-                    {riderDestName ? riderDestName.slice(0, 12) : 'RIDER DEST'}
-                  </div>
-                  <div className={`rounded-full bg-danger border-2 border-white shadow transition-all ${selectedIdx === 'direct' ? 'h-5 w-5 ring-4 ring-danger/30' : 'h-3 w-3'}`} />
+          {/* Driver destination marker */}
+          {driverDestLat != null && driverDestLng != null && (
+            <AdvancedMarker position={{ lat: driverDestLat, lng: driverDestLng }} zIndex={0}>
+              <div className="flex flex-col items-center">
+                <div className="bg-text-secondary/60 text-white rounded-full px-1.5 py-0.5 text-[9px] font-bold shadow mb-0.5">
+                  {driverDestName ? driverDestName.slice(0, 12) : 'DRIVER'}
                 </div>
-              </AdvancedMarker>
-            )}
+                <div className="h-2.5 w-2.5 rounded-full bg-text-secondary/60 border-2 border-white shadow" />
+              </div>
+            </AdvancedMarker>
+          )}
 
-            {/* Driver destination marker */}
-            {driverDestLat != null && driverDestLng != null && (
-              <AdvancedMarker position={{ lat: driverDestLat, lng: driverDestLng }} zIndex={0}>
-                <div className="flex flex-col items-center">
-                  <div className="bg-text-secondary/60 text-white rounded-full px-1.5 py-0.5 text-[9px] font-bold shadow mb-0.5">
-                    {driverDestName ? driverDestName.slice(0, 12) : 'DRIVER'}
-                  </div>
-                  <div className="h-2.5 w-2.5 rounded-full bg-text-secondary/60 border-2 border-white shadow" />
-                </div>
-              </AdvancedMarker>
-            )}
+          {/* Transit polyline preview (station → rider dest) when a station is selected */}
+          {typeof selectedIdx === 'number' && suggestions[selectedIdx]?.transit_polyline && (
+            <RoutePolyline
+              encodedPath={suggestions[selectedIdx].transit_polyline as string}
+              color="#10B981"
+              weight={3}
+              fitBounds={false}
+            />
+          )}
 
-            {/* Transit polyline preview (station → rider dest) when a station is selected */}
-            {typeof selectedIdx === 'number' && suggestions[selectedIdx]?.transit_polyline && (
-              <RoutePolyline
-                encodedPath={suggestions[selectedIdx].transit_polyline as string}
-                color="#10B981"
-                weight={3}
-                fitBounds={false}
-              />
-            )}
-
-            {/* Direct-dropoff preview: dashed straight line pickup → rider dest */}
-            {selectedIdx === 'direct' && hasPickup && hasRiderDest && (
-              <RoutePolyline
-                path={[
-                  { lat: pickupLat, lng: pickupLng },
-                  { lat: riderDestLat, lng: riderDestLng },
-                ]}
-                color="#22C55E"
-                weight={4}
-                fitBounds={false}
-                dashed
-              />
-            )}
-
-            {/* Pan to selected station, or to the rider's destination when "direct" is picked */}
-            {typeof selectedIdx === 'number' && suggestions[selectedIdx] && (
-              <SelectedStationFocus
-                lat={suggestions[selectedIdx].station_lat}
-                lng={suggestions[selectedIdx].station_lng}
-              />
-            )}
-            {selectedIdx === 'direct' && hasRiderDest && (
-              <SelectedStationFocus lat={riderDestLat} lng={riderDestLng} />
-            )}
-          </Map>
-        </div>
+          {/* Direct-dropoff preview: dashed straight line pickup → rider dest */}
+          {selectedIdx === 'direct' && hasPickup && hasRiderDest && (
+            <RoutePolyline
+              path={[
+                { lat: pickupLat, lng: pickupLng },
+                { lat: riderDestLat, lng: riderDestLng },
+              ]}
+              color="#22C55E"
+              weight={4}
+              fitBounds={false}
+              dashed
+            />
+          )}
+        </RideMapPrimitive>
       )}
 
       {/* ── Station list ──────────────────────────────────────────────── */}
@@ -544,64 +526,60 @@ export default function TransitSuggestionCard({
       {/* ── Mini-map showing color-coded journey ──────────────────── */}
       {hasMapData && (
         <div data-testid="transit-mini-map" className="rounded-lg overflow-hidden border border-border/50 mb-2" style={{ height: '150px' }}>
-          <Map
-            mapId={MAP_ID}
-            defaultZoom={11}
-            defaultCenter={{ lat: suggestion.station_lat, lng: suggestion.station_lng }}
-            gestureHandling="greedy"
-            disableDefaultUI
-            clickableIcons={false}
-            className="h-full w-full"
-          >
-            {/* Driver route — indigo solid line */}
-            {driverRoutePolyline && (
-              <RoutePolyline encodedPath={driverRoutePolyline} color="#4F46E5" weight={4} fitBounds={false} />
-            )}
+        <RideMapPrimitive
+          height="100%"
+          defaultZoom={11}
+          defaultCenter={{ lat: suggestion.station_lat, lng: suggestion.station_lng }}
+          boundsPoints={miniMapBounds}
+        >
+          {/* Driver route — indigo solid line */}
+          {driverRoutePolyline && (
+            <RoutePolyline encodedPath={driverRoutePolyline} color="#4F46E5" weight={4} fitBounds={false} />
+          )}
 
-            {/* Transit route — green line (station → rider dest) */}
-            {transitPolyline && (
-              <RoutePolyline encodedPath={transitPolyline} color="#10B981" weight={3} fitBounds={false} />
-            )}
+          {/* Transit route — green line (station → rider dest) */}
+          {transitPolyline && (
+            <RoutePolyline encodedPath={transitPolyline} color="#10B981" weight={3} fitBounds={false} />
+          )}
 
-            {/* Fit bounds */}
-            <MapBoundsFitter points={miniMapBounds} />
-
-            {/* Pickup marker */}
-            {pickupLat != null && pickupLng != null && (
-              <AdvancedMarker position={{ lat: pickupLat, lng: pickupLng }} zIndex={3}>
-                <div className="flex h-5 w-5 items-center justify-center rounded-full bg-success border-2 border-white shadow text-[8px] font-bold text-white">
-                  P
-                </div>
-              </AdvancedMarker>
-            )}
-
-            {/* Station dropoff marker */}
-            <AdvancedMarker position={{ lat: suggestion.station_lat, lng: suggestion.station_lng }} zIndex={5}>
-              <div className="flex h-6 w-6 items-center justify-center rounded-full bg-warning border-2 border-white shadow">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-3.5 w-3.5">
-                  <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" />
-                </svg>
+          {/* Pickup marker */}
+          {pickupLat != null && pickupLng != null && (
+            <AdvancedMarker position={{ lat: pickupLat, lng: pickupLng }} zIndex={3}>
+              <div className="flex h-5 w-5 items-center justify-center rounded-full bg-success border-2 border-white shadow text-[8px] font-bold text-white">
+                P
               </div>
             </AdvancedMarker>
+          )}
 
-            {/* Rider destination marker */}
-            {riderDestLat != null && riderDestLng != null && (
-              <AdvancedMarker position={{ lat: riderDestLat, lng: riderDestLng }} zIndex={3}>
-                <div className="flex h-5 w-5 items-center justify-center rounded-full bg-danger border-2 border-white shadow text-[8px] font-bold text-white">
-                  D
-                </div>
-              </AdvancedMarker>
-            )}
+          {/* Station dropoff marker */}
+          <AdvancedMarker position={{ lat: suggestion.station_lat, lng: suggestion.station_lng }} zIndex={5}>
+            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-warning border-2 border-white shadow">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" className="h-3.5 w-3.5">
+                <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" />
+              </svg>
+            </div>
+          </AdvancedMarker>
 
-            {/* Driver destination marker (subtle) */}
-            {driverDestLat != null && driverDestLng != null && (
-              <AdvancedMarker position={{ lat: driverDestLat, lng: driverDestLng }} zIndex={0}>
-                <div className="h-3 w-3 rounded-full bg-text-secondary/50 border border-white shadow" />
-              </AdvancedMarker>
-            )}
-          </Map>
+          {/* Rider destination marker */}
+          {riderDestLat != null && riderDestLng != null && (
+            <AdvancedMarker position={{ lat: riderDestLat, lng: riderDestLng }} zIndex={3}>
+              <div className="flex h-5 w-5 items-center justify-center rounded-full bg-danger border-2 border-white shadow text-[8px] font-bold text-white">
+                D
+              </div>
+            </AdvancedMarker>
+          )}
 
-          {/* Legend overlay */}
+          {/* Driver destination marker (subtle) */}
+          {driverDestLat != null && driverDestLng != null && (
+            <AdvancedMarker position={{ lat: driverDestLat, lng: driverDestLng }} zIndex={0}>
+              <div className="h-3 w-3 rounded-full bg-text-secondary/50 border border-white shadow" />
+            </AdvancedMarker>
+          )}
+        </RideMapPrimitive>
+
+          {/* Legend overlay — preserved verbatim from the pre-refactor
+              layout (relative wrapper + absolute legend) so the visual
+              output stays pixel-identical. */}
           <div className="relative">
             <div className="absolute bottom-1 left-1 flex gap-2 bg-white/80 backdrop-blur-sm rounded px-1.5 py-0.5 text-[8px] text-text-secondary">
               <span className="flex items-center gap-0.5"><span className="inline-block w-3 h-0.5 bg-[#4F46E5] rounded" /> Ride</span>
