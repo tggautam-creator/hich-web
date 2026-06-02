@@ -40,10 +40,17 @@ function b64urlDecode(s: string): Buffer {
   return Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64')
 }
 
+// Explicit domain-separation tag so the HMAC input can never collide
+// with another consumer of QR_HMAC_SECRET (e.g. qrToken.ts which
+// HMACs colon-delimited strings). Today the format spaces are
+// disjoint by accident; this makes it intentional and survives
+// future consumers being added.
+const DOMAIN_TAG = 'tago.email.unsub.v1:'
+
 function sign(payload: UnsubPayload): string {
   const { QR_HMAC_SECRET } = getServerEnv()
   const body = b64urlEncode(Buffer.from(JSON.stringify(payload)))
-  const sig = createHmac('sha256', QR_HMAC_SECRET).update(body).digest()
+  const sig = createHmac('sha256', QR_HMAC_SECRET).update(DOMAIN_TAG + body).digest()
   return `${body}.${b64urlEncode(sig)}`
 }
 
@@ -76,7 +83,7 @@ export function verifyUnsubscribeToken(token: string): VerifyResult {
   let expected: Buffer
   try {
     const { QR_HMAC_SECRET } = getServerEnv()
-    expected = createHmac('sha256', QR_HMAC_SECRET).update(body).digest()
+    expected = createHmac('sha256', QR_HMAC_SECRET).update(DOMAIN_TAG + body).digest()
   } catch {
     return { ok: false, reason: 'sign error' }
   }

@@ -105,12 +105,23 @@ adminEmailTemplatesRouter.patch(
       if (typeof body['reply_to'] === 'string') patch.reply_to = (body['reply_to'] as string).slice(0, 200) || null
       if (typeof body['is_active'] === 'boolean') patch.is_active = body['is_active'] as boolean
       if (typeof body['trigger_event'] === 'string') {
-        // Validate against the allowed list — adding a new trigger
-        // is a code change (the sweep dispatcher) not a free-form
-        // admin field.
+        // Adding a new trigger is a code change (the sweep
+        // dispatcher) not a free-form admin field — reject the
+        // request explicitly so the admin sees they made a typo
+        // instead of silently keeping the stale server-side value
+        // while the form indicates success.
         const ALLOWED_TRIGGERS = ['manual', 'onboarding_completed']
         const v = body['trigger_event'] as string
-        if (ALLOWED_TRIGGERS.includes(v)) patch.trigger_event = v
+        if (!ALLOWED_TRIGGERS.includes(v)) {
+          res.status(400).json({
+            error: {
+              code: 'INVALID_TRIGGER',
+              message: `trigger_event must be one of: ${ALLOWED_TRIGGERS.join(', ')}. Got "${v}".`,
+            },
+          })
+          return
+        }
+        patch.trigger_event = v
       }
       if (typeof body['delay_hours'] === 'number' && Number.isFinite(body['delay_hours'] as number)) {
         const h = body['delay_hours'] as number

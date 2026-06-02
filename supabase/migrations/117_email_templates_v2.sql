@@ -36,10 +36,17 @@ CREATE TRIGGER trg_set_onboarding_completed_at
   FOR EACH ROW
   EXECUTE FUNCTION public.set_onboarding_completed_at();
 
--- Backfill for already-onboarded users (imperfect — updated_at moves
--- on any change — but close enough for delay_hours math).
+-- Backfill for already-onboarded users. We use created_at as the
+-- proxy (the only timestamp the users table guarantees exists per
+-- migration 001 — there's no updated_at column on this table).
+-- Imperfect because a user who signed up months ago but completed
+-- onboarding yesterday would get an artificially old timestamp;
+-- the delay_hours math still works correctly because old timestamps
+-- always satisfy the .lte('onboarding_completed_at', cutoff) test.
+-- Future onboarding-completion flips set the column to NOW() via
+-- the trigger above so this backfill is one-time only.
 UPDATE public.users
-  SET onboarding_completed_at = updated_at
+  SET onboarding_completed_at = created_at
   WHERE onboarding_completed = TRUE
     AND onboarding_completed_at IS NULL;
 

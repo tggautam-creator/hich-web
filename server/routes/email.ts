@@ -95,22 +95,29 @@ emailPublicRouter.post(
       return
     }
     const tkScope = verified.scope === 'global' ? null : verified.templateKey
+    // Plain INSERT + treat 23505 (unique_violation) as success — the
+    // upsert path can't match the COALESCE expression index in
+    // migration 117 (Postgres can't infer the target from a regular
+    // (user_id, template_key) onConflict argument), so we hand-roll
+    // idempotency. Any other error is a real failure (logged loudly)
+    // — we still show the success page so the user isn't blocked,
+    // but ops gets a clear signal.
     const { error } = await supabaseAdmin
       .from('email_opt_outs')
-      .upsert(
-        {
-          user_id: verified.userId,
-          template_key: tkScope,
-          source: 'self',
-        } as never,
-        { onConflict: 'user_id,template_key', ignoreDuplicates: true },
-      )
+      .insert({
+        user_id: verified.userId,
+        template_key: tkScope,
+        source: 'self',
+      } as never)
     if (error) {
-      // The upsert may also fail because Postgres can't enforce the
-      // COALESCE-based unique on a regular upsert — in that case the
-      // sweep + send path's belt-and-suspenders check still blocks
-      // the send. Treat as best-effort + show the success page.
-      console.warn('[email/unsubscribe] opt-out upsert error:', error.message)
+      const isDuplicate = error.code === '23505'
+        || /duplicate key|already exists/i.test(error.message)
+      if (!isDuplicate) {
+        console.error(
+          `[email/unsubscribe] opt-out INSERT failed for user=${verified.userId} tk=${verified.templateKey}: `
+          + `${error.code ?? '<no code>'} ${error.message}`,
+        )
+      }
     }
     const tkLabel = verified.scope === 'global'
       ? 'all Tago lifecycle emails'

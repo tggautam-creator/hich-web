@@ -166,8 +166,16 @@ async function isOptedOut(userId: string, templateKey: string): Promise<boolean>
     .or(`template_key.is.null,template_key.eq.${templateKey}`)
     .limit(1)
   if (error) {
-    console.warn('[email/opt-out] lookup error:', error.message)
-    return false  // fail-open: don't block sends on a flaky DB query
+    // Fail-CLOSED. A user who clicked unsubscribe and got the
+    // success page MUST NOT receive further emails — if the DB
+    // says we can't tell, treat that as "respect the user, block
+    // the send." A transient DB hiccup briefly pausing sends is
+    // a much smaller harm than emailing someone after they opted
+    // out. The sweep retries on the next 5-min tick.
+    console.error(
+      `[email/opt-out] lookup error for user=${userId} tk=${templateKey}: ${error.message} — blocking send (fail-closed)`,
+    )
+    return true
   }
   return (data ?? []).length > 0
 }
