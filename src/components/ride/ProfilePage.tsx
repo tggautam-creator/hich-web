@@ -18,6 +18,10 @@ const EditProfileSheet  = lazy(() => import('@/components/profile/EditProfileShe
 // users with hasAccessibilityNeeds=true so non-accessibility riders
 // don't see the section at all (matching iOS gate).
 const CaregiversSection = lazy(() => import('@/components/profile/CaregiversSection'))
+// v1.3 Sprint 11 Slice 2 — trusted contacts section. Universal
+// mount (no accessibility gate) — every rider and driver can save
+// up to 5 emergency contacts. Mirrors iOS ProfilePage.swift:113.
+const TrustedContactsSection = lazy(() => import('@/components/profile/TrustedContactsSection'))
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -620,6 +624,17 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
           <CaregiversSection />
         </Suspense>
       )}
+
+      {/* v1.3 Sprint 11 Slice 2 — Trusted Contacts section. NOT
+          gated — every signed-in user can save up to 5 emergency
+          contacts. Mirrors iOS canonical mount on
+          ProfilePage.swift:113 (ProfileSafetySection). The
+          EmergencySheet's "Text my trusted contacts" CTA and the
+          Slice 4b RideSafetyCheckOverlay "Get help" branch both
+          read this list. */}
+      <Suspense fallback={null}>
+        <TrustedContactsSection />
+      </Suspense>
 
       {/* ── Saved Places ────────────────────────────────────────────────── */}
       <div className="mx-4 mt-4" data-testid="saved-places-section">

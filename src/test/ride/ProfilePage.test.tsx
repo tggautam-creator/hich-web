@@ -88,6 +88,17 @@ vi.mock('@/stores/authStore', () => ({
   ),
 }))
 
+// v1.3 Sprint 11 Slice 2 — TrustedContactsSection now mounts
+// unconditionally on ProfilePage (universal feature, no
+// accessibility gate). Its useMyTrustedContacts() hook needs a
+// QueryClientProvider that this test file doesn't set up. Stub
+// the section out — its own tests in
+// src/test/profile/TrustedContactsSection.test.tsx cover the
+// behaviour.
+vi.mock('@/components/profile/TrustedContactsSection', () => ({
+  default: () => <div data-testid="trusted-contacts-section-stub" />,
+}))
+
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 const MOCK_ROUTINES = [
