@@ -226,7 +226,21 @@ export default function TrackPage({ 'data-testid': testId = 'track-page' }: { 'd
                 <>
                   <div className="flex items-center gap-2">
                     <span className="h-2 w-2 rounded-full bg-success animate-pulse shrink-0" />
-                    <p className="text-sm font-medium text-text-primary">Driver location is being shared</p>
+                    {/* v1.3 Sprint 11 Slice 6 — neutral "Live
+                        location" copy (was "Driver location"). The
+                        share-location endpoint is symmetric — either
+                        party can mint — but the response doesn't
+                        expose `share_role`, so role-agnostic copy
+                        avoids the misleading "Driver" label when a
+                        rider shared. Server contract addition to
+                        expose share_role is out of user-side parity
+                        scope per the Stage 7 audit. */}
+                    <p
+                      data-testid="track-live-label"
+                      className="text-sm font-medium text-text-primary"
+                    >
+                      Live location is being shared
+                    </p>
                   </div>
                   {lastUpdated && (
                     <p className="text-xs text-text-secondary pl-4">

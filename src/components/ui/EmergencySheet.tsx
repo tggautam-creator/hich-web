@@ -7,6 +7,29 @@ import {
   SAFETY_REPORT_DETAILS_FOOTER,
   type SafetyReportCategoryValue,
 } from '@/lib/safetyReportCategories'
+import Toast, { useToast } from '@/components/ui/Toast'
+
+// v1.3 Sprint 11 Slice 6 — verbatim iOS `composedMessageBody` for
+// the "Text my trusted contacts" SMS branch (mirrors iOS
+// EmergencySheet+TrustedContacts.swift:63-67). Distinct from the
+// Slice 4b `helpComposedBody` ("I'm using Tago and might need help…").
+function composedMessageBody(url: string): string {
+  return `I'm using Tago and wanted you to be able to follow my ride. Live tracking link (expires in 4 hrs): ${url}`
+}
+
+// Heuristic — only return true when the user is plausibly on a
+// device that handles `sms:` deep-links. Desktop UAs lie about
+// touch; gate on viewport too. Mirrors the Slice 4b
+// `RideSafetyCheckOverlay.canSendSms` check (kept private to each
+// component so the heuristic can evolve per-surface).
+function canSendSmsHere(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false
+  const ua = navigator.userAgent ?? ''
+  if (/Android|iPhone|iPad|iPod/i.test(ua)) return true
+  const hasTouch = typeof window.matchMedia === 'function'
+    && window.matchMedia('(pointer: coarse)').matches
+  return hasTouch && window.innerWidth < 900
+}
 
 interface EmergencySheetProps {
   isOpen: boolean
@@ -54,10 +77,17 @@ export default function EmergencySheet({
   rideId,
   'data-testid': testId = 'emergency-sheet',
 }: EmergencySheetProps) {
-  const [shareStatus, setShareStatus] = useState<'idle' | 'sharing' | 'shared' | 'error'>('idle')
+  const [shareStatus, setShareStatus] = useState<'idle' | 'sharing' | 'shared' | 'revoked' | 'error'>('idle')
   const [shareLink, setShareLink] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [revokingShare, setRevokingShare] = useState(false)
+  // v1.3 Sprint 11 Slice 6 — desktop SMS fallback. When the user
+  // taps "Text my trusted contacts" on a device without an sms:
+  // handler, surface a dialog explaining + offering Copy / Close.
+  const [smsDesktopFallbackOpen, setSmsDesktopFallbackOpen] = useState(false)
+  // Toast helper — flashes for 2.4s, matches iOS EmergencySheet
+  // flashToast cadence.
+  const { toast, flash: flashToast } = useToast()
 
   // Report flow
   const [reportStep, setReportStep] = useState<ReportStep>('idle')
@@ -117,15 +147,28 @@ export default function EmergencySheet({
    */
   function textTrustedContacts() {
     if (trustedContacts.length === 0) return
-    const recipients = trustedContacts.map((c) => c.phone).join(',')
+    // v1.3 Sprint 11 Slice 6 — verbatim iOS `composedMessageBody`
+    // when a share link is live. Without a share link, fall back to
+    // the original check-in copy (web-only edge case — iOS gates
+    // this row on having a share-link).
     const trackBody = shareLink
-      ? `I'm on a Tago ride and wanted you to know. Follow my live location: ${shareLink}`
-      : `I'm on a Tago ride and wanted you to know. If something's wrong, please check on me.`
+      ? composedMessageBody(shareLink)
+      : "I'm on a Tago ride and wanted you to know. If something's wrong, please check on me."
+    // Desktop UAs don't resolve `sms:` URLs — open the fallback
+    // dialog instead so the user can copy the body manually.
+    if (!canSendSmsHere()) {
+      setSmsDesktopFallbackOpen(true)
+      return
+    }
+    const recipients = trustedContacts.map((c) => c.phone).join(',')
     const encoded = encodeURIComponent(trackBody)
-    // iOS Safari + Android Chrome accept `sms:<recipients>?body=...`.
-    // Some carriers prefer `&body=`; iOS quirk: include `?&body=`.
     const href = `sms:${recipients}?&body=${encoded}`
     window.location.href = href
+    flashToast(
+      trustedContacts.length === 1
+        ? 'Sent to 1 contact'
+        : `Sent to ${trustedContacts.length} contacts`,
+    )
   }
 
   /**
@@ -141,18 +184,30 @@ export default function EmergencySheet({
     setRevokingShare(true)
     try {
       const { data: { session } } = await supabase.auth.getSession()
-      if (!session) return
+      if (!session) {
+        flashToast('Couldn’t reach server — link still active')
+        return
+      }
       const resp = await fetch(`/api/safety/share-location/${token}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${session.access_token}` },
       })
       if (resp.ok) {
-        setShareStatus('idle')
+        // v1.3 Sprint 11 Slice 6 — keep the row mounted in the
+        // 'revoked' state so the footer copy flips and the user can
+        // see they successfully turned it off (vs. silently
+        // disappearing). Re-share spawns a fresh token.
+        setShareStatus('revoked')
         setShareLink(null)
         setCopied(false)
+        flashToast('Tracking link turned off')
+      } else {
+        flashToast('Couldn’t reach server — link still active')
       }
     } catch {
-      // best-effort — fail silently; the 4-hour TTL is the backstop
+      // best-effort — fail loudly so the user knows the link is
+      // probably still live on the recipient side.
+      flashToast('Couldn’t reach server — link still active')
     } finally {
       setRevokingShare(false)
     }
@@ -207,6 +262,7 @@ export default function EmergencySheet({
 
       if (!res.ok) {
         setShareStatus('error')
+        flashToast('Couldn’t create the link. Try again.')
         return
       }
 
@@ -232,6 +288,7 @@ export default function EmergencySheet({
       }
     } catch {
       setShareStatus('error')
+      flashToast('Couldn’t create the link. Try again.')
     }
   }
 
@@ -281,6 +338,15 @@ export default function EmergencySheet({
 
           {/* Options */}
           <div className="flex flex-col gap-3 p-5">
+            {/* v1.3 Sprint 11 Slice 6 — section headers + footers
+                mirror iOS EmergencySheet's three-section structure
+                (Emergency Services / Share Location / Report). */}
+            <p
+              data-testid="emergency-section-emergency-services"
+              className="text-[11px] font-semibold uppercase tracking-wider text-text-secondary"
+            >
+              Emergency Services
+            </p>
             {/* Call 911 */}
             <a
               href="tel:911"
@@ -296,6 +362,12 @@ export default function EmergencySheet({
               </div>
             </a>
 
+            <p
+              data-testid="emergency-section-share-location"
+              className="mt-2 text-[11px] font-semibold uppercase tracking-wider text-text-secondary"
+            >
+              Share Location
+            </p>
             {/* Share my location */}
             <button
               type="button"
@@ -325,10 +397,68 @@ export default function EmergencySheet({
             {shareLink && (
               <div
                 data-testid="emergency-share-link"
-                className="rounded-lg bg-surface px-4 py-2 text-xs text-text-secondary break-all"
+                className="flex items-center gap-2 rounded-lg bg-surface px-4 py-2"
               >
-                {shareLink}
+                {/* v1.3 Sprint 11 Slice 6 — monospaced + middle-
+                    truncated link line + dedicated Copy button
+                    (mirrors iOS shareLinkRow:171-196). */}
+                <span
+                  data-testid="emergency-share-link-text"
+                  className="flex-1 truncate font-mono text-xs text-text-secondary"
+                  style={{ direction: 'rtl', textAlign: 'left' }}
+                  title={shareLink}
+                >
+                  {shareLink}
+                </span>
+                <button
+                  type="button"
+                  data-testid="emergency-share-link-copy"
+                  onClick={() => {
+                    if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return
+                    void navigator.clipboard.writeText(shareLink).then(() => {
+                      setCopied(true)
+                      flashToast('Link copied')
+                      setTimeout(() => setCopied(false), 3000)
+                    }).catch(() => { /* ignore */ })
+                  }}
+                  aria-label="Copy link"
+                  className="rounded-md p-1.5 text-text-secondary hover:bg-white hover:text-primary"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4" aria-hidden="true">
+                    <rect x="9" y="9" width="13" height="13" rx="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                </button>
               </div>
+            )}
+
+            {/* v1.3 Sprint 11 Slice 6 — Share via… row only renders
+                when a link is live AND navigator.share is available.
+                Mirrors iOS shareViaSystemRow at L223-238. */}
+            {shareLink && typeof navigator !== 'undefined' && typeof navigator.share === 'function' && (
+              <button
+                type="button"
+                data-testid="emergency-share-via"
+                onClick={() => {
+                  if (typeof navigator === 'undefined' || typeof navigator.share !== 'function') return
+                  void navigator.share({
+                    title: 'Track my TAGO ride',
+                    text: composedMessageBody(shareLink),
+                    url: shareLink,
+                  }).catch(() => { /* user cancelled — silent */ })
+                }}
+                className="flex items-center gap-4 rounded-2xl border border-border bg-white px-5 py-3 text-text-primary active:bg-surface"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                  <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+                  <polyline points="16 6 12 2 8 6" />
+                  <line x1="12" y1="2" x2="12" y2="15" />
+                </svg>
+                <div className="text-left">
+                  <span className="text-sm font-bold">Share link via…</span>
+                  <p className="text-xs text-text-secondary">Open your phone’s share sheet</p>
+                </div>
+              </button>
             )}
 
             {/* W-T1-E1 — Stop sharing — only visible while a share
@@ -382,6 +512,27 @@ export default function EmergencySheet({
               </button>
             )}
 
+            {/* v1.3 Sprint 11 Slice 6 — state-driven Share Location
+                footer (mirrors iOS shareLocationFooter at L272-281).
+                Three exact copies for idle / shared / revoked. */}
+            <p
+              data-testid="emergency-share-footer"
+              data-share-state={shareStatus}
+              className="text-[11px] text-text-secondary"
+            >
+              {shareStatus === 'shared'
+                ? 'Anyone with this link can see your live location for the next 4 hours. Tap Stop sharing to turn it off early.'
+                : shareStatus === 'revoked'
+                  ? 'Tracking link turned off. Recipients now see an expired-link page. Tap above to share again.'
+                  : 'Generates a temporary tracking link (valid 4 hours). Tago never shares your location otherwise.'}
+            </p>
+
+            <p
+              data-testid="emergency-section-report"
+              className="mt-2 text-[11px] font-semibold uppercase tracking-wider text-text-secondary"
+            >
+              Report
+            </p>
             {/* Report unsafe situation — inline form, never navigates away */}
             {reportStep === 'idle' && (
               <button
@@ -502,6 +653,71 @@ export default function EmergencySheet({
           </div>
         </div>
       </div>
+
+      {/* v1.3 Sprint 11 Slice 6 — transient toast for copy / sent /
+          revoke / mint-fail / revoke-fail confirmations (mirrors
+          iOS flashToast). */}
+      {toast && (
+        <Toast
+          toastKey={toast.key}
+          message={toast.message}
+          data-testid="emergency-toast"
+        />
+      )}
+
+      {/* v1.3 Sprint 11 Slice 6 — desktop SMS fallback dialog. On
+          devices without an `sms:` handler (most desktop browsers),
+          the Text-my-trusted-contacts row opens this instead of
+          firing a no-op sms: URL. Mirrors iOS messageComposeFallback
+          (EmergencySheet+TrustedContacts.swift:29-46). */}
+      {smsDesktopFallbackOpen && (
+        <div
+          data-testid="emergency-sms-desktop-fallback"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="emergency-sms-fallback-title"
+          className="fixed inset-0 z-[2300] flex items-end justify-center bg-black/50 px-4 pb-4 sm:items-center sm:pb-0"
+        >
+          <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl">
+            <h3 id="emergency-sms-fallback-title" className="text-base font-bold text-text-primary">
+              Can’t send SMS from this device
+            </h3>
+            <p className="mt-2 text-sm text-text-secondary">
+              Open Tago on your phone to text the link, or copy the message and send it however you like.
+            </p>
+            {shareLink && (
+              <p className="mt-3 break-all rounded-xl bg-surface px-3 py-2 font-mono text-xs text-text-primary">
+                {composedMessageBody(shareLink)}
+              </p>
+            )}
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                data-testid="emergency-sms-fallback-copy"
+                onClick={() => {
+                  if (!shareLink) return
+                  if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return
+                  void navigator.clipboard.writeText(composedMessageBody(shareLink)).then(() => {
+                    flashToast('Link copied')
+                  }).catch(() => { /* ignore */ })
+                }}
+                disabled={!shareLink}
+                className="flex-1 rounded-xl bg-primary py-2.5 text-sm font-semibold text-white active:bg-primary/90 disabled:opacity-50"
+              >
+                Copy
+              </button>
+              <button
+                type="button"
+                data-testid="emergency-sms-fallback-close"
+                onClick={() => setSmsDesktopFallbackOpen(false)}
+                className="rounded-xl px-3 py-2.5 text-sm font-semibold text-text-secondary active:bg-surface"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>,
     portalTarget,
   )

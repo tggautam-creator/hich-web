@@ -355,6 +355,162 @@ describe('EmergencySheet', () => {
     expect(postBody!.ride_id).toBe('ride-xyz')
   })
 
+  // ── Sprint 11 Slice 6 — sections + footer + copy + share-via + sms-fallback ──
+
+  it('renders the three semantic section headers (Emergency Services / Share Location / Report)', () => {
+    renderSheet()
+    expect(screen.getByTestId('emergency-section-emergency-services').textContent).toContain('Emergency Services')
+    expect(screen.getByTestId('emergency-section-share-location').textContent).toContain('Share Location')
+    expect(screen.getByTestId('emergency-section-report').textContent).toContain('Report')
+  })
+
+  it('Share Location footer shows the "idle" copy by default (explains 4-hour TTL)', () => {
+    renderSheet()
+    const footer = screen.getByTestId('emergency-share-footer')
+    expect(footer.getAttribute('data-share-state')).toBe('idle')
+    expect(footer.textContent).toContain('valid 4 hours')
+    expect(footer.textContent).toContain('Tago never shares your location otherwise')
+  })
+
+  it('Share Location footer flips to "shared" copy once a link is live', async () => {
+    globalThis.fetch = vi.fn((input: URL | RequestInfo, opts?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === '/api/safety/trusted-contacts') {
+        return Promise.resolve({ ok: true, json: async () => ({ contacts: [] }) }) as unknown as Promise<Response>
+      }
+      if (url === '/api/safety/share-location' && opts?.method === 'POST') {
+        return Promise.resolve({ ok: true, json: async () => ({ token: 'tok-12345678' }) }) as unknown as Promise<Response>
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) }) as unknown as Promise<Response>
+    })
+    renderSheet()
+    fireEvent.click(screen.getByTestId('emergency-share-location'))
+    await waitFor(() => {
+      const footer = screen.getByTestId('emergency-share-footer')
+      expect(footer.getAttribute('data-share-state')).toBe('shared')
+    })
+    expect(screen.getByTestId('emergency-share-footer').textContent).toContain('the next 4 hours')
+    expect(screen.getByTestId('emergency-share-footer').textContent).toContain('Stop sharing')
+  })
+
+  it('share link row exposes a dedicated Copy button that fires a "Link copied" toast', async () => {
+    const writeTextSpy = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: writeTextSpy },
+    })
+    globalThis.fetch = vi.fn((input: URL | RequestInfo, opts?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === '/api/safety/trusted-contacts') {
+        return Promise.resolve({ ok: true, json: async () => ({ contacts: [] }) }) as unknown as Promise<Response>
+      }
+      if (url === '/api/safety/share-location' && opts?.method === 'POST') {
+        return Promise.resolve({ ok: true, json: async () => ({ token: 'tok-xyz' }) }) as unknown as Promise<Response>
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) }) as unknown as Promise<Response>
+    })
+    renderSheet()
+    fireEvent.click(screen.getByTestId('emergency-share-location'))
+    await waitFor(() => screen.getByTestId('emergency-share-link-copy'))
+    fireEvent.click(screen.getByTestId('emergency-share-link-copy'))
+    await waitFor(() => expect(writeTextSpy).toHaveBeenCalled())
+    expect(writeTextSpy).toHaveBeenCalledWith(expect.stringContaining('/track/tok-xyz'))
+    await waitFor(() => {
+      const toast = screen.queryByTestId('emergency-toast')
+      expect(toast?.textContent).toBe('Link copied')
+    })
+  })
+
+  it('mint failure surfaces a "Couldn’t create the link" toast', async () => {
+    globalThis.fetch = vi.fn((input: URL | RequestInfo, opts?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === '/api/safety/trusted-contacts') {
+        return Promise.resolve({ ok: true, json: async () => ({ contacts: [] }) }) as unknown as Promise<Response>
+      }
+      if (url === '/api/safety/share-location' && opts?.method === 'POST') {
+        return Promise.resolve({ ok: false, status: 500, json: async () => ({}) }) as unknown as Promise<Response>
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) }) as unknown as Promise<Response>
+    })
+    renderSheet()
+    fireEvent.click(screen.getByTestId('emergency-share-location'))
+    await waitFor(() => {
+      const toast = screen.queryByTestId('emergency-toast')
+      expect(toast?.textContent).toContain('Couldn’t create the link')
+    })
+  })
+
+  it('revoke failure surfaces "Couldn’t reach server — link still active" toast', async () => {
+    globalThis.fetch = vi.fn((input: URL | RequestInfo, opts?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === '/api/safety/trusted-contacts') {
+        return Promise.resolve({ ok: true, json: async () => ({ contacts: [] }) }) as unknown as Promise<Response>
+      }
+      if (url === '/api/safety/share-location' && opts?.method === 'POST') {
+        return Promise.resolve({ ok: true, json: async () => ({ token: 'a'.repeat(32) }) }) as unknown as Promise<Response>
+      }
+      if (url.startsWith('/api/safety/share-location/') && opts?.method === 'DELETE') {
+        return Promise.resolve({ ok: false, status: 503, json: async () => ({}) }) as unknown as Promise<Response>
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) }) as unknown as Promise<Response>
+    })
+    renderSheet()
+    fireEvent.click(screen.getByTestId('emergency-share-location'))
+    await waitFor(() => screen.getByTestId('emergency-stop-sharing'))
+    fireEvent.click(screen.getByTestId('emergency-stop-sharing'))
+    await waitFor(() => {
+      const toast = screen.queryByTestId('emergency-toast')
+      expect(toast?.textContent).toContain('Couldn’t reach server')
+    })
+  })
+
+  it('successful revoke flips the footer to "revoked" + flashes "Tracking link turned off" toast', async () => {
+    globalThis.fetch = vi.fn((input: URL | RequestInfo, opts?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === '/api/safety/trusted-contacts') {
+        return Promise.resolve({ ok: true, json: async () => ({ contacts: [] }) }) as unknown as Promise<Response>
+      }
+      if (url === '/api/safety/share-location' && opts?.method === 'POST') {
+        return Promise.resolve({ ok: true, json: async () => ({ token: 'b'.repeat(32) }) }) as unknown as Promise<Response>
+      }
+      if (url.startsWith('/api/safety/share-location/') && opts?.method === 'DELETE') {
+        return Promise.resolve({ ok: true, json: async () => ({ revoked: true }) }) as unknown as Promise<Response>
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) }) as unknown as Promise<Response>
+    })
+    renderSheet()
+    fireEvent.click(screen.getByTestId('emergency-share-location'))
+    await waitFor(() => screen.getByTestId('emergency-stop-sharing'))
+    fireEvent.click(screen.getByTestId('emergency-stop-sharing'))
+    await waitFor(() => {
+      expect(screen.getByTestId('emergency-share-footer').getAttribute('data-share-state')).toBe('revoked')
+    })
+    expect(screen.queryByTestId('emergency-toast')?.textContent).toBe('Tracking link turned off')
+  })
+
+  it('Text trusted contacts on DESKTOP opens the desktop sms-fallback dialog (no sms: navigation)', async () => {
+    Object.defineProperty(window.navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+    })
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1280 })
+    globalThis.fetch = vi.fn((input: URL | RequestInfo) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === '/api/safety/trusted-contacts') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ contacts: [{ id: 'c-1', name: 'Mom', phone: '+15551112222' }] }),
+        }) as unknown as Promise<Response>
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) }) as unknown as Promise<Response>
+    })
+    renderSheet()
+    await waitFor(() => screen.getByTestId('emergency-text-trusted-contacts'))
+    fireEvent.click(screen.getByTestId('emergency-text-trusted-contacts'))
+    expect(screen.getByTestId('emergency-sms-desktop-fallback')).toBeInTheDocument()
+    expect(screen.getByText(/Can’t send SMS from this device/)).toBeInTheDocument()
+  })
+
   it('Done button on submitted state resets the wizard back to idle', async () => {
     globalThis.fetch = vi.fn((input: URL | RequestInfo, opts?: RequestInit) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
