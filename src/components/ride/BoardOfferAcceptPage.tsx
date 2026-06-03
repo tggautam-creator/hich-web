@@ -17,6 +17,7 @@ import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import UserProfilePreviewSheet from '@/components/profile/UserProfilePreviewSheet'
 
 interface OfferDriver {
   id: string
@@ -197,6 +198,75 @@ function TransitStopRow({
         )}
       </div>
     </div>
+  )
+}
+
+// v1.3 Sprint 10 Slice 5 — wraps the existing driver avatar+name row
+// in a tap target that opens the canonical UserProfilePreviewSheet.
+// Mirrors iOS BoardOfferAcceptPage.swift:127 mount. Self-contained
+// state so each offer card owns its own sheet open/close cycle.
+function DriverAvatarPreviewTrigger({ driver }: { driver: OfferDriver }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        data-testid="board-offer-driver-preview-trigger"
+        className="flex items-center gap-3 text-left rounded-lg active:bg-surface/50 -m-1 p-1"
+      >
+        {driver.avatar_url ? (
+          <img
+            src={driver.avatar_url}
+            alt=""
+            className="h-12 w-12 rounded-full object-cover"
+          />
+        ) : (
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary font-bold">
+            {(driver.full_name ?? '?')[0]?.toUpperCase()}
+          </div>
+        )}
+        <div className="min-w-0">
+          <div className="truncate text-sm font-bold text-textPrimary">
+            {driver.full_name ?? 'Driver'}
+          </div>
+          {driver.rating_avg != null && (
+            <div className="text-xs text-textSecondary">
+              ★ {driver.rating_avg.toFixed(1)}
+              {driver.rating_count != null && ` · ${driver.rating_count} rides`}
+            </div>
+          )}
+        </div>
+      </button>
+      <UserProfilePreviewSheet
+        isOpen={open}
+        onClose={() => setOpen(false)}
+        userId={driver.id}
+        initialProfile={{
+          id: driver.id,
+          full_name: driver.full_name ?? null,
+          avatar_url: driver.avatar_url ?? null,
+          // Offer driver IS by definition a driver (only drivers offer
+          // on the board) — seed accordingly.
+          is_driver: true,
+          rating_avg: driver.rating_avg ?? null,
+          rating_count: driver.rating_count ?? 0,
+          rides_completed: 0,
+          bio: null,
+          gender: null,
+          school: null,
+          major: null,
+          graduation_year: null,
+          has_accessibility_needs: false,
+          needs_wheelchair: false,
+          waive_caregiver_fee: driver.waive_caregiver_fee === true,
+          member_since: '',
+          vehicle: null,
+        }}
+        fallbackName={driver.full_name ?? null}
+        fallbackAvatarUrl={driver.avatar_url ?? null}
+      />
+    </>
   )
 }
 
@@ -404,30 +474,10 @@ export default function BoardOfferAcceptPage() {
                 className="rounded-2xl border border-border bg-white p-4 shadow-sm"
                 data-testid="board-offer-card"
               >
-                <div className="flex items-center gap-3">
-                  {offer.driver.avatar_url ? (
-                    <img
-                      src={offer.driver.avatar_url}
-                      alt=""
-                      className="h-12 w-12 rounded-full object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary font-bold">
-                      {(offer.driver.full_name ?? '?')[0]?.toUpperCase()}
-                    </div>
-                  )}
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-bold text-textPrimary">
-                      {offer.driver.full_name ?? 'Driver'}
-                    </div>
-                    {offer.driver.rating_avg != null && (
-                      <div className="text-xs text-textSecondary">
-                        ★ {offer.driver.rating_avg.toFixed(1)}
-                        {offer.driver.rating_count != null && ` · ${offer.driver.rating_count} rides`}
-                      </div>
-                    )}
-                  </div>
-                </div>
+                {/* v1.3 Sprint 10 Slice 5 — wrap the driver avatar+name
+                    row in a button that opens UserProfilePreviewSheet.
+                    Mirrors iOS BoardOfferAcceptPage.swift:127 mount. */}
+                <DriverAvatarPreviewTrigger driver={offer.driver} />
 
                 {offer.vehicle && (offer.vehicle.year ?? offer.vehicle.make ?? offer.vehicle.model) && (
                   <div className="mt-3 text-xs text-textSecondary">

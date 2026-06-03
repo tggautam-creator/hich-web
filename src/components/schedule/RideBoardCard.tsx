@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import type { ScheduledRide } from './boardTypes'
 import { formatDate, formatTripSchedule } from './boardHelpers'
 import { estimateScheduleFare } from '@/lib/fareEstimate'
+import UserProfilePreviewSheet from '@/components/profile/UserProfilePreviewSheet'
 
 interface RideBoardCardProps {
   ride: ScheduledRide
@@ -31,6 +33,15 @@ export default function RideBoardCard({
   const isDriverPost = ride.mode === 'driver'
   const poster = ride.poster
   const name = isOwn ? 'You' : poster?.full_name ?? 'Unknown'
+  // v1.3 Sprint 10 Slice 5 — poster profile preview sheet. Tap the
+  // name+rating row (the avatar-tap equivalent on web — iOS taps the
+  // 36×36 avatar circle on `posterAvatar`; web has no avatar image on
+  // RideBoardCard today, so the name row serves as the tap target).
+  // Only enabled for non-own posts when we have a poster id to fetch
+  // against. Mirrors iOS `RideBoardPage.swift::posterPreview` mount
+  // at lines 55-60 + sheet presentation at 249-255.
+  const [profilePreviewOpen, setProfilePreviewOpen] = useState(false)
+  const canPreviewPoster = !isOwn && poster?.id != null && poster.id.length > 0
   // Fare preview shows on every post (driver and rider) as long as the
   // schedule carries coords — gives riders an expected cost and drivers
   // a sense of what they'd earn before offering to drive.
@@ -71,27 +82,97 @@ export default function RideBoardCard({
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1.5 min-w-0">
-          <span className="text-sm font-semibold text-text-primary truncate">{name}</span>
-          {poster?.rating_avg != null && (
-            <span className="text-xs text-text-secondary shrink-0">★ {poster.rating_avg.toFixed(1)}</span>
-          )}
-          {/* v1.2 F5.2 — mobility-aid access pill. Server-side AND on
-              has_accessibility_needs + needs_wheelchair means both flags
-              are true here; we re-check on the client defensively so a
-              future legacy / pre-088 row doesn't render a false pill. */}
-          {poster?.has_accessibility_needs === true && poster.needs_wheelchair === true && (
-            <span
-              data-testid="board-card-mobility-aid"
-              title="Rider uses a mobility aid"
-              aria-label="Rider uses a mobility aid"
-              className="shrink-0 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary"
-            >
-              ♿
-            </span>
-          )}
-        </div>
+        {canPreviewPoster ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              // Stop bubbling so the card-level onClick (open detail)
+              // doesn't fire alongside the profile preview.
+              e.stopPropagation()
+              setProfilePreviewOpen(true)
+            }}
+            data-testid="board-card-poster-preview-trigger"
+            className="flex items-center gap-1.5 min-w-0 rounded-md px-1 -mx-1 active:bg-surface/60"
+          >
+            <span className="text-sm font-semibold text-text-primary truncate">{name}</span>
+            {poster?.rating_avg != null && (
+              <span className="text-xs text-text-secondary shrink-0">★ {poster.rating_avg.toFixed(1)}</span>
+            )}
+            {/* v1.2 F5.2 — mobility-aid access pill. */}
+            {poster?.has_accessibility_needs === true && poster.needs_wheelchair === true && (
+              <span
+                data-testid="board-card-mobility-aid"
+                title="Rider uses a mobility aid"
+                aria-label="Rider uses a mobility aid"
+                className="shrink-0 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary"
+              >
+                ♿
+              </span>
+            )}
+          </button>
+        ) : (
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="text-sm font-semibold text-text-primary truncate">{name}</span>
+            {poster?.rating_avg != null && (
+              <span className="text-xs text-text-secondary shrink-0">★ {poster.rating_avg.toFixed(1)}</span>
+            )}
+            {/* v1.2 F5.2 — mobility-aid access pill (own-post branch). */}
+            {poster?.has_accessibility_needs === true && poster.needs_wheelchair === true && (
+              <span
+                data-testid="board-card-mobility-aid"
+                title="Rider uses a mobility aid"
+                aria-label="Rider uses a mobility aid"
+                className="shrink-0 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary"
+              >
+                ♿
+              </span>
+            )}
+          </div>
+        )}
       </div>
+
+      {/* v1.3 Sprint 10 Slice 5 — poster profile preview. Renders only
+          when the user tapped the name row above. Sheet is a portal so
+          mounting it inside the card is safe. */}
+      {canPreviewPoster && poster?.id != null && (
+        <UserProfilePreviewSheet
+          isOpen={profilePreviewOpen}
+          onClose={() => setProfilePreviewOpen(false)}
+          userId={poster.id}
+          // Seed instantly from the poster snapshot the card already has,
+          // so the sheet opens to a complete card (background fetch
+          // upgrades bio / school / vehicle / member-since silently).
+          initialProfile={{
+            id: poster.id,
+            full_name: poster.full_name ?? null,
+            avatar_url: poster.avatar_url ?? null,
+            is_driver: poster.is_driver,
+            rating_avg: poster.rating_avg ?? null,
+            // Poster snapshot doesn't carry rating_count — render as
+            // "New on Tago" until the background fetch lands the real
+            // value. The fetch reliably arrives in <300ms on warm
+            // connections; the visual flip is brief.
+            rating_count: 0,
+            rides_completed: 0,
+            bio: null,
+            gender: null,
+            school: null,
+            major: null,
+            graduation_year: null,
+            has_accessibility_needs: poster.has_accessibility_needs ?? false,
+            needs_wheelchair: poster.needs_wheelchair ?? false,
+            // Poster snapshot doesn't carry waive_caregiver_fee — the
+            // /api/schedule/board response strips it. Defaults false;
+            // the background fetch's authoritative value upgrades the
+            // pill if applicable.
+            waive_caregiver_fee: false,
+            member_since: '',
+            vehicle: null,
+          }}
+          fallbackName={poster.full_name ?? null}
+          fallbackAvatarUrl={poster.avatar_url ?? null}
+        />
+      )}
 
       {/* Route — single line with arrow */}
       <p className="text-sm text-text-primary mb-1 truncate">
