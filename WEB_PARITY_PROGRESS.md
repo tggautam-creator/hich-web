@@ -120,6 +120,22 @@ Verification table:
 
 **Lessons for the rest of Sprint 12**: the audit's per-slice contract-drift claims need per-slice verification on entry. Run the verification before applying edits — false positives are likely concentrated where the scout couldn't see recent fixes that landed in Sprint 9/10/11. Slices 1b through 6 should each begin with a 5-minute "read current shape" pass before writing any TypeScript.
 
+### Slice 1b — verification findings (NO-OP, 2026-06-03)
+
+Same pattern as Slice 1a — every audit-claimed contract drift verified false. **All 5 endpoints are already aligned with iOS.**
+
+| Endpoint | Audit claim | Actual web shape | Verdict |
+| --- | --- | --- | --- |
+| POST /api/rides/:id/tip | iOS sends `{tip_cents}`; web sends extra `payment_method_id` | RideSummaryPage:710 sends `{ tip_cents }` only | ✅ Aligned |
+| POST /api/rides/:id/retry-payment | Web sends `{payment_method_id}` | RideSummaryPage:526 sends NO body | ✅ Aligned |
+| POST /api/payment/default-method | Server POST; web sends PUT | Both sites (PaymentMethodsPage:56 + SaveCardPage:77) use `method: 'POST'` | ✅ Aligned |
+| POST /api/wallet/topup | Web sends extra `payment_method_id` | Both sites (AddFundsPage:143 + 237) send `{ amount_cents }` only | ✅ Aligned |
+| POST /api/wallet/withdraw | Verify Idempotency-Key header | WithdrawSheet:118 sends `'Idempotency-Key': genIdempotencyKey()` | ✅ Aligned |
+
+**Slice 1b action**: zero code changes. Matrix rows reclassified to PARITY. Slice closed.
+
+**Pattern observation**: Slices 1a + 1b combined = 11 audit-claimed contract drifts, **all 11 are false positives**. The audit's CONTRACT_DRIFT detection on the rides/payments/wallet domains has ~0% accuracy in this sprint — the scout agents read pre-Sprint-9/10/11 snapshots that pre-date the alignment work already shipped. Slices 1c–1f should be checked the same way before starting.
+
 ### Current focus
 Close the largest cluster of iOS↔web drift left in the catalog: 24 contract-shape mismatches where web is sending wrong field names / methods / payloads to existing server routes, 11 HIGH-severity WEB_MISSING endpoints (notification-status, driver-pending-offer resume, tap-to-call, pickup/dropoff proposals, RLS-safe profile write, BoardOffer create), the chat realtime channels web silently dropped in favour of polling, and four direct-Supabase writes that bypass server audit. The sprint is sequenced smallest-first so each slice is independently mergeable, reversible, and tied to one user-visible win or one matrix row class.
 
