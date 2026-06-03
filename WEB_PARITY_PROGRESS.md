@@ -136,6 +136,44 @@ Same pattern as Slice 1a — every audit-claimed contract drift verified false. 
 
 **Pattern observation**: Slices 1a + 1b combined = 11 audit-claimed contract drifts, **all 11 are false positives**. The audit's CONTRACT_DRIFT detection on the rides/payments/wallet domains has ~0% accuracy in this sprint — the scout agents read pre-Sprint-9/10/11 snapshots that pre-date the alignment work already shipped. Slices 1c–1f should be checked the same way before starting.
 
+### Slices 1c + 1d + 1e + 1f — batch verification (NO-OP, 2026-06-03)
+
+Verified all four remaining contract-fix slices in one batch read since the false-positive pattern was now firmly established. **18 more false positives. All 4 slices closed.**
+
+| Slice | Endpoint | Audit claim | Reality | Verdict |
+| --- | --- | --- | --- | --- |
+| 1c | /schedule/notify | Missing fields | All 12 iOS fields sent (origin/dest place_id, trip_date, trip_time, time_type, time_flexible, mode, 4 lat/lng) | ✅ |
+| 1c | /schedule/request | Web 2-field; iOS 11-field | Web sends 12+ fields incl. caregiver_id + distance_km | ✅ |
+| 1c | /schedule/sync-routines | Web sends `{}`; iOS sends `{client_date}` | RideBoard:774 sends `{ client_date }` | ✅ |
+| 1c | /transit/preview | Web nested; iOS flat 6 lat/lng | RideBoardConfirmSheet sends 6 flat fields | ✅ |
+| 1c | /schedule/by-id/:id | Web uses /:id (404) | Web's `/api/schedule/${id}` calls are DELETE matching `scheduleRouter.delete('/:id')` | ✅ |
+| 1c | /schedule/:id/seats "ghost" | No server route | `scheduleRouter.patch('/:id/seats')` exists; web matches PATCH | ✅ |
+| 1c | /schedule/board/offers "ghost" | No server route | `scheduleRouter.post('/board/offers')` exists; web matches POST | ✅ |
+| 1d | /notifications/:id/read | Web sends POST | Web uses `method: 'PATCH'` | ✅ |
+| 1d | /notification-preferences | Web sends PATCH | Web uses `method: 'PUT'` | ✅ |
+| 1d | /schedule/accept-board | Web `{requestId}` | Web sends `{ ride_id: rideId }` | ✅ |
+| 1d | /schedule/decline-board | Web `{requestId}` + missing reason | Web sends `{ ride_id: rideId }` (server doesn't read reason) | ✅ |
+| 1d | /rides/snooze | Web `{seconds}` | Web sends `{ snooze_minutes }` | ✅ |
+| 1e | /safety-warning-response | Action enum mismatch | Sprint 11 Slice 4b shipped iOS-matching enum + trusted_contacts + share_token surfacing | ✅ |
+| 1e | /safety-end | Web empty body | `postManualEnd` sends `{ reason: 'manual_end' }` | ✅ |
+| 1e | /safety/share-location POST | Web `{rideId?}`; server requires `ride_id` | EmergencySheet sends `{ ride_id: rideId }` | ✅ |
+| 1e | /share-location/:token POST "dead" | Web POSTs to nonexistent route | Single web call uses `method: 'DELETE'` matching real `safetyRouter.delete('/share-location/:token')` | ✅ |
+| 1f | /connect/dashboard | Server GET; web POST (405) | Web uses default GET (no method override) | ✅ |
+| 1f | /connect/onboard/complete | Server GET; web POST (405) | Web uses default GET (no method override) | ✅ |
+
+### Sprint 12 contract-fix domain — final tally
+
+**29 of 29 audit-claimed contract drifts (Slices 1a + 1b + 1c + 1d + 1e + 1f) are FALSE POSITIVES.**
+
+Zero code changes across the entire contract-fix domain. The scout agents read web code as it existed before Sprint 9 / 10 / 11 alignment work landed. Subsequent sprints already aligned every contract the audit flagged.
+
+**Implications:**
+- The remaining Sprint 12 work is the WEB_MISSING slices (2a, 2b, 3, 4a, 4b, 5a, 5b, 6) + the realtime/FCM slice (7). Those are MUCH more reliable than the contract claims — "no caller exists" is easier to verify mechanically than "wrong shape".
+- The audit's matrix should be treated as a starting hypothesis, not ground truth. Per-slice verification on entry remains mandatory.
+- Sprint 13 (React Query hook extraction sweep) and Sprint 14 (v1.3 catch-up) plans are unaffected — they're about extracting / building, not aligning.
+
+**Remaining real Sprint 12 work**: 9 WEB_MISSING slices, all confirmed real during the audit's recon pass. Highest-impact: Slice 7 (chat realtime, web messaging takes ~30s today vs iOS <500ms), Slice 5a (3 audit-log violation fixes + RLS-safe profile write), Slice 3 (tap-to-call counterparty contact).
+
 ### Current focus
 Close the largest cluster of iOS↔web drift left in the catalog: 24 contract-shape mismatches where web is sending wrong field names / methods / payloads to existing server routes, 11 HIGH-severity WEB_MISSING endpoints (notification-status, driver-pending-offer resume, tap-to-call, pickup/dropoff proposals, RLS-safe profile write, BoardOffer create), the chat realtime channels web silently dropped in favour of polling, and four direct-Supabase writes that bypass server audit. The sprint is sequenced smallest-first so each slice is independently mergeable, reversible, and tied to one user-visible win or one matrix row class.
 
