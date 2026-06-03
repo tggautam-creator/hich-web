@@ -52,6 +52,14 @@ vi.mock('@/hooks/useRideRole', () => ({
   useRideRole: () => ({ role: 'driver' as const, isLoading: false, error: null }),
 }))
 
+// v1.3 Sprint 11 Slice 4a — DriverActiveRidePage now consumes
+// useRideSafetyChannel (subscribes to ride-safety channel + polls
+// for divergence_state). Stub so this test file doesn't need a
+// supabase channel mock here.
+vi.mock('@/hooks/useRideSafetyChannel', () => ({
+  useRideSafetyChannel: () => ({ warningFiredAt: null, safetyEndedSignal: 0 }),
+}))
+
 vi.mock('@/stores/authStore', () => ({
   useAuthStore: vi.fn(
     (selector: (s: { profile: { id: string } | null }) => unknown) =>

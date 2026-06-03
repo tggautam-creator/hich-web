@@ -7,6 +7,8 @@ import { trackEvent } from '@/lib/analytics'
 import { getDirectionsByLatLng } from '@/lib/directions'
 import QrScanner from '@/components/ride/QrScanner'
 import SafetyPill from '@/components/ui/SafetyPill'
+import SafetyWarningBanner from '@/components/safety/SafetyWarningBanner'
+import { useRideSafetyChannel } from '@/hooks/useRideSafetyChannel'
 import { RoutePolyline, MapBoundsFitter, RecenterButton } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
@@ -42,6 +44,11 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
   const [manualCode, setManualCode] = useState('')
   const [emergencyOpen, setEmergencyOpen] = useState(false)
   const [endRideModal, setEndRideModal] = useState(false)
+  // v1.3 Sprint 11 Slice 4a — safety-channel + reseat + 10s poll
+  // backstop. Slice 4b layers the interactive overlay on top of the
+  // same hook; until then the passive banner ships parity for the
+  // realtime + reseat plumbing.
+  const { warningFiredAt } = useRideSafetyChannel(rideId ?? null)
   const [routePolyline, setRoutePolyline] = useState<string | null>(null)
   const [riderPos, setRiderPos] = useState<{ lat: number; lng: number } | null>(null)
   const [unreadChat, setUnreadChat] = useState(0)
@@ -703,6 +710,15 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
         onOpenChange={setEmergencyOpen}
         data-testid="safety-pill-rider-active"
       />
+
+      {/* Sprint 11 Slice 4a — passive divergence-warning banner.
+          Replaced by RideSafetyCheckOverlay in Slice 4b. */}
+      {warningFiredAt && (
+        <SafetyWarningBanner
+          firedAt={warningFiredAt}
+          data-testid="safety-warning-banner-rider"
+        />
+      )}
     </div>
   )
 }

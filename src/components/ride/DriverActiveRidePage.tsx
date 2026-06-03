@@ -5,6 +5,8 @@ import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import DriverQrSheet from '@/components/ride/DriverQrSheet'
 import SafetyPill from '@/components/ui/SafetyPill'
+import SafetyWarningBanner from '@/components/safety/SafetyWarningBanner'
+import { useRideSafetyChannel } from '@/hooks/useRideSafetyChannel'
 import { RoutePolyline, MapBoundsFitter, RecenterButton } from '@/components/map/RoutePreview'
 import CarMarker from '@/components/map/CarMarker'
 import { MAP_ID } from '@/lib/mapConstants'
@@ -41,6 +43,10 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
   const [cancelModal, setCancelModal] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [emergencyOpen, setEmergencyOpen] = useState(false)
+  // v1.3 Sprint 11 Slice 4a — safety-channel + reseat + 10s poll
+  // backstop. Driver mirror of the rider's wiring; Slice 4b layers
+  // the interactive overlay on top of the same hook.
+  const { warningFiredAt } = useRideSafetyChannel(rideId ?? null)
   const [unreadChat, setUnreadChat] = useState(0)
   const [fitToken, setFitToken] = useState(0)
   const signalTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -715,6 +721,15 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
         onOpenChange={setEmergencyOpen}
         data-testid="safety-pill-driver-active"
       />
+
+      {/* Sprint 11 Slice 4a — passive divergence-warning banner.
+          Replaced by RideSafetyCheckOverlay in Slice 4b. */}
+      {warningFiredAt && (
+        <SafetyWarningBanner
+          firedAt={warningFiredAt}
+          data-testid="safety-warning-banner-driver"
+        />
+      )}
 
       {/* ── QR Sheet ────────────────────────────────────────────────────── */}
       <DriverQrSheet
