@@ -67,14 +67,21 @@ export function useRideSafetyChannel(rideId: string | null | undefined): UseRide
     let cancelled = false
 
     async function tick() {
+      // `as never` on the select string bypasses the generated
+      // Supabase column-type narrowing for `divergence_state` /
+      // `warning_fired_at` — those columns ship from migration 094 +
+      // 095 but `src/types/database.ts` hasn't been regenerated to
+      // include them, so without the cast tsc rejects the build.
+      // Mirrors the same pattern used server-side in rides.ts:5116.
       const { data, error } = await supabase
         .from('rides')
-        .select('divergence_state, warning_fired_at')
+        .select('divergence_state, warning_fired_at' as never)
         .eq('id', rideId as string)
         .single()
       if (cancelled || error || !data) return
-      const state = (data.divergence_state as string | null) ?? null
-      const firedAtRaw = (data.warning_fired_at as string | null) ?? null
+      const row = data as unknown as { divergence_state: string | null; warning_fired_at: string | null }
+      const state = row.divergence_state ?? null
+      const firedAtRaw = row.warning_fired_at ?? null
       if (state === 'warning' && firedAtRaw) {
         // Only update if the timestamp actually changed — avoids
         // a re-render storm when the poll keeps reading the same
