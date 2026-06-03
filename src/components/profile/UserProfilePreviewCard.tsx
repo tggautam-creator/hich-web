@@ -106,7 +106,8 @@ export default function UserProfilePreviewCard({
       {/* Avatar — iOS lines 36-59 */}
       <div className="relative h-24 w-24 shrink-0 overflow-hidden rounded-full bg-surface border border-white/30 shadow-sm">
         {profile.avatar_url != null && profile.avatar_url.length > 0 ? (
-          // eslint-disable-next-line jsx-a11y/alt-text -- decorative; user name is rendered as sibling text
+          // alt="" marks the image as decorative; the user's name is
+          // rendered as sibling text below.
           <img
             src={profile.avatar_url}
             alt=""

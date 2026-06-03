@@ -103,7 +103,8 @@ export default function UserProfilePreviewSheet({
         >
           <div className="relative h-24 w-24 shrink-0 overflow-hidden rounded-full bg-surface">
             {fallbackAvatarUrl != null && fallbackAvatarUrl.length > 0 && (
-              // eslint-disable-next-line jsx-a11y/alt-text -- decorative; fallback name is rendered as sibling text
+              // alt="" marks the image as decorative; the fallback
+              // name is rendered as sibling text below.
               <img src={fallbackAvatarUrl} alt="" className="h-full w-full object-cover" />
             )}
           </div>
