@@ -226,6 +226,180 @@ usersRouter.put(
   },
 )
 
+// ── POST /api/users/me/profile (2026-06-03) ──────────────────────────────
+//
+// Server-mediated profile upsert. Replaces the previous direct
+// supabase.from('users').upsert(...) the iOS app used to call —
+// that path hit RLS races when the supabase-swift session JWT
+// lagged the cached user.id on new-signup INSERT, producing the
+// "new row violates row-level security policy" 42501 we kept seeing
+// on the CreateProfilePage Continue button. Using the service role
+// here bypasses RLS entirely + lets us own validation in one place.
+//
+// Idempotent: read-then-update if a row exists, else INSERT.
+// `email` is taken from auth.users (never client-provided) so a
+// compromised JWT can't forge a row for a different account.
+//
+// Body fields are all optional; only the provided fields are
+// updated. Field types + lengths are validated and any unknown
+// fields are silently dropped (consistent with notification-prefs).
+
+interface ProfileUpsertBody {
+  full_name?: unknown
+  phone?: unknown
+  avatar_url?: unknown
+  date_of_birth?: unknown
+  gender?: unknown
+  bio?: unknown
+  school?: unknown
+  major?: unknown
+  graduation_year?: unknown
+  has_accessibility_needs?: unknown
+  accessibility_profile?: unknown
+  waive_caregiver_fee?: unknown
+}
+
+const ALLOWED_GENDERS = ['male', 'female', 'nonbinary', 'other', 'prefer_not_to_say'] as const
+
+usersRouter.post(
+  '/me/profile',
+  validateJwt,
+  async (req: Request, res: Response) => {
+    const userId = res.locals['userId'] as string
+    if (!userId) {
+      res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Not signed in' } })
+      return
+    }
+
+    const body = (req.body ?? {}) as ProfileUpsertBody
+    const updates: Record<string, unknown> = {}
+
+    if (typeof body.full_name === 'string') {
+      const trimmed = body.full_name.trim()
+      if (trimmed.length < 1 || trimmed.length > 200) {
+        res.status(400).json({ error: { code: 'INVALID_NAME', message: 'full_name must be 1–200 characters' } })
+        return
+      }
+      updates['full_name'] = trimmed
+    }
+    if (body.phone !== undefined) {
+      updates['phone'] = typeof body.phone === 'string' ? body.phone.slice(0, 50) : null
+    }
+    if (body.avatar_url !== undefined) {
+      updates['avatar_url'] = typeof body.avatar_url === 'string' ? body.avatar_url.slice(0, 1000) : null
+    }
+    if (body.date_of_birth !== undefined) {
+      if (body.date_of_birth === null) {
+        updates['date_of_birth'] = null
+      } else if (typeof body.date_of_birth === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.date_of_birth)) {
+        updates['date_of_birth'] = body.date_of_birth
+      } else {
+        res.status(400).json({ error: { code: 'INVALID_DOB', message: 'date_of_birth must be YYYY-MM-DD or null' } })
+        return
+      }
+    }
+    if (body.gender !== undefined) {
+      if (body.gender === null || (typeof body.gender === 'string' && (ALLOWED_GENDERS as readonly string[]).includes(body.gender))) {
+        updates['gender'] = body.gender
+      } else {
+        res.status(400).json({
+          error: { code: 'INVALID_GENDER', message: 'gender must be one of: ' + ALLOWED_GENDERS.join(', ') },
+        })
+        return
+      }
+    }
+    if (body.bio !== undefined) {
+      updates['bio'] = typeof body.bio === 'string' ? body.bio.slice(0, 500) : null
+    }
+    if (body.school !== undefined) {
+      updates['school'] = typeof body.school === 'string' ? body.school.slice(0, 200) : null
+    }
+    if (body.major !== undefined) {
+      updates['major'] = typeof body.major === 'string' ? body.major.slice(0, 200) : null
+    }
+    if (body.graduation_year !== undefined) {
+      if (typeof body.graduation_year === 'number' && Number.isFinite(body.graduation_year)) {
+        updates['graduation_year'] = Math.max(1900, Math.min(2100, Math.floor(body.graduation_year)))
+      } else {
+        updates['graduation_year'] = null
+      }
+    }
+    if (typeof body.has_accessibility_needs === 'boolean') {
+      updates['has_accessibility_needs'] = body.has_accessibility_needs
+    }
+    if (body.accessibility_profile !== undefined
+      && body.accessibility_profile !== null
+      && typeof body.accessibility_profile === 'object'
+      && !Array.isArray(body.accessibility_profile)) {
+      updates['accessibility_profile'] = body.accessibility_profile
+    }
+    if (typeof body.waive_caregiver_fee === 'boolean') {
+      updates['waive_caregiver_fee'] = body.waive_caregiver_fee
+    }
+
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ error: { code: 'EMPTY_BODY', message: 'No valid profile fields in body' } })
+      return
+    }
+
+    try {
+      // Does the row already exist? Determines INSERT vs UPDATE.
+      const { data: existing, error: readErr } = await supabaseAdmin
+        .from('users')
+        .select('id')
+        .eq('id', userId)
+        .maybeSingle()
+      if (readErr) {
+        console.error(`[users/me/profile POST] read failed: ${readErr.message}`)
+        res.status(500).json({ error: { code: 'DB_ERROR', message: 'Could not load profile' } })
+        return
+      }
+
+      if (existing) {
+        const { data: updated, error } = await supabaseAdmin
+          .from('users')
+          .update(updates as never)
+          .eq('id', userId)
+          .select('*')
+          .single()
+        if (error || !updated) {
+          console.error(`[users/me/profile POST] update failed: ${error?.message ?? 'no row'}`)
+          res.status(500).json({ error: { code: 'DB_ERROR', message: 'Could not save profile' } })
+          return
+        }
+        res.status(200).json({ ok: true, profile: updated })
+        return
+      }
+
+      // INSERT path — resolve email from auth.users (never client).
+      const { data: authUser, error: authErr } = await supabaseAdmin.auth.admin.getUserById(userId)
+      const email = authUser?.user?.email
+      if (authErr || !email) {
+        console.error(`[users/me/profile POST] auth lookup failed: ${authErr?.message ?? 'no email'}`)
+        res.status(500).json({
+          error: { code: 'AUTH_LOOKUP_FAILED', message: 'Could not resolve email for this user' },
+        })
+        return
+      }
+      const insertRow = { id: userId, email, ...updates }
+      const { data: inserted, error: insertErr } = await supabaseAdmin
+        .from('users')
+        .insert(insertRow as never)
+        .select('*')
+        .single()
+      if (insertErr || !inserted) {
+        console.error(`[users/me/profile POST] insert failed: ${insertErr?.message ?? 'no row'}`)
+        res.status(500).json({ error: { code: 'DB_ERROR', message: 'Could not create profile' } })
+        return
+      }
+      res.status(200).json({ ok: true, profile: inserted })
+    } catch (err) {
+      console.error('[users/me/profile POST] unexpected:', err)
+      res.status(500).json({ error: { code: 'INTERNAL', message: 'Profile save failed' } })
+    }
+  },
+)
+
 // ── POST /api/users/me/location (Slice 1.11) ─────────────────────────────
 //
 // Per-user GPS ping. iOS + web call this on app foreground (and after
