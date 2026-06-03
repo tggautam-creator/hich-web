@@ -63,6 +63,20 @@ vi.mock('@/lib/supabase', () => ({
   supabase: { auth: { getSession: mockGetSession } },
 }))
 
+// v1.3 Sprint 10 Slice 6 — RideBoardConfirmSheet now consumes
+// useMyCaregivers (for the caregiver picker on the rider-on-driver-post
+// path). Stub here so the test doesn't need a QueryClientProvider — the
+// transit mini-map paths exercised below don't involve the caregiver
+// picker (test profile has no accessibility needs).
+vi.mock('@/hooks/useCaregivers', () => ({
+  useMyCaregivers: () => ({ data: [], isLoading: false, error: null }),
+}))
+
+vi.mock('@/stores/authStore', () => ({
+  useAuthStore: (selector: (s: { profile: null }) => unknown) =>
+    selector({ profile: null }),
+}))
+
 function makeRide(overrides: Partial<ScheduledRide> = {}): ScheduledRide {
   return {
     id: 'sched-1',

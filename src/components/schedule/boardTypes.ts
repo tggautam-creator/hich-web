@@ -40,6 +40,14 @@ export interface ScheduledRide {
   already_requested?: boolean
   ride_status?: string | null
   ride_id?: string | null
+  /** v1.2.1 S2 (2026-05-27) — when the VIEWER is a driver who has an
+   *  outstanding pending board offer on this rider-post, the server
+   *  enriches the ScheduledRide row with the offer id so the card can
+   *  render "Offer Sent + Withdraw Offer" instead of the standard
+   *  Request flow. Null when the viewer hasn't offered yet OR when
+   *  they offered + the offer was accepted (then `ride_id` is set
+   *  instead). Verified at server/routes/schedule.ts:544. */
+  my_offer_id?: string | null
   // Coordinates stored directly on the schedule row (post-migration 048).
   // Populated for both driver and rider posts so fare preview and "Near me"
   // work everywhere, not just on driver posts that happen to have a routine.

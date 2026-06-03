@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { AdvancedMarker } from '@vis.gl/react-google-maps'
 import type { ScheduledRide } from './boardTypes'
 import { formatDate, formatTripSchedule } from './boardHelpers'
@@ -8,6 +8,10 @@ import { supabase } from '@/lib/supabase'
 import { estimateScheduleFare } from '@/lib/fareEstimate'
 import RideMapPrimitive from '@/components/map/RideMapPrimitive'
 import RideBoardTransitStationRow from './RideBoardTransitStationRow'
+import CaregiverPickerSection from '@/components/profile/CaregiverPickerSection'
+import { useMyCaregivers } from '@/hooks/useCaregivers'
+import { useAuthStore } from '@/stores/authStore'
+import { haversineMetres } from '@/lib/geo'
 
 export interface RequestEnrichment {
   pickup_lat?: number
@@ -22,6 +26,18 @@ export interface RequestEnrichment {
   // — server uses this to pre-confirm the dropoff so the driver doesn't
   // have to suggest one in chat for an already-agreed endpoint.
   dropoff_at_driver_destination?: boolean
+  /** v1.2 F7.2 — caregiver the rider wants to bring on this trip.
+   *  Mirrors iOS RideBoardConfirmViewModel.swift:635 enrichment fold.
+   *  Server side: forwarded into the `/api/schedule/request` body so
+   *  the eventual rides row carries the attachment. (Server has not
+   *  yet read this field on the board-request path — iOS has been
+   *  sending it for weeks; landing the wire shape on web here so the
+   *  server-side consumption slice can light up both clients at once.) */
+  caregiver_id?: string | null
+  /** Client-side trip distance estimate (km) used by the server to
+   *  recompute the canonical caregiver-fee tier. Mirrors iOS field
+   *  `distance_km` on the ScheduleRequestEndpoint payload. */
+  distance_km?: number
 }
 
 /**
@@ -88,6 +104,44 @@ export default function RideBoardConfirmSheet({
   // a fresh `/api/transit/preview` returns (the ride or destination
   // changed) and when the rider commits via "Use this stop".
   const [peekedStationKey, setPeekedStationKey] = useState<string | null>(null)
+
+  // v1.3 Sprint 10 Slice 6 — caregiver picker state. Mirrors iOS
+  // RideBoardConfirmSheet.swift:58-61 + caregiverSectionVisible gate
+  // at lines 293-299. Only the rider-on-driver-post path (isDriverPost
+  // === true) shows the picker; drivers offering on a rider-post don't
+  // bring caregivers in v1.2. Gating predicate: viewer profile has
+  // accessibility needs + needs wheelchair AND has at least one
+  // caregiver on file. `selectedCaregiverId` is the picker's external
+  // state — the picker itself toggles between null (off) and a
+  // caregiver id (on with first-row auto-select).
+  const profile = useAuthStore((s) => s.profile)
+  const caregiversQuery = useMyCaregivers()
+  const isWheelchairRider = profile?.has_accessibility_needs === true
+    && profile.accessibility_profile?.needs_wheelchair === true
+  const myCaregivers = isWheelchairRider ? (caregiversQuery.data ?? []) : []
+  const [selectedCaregiverId, setSelectedCaregiverId] = useState<string | null>(null)
+  // v1.3 Sprint 10 Slice 6 — coarse client-side trip distance for the
+  // "+$X" caregiver-tier preview. Prefers the rider's picked pickup +
+  // selected destination coords; falls back to the schedule's posted
+  // endpoints when either is missing. Server (F7.1) recomputes the
+  // canonical tier at submit time. Mirrors iOS confirmSheetDistanceKM
+  // at RideBoardConfirmSheet.swift:305-319. Lives up here (above the
+  // `if (!ride) return null` early return) so React's hook order
+  // stays stable across mount/unmount cycles.
+  const distanceKmEstimate = useMemo(() => {
+    const pickupLat = selectedPickup?.lat ?? ride?.origin_lat ?? null
+    const pickupLng = selectedPickup?.lng ?? ride?.origin_lng ?? null
+    const destLat = selectedPlace?.lat
+      ?? ride?.driver_dest_lat
+      ?? ride?.dest_lat
+      ?? null
+    const destLng = selectedPlace?.lng
+      ?? ride?.driver_dest_lng
+      ?? ride?.dest_lng
+      ?? null
+    if (pickupLat == null || pickupLng == null || destLat == null || destLng == null) return 0
+    return haversineMetres(pickupLat, pickupLng, destLat, destLng) / 1000
+  }, [selectedPickup?.lat, selectedPickup?.lng, selectedPlace?.lat, selectedPlace?.lng, ride?.origin_lat, ride?.origin_lng, ride?.driver_dest_lat, ride?.driver_dest_lng, ride?.dest_lat, ride?.dest_lng])
 
   // Reset/prefill state when ride changes
   useEffect(() => {
@@ -244,6 +298,16 @@ export default function RideBoardConfirmSheet({
   const poster = ride.poster
   const initial = poster?.full_name?.[0]?.toUpperCase() ?? '?'
 
+  // v1.3 Sprint 10 Slice 6 — caregiver-section render gate. Only on
+  // the rider-on-driver-post branch (isDriverPost === true) AND when
+  // the viewer is an accessibility rider with caregivers on file.
+  // NOTE: distanceKmEstimate useMemo is hoisted ABOVE the
+  // `if (!ride) return null` early return to keep React hook order
+  // stable across mount/unmount cycles. React requires every hook to
+  // run on every render path; an early return that skips hooks
+  // triggers "Rendered more hooks than during the previous render".
+  const caregiverSectionVisible = isDriverPost && isWheelchairRider && myCaregivers.length > 0
+
   const handleRiderSubmit = () => {
     if (!selectedPickup?.lat || !selectedPickup.lng) return
     const usingDriverDest = useDriverDestination && !selectedPlace
@@ -267,6 +331,17 @@ export default function RideBoardConfirmSheet({
       enrichment.destination_name = selectedPlace.fullAddress
     }
     if (note.trim()) enrichment.note = note.trim().slice(0, 200)
+    // v1.3 Sprint 10 Slice 6 — forward caregiver_id + distance_km
+    // when the picker is mounted + the rider has a caregiver selected.
+    // Server-side consumption on the board-request path is missing
+    // today (same situation as iOS — both clients have been sending
+    // these fields against /api/schedule/request which silently drops
+    // them); landing the wire shape here so a future server slice can
+    // light up both clients at once.
+    if (caregiverSectionVisible && selectedCaregiverId != null) {
+      enrichment.caregiver_id = selectedCaregiverId
+      enrichment.distance_km = distanceKmEstimate
+    }
     onConfirm(enrichment)
   }
 
@@ -745,6 +820,23 @@ export default function RideBoardConfirmSheet({
                   )}
                 </div>
               </div>
+
+              {/* v1.3 Sprint 10 Slice 6 — caregiver picker on rider-
+                  on-driver-post path. Mirrors iOS
+                  RideBoardConfirmSheet.swift:108-116 mount.
+                  Gating: isDriverPost && isWheelchairRider &&
+                  myCaregivers.length > 0 (matches iOS
+                  caregiverSectionVisible at 293-299). */}
+              {caregiverSectionVisible && (
+                <div className="mb-5" data-testid="ride-board-confirm-caregiver-picker-block">
+                  <CaregiverPickerSection
+                    caregivers={myCaregivers}
+                    selectedId={selectedCaregiverId}
+                    onChange={setSelectedCaregiverId}
+                    distanceKm={distanceKmEstimate}
+                  />
+                </div>
+              )}
 
               <div className="mb-5">
                 <p className="text-sm font-semibold text-text-primary mb-2">Add a note <span className="text-text-secondary font-normal">(optional)</span></p>

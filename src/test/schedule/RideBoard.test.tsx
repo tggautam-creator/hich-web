@@ -44,6 +44,15 @@ vi.mock('@/stores/authStore', () => ({
     }),
 }))
 
+// v1.3 Sprint 10 Slice 6 — RideBoardConfirmSheet is always mounted by
+// RideBoard (with `ride={null}` initially) and now calls useMyCaregivers
+// unconditionally (hooks run before the if-null early return). Stub
+// here so RideBoard tests don't need a QueryClientProvider; profile
+// above lacks accessibility_profile so the picker won't render anyway.
+vi.mock('@/hooks/useCaregivers', () => ({
+  useMyCaregivers: () => ({ data: [], isLoading: false, error: null }),
+}))
+
 // ── Mock Supabase (with channel for Realtime) ────────────────────────────────
 
 const { mockChannel, mockRemoveChannel } = vi.hoisted(() => ({

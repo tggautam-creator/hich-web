@@ -10,10 +10,18 @@ interface RideBoardCardProps {
   isNearby?: boolean
   deletingId: string | null
   withdrawingRideId?: string | null
+  /** v1.3 Sprint 10 Slice 6 — id of the offer currently being
+   *  withdrawn (driver-side outgoing offer cancellation). Drives the
+   *  disabled+spinner state on the Withdraw Offer button. */
+  withdrawingOfferId?: string | null
   onRequestClick: (ride: ScheduledRide) => void
   onDeleteClick: (scheduleId: string) => void
   onOpenMessages: (ride: ScheduledRide) => void
   onWithdrawClick?: (rideId: string) => void
+  /** v1.3 Sprint 10 Slice 6 — driver withdraws their own pending
+   *  board offer. Fires `POST /api/schedule/board/offers/:offerId/withdraw`.
+   *  Mirrors iOS RideBoardPage+Actions.swift::withdrawOffer. */
+  onWithdrawOfferClick?: (offerId: string) => void
   onCardClick: (ride: ScheduledRide) => void
   'data-testid'?: string
 }
@@ -24,10 +32,12 @@ export default function RideBoardCard({
   isNearby = false,
   deletingId,
   withdrawingRideId = null,
+  withdrawingOfferId = null,
   onRequestClick,
   onDeleteClick,
   onOpenMessages,
   onWithdrawClick,
+  onWithdrawOfferClick,
   onCardClick,
 }: RideBoardCardProps) {
   const isDriverPost = ride.mode === 'driver'
@@ -233,7 +243,36 @@ export default function RideBoardCard({
         </div>
       )}
 
-      {!isOwn && ride.already_requested && ride.ride_status !== 'coordinating' && ride.ride_status !== 'accepted' && (
+      {/* v1.3 Sprint 10 Slice 6 — driver-side outgoing board offer.
+          Renders BEFORE the rider-side "Request Sent / Withdraw" branch
+          below + excludes my_offer_id from the latter's gate so both
+          don't render simultaneously. Mirrors iOS RideBoardCard.swift
+          lines 445-453 (offerSentRow) + 582-603. Calls the new
+          onWithdrawOfferClick(offerId) → POST /api/schedule/board/
+          offers/:offerId/withdraw (server endpoint at
+          server/routes/schedule.ts:5858, v1.2.1 S2 2026-05-27). */}
+      {!isOwn && ride.my_offer_id != null && ride.ride_id == null && (
+        <div className="flex items-center gap-2" data-testid="board-card-offer-sent-row">
+          <div className="flex-1 rounded-2xl py-2.5 text-center text-sm font-semibold bg-primary/10 text-primary" data-testid="board-card-offer-sent-badge">
+            Offer Sent
+          </div>
+          {onWithdrawOfferClick && (
+            <button
+              data-testid="board-card-withdraw-offer-button"
+              disabled={withdrawingOfferId === ride.my_offer_id}
+              onClick={(e) => {
+                e.stopPropagation()
+                if (ride.my_offer_id != null) onWithdrawOfferClick(ride.my_offer_id)
+              }}
+              className="rounded-2xl px-3 py-2.5 text-sm font-semibold text-danger bg-danger/10 active:bg-danger/20 disabled:opacity-50"
+            >
+              {withdrawingOfferId === ride.my_offer_id ? 'Withdrawing…' : 'Withdraw Offer'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {!isOwn && ride.already_requested && ride.my_offer_id == null && ride.ride_status !== 'coordinating' && ride.ride_status !== 'accepted' && (
         <div className="flex items-center gap-2">
           <div className="flex-1 rounded-2xl py-2.5 text-center text-sm font-semibold bg-surface text-text-secondary" data-testid="already-requested-badge">
             Request Sent

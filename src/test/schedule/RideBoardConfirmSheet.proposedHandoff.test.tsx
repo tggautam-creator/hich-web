@@ -28,6 +28,17 @@ vi.mock('@/lib/fareEstimate', () => ({
   estimateScheduleFare: vi.fn().mockReturnValue(null),
 }))
 
+// v1.3 Sprint 10 Slice 6 — caregiver picker hook stub (test profile
+// has no accessibility needs, so the picker doesn't render here).
+vi.mock('@/hooks/useCaregivers', () => ({
+  useMyCaregivers: () => ({ data: [], isLoading: false, error: null }),
+}))
+
+vi.mock('@/stores/authStore', () => ({
+  useAuthStore: (selector: (s: { profile: null }) => unknown) =>
+    selector({ profile: null }),
+}))
+
 function makeRide(overrides: Partial<ScheduledRide> = {}): ScheduledRide {
   return {
     id: 'sched-1',

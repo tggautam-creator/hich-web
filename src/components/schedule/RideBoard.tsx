@@ -77,6 +77,13 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
   const [requestError, setRequestError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [withdrawingRideId, setWithdrawingRideId] = useState<string | null>(null)
+  // v1.3 Sprint 10 Slice 6 — driver-side outgoing board offer
+  // withdrawal. Separate state from `withdrawingRideId` because the
+  // request flows through a different endpoint
+  // (POST /api/schedule/board/offers/:offerId/withdraw vs
+  // PATCH /api/schedule/withdraw-board) and the disabled state on the
+  // RideBoardCard's button keys off the offer id.
+  const [withdrawingOfferId, setWithdrawingOfferId] = useState<string | null>(null)
   const [editingSeats, setEditingSeats] = useState(false)
   const [seatEditValue, setSeatEditValue] = useState(1)
   const [savingSeats, setSavingSeats] = useState(false)
@@ -254,6 +261,11 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                 destination_flexible: enrichment.destination_flexible,
                 note: enrichment.note,
                 dropoff_at_driver_destination: enrichment.dropoff_at_driver_destination,
+                // v1.3 Sprint 10 Slice 6 — caregiver wire shape
+                // mirrors iOS. Server-side consumption on the board-
+                // request path is still pending (separate slice).
+                caregiver_id: enrichment.caregiver_id ?? null,
+                distance_km: enrichment.distance_km ?? null,
               } : {}),
             }),
           })
@@ -514,6 +526,47 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       setRequestError('Network error — please try again.')
     } finally {
       setWithdrawingRideId(null)
+    }
+  }, [])
+
+  // v1.3 Sprint 10 Slice 6 — driver withdraws their own outstanding
+  // pending board offer. Mirrors iOS RideBoardPage+Actions.swift::
+  // withdrawOffer + WithdrawBoardOfferEndpoint. Endpoint at
+  // server/routes/schedule.ts:5858 (v1.2.1 S2 2026-05-27).
+  const handleWithdrawOffer = useCallback(async (offerId: string) => {
+    setWithdrawingOfferId(offerId)
+    setRequestError(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        setRequestError('Not authenticated')
+        return
+      }
+      const resp = await fetch(`/api/schedule/board/offers/${offerId}/withdraw`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      })
+      if (!resp.ok) {
+        const body = (await resp.json().catch(() => null)) as { error?: { message?: string } } | null
+        setRequestError(body?.error?.message ?? 'Failed to withdraw offer')
+        return
+      }
+      // Optimistic local update — clear the my_offer_id flag so the
+      // card flips back to the "Offer to Drive" CTA without waiting
+      // for a refetch. Same pattern as handleWithdrawRequest above.
+      setRides((prev) => prev.map((r) =>
+        r.my_offer_id === offerId
+          ? { ...r, my_offer_id: null, already_requested: false }
+          : r,
+      ))
+      setSuccessMessage('Offer withdrawn.')
+      setTimeout(() => setSuccessMessage(null), 3000)
+    } catch {
+      setRequestError('Network error — please try again.')
+    } finally {
+      setWithdrawingOfferId(null)
     }
   }, [])
 
@@ -865,11 +918,13 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
                 isNearby={nearbyRideIds.has(ride.id)}
                 deletingId={deletingId}
                 withdrawingRideId={withdrawingRideId}
+                withdrawingOfferId={withdrawingOfferId}
                 onCardClick={(r) => { setDetailRide(r) }}
                 onRequestClick={(r) => { void handleStartRequest(r) }}
                 onDeleteClick={(id) => { void handleDeleteSchedule(id) }}
                 onOpenMessages={handleOpenMessages}
                 onWithdrawClick={(rideId) => { void handleWithdrawRequest(rideId) }}
+                onWithdrawOfferClick={(offerId) => { void handleWithdrawOffer(offerId) }}
               />
             ))}
           </div>
