@@ -21,7 +21,7 @@ iOS has added 22 migrations (086–107), 22 new endpoints, and entire new Featur
 | 4 | **Rider routines + Suggestions** | mig 099–106, `Features/Suggestions/`, `Features/Schedule/Routines*`, `Features/Profile/ProfileRoutinesSection`, suggestion + project-routine + sync-routine endpoints | ✅ audit complete 2026-05-30 — see [Sprint 8](#sprint-8--suggestions--rider-routines-v13-parity) below |
 | 5 | **Trips & segments (split fare)** | mig 097, 098, `Features/Rides/`, `Features/MultiRider/`, `Features/DriverHome/DriverMultiRidePage+TripComplete`, `server/lib/trips.ts` + `server/lib/segments.ts`, no dedicated endpoint yet (iOS reads Supabase direct via `CoRidersFetcher`) | ✅ audit complete 2026-05-30 — see [Sprint 9](#sprint-9--trips--segments-split-fare-foundation-v13-parity) below |
 | 6 | **Board redesign + Smart geo-match** | 25 `Features/RideBoard/` .swift files, board endpoints (`BoardOfferEndpoints`, `BoardSearchEndpoint`, `BoardRequestActionEndpoints`, `ScheduleBoardEndpoint`), migrations 072 + 075 + 078 + 083 (smart polylines + transit details), parallel-session coordination cleared (no `RideBoard/` activity from them in 14d) | ✅ audit complete 2026-06-01 — see [Sprint 10](#sprint-10--board-redesign--smart-geo-match-v13-parity) below |
-| 7 | **Ride safety + forensics (admin)** | mig 094, 095, 096, `Features/Safety/`, `Features/AdminCampaign/` | ⏳ pending |
+| 7 | **Ride safety + forensics (admin)** | mig 094, 095, 096, `Features/Safety/`, `Features/Profile/ProfileSafetySection.swift`, safety endpoints | ✅ audit complete 2026-06-02 — see [Sprint 11](#sprint-11--ride-safety--forensics-v13-parity) below |
 | 8 | **Endpoint coverage audit** | all 72 endpoints in `ios/Core/Networking/Endpoints/` | ⏳ pending |
 | 9 | **Re-walk Tier 2 polish from 2026-05-12** | copy / sort / filter / banner items | ⏳ pending |
 
@@ -38,8 +38,10 @@ For every stage:
 
 ### Currently pending decisions
 
-- **Stages 1–6 audits landed**. Stages 7–9 still queued.
-- **Sprint 10 (Board redesign + Smart geo-match v1.3)** — ✅ Audit complete 2026-06-01. 6-slice plan landed below; no code yet. Headline: web Board is wire-compatible on every server endpoint but iOS has pulled ahead on 5 load-bearing surfaces: (1) `proposed_transit_*` dropped at web type boundary on offer card, (2) `reverse_transit_handoff` match-type dark on web, (3) transit-station picker is text-only (iOS ships mini-map + peek), (4) no `PosterProfilePreviewSheet` on avatar tap, (5) no `CaregiverPickerSection` on Board confirm + no `my_offer_id` Withdraw on `RideBoardCard`. `FareEducatorInlineCard` deferred to Sprint 11 (called out in open questions).
+- **Stages 1–7 audits landed**. Stages 8–9 still queued.
+- **2026-06-02 hotfix — `rides.pickup_point=null` invariant restored** (commit `29656ce`, 3 unpushed). Server-side two-site write + accept-location backfill + client-side rescue listeners on Rider/DriverPickupPage. 5 new regression tests pin the invariant from both directions. Tarun QA confirmed on a fresh ride.
+- **Sprint 11 (Ride safety + forensics v1.3)** — ✅ Audit complete 2026-06-02. 7-slice plan landed below; no code yet. Headline: web is missing the entire `RideSafetyCheckOverlay` flow + `ride-safety:{rideID}` channel + Trusted Contacts CRUD on Profile + role-aware safety report categories + Phase-3.4 gated manual-end button, AND there's a live CLAUDE.md hard-rule violation where the emergency button is hidden inside `JourneyDrawer` during QR scanning. 5 BLOCKER + 8 HIGH gaps closed.
+- **Sprint 10 (Board redesign + Smart geo-match v1.3)** — ✅ All 6 slices shipped locally (commits through `2201e6e`). Awaiting QA + push.
 - **Sprint 9 (Trips & segments v1.3)** — ✅ All 5 slices shipped locally (commits `a6a31d3`, `71db876`, `b245760`, `1999f75`, `3dbb4b8`). Awaiting QA + push.
 - **Sprint 8 (Suggestions + rider routines v1.3)** — ✅ Audit complete 2026-05-30. 6-slice plan landed; no code yet. Open question #9: rider-home Waymo redesign blocks Slice 4's natural placement.
 - **Sprint 7 (accessibility / user profile)** — ✅ Slices 1–5 shipped + pushed (CI green 2026-05-30). Slice 6 (UserProfilePreviewCard polish) parked.
@@ -48,17 +50,249 @@ For every stage:
 
 ### Current focus
 
-Stage 6 audit just landed. Stages 1–6 of the multi-stage iOS-parity audit are now complete; 6 numbered sprints (Sprints 5–10) wait on user direction. Sprint 9 has all 5 slices shipped locally and is the most ready-to-push artifact.
+Stage 7 audit just landed. Stages 1–7 of the multi-stage iOS-parity audit are now complete; 7 numbered sprints (Sprints 5–11) wait on user direction. Sprint 11 is the freshest — closes a live CLAUDE.md hard-rule violation in Slice 1. Sprints 9 and 10 both have all slices shipped locally and are ready-to-push.
 
 ### Next action
 
 Tarun decides:
-1. **Push Sprint 9** to origin (all 5 slices green, all reviewer matrices attached, awaiting only QA + "ship it").
-2. **Sprint 10 Slice 1** (zero-dep `proposed_transit_*` render on `BoardOfferAcceptPage` — ~150 LoC, smallest possible win).
+1. **Sprint 11 Slice 1** (always-visible top-bar safety pill — closes CLAUDE.md hard rule, ~180 LoC, smallest possible win, lands shared `SafetyPill.tsx`).
+2. **Push Sprint 9 + Sprint 10** to origin (all green, reviewer matrices attached, awaiting only "ship it").
 3. **Sprint 8 Slice 1** (Suggestions foundation).
 4. **Sprint 5 Slice 1** (Reports v2 notifications drift — bounded UX fix).
-5. Run **Stage 7 audit** (Ride safety + forensics — admin-side, light on user-facing parity).
-6. Resolve **Sprint 10 open questions** (Slice 4 sizing, Slice 5 self-preview, Slice 6 empty-caregivers behavior, FareEducator promotion).
+5. Run **Stage 8 audit** (Endpoint coverage — read all 72 iOS endpoint files end-to-end).
+6. Resolve **Sprint 11 open questions** (Trusted Contacts host page, FCM Web prompt UX, RiderPickupPage iOS counterpart, TrackPage symmetric copy, RideSummary end-reason tag, /report-issue taxonomy cleanup).
+
+---
+
+## Sprint 11 — Ride safety + forensics v1.3 parity
+
+**Audit-first mode.** Stage 7 of the multi-stage iOS-parity audit completed 2026-06-02 with no code changes. This section is the side-by-side findings + slice plan. Nothing here is shipped on the web app yet.
+
+### Current focus
+Sprint 11 closes the user-facing safety gap surfaced by the Stage 7 audit (2026-06-02): web has no `RideSafetyCheckOverlay`, no `ride-safety:{rideID}` realtime subscription, no Trusted Contacts CRUD, no role-aware safety report categories, no gated Phase-3.4 manual-end button, and — critically — a CLAUDE.md hard-rule violation where the emergency button is hidden inside `JourneyDrawer` during QR scanning on both active-ride pages. The sprint ships the missing divergence-warning flow end-to-end (foreground realtime + background push + countdown UI + three role-aware action submits), unblocks the dead `Text trusted contacts` button by adding the Profile-side CRUD, and restores parity on the report taxonomy (rider vs driver categories), the EmergencySheet structure, and the post-pickup safety pill. Every slice mirrors an iOS surface in `ios/Tago/Features/Safety/` or `ios/Tago/Features/Profile/`; nothing in this sprint is a web-native invention.
+
+### Sprint 11 sequenced plan (one paragraph plain-English)
+We start with the smallest, highest-leverage fix: the always-visible safety pill (Slice 1) closes the CLAUDE.md hard rule and lands a tiny shared component the rest of the sprint reuses. Slice 2 builds the Trusted Contacts list/add/delete UI on the Profile page so the existing "Text trusted contacts" button stops being a dead-end and so the divergence overlay's "Get help" branch has someone to text. Slice 3 introduces the `useRideRole` hook and makes the EmergencySheet report wizard role-aware (rider sees 5 rider categories, driver sees 5 driver categories) — this hook is the shared primitive for Slice 4. Slice 4a wires the `ride-safety:{rideID}` realtime channel, reseat-on-mount via `GET /api/rides/active`, and a passive "warning detected" banner that auto-clears on `warning_responded` / `safety_ended`. Slice 4b layers the interactive `RideSafetyCheckOverlay` on top — 90s countdown ring, three role-aware action buttons, sms help branch with desktop fallback, FCM Web background push handler for `warning_fired`/`warning_responded`/`safety_ended`, and stale-tap silent dismiss. Slice 5 adds the gated "End ride without QR" secondary button on both rider and driver active pages (Phase 3.4 mandate, `elapsed>5min AND gpsDistance>1km`). Slice 6 finishes with EmergencySheet structural polish — three semantic sections, state-driven footer copy, toast confirmations, sms-fallback for desktop, and the symmetric TrackPage copy fix.
+
+### Parity matrix
+| iOS Surface | Web Status | Severity | Gap |
+| --- | --- | --- | --- |
+| Top-bar always-visible safety pill (rider active + driver active + driver pickup) | DRIFT | BLOCKER | Web mounts emergency trigger inside `JourneyDrawer` only — not rendered during QR scanning mode on `RiderActiveRidePage` (L441-489). Violates CLAUDE.md "Emergency button always in portal at top of DOM tree. Never inside conditional renders." Three iOS surfaces (`RiderActiveRidePage.swift:475-490`, `DriverActiveRidePage.swift:446-461`, `DriverPickupPage.swift:919-941`) all host the 36x36 disc top-bar pill. |
+| `RideSafetyCheckOverlay` — divergence warning UI | MISSING | BLOCKER | iOS shows a `fullScreenCover` with 90s countdown ring (green→yellow→red) and three role-aware actions triggered by `warning_fired` realtime event. Web has zero subscription, zero overlay, zero client callers. Server cron auto-ends the ride after 90s with no rider/driver chance to respond. |
+| `ride-safety:{rideID}` realtime channel subscription | MISSING | BLOCKER | iOS subscribes on both active-ride pages to `warning_fired` / `warning_responded` / `safety_ended`. Web has no subscription on either page. |
+| Submit `rider_in_car` / `driver_in_car` ("still here") | MISSING | BLOCKER | No web caller for `POST /api/rides/:id/safety-warning-response`. Action prefix must match per-ride role or server returns 403 WRONG_ROLE. |
+| Submit `rider_left` / `driver_left` ("got out") | MISSING | BLOCKER | No web caller; ride-ending branch unreachable from web overlay. Server broadcasts `safety_ended` (not `warning_responded`) on this branch. |
+| Submit `help_requested` + sms pre-fill to trusted contacts | MISSING | BLOCKER | iOS mints share token via response and opens MFMessageComposeViewController pre-filled. Web equivalent: sms: deep-link with helpComposedBody on mobile; Copy/Share fallback on desktop where sms: doesn't resolve. |
+| Trusted Contacts CRUD on Profile (list + add + delete) | MISSING | BLOCKER | iOS `ProfileSafetySection.swift` shows up to 5 contacts; web has zero CRUD UI. EmergencySheet's "Text trusted contacts" button and the overlay's "Get help" branch are both dead today. iOS mounts on Profile page (`ProfilePage.swift:113`), not Settings — web should match. |
+| `AddTrustedContactSheet` (name + phone + cap + normalisation) | MISSING | BLOCKER | iOS sheet with name/phone fields, 5-contact cap, `normalisePhone` helper (trim, preserve leading +, strip non-digits), and exact INVALID_NAME/INVALID_PHONE/LIMIT_REACHED error mappings. Web has nothing. |
+| Safety report category taxonomy (rider vs driver-aware) | DRIFT | HIGH | iOS `SafetyReportCategory.availableFor(role:)` shows rider-specific OR driver-specific categories based on viewer role. Web shows rider-only categories regardless of role. Adds: `rider_aggression`, `rider_damage`, `rider_threat`, `rider_no_show` for drivers. Server's legacy alias map (`server/routes/report.ts:84-92`) already handles these rawValues. |
+| Reseat overlay on mount (`divergence_state === 'warning'`) | MISSING | HIGH | iOS reads `divergence_state` + `warning_fired_at` on initial fetch and re-seats the overlay if user re-opens app mid-warning. Web has no overlay and the bare `GET /api/rides/:id` handler does NOT exist on the server (verified via exhaustive grep) — must read from `GET /api/rides/active` instead, which already `select('*')`s the row. Polling backstop on the 10s/15s loops also required for realtime drops. |
+| Role-aware overlay subtitle + button labels | MISSING | HIGH | Rider sees "You and your driver appear to be apart…" + "I'm still in the car" / "I got out — end the ride" / "Something's wrong — get help". Driver sees "{counterpartyName ?? 'your rider'} is no longer near the vehicle…" + "{Name} is still with me" / "{Name} got out — end the ride" / "Report a problem". |
+| Overlay error states (3 distinct copies + restart countdown) | MISSING | HIGH | iOS sets `errorMessage` to "Couldn't confirm — {error}" / "Couldn't end ride — {error}" / "Couldn't notify — {error}" and restarts the countdown so user can retry. Without these the overlay looks broken on error. |
+| Help-flow no-trusted-contacts guidance | MISSING | HIGH | iOS shows "No trusted contacts saved. Add them in Profile → Safety so we can text them next time." with 2.5s pause before resolving. Cross-references Slice 2. |
+| Help-flow desktop fallback (no sms: handler) | MISSING | HIGH | iOS `helpFallback` view with Copy link / ShareLink / Close actions. Desktop browsers have no sms: handler — the help branch is functionally broken without a Copy/Share fallback. |
+| Gated "End ride without QR" — rider | MISSING | HIGH | CLAUDE.md Phase 3.4 mandates rider-side secondary end gated to `elapsed>5min AND gpsDistance>1km`. Web has no button and no gate. Anti-fraud risk: if shipped without gate, rider ends at $5 minimum after 100m. iOS posts `reason='manual_end'` to `POST /api/rides/:id/safety-end`. |
+| Gated "End ride without QR" — driver mirror | MISSING | HIGH | Same gap as rider; CLAUDE.md mandates mirror with same `>5min AND >1km` gate (`DriverActiveRidePage.swift:757-767 manualEndEligible`). Posts `reason='manual_end'`. |
+| Delete trusted contact + destructive dialog copy | MISSING | HIGH | iOS shows "Remove this contact?" with subtitle "They won't receive your live-tracking link in an emergency." Web has no UI. |
+| Trusted contacts cap (5) + client-side hide + server `409 LIMIT_REACHED` mapping | MISSING | MEDIUM | iOS hides add button at count >= 5 AND maps server 409 (defence-in-depth). Web needs both. |
+| Stale-tap silent dismiss (`409 NO_ACTIVE_WARNING`) | MISSING | MEDIUM | iOS treats 409 NO_ACTIVE_WARNING/NOT_ACTIVE as silent dismiss. Web overlay must mirror. |
+| Countdown ring (90s green→yellow→red) | MISSING | MEDIUM | Color-graded SVG ring on iOS; web uses CSS ring with matching color stops. |
+| `EmergencySheet` shell (three semantic sections) | DRIFT | MEDIUM | Web ships single flat sheet; iOS uses three sections (Emergency Services / Share Location / Report) with state-driven footer copy. |
+| Report wizard navigation pattern | DRIFT | MEDIUM | iOS pushes `ReportSafetyView` via NavigationLink; web renders inline. Functionally equivalent — keep web's inline pattern (web-native flow). |
+| `DriverPickupPage` hardcoded `viewerRole:.driver` (iOS bug) | WEB_AHEAD | MEDIUM | iOS hardcodes driver role on pickup-page EmergencySheet. Web is currently rider-only by default; once role-aware (Slice 3) web will be correct on BOTH platforms before iOS catches up. |
+| `RiderPickupPage` / `DriverPickupPage` emergency mounts (parallel to active-ride hard-rule) | DRIFT | MEDIUM | Web already mounts EmergencySheet on both pickup pages; safety pill needs the same always-visible top-bar treatment there too. Folded into Slice 1. |
+| EmergencySheet desktop sms: fallback (`canSendText==false` equivalent) | MISSING | MEDIUM | Desktop browsers don't resolve `sms:` URLs. Web needs "Open on phone" or copy-to-clipboard messaging. |
+| FCM Web push handlers for safety events | MISSING | MEDIUM | Web has FCM-Web infra but no handler for `warning_fired`/`warning_responded`/`safety_ended` payloads. Foreground covered by realtime; push covers background. Folded into Slice 4b. |
+| Server-side WRONG_ROLE 403 mapping | MISSING | MEDIUM | Web overlay must derive role per-ride before posting; mistaken prefix → 403. Slice 4b uses Slice 3's `useRideRole` hook. |
+| `warning_responded` realtime auto-dismiss (when counterparty responds first) | MISSING | MEDIUM | Overlay clears without local action when other party posts first. Must be unit-tested. |
+| `help_sms_sent_at` response field | MISSING | LOW | Server timestamps when help branch fires; overlay may read it back to throttle re-taps. |
+| `AddTrustedContactSheet` phone normalisation | MISSING | MEDIUM | Without `normalisePhone` mirror, users entering "(415) 555-1234" hit server INVALID_PHONE. |
+| Trusted Contacts list refresh on settings/profile refresh | MISSING | LOW | iOS reacts to `refreshSignal`; web should invalidate React Query on parent refresh. |
+| ProfileSafetySection silent retry-once on load error | MISSING | LOW | iOS retries with 1s sleep before surfacing error banner. |
+| ProfileSafetySection empty-state copy | MISSING | LOW | Exact cap-substituted hint: "Add up to 5 people you'd want to reach in an emergency. They'll receive your live-tracking link with one tap from the Safety menu during a ride." |
+| Add sheet auto-focus on `.name` after 250ms | MISSING | LOW | Lets sheet finish slide-in before opening keyboard; web should mirror on mount. |
+| Two-section structure of add sheet (Pick from Contacts + Or enter manually) | DRIFT | LOW | Web omits Picker but keeps the "Or enter manually" section header for cross-platform familiarity. |
+| `ContactPickerView` (CNContactPickerViewController) | MISSING | LOW | Pure native — no cross-browser web equivalent. Acceptable defer; web users type manually. |
+| `ReportSafetyView` `.dismissKeyboardOnTap()` + FocusState | MISSING | LOW | Hard-rule per memory; ensure web textarea has Done/Escape handling. |
+| `ReportSafetyView` details footer + placeholder + Done button | MISSING | LOW | Exact copy parity for footer, "Select a category" placeholder, and submitted-state Done button. |
+| `EmergencySheet` Done toolbar item + interactive-dismiss-disabled + `.large` detent | DRIFT | LOW | Web's close button placement/copy differs; confirm not swipe-dismissible. |
+| `EmergencySheet` share-link row (copy button + monospace + middle-truncate) | DRIFT | LOW | Web shows plain text; iOS exposes dedicated copy button with `doc.on.doc` + monospaced footnote + middle truncation. |
+| `EmergencySheet` "Share link via…" row (ShareLink) | MISSING | LOW | iOS exposes distinct re-share row in `.shared` state; web only invokes navigator.share at mint-time. |
+| `EmergencySheet` state-driven footer copy under Share Location | MISSING | LOW | Three strings (idle/shared/revoked) explaining 4h TTL. Web has no footer. |
+| Toast confirmations (copy/sent/revoke) | MISSING | LOW | iOS shows transient 2.4s capsule toast; web has no feedback. |
+| Revoke failure toast: "Couldn't reach server — link still active" | MISSING | LOW | Error state for DELETE share-location is missing; web silently logs today. |
+| Mint failure toast: "Couldn't create the link. Try again." | MISSING | LOW | Re-enable retry on `shareLocationCTARow(title: 'Try again')`. |
+| `composedMessageBody` SMS pre-fill exact string | MISSING | LOW | "I'm using Tago and wanted you to be able to follow my ride. Live tracking link (expires in 4 hrs): {url}" — exact parity. |
+| `helpComposedBody` SMS pre-fill exact string | MISSING | LOW | Distinct from above: "I'm using Tago and might need help. Live tracking link (expires in 4 hrs): {url}". Folded into Slice 4b. |
+| Trusted contacts count subtitle pluralization | MISSING | LOW | "Send to N saved contact" / "Send to N saved contacts". |
+| Driver-side overlay `errorFallback` silently ignored | DRIFT | LOW | iOS intentionally silent on driver-side overlay error fallback; web should mirror or upgrade with toast — document the choice. |
+| Driver-side `safety_ended` also bumps `rideEndedSignal` | MISSING | LOW | Belt-and-suspenders redundancy with the rider-active `ride_ended` channel; web driver page should mirror. |
+| `clearDropoffReminderBanner` on `rideEndedSignal` | MISSING | LOW | Slice 4b service-worker handler for `safety_ended` must also clear any pending notification banners. |
+| Accessibility identifiers for overlay testability | MISSING | LOW | Web overlay must expose matching `data-testid` (overlay/card/stillHere/gotOut/help). |
+| TrackPage copy "Driver location is being shared" | DRIFT | LOW | Server is symmetric but UI hardcodes "Driver" — misleading when a rider shared. Without a server contract change to expose `share_role`, web falls back to neutral "Live location is being shared". |
+| `GET /api/safety/share-location` 403 not_participant / 404 ride_not_found | MISSING | LOW | EmergencySheet should show graceful error toast on these server responses. |
+| Migration 095 forensic columns persisted by web QR flow | PARITY | LOW | Server writes pickup_scan_lat/lng/at, dropoff_scan_lat/lng/at, gas_price_per_gallon_cents, gas_cost_cents, time_cost_cents via existing endpoints; web already exercises via existing flow. Verify in Slice 5 implementation but no new code needed. |
+| `ride_audit_log` trigger (write-path discipline) | PARITY | MEDIUM | Cross-cutting note: web must NEVER write directly to `rides` row from the client — every mutation must go through a server route or audit trail breaks. Called out as a cross-cutting constraint, not a slice. |
+| `divergence_pattern` column (migration 096) | DEAD | LOW | Declared but never written/read. Web decoders should ignore it. Informational only. |
+| TrackPage public live tracking | PARITY (web AHEAD) | LOW | Already shipping with Google Maps, 10s polling, all error states. No iOS equivalent. |
+| GpsPingEndpoint integration | PARITY | LOW | Both platforms ping every 10s feeding server divergence detection. |
+| EmergencySheet auto-load trusted contacts on open | PARITY | LOW | Both lazy-load on first open. |
+| Call 911 row | PARITY | LOW | Web `tel:` anchor; iOS adds warning haptic. Acceptable — web has no haptic API. |
+| Share my location CTA (mint share-token) | PARITY | LOW | Same endpoint, same URL construction. |
+| Text trusted contacts row (depends on Slice 2 to become functional) | PARITY (functionally dead) | LOW | Both load contacts and build sms: link. Becomes useful once Slice 2 ships. |
+| Stop sharing row | PARITY | LOW | Both DELETE the token. |
+| Submitted success screen | PARITY | LOW | Both show green checkmark + thank-you copy. |
+| MyReportsPage / MyReportDetailPage / report attachments | MISSING | MEDIUM/LOW | Out of Sprint 11 — belongs to Reports v2 stage. |
+| Forensic columns on RideSummary (`end_reason`/`cancel_reason` user-facing tag) | MISSING | LOW | Defer until iOS source confirms a corresponding surface. |
+| Admin-lane safety surfaces (EmergencyBanner, SafetyEndedPage, audit-log read) | PARITY | LOW | Parallel admin session lane — out of scope. |
+
+### Sprint 11 slice plan
+
+**Slice 1: Always-visible top-bar safety pill (HARD-RULE fix) + pickup-page mount**
+- Scope: Mount a portal-level 36x36 safety pill at the top of `RiderActiveRidePage`, `DriverActiveRidePage`, `RiderPickupPage`, and `DriverPickupPage`. Pill is visible at all times including during QR scanning mode (fixes CLAUDE.md hard-rule violation where `JourneyDrawer`-mounted emergency trigger is hidden during scanning). Reuse existing `EmergencySheet` as the sheet target. New shared `SafetyPill.tsx` component lives in `src/components/ui/`.
+- iOS reference files: `ios/Tago/Features/RiderHome/RiderActiveRidePage.swift:475-490`, `ios/Tago/Features/DriverHome/DriverActiveRidePage.swift:446-461`, `ios/Tago/Features/DriverHome/DriverPickupPage.swift:919-941`
+- Web files to create/modify: `src/components/ui/SafetyPill.tsx` (new, ~80 LoC), `src/components/ride/RiderActiveRidePage.tsx`, `src/components/ride/DriverActiveRidePage.tsx`, `src/components/ride/RiderPickupPage.tsx`, `src/components/ride/DriverPickupPage.tsx`
+- Endpoints touched: none
+- Tests: SafetyPill renders during scanning mode on `RiderActiveRidePage`; tap opens EmergencySheet; pill survives mode flips between scan/active/journey-drawer; pill renders on both pickup pages; pill is portal-mounted (not inside conditional renders).
+- Estimated LoC: ~180
+- Dependencies: none
+- Scope cuts (explicit defers): haptic feedback on long-press (web has no haptic API).
+
+**Slice 2: Trusted Contacts CRUD on Profile (unblocker for safety flows)**
+- Scope: Add `TrustedContactsSection` to the Profile page (matching iOS `ProfilePage.swift:113` mount point — NOT Settings). List up to 5 contacts with name/phone. `AddTrustedContactSheet` with single "Or enter manually" section header (no native contact picker), name (1-60 chars) + phone fields, `normalisePhone` helper mirroring iOS (trim, preserve leading +, strip non-digits → `+{digits}` or `{digits}`), auto-focus on name after 250ms. Delete with destructive confirmation: "Remove this contact?" + "They won't receive your live-tracking link in an emergency." Empty state with exact iOS copy. Cap of 5 — hide add button client-side AND map server 409 LIMIT_REACHED (defence-in-depth). Silent retry-once-after-1s on load error before surfacing the banner. React Query invalidate on parent refresh.
+- iOS reference files: `ios/Tago/Features/Profile/ProfileSafetySection.swift`, `ios/Tago/Features/Profile/AddTrustedContactSheet.swift`, `ios/Tago/Features/Profile/ProfilePage.swift:113`
+- Web files to create/modify: `src/components/profile/TrustedContactsSection.tsx` (new), `src/components/profile/AddTrustedContactSheet.tsx` (new), `src/components/profile/ProfilePage.tsx` (mount new section — verify exact path), `src/hooks/useTrustedContacts.ts` (new — React Query CRUD)
+- Endpoints touched: `GET /api/safety/trusted-contacts`, `POST /api/safety/trusted-contacts`, `DELETE /api/safety/trusted-contacts/:id`
+- Tests: list renders empty state with exact copy; add flow validates name 1-60 + phone 7-20 via `normalisePhone`; add button hidden when count >= 5 (client cap); server 409 LIMIT_REACHED also maps to user copy "You can save up to 5 trusted contacts." (separate test from cap hide); INVALID_NAME → "Name must be 1-60 characters."; INVALID_PHONE → "Phone must be a valid number."; delete confirmation flow with exact destructive copy; silent retry-once on load error before banner; auto-focus name after 250ms.
+- Estimated LoC: ~450 (at upper edge — split if it crosses 500 during implementation)
+- Dependencies: none
+- Scope cuts (explicit defers): `CNContactPickerViewController`-equivalent — Web Contacts Picker API is Chromium-only/secure-context, skipped for cross-browser parity. Sheet keeps "Or enter manually" section header so structure mirrors iOS even without the picker.
+
+**Slice 3: Role-aware safety report categories + `useRideRole` shared primitive**
+- Scope: Introduce `useRideRole(rideId)` hook deriving role from `rides.rider_id`/`driver_id` (per the role-per-ride memory rule). Make `EmergencySheet`'s report wizard show 5 rider categories (`unsafe_driving`, `inappropriate_behavior`, `wrong_route`, `no_show`, `other`) OR 5 driver categories (`rider_aggression`, `rider_damage`, `rider_threat`, `rider_no_show`, `other`) based on `useRideRole` result. Send the raw category rawValues to the server — `server/routes/report.ts:84-92` legacy alias map already normalizes them. Add `.dismissKeyboardOnTap()`-equivalent for the description textarea, exact `detailsFooter` copy ("Tago's safety team reviews every report. Add as much detail as you can — driver behaviour, location, time, anything that helps."), "Select a category" placeholder option, and an explicit Done button on the submitted state that clears wizard state. Keep web's inline wizard pattern (don't push to a separate page — web-native flow is fine).
+- iOS reference files: `ios/Tago/Features/Safety/ReportSafetyView.swift`, `ios/Tago/Models/SafetyReportCategory.swift`
+- Web files to create/modify: `src/components/ui/EmergencySheet.tsx`, `src/lib/safetyReportCategories.ts` (new — role-aware enum + labels), `src/hooks/useRideRole.ts` (new — shared with Slice 4)
+- Endpoints touched: `POST /api/report`
+- Tests: rider sees 5 rider categories; driver sees 5 driver categories; submission posts correct rawValue; server legacy aliases still normalize correctly (Vitest server assertion for `rider_aggression`/`rider_threat` → `safety_during_ride`, `rider_damage` → `rider_conduct`, `rider_no_show` → `cancellation_dispute`); Done button on submitted state clears wizard.
+- Estimated LoC: ~200
+- Dependencies: none (lands the `useRideRole` hook for Slice 4 to consume)
+- Scope cuts (explicit defers): native pushed-page report flow (web's inline wizard is acceptable parity).
+
+**Slice 4a: `ride-safety:{rideID}` realtime channel + passive warning detection + reseat-on-mount**
+- Scope: New `useRideSafetyChannel(rideId, role)` hook subscribing to `ride-safety:{rideID}` channel for `warning_fired` / `warning_responded` / `safety_ended` events. Both rider and driver active pages consume it. Reseat-on-mount: on initial active-ride fetch, read `divergence_state` + `warning_fired_at` from the response and re-seat overlay state if `divergence_state === 'warning'`. Polling backstop on the existing 10s/15s loops to recover from realtime drops. Render a passive "Safety check detected — verifying" banner during this slice; full interactive overlay lands in 4b. Auto-clear banner on `warning_responded` (counterparty responded first) and `safety_ended`. NOTE: `GET /api/rides/:id` bare handler does NOT exist on the server (verified) — reseat must use `GET /api/rides/active` which `select('*')`s the row and already surfaces `divergence_state` + `warning_fired_at`.
+- iOS reference files: `ios/Tago/Features/RiderHome/RiderActiveRidePage+Live.swift`, `ios/Tago/Features/DriverHome/DriverActiveRidePage.swift:1273-1320`, `ios/Tago/Features/DriverHome/DriverActiveRidePage.swift:1130-1138` (10s poll reads `divergence_state`)
+- Web files to create/modify: `src/hooks/useRideSafetyChannel.ts` (new), `src/components/ride/RiderActiveRidePage.tsx`, `src/components/ride/DriverActiveRidePage.tsx`, possibly extend `src/components/safety/SafetyWarningBanner.tsx` (small passive banner — replaced by overlay in 4b)
+- Endpoints touched: `GET /api/rides/active` (read `divergence_state` + `warning_fired_at` from existing projection — verify field surfaced)
+- Tests: `warning_fired` event mounts banner; `warning_responded` from counterparty auto-clears banner; `safety_ended` clears banner; reseat-on-mount shows banner when `divergence_state === 'warning'` on initial active-ride fetch; polling backstop recovers banner if realtime event missed; banner clears cleanly on ride end.
+- Estimated LoC: ~250
+- Dependencies: none (Slice 3's `useRideRole` is consumed in 4b, not 4a)
+- Scope cuts (explicit defers): all interactive overlay UI → Slice 4b.
+
+**Slice 4b: `RideSafetyCheckOverlay` interactive UI + 3 action submits + FCM Web background push**
+- Scope: Replace the 4a passive banner with full `RideSafetyCheckOverlay` — 90s CSS countdown ring (green → yellow → red color stops matching iOS), role-aware subtitle ("You and your driver appear to be apart…" for rider; "{counterpartyName ?? 'your rider'} is no longer near the vehicle…" for driver), three role-aware action buttons (rider: "I'm still in the car" / "I got out — end the ride" / "Something's wrong — get help"; driver: "{Name} is still with me" / "{Name} got out — end the ride" / "Report a problem"). Submit handlers use Slice 3's `useRideRole` hook to derive the correct action prefix (`rider_in_car`/`driver_in_car`, `rider_left`/`driver_left`, `help_requested`) — never let the wrong prefix hit the server (would 403 WRONG_ROLE). Three distinct error copies with countdown-restart: "Couldn't confirm — {error}" / "Couldn't end ride — {error}" / "Couldn't notify — {error}". Help branch opens sms: deep-link to trusted contacts using exact `helpComposedBody`: "I'm using Tago and might need help. Live tracking link (expires in 4 hrs): {url}". Desktop fallback (no sms: handler) shows Copy link + Web Share API + Close actions. Help-with-zero-trusted-contacts shows exact guidance: "No trusted contacts saved. Add them in Profile → Safety so we can text them next time." with 2.5s pause before resolving. `409 NO_ACTIVE_WARNING`/`NOT_ACTIVE` = silent dismiss. Driver-side `safety_ended` also bumps `rideEndedSignal`-equivalent (belt-and-suspenders). `data-testid` attributes: `ride-safety-check-overlay`, `-card`, `-still-here`, `-got-out`, `-help`. FCM Web service worker handler for `warning_fired`/`warning_responded`/`safety_ended` payloads (background); foreground covered by 4a realtime. `safety_ended` push handler also clears any pending drop-off reminder banner.
+- iOS reference files: `ios/Tago/Features/Safety/RideSafetyCheckOverlay.swift` (entire file), `ios/Tago/Features/DriverHome/DriverActiveRidePage.swift:1311` (safety_ended bumps rideEndedSignal)
+- Web files to create/modify: `src/components/safety/RideSafetyCheckOverlay.tsx` (new), `src/components/safety/CountdownRing.tsx` (new — CSS SVG ring), `src/components/ride/RiderActiveRidePage.tsx`, `src/components/ride/DriverActiveRidePage.tsx`, `public/firebase-messaging-sw.js` (extend), `src/lib/fcm.ts` (extend handlers)
+- Endpoints touched: `POST /api/rides/:id/safety-warning-response`
+- Tests: `warning_fired` mounts overlay with 90s countdown; still-here posts `rider_in_car`/`driver_in_car` based on role; got-out posts `rider_left`/`driver_left` and overlay clears on `safety_ended` (NOT `warning_responded` — server only broadcasts `warning_responded` on still-here + help branches); help posts `help_requested` and opens sms: with helpComposedBody; help desktop fallback shows Copy/Share/Close; help-with-zero-contacts shows guidance + 2.5s pause; `409 NO_ACTIVE_WARNING` silently dismisses; `warning_responded` from counterparty auto-clears overlay; three error copies render + countdown restarts; FCM service-worker handler for `warning_fired` triggers notification with click-through to active-ride route; `safety_ended` SW handler clears pending banners; driver-side WRONG_ROLE 403 path covered.
+- Estimated LoC: ~400 (overlay + countdown + sms branches + SW handlers — at the ceiling but tightly coupled)
+- Dependencies: Slice 2 (help branch needs trusted contacts to be meaningful), Slice 3 (`useRideRole` hook), Slice 4a (channel hook + reseat)
+- Scope cuts (explicit defers): iOS-style critical alerts (not available on web; standard severity); haptics; native iMessage composer (sms: deep-link is the web equivalent).
+
+**Slice 5: Gated "End ride without QR" secondary button (rider + driver mirror)**
+- Scope: Add gated secondary end button on both `RiderActiveRidePage` and `DriverActiveRidePage`. Gate predicate: `elapsed > 5min AND gpsDistance > 1000m` (matches CLAUDE.md Phase 3.4 + iOS `DriverActiveRidePage.manualEndEligible:757-767`). Below the gate, button stays hidden. Both rider and driver post `reason: 'manual_end'` to `POST /api/rides/:id/safety-end` (NOT `rider_left`/`driver_left` — those are reserved for the overlay's got-out branch). PRE-SLICE VERIFICATION: grep `server/routes/rides.ts` for `gps_distance_metres` in the user-facing select projection; if missing, add field-surfacing to this slice. Place button inside the existing active-ride action area, below the QR scan primary — JourneyDrawer is a different shape on web so inline placement is the natural home.
+- iOS reference files: `ios/Tago/Features/RiderHome/RiderActiveRidePage.swift:373 submitManualEnd`, `ios/Tago/Features/DriverHome/DriverActiveRidePage.swift:799 submitManualEnd`, `ios/Tago/Features/DriverHome/DriverActiveRidePage.swift:757-767 manualEndEligible`
+- Web files to create/modify: `src/components/ride/RiderActiveRidePage.tsx`, `src/components/ride/DriverActiveRidePage.tsx`, `src/lib/rideManualEndGate.ts` (new — shared gate predicate)
+- Endpoints touched: `POST /api/rides/:id/safety-end`
+- Tests: button hidden when `elapsed < 5min`; hidden when `gpsDistance < 1km`; hidden when only one of two met; visible when both met; rider posts `reason='manual_end'`; driver posts `reason='manual_end'`; success transitions to RideSummary; client never writes directly to `rides` row (audit-log discipline).
+- Estimated LoC: ~250
+- Dependencies: none (independent of Slices 1-4)
+- Scope cuts (explicit defers): special "manual end" badge on RideSummary; forensic-tag surfacing — pending iOS source confirmation of a corresponding surface.
+
+**Slice 6: EmergencySheet polish — sections, footers, toasts, sms-fallback, TrackPage copy**
+- Scope: Restructure `EmergencySheet` to three semantic sections (Emergency Services / Share Location / Report). Add state-driven footer copy under Share Location (idle/shared/revoked exact strings explaining 4h TTL). Add toast component + wire transient confirmations: "Link copied" / "Sent to N contact(s)" / "Tracking link turned off" (pluralization-aware). Add error toasts: "Couldn't create the link. Try again." (mint fail), "Couldn't reach server — link still active" (revoke fail). Add dedicated copy button next to share link with monospaced footnote styling + middle-truncate. Add explicit "Share link via…" row in `.shared` state using `navigator.share`. Add desktop sms: fallback (when `navigator` lacks sms handler — e.g. desktop browsers) — show "Open on phone" messaging with copy-link affordance. Confirm Done toolbar item + non-swipe-dismissible behaviour. Use exact `composedMessageBody` for trusted-contact sms: "I'm using Tago and wanted you to be able to follow my ride. Live tracking link (expires in 4 hrs): {url}". TrackPage copy: change hardcoded "Driver location is being shared" to neutral "Live location is being shared" (server response doesn't expose `share_role` to differentiate — would require a server contract addition to render asymmetrically). Graceful error UI when `POST /api/safety/share-location` returns 403 not_participant / 404 ride_not_found.
+- iOS reference files: `ios/Tago/Features/Safety/EmergencySheet.swift` (entire file), `ios/Tago/Features/Safety/EmergencySheet+TrustedContacts.swift`
+- Web files to create/modify: `src/components/ui/EmergencySheet.tsx`, `src/components/safety/TrackPage.tsx`, `src/components/ui/Toast.tsx` (new or reuse existing)
+- Endpoints touched: none new
+- Tests: three sections present in DOM; footer copy flips on share state (idle/shared/revoked); toast appears + auto-dismisses on copy/sent/revoke; pluralization correct for 1 vs N contacts; mint/revoke error toasts surface; desktop sms: fallback renders when navigator can't handle sms:; sheet is not swipe-dismissible; TrackPage shows neutral "Live location" copy; symmetric Track copy fix verified.
+- Estimated LoC: ~300
+- Dependencies: Slice 1 (don't churn EmergencySheet pre-pill restructure), Slice 3 (don't churn EmergencySheet pre-role-aware report fix)
+- Scope cuts (explicit defers): server contract change to expose `share_role` on TrackPage response — out of scope of user-side parity (web falls back to neutral copy); haptics; native iMessage composer.
+
+### Cross-cutting notes
+- **CLAUDE.md hard rule (Emergency button portal)**: Slice 1 closes the active violation. Every future change touching active-ride pages must verify the safety pill remains portal-mounted at top of DOM tree.
+- **CLAUDE.md hard rule (Phase 3.4 gate)**: Slice 5 must enforce `elapsed>5min AND gpsDistance>1km`. Without the gate, riders end at $5 minimum after 100m. Anti-fraud risk.
+- **CLAUDE.md hard rule (Wallet transactions)**: not touched this sprint.
+- **`ride_audit_log` write-path discipline**: every ride mutation in this sprint MUST go through a server route (`/safety-warning-response`, `/safety-end`). Never write to `rides` row directly from the web client — the audit-log trigger needs an authenticated server actor.
+- **Role-per-ride memory rule**: Slice 3's `useRideRole` hook is the canonical primitive; Slice 4b derives action prefix from it before posting. Never read role from a tab/sub-app/nav context.
+- **Parallel admin session lane**: do NOT read or stage `src/components/admin/EmergencyBanner.tsx`, `ReportsInboxPage.tsx`, `ReportDetailPage.tsx`, `SafetyEndedPage.tsx`, `UserDetailPage` TrustedContactsCard, `useAdminSafetyEnded`, `useAdminRides ride_audit_log` read, `server/routes/admin/rideSafetyActions.ts`, `audit.ts`, `safetyEnded.ts`. Those are owned by the parallel session.
+- **No iOS planning markdowns**: per the audit hard rule, only `.swift` source + `supabase/migrations/*.sql` + `server/routes/*.ts` were consulted. No `*_PLAN.md` / `*_PROGRESS.md` from `ios/` or `docs/` were read.
+- **Reviewer parity-check before slice handoff**: every slice produces a 3-column iOS↔web parity matrix (✅/⚠️/➖) as part of its handoff message. No exception.
+- **Per-feature green-light**: stop after each slice (lint + tests + build green + tough self-review + reviewer parity matrix) and wait for explicit "go" / "push" / "ship it" from Tarun before starting the next slice.
+- **Commit-only, never push**: each slice commits locally as soon as gates pass; push requires a separate explicit instruction.
+- **`tsx watch` doesn't reload `.env`**: no environment changes are expected this sprint, but if Slice 4b's FCM SW handler needs new keys, restart `npm run dev:server` manually.
+- **Migration discipline**: this sprint adds NO new migrations — all server endpoints already exist. If a slice surfaces a missing column (e.g. Slice 5's gps_distance_metres projection check), flag and discuss before adding a migration.
+
+### Out-of-scope (admin lane handoff)
+- `src/components/admin/EmergencyBanner.tsx` — admin-side warning visibility
+- `src/components/admin/ReportsInboxPage.tsx` and `ReportDetailPage.tsx` — admin report triage
+- `src/components/admin/SafetyEndedPage.tsx` — admin view of auto-ended rides
+- `UserDetailPage` TrustedContactsCard — admin view of a user's trusted contacts
+- `useAdminSafetyEnded`, `useAdminRides` ride_audit_log timeline read
+- `server/routes/admin/rideSafetyActions.ts`, `server/routes/admin/audit.ts`, `server/routes/admin/safetyEnded.ts`
+- `ride_audit_log` user-facing surface — no iOS user surface either; admin-only
+- `divergence_pattern` column (migration 096) — dead schema, requires server-side writer first
+- `share_role` field on `GET /api/safety/track/:token` response — server contract addition required to ship truly symmetric TrackPage copy; out of user-side parity scope (web ships neutral copy as fallback)
+- Bare `GET /api/rides/:id` handler — does not exist on the server; iOS `GetRideEndpoint` actually 404s today. Sprint 11 routes around by using `GET /api/rides/active`. Adding the bare handler is server work outside this sprint.
+
+### Open questions (need Tarun's call before or during Sprint 11)
+1. **`AddTrustedContactSheet` host page**: iOS mounts `ProfileSafetySection` on `ProfilePage.swift:113`. Web `SettingsPage` is a different shape — should `TrustedContactsSection` live on the Profile page (mirrors iOS) or on the Settings page (web convention)? Slice 2 currently plans Profile page to match iOS canonical placement.
+2. **FCM Web permission prompt UX**: should Slice 4b prompt for notification permission proactively in Profile → Safety, or piggyback on the existing push prompt flow? Default plan: piggyback to avoid an extra prompt.
+3. **`RiderPickupPage` iOS counterpart**: iOS scout enumerated `DriverPickupPage` only. Web grep shows EmergencySheet mounts on both pickup pages — does iOS have a `RiderPickupPage` emergency mount too? If yes, Slice 1's RiderPickupPage pill is parity; if no, it's web-AHEAD. Either way Slice 1 ships the pill on both for the hard-rule fix.
+4. **TrackPage symmetric copy**: ship neutral "Live location is being shared" (Slice 6 plan) or request a server contract change to expose `share_role` and render true symmetric copy? Default plan: neutral fallback.
+5. **End-reason tag on RideSummaryPage**: iOS may render "Ride ended automatically" for `auto_divergence` rides on summary. Worth confirming iOS source has a user-facing surface before adding to a future sprint.
+6. **`/report-issue` mailto and `/report/:rideId` ReportReason taxonomy**: three different category lists exist across web today. Worth a separate cleanup slice in a Reports v2 stage — confirm not to fold into Sprint 11.
+
+### What this audit dropped from the initial matrix and why
+- **MyReportsPage / MyReportDetailPage / Report attachments**: MEDIUM/LOW per matrix, belong to a Reports v2 stage. Not closely coupled to the safety net.
+- **`divergence_pattern` column surfacing**: dead schema (0 references outside migration 096) — informational only, no client surface needed until a server writer exists.
+- **`ride_audit_log` user-facing read**: no iOS user surface; admin-only.
+- **All admin-lane safety surfaces**: parallel session owns them. Flagging in cross-cutting notes is enough.
+- **`CNContactPickerViewController` equivalent**: pure-native iOS; Web Contacts Picker API is Chromium-only/secure-context. Acceptable indefinite defer per matrix; users type name+phone manually.
+- **Bare `GET /api/rides/:id` server handler**: server-side work, not user-parity. Slice 4a routes around via `GET /api/rides/active`.
+- **`share_role` field addition to TrackPage response**: server contract change; Sprint 11 ships neutral fallback copy.
+- **`/report-issue` mailto cleanup + `/report/:rideId` taxonomy reconciliation**: belongs to a separate Reports v2 cleanup stage — flagging as Open Question #6.
+- **User-facing `end_reason` / `cancel_reason` tag on RideSummaryPage**: defer until iOS source confirms a corresponding surface.
+- **`ReportSafetyView` push-to-page navigation pattern**: web's inline wizard is functional parity — keep it.
+- **Haptics across all surfaces**: web has no haptic API; acceptable native-only differentiation.
+- **Migration 095 forensic columns**: server already writes via existing endpoints; web QR flow already exercises them. Verify-only, no new code.
+
+### Critic verdicts
+- **Completeness**: PASS — 36 missed elements folded in (4 critical: help-flow desktop fallback, role-aware overlay subtitles + button labels, three distinct error copies + countdown restart, no-trusted-contacts guidance). 5 LOW items deferred with explicit rationale (admin lane, MyReportsPage, ContactPicker, divergence_pattern dead column, mailto cleanup).
+- **Contract**: PASS — BLOCKER (`GET /api/rides/:id` 404) resolved by routing Slice 4a reseat through `GET /api/rides/active`. HIGH (wrong event name on safety channel) resolved by listening for `safety_ended` not `ride_ended`. MEDIUM (TrackPage role) resolved by neutral fallback copy + open question. LOW items (legacy alias map, got-out branch broadcasts safety_ended not warning_responded, manual_end reason clarity, LIMIT_REACHED split tests, divergence_pattern dead, WRONG_ROLE 403 path, UUID case asymmetry) all folded into slice scope/tests.
+- **Sprint shape**: PASS — Slice 4 split into 4a (channel + reseat + passive banner, ~250 LoC) and 4b (interactive overlay + 3 actions + FCM Web SW, ~400 LoC). Slice 5 (FCM Web push handlers) merged into 4b for atomicity. Pickup-page pill folded into Slice 1. Slice 7 polish promoted to Slice 6, kept as single slice given tight semantic coupling around EmergencySheet/Share Location. Sprint lands at 7 slices (1, 2, 3, 4a, 4b, 5, 6) — within tolerance. Slice 5 (manual-end button) has pre-slice gps_distance_metres projection verification step. Slice 2 LoC flagged as upper-edge with split escape hatch.
+
+### Sprint 11 summary
+
+| Status | Count |
+|---|---|
+| Not started | 7 slices (1, 2, 3, 4a, 4b, 5, 6) |
+| In progress | 0 |
+| Done (awaiting QA) | 0 |
+| Done (verified + pushed) | 0 |
+
+Sprint 11 ships the missing user-side safety net: always-visible top-bar emergency pill (closing a CLAUDE.md hard-rule violation), full `RideSafetyCheckOverlay` flow with 90s countdown + role-aware actions + sms help branch + desktop fallback, `ride-safety:{rideID}` realtime channel + FCM Web background push parity, Trusted Contacts CRUD on the Profile page (unblocking the dead "Text trusted contacts" button), role-aware safety report categories in the EmergencySheet, the gated Phase-3.4 "End ride without QR" secondary on both rider and driver active pages, and an EmergencySheet structural polish pass (sections + footers + toasts + sms-fallback + symmetric TrackPage copy). Seven slices, sequenced smallest-first with the shared `useRideRole` and `SafetyPill` primitives landing early so later slices compose. Closes 5 BLOCKER + 8 HIGH gaps from the Stage 7 audit. Admin-lane safety surfaces, Reports v2 page set, and one server-side contract addition (`share_role` on TrackPage) explicitly deferred.
+
+### Current focus
+
+Awaiting Tarun's "go" on Slice 1 (always-visible top-bar safety pill — closes CLAUDE.md hard rule, ~180 LoC, smallest possible win, lands shared `SafetyPill.tsx`). No code changes have shipped from this audit yet.
+
+### Next action
+
+If Tarun greenlights Slice 1: read [`ios/Tago/Features/RiderHome/RiderActiveRidePage.swift`](ios/Tago/Features/RiderHome/RiderActiveRidePage.swift) (focus on `safetyPill()` mount + emergency presentation at L475-490), [`ios/Tago/Features/DriverHome/DriverActiveRidePage.swift`](ios/Tago/Features/DriverHome/DriverActiveRidePage.swift) (L446-461), [`ios/Tago/Features/DriverHome/DriverPickupPage.swift`](ios/Tago/Features/DriverHome/DriverPickupPage.swift) (L919-941), then web counterparts in [`src/components/ride/`](src/components/ride/) end-to-end before any TypeScript. Confirm `git status` is clean of parallel-session WIP on the active-ride pages at slice kickoff.
+
+### Plain English
+
+The web app has a safety button to call 911 / share live location / report problems / text trusted contacts — but right now it lives inside a slide-up drawer that disappears the moment the rider opens the QR scanner. That's the active CLAUDE.md hard-rule violation. We also don't have a way for users to add their own trusted contacts (so the "text them" button is permanently dead). And there's a much bigger gap: when the server thinks the rider and the driver have drifted apart mid-ride (the "safety check"), iOS pops up a 90-second countdown asking "are you still in the car / did you get out / do you need help?" — the web app has NO way to receive that alert at all. After 90 seconds with no response, the server just auto-ends the ride. Sprint 11 ships all of that: pinned top-bar safety button visible at all times, a way to add up to 5 trusted contacts on Profile, the full mid-ride safety check screen with three actions, separate categories for rider-reports-driver vs driver-reports-rider, a gated "end the ride without scanning" button for when the QR fails, and a polish pass on the share-link sheet. Seven slices, sequenced smallest-first.
 
 ---
 
