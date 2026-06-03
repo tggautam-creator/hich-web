@@ -68,6 +68,35 @@ Tarun decides:
 
 **Audit-first mode.** Stage 8 of the multi-stage iOS-parity audit completed 2026-06-03 with no code changes. This section is the side-by-side findings + 13-slice plan. Nothing here is shipped on the web app yet.
 
+### Slice 0 — verification spike (RESOLVED 2026-06-03)
+
+Three open questions blocked the next slices. All three answered via read-only investigation; matrix rows updated below.
+
+**Q1 — Does `GET /api/rides/:rideId` return a full RideSnapshot, or is iOS reading via Supabase RPC?**
+- iOS endpoint defined at [`GetRideEndpoint.swift`](ios/Tago/Core/Networking/Endpoints/GetRideEndpoint.swift) — returns `RideSnapshot { id, status, driver_id, pickup_point, destination_name }`.
+- Three iOS call sites: `WaitingRoomPage+Live.swift:34`, `RideSuggestionPage.swift:1381`, `DropoffSelectionPage+Actions.swift:148` — all use `try?` (silent failure on error).
+- Server has `/api/rides/:id/status` (lightweight `{status}`), `/:id/notification-status`, `/:id/offers`, `/:id/qr` — but **NO bare `GET /api/rides/:id` handler**.
+- **Finding**: iOS endpoint 404s today; silent failure swallowed by `try?`. iOS has a latent bug; rider waiting-room state actually updates via realtime + `/api/rides/active` polling. **Web has zero work here.** Flag for iOS session.
+- **Matrix row reclassified**: `GET /api/rides/:rideId` → IOS_BUG / LOW (was OPEN_QUESTION / HIGH).
+
+**Q2 — Does web `RideBoard.tsx` fetch `/api/schedule/board` or read `ride_schedules` via Supabase direct?**
+- Web `RideBoard.tsx:715` calls `fetch(/api/schedule/board?${qs})` — server endpoint used.
+- iOS `RideBoardViewModel.swift:87` calls the same `/api/schedule/board`.
+- **Finding**: Wire-compatible. PARITY. The separate `/api/schedule/board/offers` drift on `RideBoard.tsx:272` (iOS uses `/schedule/:id/offers`) stays in Slice 1c as previously planned.
+- **Matrix row reclassified**: `GET /api/schedule/board` → PARITY / LOW (was OPEN_QUESTION / HIGH).
+
+**Q3 — Does iOS `VehicleRegistrationPage` write `vehicles.insert` directly or via a server route?**
+- iOS routes through `Core/Supabase/Repositories/VehiclesRepository.swift` — direct `from("vehicles")` access for insert + select + update + delete.
+- Web `VehicleRegistrationPage.tsx:326` — `supabase.from('vehicles').insert(...)` — direct Supabase access.
+- **Finding**: Both clients use direct Supabase by design (no `vehicleRouter` write route exists in `server/routes/vehicle.ts` — only `POST /plate-lookup`). PARITY.
+- **Matrix row reclassified**: `Direct Supabase: vehicles.insert` → PARITY / LOW (was OPEN_QUESTION / MEDIUM).
+
+**Net impact on slice plan:**
+- **Slice 1a** unblocked — no longer needs to bridge a phantom `GET /api/rides/:rideId` handler.
+- **Slice 1c** unchanged — `/api/schedule/board` is fine; only the per-schedule offers fetch shifts to `/schedule/:id/offers`.
+- **Slice 5a** unchanged — vehicles direct-Supabase write is intentional parity, not an audit-log violation.
+- **Audit-log violations remaining after Slice 0**: 3 (down from 4 — `vehicles.insert` removed from the list).
+
 ### Current focus
 Close the largest cluster of iOS↔web drift left in the catalog: 24 contract-shape mismatches where web is sending wrong field names / methods / payloads to existing server routes, 11 HIGH-severity WEB_MISSING endpoints (notification-status, driver-pending-offer resume, tap-to-call, pickup/dropoff proposals, RLS-safe profile write, BoardOffer create), the chat realtime channels web silently dropped in favour of polling, and four direct-Supabase writes that bypass server audit. The sprint is sequenced smallest-first so each slice is independently mergeable, reversible, and tied to one user-visible win or one matrix row class.
 
