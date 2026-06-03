@@ -186,6 +186,27 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   useEffect(() => {
     if (!profile?.id || !rideId) return
 
+    // 2026-06-02 — defensive rescue: when the initial SELECT raced
+    // ahead of an upstream write OR a broadcast was dropped between
+    // page mounts, re-pull the ride row from any signal that says
+    // "ride state changed." Catches the entire class of stuck-on-
+    // waiting bugs, not just the pickup_point=null incident this
+    // listener was added for.
+    const refetchRide = () => {
+      void supabase
+        .from('rides')
+        .select('pickup_point, pickup_note')
+        .eq('id', rideId as string)
+        .single()
+        .then(({ data }) => {
+          if (!data?.pickup_point) return
+          const pp = data.pickup_point as GeoPoint
+          setPickupLat(pp.coordinates[1])
+          setPickupLng(pp.coordinates[0])
+          if (typeof data.pickup_note === 'string') setPickupNote(data.pickup_note)
+        })
+    }
+
     const channel = supabase
       .channel(`rider-pickup:${profile.id}`)
       .on('broadcast', { event: 'pickup_set' }, (msg) => {
@@ -196,6 +217,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
           setPickupNote(data.note ?? null)
         }
       })
+      .on('broadcast', { event: 'locations_confirmed' }, refetchRide)
       .on('broadcast', { event: 'ride_started' }, () => {
         navigate(`/ride/active-rider/${rideId}`, { replace: true })
       })

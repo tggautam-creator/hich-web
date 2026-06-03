@@ -251,6 +251,21 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
   useEffect(() => {
     if (!profile?.id || !rideId) return
 
+    // 2026-06-02 — defensive rescue: re-pull the ride row when the
+    // server says locations are confirmed. Catches the case where
+    // the initial SELECT raced ahead of an upstream column write
+    // (e.g. pickup_point=null while pickup_confirmed=true). Server
+    // broadcasts locations_confirmed to msg-driver:{userId}, so we
+    // listen on that channel too rather than just driver-pickup.
+    const refetchRide = () => {
+      void supabase
+        .from('rides')
+        .select('*')
+        .eq('id', rideId as string)
+        .single()
+        .then(({ data }) => { if (data) setRide(data) })
+    }
+
     const pickupChannel = supabase
       .channel(`driver-pickup:${profile.id}`)
       .on('broadcast', { event: 'ride_started' }, () => {
@@ -264,6 +279,11 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
       })
       .subscribe()
 
+    const driverMsgChannel = supabase
+      .channel(`msg-driver:${profile.id}`)
+      .on('broadcast', { event: 'locations_confirmed' }, refetchRide)
+      .subscribe()
+
     // Listen on a unique channel for signal events from the rider
     const riderChannel = supabase
       .channel(`rider-signal:${profile.id}`)
@@ -274,6 +294,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
 
     return () => {
       void supabase.removeChannel(pickupChannel)
+      void supabase.removeChannel(driverMsgChannel)
       void supabase.removeChannel(riderChannel)
     }
   }, [profile?.id, rideId, navigate])

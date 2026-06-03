@@ -3417,6 +3417,40 @@ ridesRouter.post(
 
     if (updateErr) { next(updateErr); return }
 
+    // 2026-06-02 — defensive backfill for the pickup_point invariant.
+    // If we're flipping pickup_confirmed and rides.pickup_point is
+    // still NULL (because an upstream code path inserted a
+    // pickup_suggestion message without mirroring the column write),
+    // pull lat/lng from the most recent pickup_suggestion meta and
+    // populate the column atomically with this accept. The `.is(...
+    // null)` guard makes this a no-op when pickup_point is already
+    // set, so this composes safely with the PATCH /pickup-point
+    // writer and the two auto-suggestion sites that ALSO write the
+    // column directly. See 2026-06-02 incident: rider stranded on
+    // "Waiting for driver to set pickup point" after both confirmed.
+    if (flipResult && location_type === 'pickup' && ride.pickup_point == null) {
+      const { data: latestSuggestion } = await supabaseAdmin
+        .from('messages')
+        .select('meta')
+        .eq('ride_id', rideId)
+        .eq('type', 'pickup_suggestion')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      const meta = (latestSuggestion as { meta?: { lat?: unknown; lng?: unknown } } | null)?.meta
+      const lat = typeof meta?.lat === 'number' ? meta.lat : null
+      const lng = typeof meta?.lng === 'number' ? meta.lng : null
+      if (lat !== null && lng !== null) {
+        await supabaseAdmin
+          .from('rides')
+          .update({
+            pickup_point: { type: 'Point', coordinates: [lng, lat] } as never,
+          })
+          .eq('id', rideId)
+          .is('pickup_point', null)
+      }
+    }
+
     if (!flipResult) {
       // CAS missed — the flag was already true. Either the rider
       // double-tapped Accept faster than the first call returned,
@@ -3477,6 +3511,24 @@ ridesRouter.post(
       const pickupCoords = (ride.origin as { coordinates: [number, number] }).coordinates
       const pickupName = ride.origin_name
         ?? (isBoardOriginated ? 'your pickup' : 'the rider\'s requested pickup')
+
+      // 2026-06-02 — invariant: a pickup_suggestion in chat implies
+      // rides.pickup_point is set. Without this write, accepting the
+      // auto-generated suggestion flips pickup_confirmed=true while
+      // pickup_point stays NULL, which strands the rider's
+      // RiderPickupPage on "Waiting for driver to set pickup point"
+      // forever (see 2026-06-02 incident — driver auto-pickup +
+      // transit dropoff path). The PATCH /pickup-point endpoint is
+      // the OTHER writer; here we mirror its column write so any
+      // downstream surface that reads rides.pickup_point (active
+      // ride map, drive-to-pickup polyline, safety divergence math)
+      // sees a populated value. Gated `.is('pickup_point', null)`
+      // so we never clobber an existing driver-set pin.
+      await supabaseAdmin
+        .from('rides')
+        .update({ pickup_point: ride.origin as never })
+        .eq('id', rideId)
+        .is('pickup_point', null)
 
       // v1.2 F8.3 / F14.3 / F18.3 — freeze the fare into meta so
       // the card doesn't fall back to a local re-compute that

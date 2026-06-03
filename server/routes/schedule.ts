@@ -3856,6 +3856,17 @@ scheduleRouter.patch(
       const proposerId = ride.rider_id
       const pickupCoords = (ride.origin as { coordinates: [number, number] }).coordinates
       const pickupName = ride.origin_name ?? 'the rider\'s requested pickup'
+
+      // 2026-06-02 — invariant: pickup_suggestion in chat ⇒
+      // rides.pickup_point set. See server/routes/rides.ts mirror
+      // (same fix at the /accept-location auto-suggestion site).
+      // Without this, accepting the auto-suggestion flips
+      // pickup_confirmed=true while pickup_point stays NULL.
+      await supabaseAdmin
+        .from('rides')
+        .update({ pickup_point: ride.origin as never })
+        .eq('id', rideId)
+        .is('pickup_point', null)
       const { data: pickupMsg, error: pmErr } = await supabaseAdmin
         .from('messages')
         .insert({
