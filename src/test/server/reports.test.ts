@@ -196,6 +196,54 @@ describe('POST /api/report', () => {
     expect(captured.title).toBe('Driver conduct report')
   })
 
+  // v1.3 Sprint 11 Slice 3 — pin the 4 driver-perspective rawValues
+  // (added 2026-05-21) against the server's LEGACY_CATEGORY_MAP.
+  // The web client's role-aware EmergencySheet POSTs these
+  // verbatim when the viewer is the driver; server must normalise.
+  it.each([
+    ['rider_aggression', 'safety_during_ride', 'emergency'],
+    ['rider_threat',     'safety_during_ride', 'emergency'],
+    ['rider_damage',     'rider_conduct',      'normal'],
+    ['rider_no_show',    'cancellation_dispute', 'normal'],
+  ])('maps driver-perspective category %s → %s (Slice 3 legacy alias map)', async (rawValue, normalised, expectedSeverity) => {
+    authAsUser()
+    const capture: { payload: unknown } = { payload: null }
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'reports') {
+        return insertChain(capture, {
+          id: REPORT_UUID,
+          severity: expectedSeverity,
+          status: 'open',
+        })
+      }
+      if (table === 'rides') {
+        return singleChain({
+          status: 'active',
+          fare_cents: 750,
+          rider_id: OTHER_USER_UUID,
+          driver_id: USER_UUID,
+          vehicle_id: null,
+        })
+      }
+      if (table === 'users') {
+        return { update: () => ({ eq: () => Promise.resolve({ data: null, error: null }) }) }
+      }
+      throw new Error(`unmocked from(${table})`)
+    })
+    const res = await request(app)
+      .post('/api/report')
+      .set('Authorization', VALID_JWT)
+      .send({
+        category: rawValue,
+        description: 'driver-perspective safety report against the rider',
+        ride_id: RIDE_UUID,
+      })
+    expect(res.status).toBe(201)
+    const captured = capture.payload as { category: string; severity: string }
+    expect(captured.category).toBe(normalised)
+    expect(captured.severity).toBe(expectedSeverity)
+  })
+
   it('legacy "safety" category forces severity = emergency regardless of client', async () => {
     authAsUser()
     const capture: { payload: unknown } = { payload: null }

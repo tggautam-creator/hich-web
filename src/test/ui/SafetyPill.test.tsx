@@ -45,6 +45,13 @@ vi.mock('@/lib/env', () => ({
   },
 }))
 
+// v1.3 Sprint 11 Slice 3 — EmergencySheet (mounted via SafetyPill)
+// now reads useRideRole. Stub it so this test file doesn't need a
+// QueryClientProvider.
+vi.mock('@/hooks/useRideRole', () => ({
+  useRideRole: () => ({ role: 'rider' as const, isLoading: false, error: null }),
+}))
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function ensurePortalRoot() {

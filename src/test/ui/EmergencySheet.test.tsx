@@ -38,6 +38,17 @@ vi.mock('@/lib/env', () => ({
   },
 }))
 
+// v1.3 Sprint 11 Slice 3 — EmergencySheet now consumes useRideRole
+// to surface the role-aware safety report category list. Stub the
+// hook so existing tests don't need a QueryClientProvider.
+const { mockRideRole } = vi.hoisted(() => ({
+  mockRideRole: { current: 'rider' as 'rider' | 'driver' | null },
+}))
+
+vi.mock('@/hooks/useRideRole', () => ({
+  useRideRole: () => ({ role: mockRideRole.current, isLoading: false, error: null }),
+}))
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function renderSheet(props: Partial<Parameters<typeof EmergencySheet>[0]> = {}) {
@@ -54,6 +65,8 @@ function renderSheet(props: Partial<Parameters<typeof EmergencySheet>[0]> = {}) 
 describe('EmergencySheet', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // Reset the role mock between tests — default to rider.
+    mockRideRole.current = 'rider'
     // Ensure portal root exists
     if (!document.getElementById('portal-root')) {
       const el = document.createElement('div')
@@ -273,5 +286,98 @@ describe('EmergencySheet', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('emergency-stop-sharing')).not.toBeInTheDocument()
     })
+  })
+
+  // ── Sprint 11 Slice 3 — role-aware report categories + Done + footer ──
+
+  it('rider sees the 5 RIDER safety report categories', () => {
+    mockRideRole.current = 'rider'
+    renderSheet()
+    fireEvent.click(screen.getByTestId('emergency-report'))
+    expect(screen.getByTestId('report-category-unsafe_driving')).toBeInTheDocument()
+    expect(screen.getByTestId('report-category-inappropriate_behavior')).toBeInTheDocument()
+    expect(screen.getByTestId('report-category-wrong_route')).toBeInTheDocument()
+    expect(screen.getByTestId('report-category-no_show')).toBeInTheDocument()
+    expect(screen.getByTestId('report-category-other')).toBeInTheDocument()
+    // Driver categories must NOT appear in the rider list.
+    expect(screen.queryByTestId('report-category-rider_aggression')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('report-category-rider_damage')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('report-category-rider_threat')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('report-category-rider_no_show')).not.toBeInTheDocument()
+  })
+
+  it('driver sees the 5 DRIVER safety report categories', () => {
+    mockRideRole.current = 'driver'
+    renderSheet()
+    fireEvent.click(screen.getByTestId('emergency-report'))
+    expect(screen.getByTestId('report-category-rider_aggression')).toBeInTheDocument()
+    expect(screen.getByTestId('report-category-rider_damage')).toBeInTheDocument()
+    expect(screen.getByTestId('report-category-rider_threat')).toBeInTheDocument()
+    expect(screen.getByTestId('report-category-rider_no_show')).toBeInTheDocument()
+    expect(screen.getByTestId('report-category-other')).toBeInTheDocument()
+    // Rider categories must NOT appear in the driver list.
+    expect(screen.queryByTestId('report-category-unsafe_driving')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('report-category-inappropriate_behavior')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('report-category-wrong_route')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('report-category-no_show')).not.toBeInTheDocument()
+  })
+
+  it('description step renders the verbatim iOS detailsFooter under the textarea', () => {
+    renderSheet()
+    fireEvent.click(screen.getByTestId('emergency-report'))
+    fireEvent.click(screen.getByTestId('report-category-unsafe_driving'))
+    const footer = screen.getByTestId('report-description-footer')
+    expect(footer.textContent).toContain("Tago's safety team reviews every report.")
+    expect(footer.textContent).toContain('driver behaviour, location, time, anything that helps.')
+  })
+
+  it('submission posts the selected category rawValue to /api/report', async () => {
+    let postBody: { category?: string; description?: string; ride_id?: string } | null = null
+    globalThis.fetch = vi.fn((input: URL | RequestInfo, opts?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === '/api/report' && opts?.method === 'POST') {
+        postBody = JSON.parse(opts.body as string) as typeof postBody
+        return Promise.resolve({ ok: true, status: 201, json: async () => ({ id: 'r-1' }) }) as unknown as Promise<Response>
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) }) as unknown as Promise<Response>
+    })
+
+    mockRideRole.current = 'driver'
+    renderSheet({ rideId: 'ride-xyz' })
+    fireEvent.click(screen.getByTestId('emergency-report'))
+    fireEvent.click(screen.getByTestId('report-category-rider_aggression'))
+    fireEvent.change(screen.getByTestId('report-description-input'), {
+      target: { value: 'rider was screaming at me for 5 minutes' },
+    })
+    fireEvent.click(screen.getByTestId('report-submit-button'))
+    await waitFor(() => expect(postBody).not.toBeNull())
+    expect(postBody!.category).toBe('rider_aggression')
+    expect(postBody!.ride_id).toBe('ride-xyz')
+  })
+
+  it('Done button on submitted state resets the wizard back to idle', async () => {
+    globalThis.fetch = vi.fn((input: URL | RequestInfo, opts?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url === '/api/report' && opts?.method === 'POST') {
+        return Promise.resolve({ ok: true, status: 201, json: async () => ({ id: 'r-1' }) }) as unknown as Promise<Response>
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) }) as unknown as Promise<Response>
+    })
+
+    renderSheet()
+    fireEvent.click(screen.getByTestId('emergency-report'))
+    fireEvent.click(screen.getByTestId('report-category-unsafe_driving'))
+    fireEvent.change(screen.getByTestId('report-description-input'), {
+      target: { value: 'driver was swerving across lanes' },
+    })
+    fireEvent.click(screen.getByTestId('report-submit-button'))
+    await waitFor(() => expect(screen.getByTestId('report-submitted')).toBeInTheDocument())
+    expect(screen.getByTestId('report-done-button')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('report-done-button'))
+    // After Done: wizard reset to idle — the Report idle button is
+    // visible again, the submitted card is gone.
+    expect(screen.queryByTestId('report-submitted')).not.toBeInTheDocument()
+    expect(screen.getByTestId('emergency-report')).toBeInTheDocument()
   })
 })

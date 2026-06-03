@@ -45,6 +45,13 @@ vi.mock('@/lib/env', () => ({
   },
 }))
 
+// v1.3 Sprint 11 Slice 3 — EmergencySheet (mounted via SafetyPill on
+// this page) now reads useRideRole. Stub it so this test file
+// doesn't need a QueryClientProvider.
+vi.mock('@/hooks/useRideRole', () => ({
+  useRideRole: () => ({ role: 'driver' as const, isLoading: false, error: null }),
+}))
+
 vi.mock('@/stores/authStore', () => ({
   useAuthStore: vi.fn(
     (selector: (s: { profile: { id: string } | null }) => unknown) =>

@@ -1,6 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from '@/lib/supabase'
+import { useRideRole } from '@/hooks/useRideRole'
+import {
+  availableFor as availableSafetyCategoriesFor,
+  SAFETY_REPORT_DETAILS_FOOTER,
+  type SafetyReportCategoryValue,
+} from '@/lib/safetyReportCategories'
 
 interface EmergencySheetProps {
   isOpen: boolean
@@ -30,15 +36,11 @@ function tokenFromShareLink(link: string): string | null {
   }
 }
 
-const REPORT_CATEGORIES = [
-  { value: 'unsafe_driving', label: 'Unsafe driving' },
-  { value: 'inappropriate_behavior', label: 'Inappropriate behavior' },
-  { value: 'wrong_route', label: 'Wrong route / detour' },
-  { value: 'no_show', label: 'No show / abandonment' },
-  { value: 'other', label: 'Other safety concern' },
-] as const
-
-type ReportCategory = (typeof REPORT_CATEGORIES)[number]['value']
+// v1.3 Sprint 11 Slice 3 — category list now derived per-ride from
+// `useRideRole`. Rider sees driver-facing categories ("Unsafe
+// driving" …), driver sees rider-facing categories ("Rider was
+// aggressive" …). Server's LEGACY_CATEGORY_MAP at
+// server/routes/report.ts:73-93 accepts all 9 rawValues.
 type ReportStep = 'idle' | 'category' | 'description' | 'submitting' | 'submitted' | 'error'
 
 /**
@@ -59,8 +61,23 @@ export default function EmergencySheet({
 
   // Report flow
   const [reportStep, setReportStep] = useState<ReportStep>('idle')
-  const [reportCategory, setReportCategory] = useState<ReportCategory | null>(null)
+  const [reportCategory, setReportCategory] = useState<SafetyReportCategoryValue | null>(null)
   const [reportDescription, setReportDescription] = useState('')
+
+  // v1.3 Sprint 11 Slice 3 — derive viewer role from the ride row
+  // (per the role-per-ride memory rule). Picks which 5 categories
+  // surface in the wizard. Falls back to the rider list when the
+  // role is still loading or unknown — matches the deployed
+  // pre-split behaviour so the wizard doesn't blank-state.
+  const { role: rideRole } = useRideRole(rideId)
+  const reportCategories = useMemo(
+    () => availableSafetyCategoriesFor(rideRole),
+    [rideRole],
+  )
+  const reportCategoryLabel = useMemo(
+    () => reportCategories.find((c) => c.value === reportCategory)?.label ?? '',
+    [reportCategories, reportCategory],
+  )
 
   // W-T1-E1 — Trusted contacts. Loaded lazily on sheet open from
   // GET /api/safety/trusted-contacts. The list is small (cap 5) so
@@ -390,7 +407,7 @@ export default function EmergencySheet({
                   <button type="button" onClick={resetReport} className="text-xs text-text-secondary hover:text-text-primary">Cancel</button>
                 </div>
                 <div className="space-y-2">
-                  {REPORT_CATEGORIES.map((cat) => (
+                  {reportCategories.map((cat) => (
                     <button
                       key={cat.value}
                       type="button"
@@ -417,7 +434,7 @@ export default function EmergencySheet({
                     </svg>
                     Back
                   </button>
-                  <p className="text-xs text-text-secondary font-medium">{REPORT_CATEGORIES.find(c => c.value === reportCategory)?.label}</p>
+                  <p className="text-xs text-text-secondary font-medium">{reportCategoryLabel}</p>
                 </div>
                 <textarea
                   data-testid="report-description-input"
@@ -427,6 +444,12 @@ export default function EmergencySheet({
                   rows={3}
                   className="w-full resize-none rounded-xl border border-border bg-white px-3 py-2.5 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none"
                 />
+                {/* v1.3 Sprint 11 Slice 3 — verbatim iOS `detailsFooter`
+                    so the user knows what kind of detail helps the
+                    safety team triage faster. */}
+                <p data-testid="report-description-footer" className="text-xs text-text-secondary">
+                  {SAFETY_REPORT_DETAILS_FOOTER}
+                </p>
                 <button
                   type="button"
                   data-testid="report-submit-button"
@@ -446,9 +469,21 @@ export default function EmergencySheet({
             )}
 
             {reportStep === 'submitted' && (
-              <div data-testid="report-submitted" className="rounded-2xl border border-success/30 bg-success/5 p-4 text-center space-y-1">
+              <div data-testid="report-submitted" className="rounded-2xl border border-success/30 bg-success/5 p-4 text-center space-y-3">
                 <p className="font-semibold text-success text-sm">Report submitted</p>
                 <p className="text-xs text-text-secondary">Our safety team will review this ride. Thank you for reporting.</p>
+                {/* v1.3 Sprint 11 Slice 3 — explicit Done button mirrors
+                    iOS `ReportSafetyView.submittedSection`. Resets the
+                    wizard so re-opening the sheet starts at idle
+                    instead of "Report submitted." */}
+                <button
+                  type="button"
+                  data-testid="report-done-button"
+                  onClick={resetReport}
+                  className="w-full rounded-xl border border-success/40 px-4 py-2 text-sm font-semibold text-success active:bg-success/10"
+                >
+                  Done
+                </button>
               </div>
             )}
 
