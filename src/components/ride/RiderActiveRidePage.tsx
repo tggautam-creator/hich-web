@@ -7,7 +7,7 @@ import { trackEvent } from '@/lib/analytics'
 import { getDirectionsByLatLng } from '@/lib/directions'
 import QrScanner from '@/components/ride/QrScanner'
 import SafetyPill from '@/components/ui/SafetyPill'
-import SafetyWarningBanner from '@/components/safety/SafetyWarningBanner'
+import RideSafetyCheckOverlay from '@/components/safety/RideSafetyCheckOverlay'
 import { useRideSafetyChannel } from '@/hooks/useRideSafetyChannel'
 import { RoutePolyline, MapBoundsFitter, RecenterButton } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
@@ -711,12 +711,23 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
         data-testid="safety-pill-rider-active"
       />
 
-      {/* Sprint 11 Slice 4a — passive divergence-warning banner.
-          Replaced by RideSafetyCheckOverlay in Slice 4b. */}
-      {warningFiredAt && (
-        <SafetyWarningBanner
+      {/* Sprint 11 Slice 4b — full interactive RideSafetyCheckOverlay.
+          Replaces the Slice 4a passive banner. The hook nulls out
+          `warningFiredAt` automatically on `warning_responded` /
+          `safety_ended` (counterparty responded first / server
+          auto-ended) so the typical dismiss path is just the parent
+          re-rendering with null. `onResolved` is a no-op here — the
+          got-out path's ride-summary navigation is driven by the
+          existing `ride_ended` realtime listener already mounted on
+          this page. */}
+      {warningFiredAt && rideId && (
+        <RideSafetyCheckOverlay
+          rideId={rideId}
+          role="rider"
+          counterpartyName={driver?.full_name ?? null}
           firedAt={warningFiredAt}
-          data-testid="safety-warning-banner-rider"
+          onResolved={() => { /* parent state self-clears */ }}
+          data-testid="ride-safety-check-overlay-rider"
         />
       )}
     </div>

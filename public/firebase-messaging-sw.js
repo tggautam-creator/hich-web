@@ -123,6 +123,14 @@ self.addEventListener('notificationclick', (event) => {
     // Slice 1.4b — admin broadcast deep-link. Slug came down in the
     // FCM data payload; route to the public /c/<slug> marketing page.
     url = '/c/' + data.slug
+  } else if (inferredType === 'ride_safety_warning' && data.ride_id) {
+    // v1.3 Sprint 11 Slice 4b — divergence warning push. Server emits
+    // `data.role = 'rider' | 'driver'`; route the user to their
+    // active-ride surface where useRideSafetyChannel will reseat the
+    // overlay (the 90s countdown is anchored to warning_fired_at so
+    // there's still meaningful time left even if the user tapped late).
+    const role = data.role === 'driver' ? 'active-driver' : 'active-rider'
+    url = '/ride/' + role + '/' + data.ride_id
   }
 
   console.log('[SW] notificationclick route:', { url, inferredType, data })

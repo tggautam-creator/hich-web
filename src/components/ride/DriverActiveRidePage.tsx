@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import DriverQrSheet from '@/components/ride/DriverQrSheet'
 import SafetyPill from '@/components/ui/SafetyPill'
-import SafetyWarningBanner from '@/components/safety/SafetyWarningBanner'
+import RideSafetyCheckOverlay from '@/components/safety/RideSafetyCheckOverlay'
 import { useRideSafetyChannel } from '@/hooks/useRideSafetyChannel'
 import { RoutePolyline, MapBoundsFitter, RecenterButton } from '@/components/map/RoutePreview'
 import CarMarker from '@/components/map/CarMarker'
@@ -722,12 +722,19 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
         data-testid="safety-pill-driver-active"
       />
 
-      {/* Sprint 11 Slice 4a — passive divergence-warning banner.
-          Replaced by RideSafetyCheckOverlay in Slice 4b. */}
-      {warningFiredAt && (
-        <SafetyWarningBanner
+      {/* Sprint 11 Slice 4b — full interactive RideSafetyCheckOverlay.
+          Replaces the Slice 4a passive banner. Driver-side mirror:
+          counterpartyName is the rider's full_name; ride-end
+          summary navigation flows through the existing ride_ended
+          subscription on this page. */}
+      {warningFiredAt && rideId && (
+        <RideSafetyCheckOverlay
+          rideId={rideId}
+          role="driver"
+          counterpartyName={rider?.full_name ?? null}
           firedAt={warningFiredAt}
-          data-testid="safety-warning-banner-driver"
+          onResolved={() => { /* parent state self-clears */ }}
+          data-testid="ride-safety-check-overlay-driver"
         />
       )}
 
