@@ -8,7 +8,7 @@ import { useAnimatedPosition } from '@/hooks/useAnimatedPosition'
 import { trackEvent } from '@/lib/analytics'
 import { useAuthStore } from '@/stores/authStore'
 import QrScanner from '@/components/ride/QrScanner'
-import EmergencySheet from '@/components/ui/EmergencySheet'
+import SafetyPill from '@/components/ui/SafetyPill'
 import { RoutePolyline, MapBoundsFitter, RecenterButton } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
@@ -437,23 +437,42 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
       ? { lat: riderLat, lng: riderLng }
       : { lat: 38.5382, lng: -121.7617 }
 
+  // ── Sprint 11 Slice 1 — portal-mounted safety pill + EmergencySheet.
+  //    Declared here so each of the three early-return branches below
+  //    (loading / error / scanning) can include it — the pill MUST stay
+  //    visible during QR scanning per the CLAUDE.md hard rule.
+  const safetyElement = rideId ? (
+    <SafetyPill
+      rideId={rideId}
+      isOpen={emergencyOpen}
+      onOpenChange={setEmergencyOpen}
+      data-testid="safety-pill-rider-pickup"
+    />
+  ) : null
+
   // ── Loading ──────────────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div data-testid={testId ?? 'rider-pickup-page'} className="flex min-h-dvh items-center justify-center bg-surface">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-      </div>
+      <>
+        {safetyElement}
+        <div data-testid={testId ?? 'rider-pickup-page'} className="flex min-h-dvh items-center justify-center bg-surface">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+        </div>
+      </>
     )
   }
 
   if (!ride) {
     return (
-      <div data-testid={testId ?? 'rider-pickup-page'} className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-surface px-6">
-        <p className="text-center text-danger" data-testid="error-message">{error ?? 'Ride not found'}</p>
-        <button type="button" onClick={() => navigate('/home/rider', { replace: true })} className="rounded-2xl bg-primary px-6 py-3 font-semibold text-white">
-          Back to Home
-        </button>
-      </div>
+      <>
+        {safetyElement}
+        <div data-testid={testId ?? 'rider-pickup-page'} className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-surface px-6">
+          <p className="text-center text-danger" data-testid="error-message">{error ?? 'Ride not found'}</p>
+          <button type="button" onClick={() => navigate('/home/rider', { replace: true })} className="rounded-2xl bg-primary px-6 py-3 font-semibold text-white">
+            Back to Home
+          </button>
+        </div>
+      </>
     )
   }
 
@@ -462,7 +481,9 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
   // ── QR Scanner Overlay ───────────────────────────────────────────────────
   if (scanning) {
     return (
-      <div data-testid={testId ?? 'rider-pickup-page'} className="flex h-dvh flex-col bg-black font-sans overflow-hidden">
+      <>
+        {safetyElement}
+        <div data-testid={testId ?? 'rider-pickup-page'} className="flex h-dvh flex-col bg-black font-sans overflow-hidden">
         <div
           className="flex items-center gap-3 px-4 bg-black z-10 shrink-0"
           style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
@@ -524,7 +545,8 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
             </div>
           )}
         </div>
-      </div>
+        </div>
+      </>
     )
   }
 
@@ -799,11 +821,7 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
         </div>
       )}
 
-      <EmergencySheet
-        isOpen={emergencyOpen}
-        onClose={() => setEmergencyOpen(false)}
-        rideId={rideId ?? ''}
-      />
+      {safetyElement}
     </div>
   )
 }

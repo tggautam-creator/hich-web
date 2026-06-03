@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { trackEvent } from '@/lib/analytics'
 import { getDirectionsByLatLng } from '@/lib/directions'
 import QrScanner from '@/components/ride/QrScanner'
-import EmergencySheet from '@/components/ui/EmergencySheet'
+import SafetyPill from '@/components/ui/SafetyPill'
 import { RoutePolyline, MapBoundsFitter, RecenterButton } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
@@ -693,10 +693,15 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
         remainingLabel={routeEta ? `${routeEta} remaining` : undefined}
       />
 
-      <EmergencySheet
-        isOpen={emergencyOpen}
-        onClose={() => setEmergencyOpen(false)}
+      {/* Sprint 11 Slice 1 — portal-mounted safety pill + EmergencySheet.
+          Replaces the previous bare <EmergencySheet> mount so the
+          emergency surface stays reachable during QR scanning + any
+          other branch of the page (CLAUDE.md hard rule). */}
+      <SafetyPill
         rideId={rideId ?? ''}
+        isOpen={emergencyOpen}
+        onOpenChange={setEmergencyOpen}
+        data-testid="safety-pill-rider-active"
       />
     </div>
   )

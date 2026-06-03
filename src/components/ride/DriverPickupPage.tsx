@@ -11,7 +11,7 @@ import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
 import { useAuthStore } from '@/stores/authStore'
 import DriverQrSheet from '@/components/ride/DriverQrSheet'
-import EmergencySheet from '@/components/ui/EmergencySheet'
+import SafetyPill from '@/components/ui/SafetyPill'
 import AppIcon from '@/components/ui/AppIcon'
 import JourneyDrawer from '@/components/ride/JourneyDrawer'
 import CaregiverContextRow from '@/components/profile/CaregiverContextRow'
@@ -507,23 +507,42 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
   const walkMinutes = walkEta !== null ? Math.ceil(walkEta / 60) : null
   const walkFeet = walkDist !== null ? Math.round(walkDist * 3.28084) : 0
 
+  // ── Sprint 11 Slice 1 — portal-mounted safety pill + EmergencySheet.
+  //    Declared here so each early-return branch below (loading /
+  //    error / en-route view / pin-dropper) includes it. CLAUDE.md
+  //    hard rule: the pill must remain reachable in every branch.
+  const safetyElement = rideId ? (
+    <SafetyPill
+      rideId={rideId}
+      isOpen={emergencyOpen}
+      onOpenChange={setEmergencyOpen}
+      data-testid="safety-pill-driver-pickup"
+    />
+  ) : null
+
   // ── Loading ────────────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div data-testid={testId ?? 'driver-pickup-page'} className="flex min-h-dvh items-center justify-center bg-surface">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-      </div>
+      <>
+        {safetyElement}
+        <div data-testid={testId ?? 'driver-pickup-page'} className="flex min-h-dvh items-center justify-center bg-surface">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+        </div>
+      </>
     )
   }
 
   if (!ride) {
     return (
-      <div data-testid={testId ?? 'driver-pickup-page'} className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-surface px-6">
-        <p className="text-center text-danger" data-testid="error-message">{error ?? 'Ride not found'}</p>
-        <button type="button" onClick={() => navigate('/home/driver', { replace: true })} className="rounded-2xl bg-primary px-6 py-3 font-semibold text-white">
-          Back to Home
-        </button>
-      </div>
+      <>
+        {safetyElement}
+        <div data-testid={testId ?? 'driver-pickup-page'} className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-surface px-6">
+          <p className="text-center text-danger" data-testid="error-message">{error ?? 'Ride not found'}</p>
+          <button type="button" onClick={() => navigate('/home/driver', { replace: true })} className="rounded-2xl bg-primary px-6 py-3 font-semibold text-white">
+            Back to Home
+          </button>
+        </div>
+      </>
     )
   }
 
@@ -697,11 +716,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
           pickupNote={ride.pickup_note}
         />
 
-        <EmergencySheet
-          isOpen={emergencyOpen}
-          onClose={() => setEmergencyOpen(false)}
-          rideId={rideId ?? ''}
-        />
+        {safetyElement}
       </div>
     )
   }
@@ -882,6 +897,8 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
             : (isDropoffMode ? 'Confirm Dropoff Point' : 'Confirm Pickup Point')}
         </button>
       </div>
+
+      {safetyElement}
     </div>
   )
 }

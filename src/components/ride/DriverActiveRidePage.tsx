@@ -4,7 +4,7 @@ import { Map, AdvancedMarker } from '@vis.gl/react-google-maps'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import DriverQrSheet from '@/components/ride/DriverQrSheet'
-import EmergencySheet from '@/components/ui/EmergencySheet'
+import SafetyPill from '@/components/ui/SafetyPill'
 import { RoutePolyline, MapBoundsFitter, RecenterButton } from '@/components/map/RoutePreview'
 import CarMarker from '@/components/map/CarMarker'
 import { MAP_ID } from '@/lib/mapConstants'
@@ -705,10 +705,15 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
         remainingLabel={routeEta ? `${routeEta} remaining` : undefined}
       />
 
-      <EmergencySheet
-        isOpen={emergencyOpen}
-        onClose={() => setEmergencyOpen(false)}
+      {/* Sprint 11 Slice 1 — portal-mounted safety pill + EmergencySheet.
+          Replaces the previous bare <EmergencySheet> mount so the
+          emergency surface stays reachable during QR display + any
+          other branch of the page (CLAUDE.md hard rule). */}
+      <SafetyPill
         rideId={rideId ?? ''}
+        isOpen={emergencyOpen}
+        onOpenChange={setEmergencyOpen}
+        data-testid="safety-pill-driver-active"
       />
 
       {/* ── QR Sheet ────────────────────────────────────────────────────── */}
