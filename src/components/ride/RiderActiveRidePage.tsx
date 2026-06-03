@@ -9,6 +9,11 @@ import QrScanner from '@/components/ride/QrScanner'
 import SafetyPill from '@/components/ui/SafetyPill'
 import RideSafetyCheckOverlay from '@/components/safety/RideSafetyCheckOverlay'
 import { useRideSafetyChannel } from '@/hooks/useRideSafetyChannel'
+import {
+  manualEndEligible,
+  ManualEndApiError,
+  postManualEnd,
+} from '@/lib/rideManualEndGate'
 import { RoutePolyline, MapBoundsFitter, RecenterButton } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
@@ -49,6 +54,12 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
   // same hook; until then the passive banner ships parity for the
   // realtime + reseat plumbing.
   const { warningFiredAt } = useRideSafetyChannel(rideId ?? null)
+  // v1.3 Sprint 11 Slice 5 — gated manual-end secondary button.
+  // gpsDistanceMetres is set from the gps-ping response below.
+  const [gpsDistanceMetres, setGpsDistanceMetres] = useState<number>(0)
+  const [manualEndConfirm, setManualEndConfirm] = useState(false)
+  const [manualEndSubmitting, setManualEndSubmitting] = useState(false)
+  const [manualEndError, setManualEndError] = useState<string | null>(null)
   const [routePolyline, setRoutePolyline] = useState<string | null>(null)
   const [riderPos, setRiderPos] = useState<{ lat: number; lng: number } | null>(null)
   const [unreadChat, setUnreadChat] = useState(0)
@@ -129,7 +140,7 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
       try {
         const { data: { session } } = await supabase.auth.getSession()
         if (!session) return
-        await fetch(`/api/rides/${rideId}/gps-ping`, {
+        const resp = await fetch(`/api/rides/${rideId}/gps-ping`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -137,6 +148,20 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
           },
           body: JSON.stringify({ lat: riderPos.lat, lng: riderPos.lng }),
         })
+        // v1.3 Sprint 11 Slice 5 — capture the server's running GPS
+        // distance so the manual-end gate (>5min AND >1km) can flip
+        // on. Server returns `{ gps_distance_metres }` per ping
+        // (rides.ts:5150).
+        if (resp.ok) {
+          try {
+            const body = (await resp.json()) as { gps_distance_metres?: number }
+            if (typeof body.gps_distance_metres === 'number') {
+              setGpsDistanceMetres(body.gps_distance_metres)
+            }
+          } catch {
+            // ignore parse errors — manual-end gate just stays off
+          }
+        }
       } catch {
         // Best-effort — driver pings are primary, rider is backup
       }
@@ -363,6 +388,31 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
     if (!code) return
     void submitDriverCode(code)
   }, [manualCode, submitDriverCode])
+
+  // ── Sprint 11 Slice 5: manual-end submit ────────────────────────────────
+  // POSTs `/api/rides/:id/safety-end` with `reason: 'manual_end'`.
+  // The server broadcasts `ride_ended` which the existing realtime
+  // listener on this page already routes to the summary screen, so
+  // we don't need to navigate explicitly — but we do so defensively
+  // so the user doesn't sit on a stale "Ending…" button if the
+  // broadcast hiccups.
+  const handleManualEnd = useCallback(async () => {
+    if (!rideId || manualEndSubmitting) return
+    setManualEndSubmitting(true)
+    setManualEndError(null)
+    try {
+      await postManualEnd(rideId)
+      trackEvent('ride_ended', { ride_id: rideId, end_reason: 'manual_end' })
+      setManualEndConfirm(false)
+      navigate(`/ride/summary/${rideId}`, { replace: true })
+    } catch (err) {
+      const message = err instanceof ManualEndApiError
+        ? err.message
+        : (err instanceof Error ? err.message : 'Try again.')
+      setManualEndError(`Couldn't end ride — ${message}`)
+      setManualEndSubmitting(false)
+    }
+  }, [rideId, manualEndSubmitting, navigate])
 
   // ── Format elapsed time ─────────────────────────────────────────────────
   const minutes = Math.floor(elapsed / 60)
@@ -674,6 +724,71 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
                   Scan QR
                 </button>
               </div>
+
+              {/* v1.3 Sprint 11 Slice 5 — gated "End ride without QR"
+                  secondary. CLAUDE.md hard rule: hidden until elapsed
+                  >5min AND gpsDistance >1km. Without the gate, riders
+                  could end at the $5 minimum after 100m. */}
+              {manualEndEligible(elapsed, gpsDistanceMetres) && (
+                <button
+                  type="button"
+                  data-testid="modal-end-without-qr"
+                  onClick={() => { setEndRideModal(false); setManualEndConfirm(true); setManualEndError(null) }}
+                  className="mt-3 w-full rounded-2xl border border-dashed border-text-secondary/40 py-2.5 text-xs font-semibold text-text-secondary active:bg-surface"
+                >
+                  End ride without QR
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Manual End Confirm Dialog (Sprint 11 Slice 5) ──────────────── */}
+      {manualEndConfirm && (
+        <div
+          data-testid="manual-end-confirm"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="manual-end-title"
+          aria-describedby="manual-end-body"
+          className="fixed inset-0 z-[960] flex items-center justify-center bg-black/50 px-6"
+        >
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl">
+            <h3 id="manual-end-title" className="text-lg font-bold text-text-primary">
+              End ride now?
+            </h3>
+            <p id="manual-end-body" className="mt-2 text-sm text-text-secondary">
+              This will end the ride right now without scanning your driver&apos;s QR. You&apos;ll be charged based on the GPS distance traveled so far.
+            </p>
+            {manualEndError && (
+              <p
+                data-testid="manual-end-error"
+                role="alert"
+                className="mt-3 rounded-xl bg-danger/10 px-3 py-2 text-xs font-semibold text-danger"
+              >
+                {manualEndError}
+              </p>
+            )}
+            <div className="mt-5 flex gap-3">
+              <button
+                type="button"
+                data-testid="manual-end-cancel"
+                onClick={() => setManualEndConfirm(false)}
+                disabled={manualEndSubmitting}
+                className="flex-1 rounded-2xl border border-border py-3 text-sm font-semibold text-text-primary active:bg-surface disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                data-testid="manual-end-confirm-button"
+                onClick={() => { void handleManualEnd() }}
+                disabled={manualEndSubmitting}
+                className="flex-1 rounded-2xl bg-danger py-3 text-sm font-semibold text-white active:bg-danger/90 disabled:opacity-60"
+              >
+                {manualEndSubmitting ? 'Ending…' : 'End ride'}
+              </button>
             </div>
           </div>
         </div>

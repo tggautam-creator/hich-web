@@ -7,6 +7,11 @@ import DriverQrSheet from '@/components/ride/DriverQrSheet'
 import SafetyPill from '@/components/ui/SafetyPill'
 import RideSafetyCheckOverlay from '@/components/safety/RideSafetyCheckOverlay'
 import { useRideSafetyChannel } from '@/hooks/useRideSafetyChannel'
+import {
+  manualEndEligible,
+  ManualEndApiError,
+  postManualEnd,
+} from '@/lib/rideManualEndGate'
 import { RoutePolyline, MapBoundsFitter, RecenterButton } from '@/components/map/RoutePreview'
 import CarMarker from '@/components/map/CarMarker'
 import { MAP_ID } from '@/lib/mapConstants'
@@ -47,6 +52,13 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
   // backstop. Driver mirror of the rider's wiring; Slice 4b layers
   // the interactive overlay on top of the same hook.
   const { warningFiredAt } = useRideSafetyChannel(rideId ?? null)
+  // v1.3 Sprint 11 Slice 5 — gated manual-end mirror. Same gate +
+  // submit as the rider page; driver-side dialog body emphasises
+  // that the rider will be charged based on GPS distance.
+  const [gpsDistanceMetres, setGpsDistanceMetres] = useState<number>(0)
+  const [manualEndConfirm, setManualEndConfirm] = useState(false)
+  const [manualEndSubmitting, setManualEndSubmitting] = useState(false)
+  const [manualEndError, setManualEndError] = useState<string | null>(null)
   const [unreadChat, setUnreadChat] = useState(0)
   const [fitToken, setFitToken] = useState(0)
   const signalTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -154,7 +166,7 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
       try {
         const { data: { session } } = await supabase.auth.getSession()
         if (!session) return
-        await fetch(`/api/rides/${rideId}/gps-ping`, {
+        const resp = await fetch(`/api/rides/${rideId}/gps-ping`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -162,6 +174,18 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
           },
           body: JSON.stringify({ lat: driverLat, lng: driverLng }),
         })
+        // v1.3 Sprint 11 Slice 5 — capture server's running GPS
+        // distance for the manual-end gate (>5min AND >1km).
+        if (resp.ok) {
+          try {
+            const body = (await resp.json()) as { gps_distance_metres?: number }
+            if (typeof body.gps_distance_metres === 'number') {
+              setGpsDistanceMetres(body.gps_distance_metres)
+            }
+          } catch {
+            // ignore parse errors — manual-end gate just stays off
+          }
+        }
       } catch {
         // Silently fail — GPS pings are best-effort
       }
@@ -360,6 +384,24 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
     }, 5000)
     return () => clearTimeout(timer)
   }, [rideId, progress, isActive])
+
+  // ── Sprint 11 Slice 5: manual-end submit (driver mirror) ───────────────
+  const handleManualEnd = useCallback(async () => {
+    if (!rideId || manualEndSubmitting) return
+    setManualEndSubmitting(true)
+    setManualEndError(null)
+    try {
+      await postManualEnd(rideId)
+      setManualEndConfirm(false)
+      navigate(`/ride/summary/${rideId}`, { replace: true })
+    } catch (err) {
+      const message = err instanceof ManualEndApiError
+        ? err.message
+        : (err instanceof Error ? err.message : 'Try again.')
+      setManualEndError(`Couldn't end ride — ${message}`)
+      setManualEndSubmitting(false)
+    }
+  }, [rideId, manualEndSubmitting, navigate])
 
   // ── Cancel ride ────────────────────────────────────────────────────────
   const handleCancel = useCallback(async () => {
@@ -682,6 +724,70 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
                   Show QR
                 </button>
               </div>
+
+              {/* v1.3 Sprint 11 Slice 5 — gated driver-side mirror of
+                  the rider's manual-end secondary. Same gate (>5min
+                  AND >1km). */}
+              {manualEndEligible(elapsed, gpsDistanceMetres) && (
+                <button
+                  type="button"
+                  data-testid="modal-end-without-qr"
+                  onClick={() => { setEndModal(false); setManualEndConfirm(true); setManualEndError(null) }}
+                  className="mt-3 w-full rounded-2xl border border-dashed border-text-secondary/40 py-2.5 text-xs font-semibold text-text-secondary active:bg-surface"
+                >
+                  End ride without QR
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Manual End Confirm Dialog (Sprint 11 Slice 5) ──────────────── */}
+      {manualEndConfirm && (
+        <div
+          data-testid="manual-end-confirm"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="manual-end-title"
+          aria-describedby="manual-end-body"
+          className="fixed inset-0 z-[960] flex items-center justify-center bg-black/50 px-6"
+        >
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl">
+            <h3 id="manual-end-title" className="text-lg font-bold text-text-primary">
+              End ride now?
+            </h3>
+            <p id="manual-end-body" className="mt-2 text-sm text-text-secondary">
+              This will end the ride right now without the rider scanning your QR. The rider will be charged based on the GPS distance traveled.
+            </p>
+            {manualEndError && (
+              <p
+                data-testid="manual-end-error"
+                role="alert"
+                className="mt-3 rounded-xl bg-danger/10 px-3 py-2 text-xs font-semibold text-danger"
+              >
+                {manualEndError}
+              </p>
+            )}
+            <div className="mt-5 flex gap-3">
+              <button
+                type="button"
+                data-testid="manual-end-cancel"
+                onClick={() => setManualEndConfirm(false)}
+                disabled={manualEndSubmitting}
+                className="flex-1 rounded-2xl border border-border py-3 text-sm font-semibold text-text-primary active:bg-surface disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                data-testid="manual-end-confirm-button"
+                onClick={() => { void handleManualEnd() }}
+                disabled={manualEndSubmitting}
+                className="flex-1 rounded-2xl bg-danger py-3 text-sm font-semibold text-white active:bg-danger/90 disabled:opacity-60"
+              >
+                {manualEndSubmitting ? 'Ending…' : 'End ride'}
+              </button>
             </div>
           </div>
         </div>
