@@ -22,7 +22,7 @@ iOS has added 22 migrations (086–107), 22 new endpoints, and entire new Featur
 | 5 | **Trips & segments (split fare)** | mig 097, 098, `Features/Rides/`, `Features/MultiRider/`, `Features/DriverHome/DriverMultiRidePage+TripComplete`, `server/lib/trips.ts` + `server/lib/segments.ts`, no dedicated endpoint yet (iOS reads Supabase direct via `CoRidersFetcher`) | ✅ audit complete 2026-05-30 — see [Sprint 9](#sprint-9--trips--segments-split-fare-foundation-v13-parity) below |
 | 6 | **Board redesign + Smart geo-match** | 25 `Features/RideBoard/` .swift files, board endpoints (`BoardOfferEndpoints`, `BoardSearchEndpoint`, `BoardRequestActionEndpoints`, `ScheduleBoardEndpoint`), migrations 072 + 075 + 078 + 083 (smart polylines + transit details), parallel-session coordination cleared (no `RideBoard/` activity from them in 14d) | ✅ audit complete 2026-06-01 — see [Sprint 10](#sprint-10--board-redesign--smart-geo-match-v13-parity) below |
 | 7 | **Ride safety + forensics (admin)** | mig 094, 095, 096, `Features/Safety/`, `Features/Profile/ProfileSafetySection.swift`, safety endpoints | ✅ audit complete 2026-06-02 — see [Sprint 11](#sprint-11--ride-safety--forensics-v13-parity) below |
-| 8 | **Endpoint coverage audit** | all 72 endpoints in `ios/Core/Networking/Endpoints/` | ⏳ pending |
+| 8 | **Endpoint coverage audit** | all 72 endpoints in `ios/Core/Networking/Endpoints/` + ~25 server routes + every web fetch / Supabase call site | ✅ audit complete 2026-06-03 — see [Sprint 12](#sprint-12--endpoint-coverage-v13-parity) below |
 | 9 | **Re-walk Tier 2 polish from 2026-05-12** | copy / sort / filter / banner items | ⏳ pending |
 
 Each stage produces a numbered sprint that lands below. The next stage doesn't start until the previous stage's sprint is pushed.
@@ -38,11 +38,11 @@ For every stage:
 
 ### Currently pending decisions
 
-- **Stages 1–7 audits landed**. Stages 8–9 still queued.
-- **2026-06-02 hotfix — `rides.pickup_point=null` invariant restored** (commit `29656ce`, 3 unpushed). Server-side two-site write + accept-location backfill + client-side rescue listeners on Rider/DriverPickupPage. 5 new regression tests pin the invariant from both directions. Tarun QA confirmed on a fresh ride.
-- **Sprint 11 (Ride safety + forensics v1.3)** — ✅ Audit complete 2026-06-02. 7-slice plan landed below; no code yet. Headline: web is missing the entire `RideSafetyCheckOverlay` flow + `ride-safety:{rideID}` channel + Trusted Contacts CRUD on Profile + role-aware safety report categories + Phase-3.4 gated manual-end button, AND there's a live CLAUDE.md hard-rule violation where the emergency button is hidden inside `JourneyDrawer` during QR scanning. 5 BLOCKER + 8 HIGH gaps closed.
-- **Sprint 10 (Board redesign + Smart geo-match v1.3)** — ✅ All 6 slices shipped locally (commits through `2201e6e`). Awaiting QA + push.
-- **Sprint 9 (Trips & segments v1.3)** — ✅ All 5 slices shipped locally (commits `a6a31d3`, `71db876`, `b245760`, `1999f75`, `3dbb4b8`). Awaiting QA + push.
+- **Stages 1–8 audits landed**. Stage 9 still queued.
+- **Sprint 12 (Endpoint coverage v1.3)** — ✅ Audit complete 2026-06-03. 13-slice plan landed below; no code yet. Headline: 24 contract-shape mismatches (wrong field names / methods / payloads to existing server routes), 11 HIGH-severity WEB_MISSING endpoints, 3 audit-log-bypass direct-Supabase writes, 4 chat realtime channels web silently dropped in favour of polling, and dead-code calls to nonexistent server routes. Slice 0 is a verification spike (3 open questions reshape later slices). 1500-LoC React Query extraction sweep + 1200-LoC v1.3 catch-up deferred to Sprint 13 + Sprint 14 standalone.
+- **Sprint 11 (Ride safety + forensics v1.3)** — ✅ ALL 7 slices shipped + pushed (commits through `cd7bc26` + tsc/eslint hotfixes). CI green. 136 new tests added across the sprint. Closed 5 BLOCKER + 8 HIGH gaps.
+- **Sprint 10 (Board redesign + Smart geo-match v1.3)** — ✅ All 6 slices shipped + pushed.
+- **Sprint 9 (Trips & segments v1.3)** — ✅ All 5 slices shipped + pushed.
 - **Sprint 8 (Suggestions + rider routines v1.3)** — ✅ Audit complete 2026-05-30. 6-slice plan landed; no code yet. Open question #9: rider-home Waymo redesign blocks Slice 4's natural placement.
 - **Sprint 7 (accessibility / user profile)** — ✅ Slices 1–5 shipped + pushed (CI green 2026-05-30). Slice 6 (UserProfilePreviewCard polish) parked.
 - **Sprint 6 (caregivers)** — ✅ Slices 1–6 shipped + pushed.
@@ -50,17 +50,239 @@ For every stage:
 
 ### Current focus
 
-Stage 7 audit just landed. Stages 1–7 of the multi-stage iOS-parity audit are now complete; 7 numbered sprints (Sprints 5–11) wait on user direction. Sprint 11 is the freshest — closes a live CLAUDE.md hard-rule violation in Slice 1. Sprints 9 and 10 both have all slices shipped locally and are ready-to-push.
+Stage 8 audit just landed (2026-06-03). Stages 1–8 of the multi-stage iOS-parity audit are now complete. Sprint 11 is **shipped to prod**. 13-slice Sprint 12 endpoint-coverage plan waits on user direction — biggest scope yet, but each slice is independently mergeable + reversible. Slice 0 is a zero-LoC verification spike that resolves 3 open questions before any code.
 
 ### Next action
 
 Tarun decides:
-1. **Sprint 11 Slice 1** (always-visible top-bar safety pill — closes CLAUDE.md hard rule, ~180 LoC, smallest possible win, lands shared `SafetyPill.tsx`).
-2. **Push Sprint 9 + Sprint 10** to origin (all green, reviewer matrices attached, awaiting only "ship it").
-3. **Sprint 8 Slice 1** (Suggestions foundation).
+1. **Sprint 12 Slice 0** (verification spike — zero-LoC, ~30min, resolves the 3 open questions that reshape Slices 1c + 4a + 5a).
+2. **Sprint 12 Slice 1a** (ride-flow contract fixes — 6 endpoints aligned to iOS, ~180 LoC, smallest contract slice). Can run after Slice 0.
+3. **Sprint 8 Slice 1** (Suggestions foundation) — bigger unrelated direction.
 4. **Sprint 5 Slice 1** (Reports v2 notifications drift — bounded UX fix).
-5. Run **Stage 8 audit** (Endpoint coverage — read all 72 iOS endpoint files end-to-end).
-6. Resolve **Sprint 11 open questions** (Trusted Contacts host page, FCM Web prompt UX, RiderPickupPage iOS counterpart, TrackPage symmetric copy, RideSummary end-reason tag, /report-issue taxonomy cleanup).
+5. Run **Stage 9 audit** (Tier 2 polish re-walk — copy / sort / filter / banners from 2026-05-12 report).
+6. Resolve **Sprint 12 open questions** (Slice 0 spike answers + Sprint 13/14 scope confirms — caregivers REST routes deprecation, report attachments, hook extraction scope, v1.3 catch-up scope).
+
+---
+
+## Sprint 12 — Endpoint coverage v1.3 parity
+
+**Audit-first mode.** Stage 8 of the multi-stage iOS-parity audit completed 2026-06-03 with no code changes. This section is the side-by-side findings + 13-slice plan. Nothing here is shipped on the web app yet.
+
+### Current focus
+Close the largest cluster of iOS↔web drift left in the catalog: 24 contract-shape mismatches where web is sending wrong field names / methods / payloads to existing server routes, 11 HIGH-severity WEB_MISSING endpoints (notification-status, driver-pending-offer resume, tap-to-call, pickup/dropoff proposals, RLS-safe profile write, BoardOffer create), the chat realtime channels web silently dropped in favour of polling, and four direct-Supabase writes that bypass server audit. The sprint is sequenced smallest-first so each slice is independently mergeable, reversible, and tied to one user-visible win or one matrix row class.
+
+### Sprint 12 sequenced plan (one paragraph plain-English)
+We start with a tiny verification spike (Slice 0) to resolve two blocking open questions — does GET /api/rides/:rideId actually exist as a full snapshot, and does the web RideBoard read /api/schedule/board or fall back to Supabase direct — because the answers reshape later slices. Then six small contract-fix slices (1a–1f) ship one user-visible domain at a time (ride flow, payments/wallet, scheduling, notifications/preferences, safety, Stripe Connect) so a regression in any one fix can roll back without touching the others. Next come small, focused WEB_MISSING surfaces in single-win slices: WaitingRoom CTA (2a), driver PWA resume (2b), tap-to-call (3), pickup/dropoff proposals via chat (4a), seats edit on MyRidesPage (4b), RLS-safe profile write path (5a), profile stats tiles (5b), driver "make an offer" composer (6), and the chat realtime subscription fix (7, replacing the original mega-extraction Slice 7). The big React Query hook-extraction sweep is deferred to Sprint 13 because it requires Slices 1a–6 to land first and would otherwise rewrite code those slices just shipped. The iOS-canonical Suggestions hero and Rider Routines page are deferred to Sprint 14 as a standalone v1.3 catch-up sprint. New rows added by the completeness critic — including a HIGH chat realtime gap, audit-log violations on progress/driver-locations direct writes, FCM data.type handler coverage, and missing accessibility/caregiver fields on profile upsert — are folded into the slice that already touches that surface.
+
+### Parity matrix — endpoint by endpoint
+
+| Endpoint | iOS | Web | Status | Severity | Gap |
+| --- | --- | --- | --- | --- | --- |
+| POST /api/rides/request | RideConfirmPage.swift:614 | RideConfirm.tsx:150 (inline) | WEB_INLINE | MEDIUM | Missing caregiver_id (v1.2 F6.2) + origin_name (reverse-geocoded label, 2026-05-01); no RQ wrapper |
+| GET /api/rides/:rideId (full RideSnapshot) | WaitingRoomPage+Live.swift:34, RideSuggestionPage.swift:1381, DropoffSelectionPage+Actions.swift:148 | none | OPEN_QUESTION | HIGH | Server catalog shows only GET /:id/status returning {status}. Either iOS reads via Supabase RPC or a handler isn't enumerated. **Resolved in Slice 0** |
+| GET /api/rides/active | RidesTabViewModel.swift:152 | RiderHomePage.tsx:44, MyRidesPage.tsx:96, DriverHomePage.tsx:93 (3× inline) | WEB_INLINE | MEDIUM | No shared hook; cross-page invalidation ad hoc — folded into Sprint 13 extraction |
+| PATCH /api/rides/:id/accept | RideSuggestionPage.swift:1152 | RideRequestNotification.tsx:907, RideSuggestion.tsx:501 (inline) | CONTRACT_DRIFT | MEDIUM | Missing driver_destination_{lat,lng,name} **and** driver_route_polyline + overlap_pct that server reads on /accept handler |
+| PATCH /api/rides/:rideId/cancel | WaitingRoomPage.swift:571 | 10 inline call sites | WEB_INLINE | HIGH | snooze_minutes / reason field drift across 10 surfaces — Sprint 13 |
+| POST /api/rides/scan-driver | DriverPickupPage.swift:1517 | RiderActiveRidePage.tsx:342, RiderPickupPage.tsx:360 | CONTRACT_DRIFT | HIGH | iOS sends `{driver_code, lat?, lng?}`; web sends `{token}` only |
+| POST /api/rides/:id/signal | DriverPickupPage.swift:1474 | RiderPickupPage.tsx:416 | CONTRACT_DRIFT | MEDIUM | iOS empty body; web sends `{kind}` — server contract is bodyless |
+| GET /api/rides/:rideId/notification-status | WaitingRoomPage.swift:636 | none | WEB_MISSING | HIGH | "No drivers nearby — try Ride Board" CTA never surfaces. **Slice 2a** |
+| POST /api/rides/:id/accept-location | MessagingPage+MessageRows.swift:145 | MessagingWindow.tsx:1028 | CONTRACT_DRIFT | HIGH | Missing `{location_type: 'pickup'\|'dropoff'}` — wrong column flipped |
+| PATCH /api/rides/:id/pickup-point | DriverPickupPage.swift:1312 | none | WEB_MISSING | HIGH | **Slice 4a** |
+| PATCH /api/rides/:id/dropoff-point | DriverPickupPage.swift:1323 | none | WEB_MISSING | HIGH | **Slice 4a** |
+| PATCH /api/rides/:id/driver-destination | DriverDestinationEntryPage.swift:352 | RideSuggestion.tsx:549, DriverDestinationCard.tsx:85, DropoffSelection.tsx:195 | CONTRACT_DRIFT | MEDIUM | Web `{lat,lng,address}` vs iOS `{destination_lat,destination_lng,destination_name}` |
+| POST /api/rides/:id/suggest-transit-dropoff | DropoffSelectionPage+Actions.swift:84 | DropoffSelection.tsx:342, TransitSuggestionCard.tsx:158 | CONTRACT_DRIFT | HIGH | Web sends 3 fields; iOS sends 14 — drops every transit-routing field |
+| GET /api/rides/driver-pending-offer | RideRequestListener.swift:154 | none | WEB_MISSING | HIGH | PWA reload loses pending offer. **Slice 2b** |
+| GET /api/rides/:rideId/counterparty-contact | CallButton.swift:141 | none | WEB_MISSING | HIGH | Tap-to-call missing on web. **Slice 3** |
+| POST /api/rides/:id/tip | RateRidePage.swift:565 | RideSummaryPage.tsx:704 | CONTRACT_DRIFT | MEDIUM | iOS `{tip_cents}` only; web sends extra `payment_method_id` |
+| POST /api/rides/:id/retry-payment | DunningBanner.swift:180 | RideSummaryPage.tsx:526 | CONTRACT_DRIFT | MEDIUM | Web sends `{payment_method_id}`; server uses default |
+| POST /api/rides/:id/safety-end | DriverActiveRidePage.swift:799 | rideManualEndGate.ts:90 | CONTRACT_DRIFT | MEDIUM | Web sends empty body; iOS sends `{reason}` (enum: `rider_left\|driver_left\|manual_end`) |
+| POST /api/rides/:id/safety-warning-response | RideSafetyCheckOverlay.swift:296 | safetyWarningResponseApi.ts:102 | CONTRACT_DRIFT | HIGH | Action enum mismatch + web doesn't surface `trusted_contacts[]` + `share_token` returned on `help_requested` |
+| POST /api/rides/snooze | RideSuggestionPage.swift:1239 | RideRequestNotification:217, RideSuggestion:362, DriverHomePage:277 | CONTRACT_DRIFT | MEDIUM | Web sends `{seconds}`; iOS sends `{snooze_minutes}` |
+| POST /api/payment/default-method | PaymentMethodsPage.swift:483 | PaymentMethodsPage.tsx:55, SaveCardPage.tsx:76 | CONTRACT_DRIFT | MEDIUM | Server POST; web sends PUT |
+| POST /api/wallet/topup | AddFundsSheet.swift:533 | AddFundsPage.tsx:142,236 | CONTRACT_DRIFT | MEDIUM | Web sends extra `payment_method_id` |
+| POST /api/wallet/withdraw | WithdrawSheet.swift:311 | WithdrawSheet.tsx:114 | CONTRACT_DRIFT | MEDIUM | Verify Idempotency-Key header — without it, double-tap on slow networks double-withdraws |
+| GET /api/connect/dashboard | PayoutsPage.swift:464 | DriverPayoutsPage.tsx:57 | CONTRACT_DRIFT | MEDIUM | Server GET; web uses POST (405) |
+| GET /api/connect/onboard/complete | StripeOnboardingCompletePage.swift:202 | StripeOnboardingCompletePage:26, DriverHomePage:246 | CONTRACT_DRIFT | MEDIUM | Server GET; web POST (405) |
+| GET /api/schedule/board | RideBoardViewModel.swift:154 | none (likely Supabase direct) | OPEN_QUESTION | HIGH | **Resolved in Slice 0** |
+| GET /api/schedule/by-id/:id | SuggestedRidesHero.swift:249 | RideBoard.tsx:451, MyRidesPage.tsx:135 (uses /api/schedule/:id — 404) | CONTRACT_DRIFT | HIGH | Server only registers `/by-id/:id` |
+| GET /api/schedule/:id/seats | none | RideBoard.tsx:477 (inline) | CONTRACT_DRIFT | HIGH | No server route — likely 404 |
+| GET /api/schedule/board/offers | none (iOS uses `/schedule/:id/offers`) | RideBoard.tsx:272 | CONTRACT_DRIFT | HIGH | Server only has `/board/schedule/:scheduleId/offers` |
+| PATCH /api/schedule/:id/seats | RideBoardPage+Actions.swift:103 | none | WEB_MISSING | MEDIUM | **Slice 4b** |
+| POST /api/schedule/notify | SchedulePostViewModel+Submit.swift:827 | SchedulePage.tsx:425,691 | CONTRACT_DRIFT | MEDIUM | Web sends `{scheduleId}`; server expects full match params |
+| POST /api/schedule/request | RideBoardConfirmViewModel.swift:712 | RideBoard.tsx:246 | CONTRACT_DRIFT | HIGH | Web 2-field; iOS 11-field (coords + caregiver_id) |
+| POST /api/schedule/sync-routines | RoutinesViewModel.swift:66 | RideBoard.tsx:768 | CONTRACT_DRIFT | MEDIUM | Web sends `{}`; iOS sends `{client_date}` |
+| POST /api/transit/preview | RideBoardConfirmViewModel.swift:540 | RideBoardConfirmSheet.tsx:210 | CONTRACT_DRIFT | MEDIUM | Web sends nested objects; iOS sends 6 flat lat/lng fields |
+| POST /api/schedule/board/offers | RideBoardConfirmViewModel.swift:765 | none | WEB_MISSING | HIGH | **Slice 6** |
+| PATCH /api/schedule/accept-board | NotificationsPage.swift:255 | NotificationsPage.tsx:102, BoardRequestReview.tsx:163 | CONTRACT_DRIFT | MEDIUM | Web `{requestId}` vs iOS `{ride_id}` |
+| PATCH /api/schedule/decline-board | NotificationsPage.swift:277 | NotificationsPage.tsx:132, BoardRequestReview.tsx:141 | CONTRACT_DRIFT | MEDIUM | Same `{ride_id}` drift + missing reason |
+| POST /api/messages/:rideId | MessagesViewModel.swift:324 | MessagingWindow.tsx:826,875, DriverGroupChatPage:154 | CONTRACT_DRIFT | HIGH | Web sends `{locationLat,locationLng,locationLabel,clientMessageId}` — server only reads `content` (silent drop). Folded into **Slice 4a** |
+| Realtime: chat:{rideId} | MessagesViewModel subscribes | MessagingWindow polls instead | DRIFT | HIGH | **Slice 7** — replace polling with realtime |
+| Realtime: chat-badge:{rideId} | iOS subscribes | none | DRIFT | MEDIUM | **Slice 7** |
+| Realtime: chat-confirm:{rideId} (locations_confirmed) | iOS subscribes | none | DRIFT | MEDIUM | **Slice 7** |
+| Realtime: ride:{rideId} (transit_suggestions) | DropoffSelectionPage listens | none | DRIFT | MEDIUM | **Slice 7** |
+| PATCH /api/notifications/:id/read | RideRequestListener.swift:405 | RideRequestNotification:765,832 | CONTRACT_DRIFT | MEDIUM | Web sends POST; server is PATCH (405) |
+| PUT /api/users/me/notification-preferences | NotificationPreferences.swift:98 | SettingsPage.tsx:96 | CONTRACT_DRIFT | MEDIUM | Web PATCH; server PUT (405) |
+| POST /api/safety/share-location | EmergencySheet.swift:360 | EmergencySheet.tsx:255 | CONTRACT_DRIFT | MEDIUM | Web `{rideId?}`; server requires `ride_id` |
+| POST /api/safety/share-location/:token (web only) | none | EmergencySheet.tsx:192 | DEAD_CODE | HIGH | **No such server route** — 404. Removed in **Slice 1e** |
+| POST /api/users/me/profile | AuthStore.swift:249 | none (3 sites: CreateProfile, ProfilePage is_driver toggle, ProfilePage avatar) | WEB_MISSING | HIGH | **Slice 5a** — RLS-safe write + accessibility_profile + waive_caregiver_fee fields |
+| GET /api/users/me/stats | ProfilePage.swift:329 | none | WEB_MISSING | MEDIUM | **Slice 5b** |
+| Direct Supabase: driver_locations.upsert | LocationPingService uses /api/users/me/location | DriverHomePage.tsx:176,319 | CONTRACT_DRIFT | HIGH | Web bypasses iOS canonical /me/location. Folded into **Slice 5a** |
+| Direct Supabase: rides.update progress_pct | iOS computes server-side via /gps-ping | RiderActiveRidePage:459, DriverActiveRidePage:383 | AUDIT_LOG_VIOLATION | HIGH | No server route; bypasses audit. **Slice 1a** removes the direct write |
+| Direct Supabase: users.update is_driver/avatar | iOS uses /me/profile | ProfilePage.tsx:246,307 | AUDIT_LOG_VIOLATION | HIGH | Folded into **Slice 5a** |
+| GET /api/suggestions/top | SuggestedRidesHero.swift:223 | none | WEB_MISSING | MEDIUM | Sprint 14 |
+| GET /api/rider-routines (+ POST/PUT/DELETE) | (none in catalog) | none | WEB_MISSING | MEDIUM | Sprint 14 |
+| FCM data.type handlers (30+ values) | iOS routes all in NotificationService | RideRequestNotification handles subset; many unhandled | DRIFT | HIGH | payment_received, payment_failed, dropoff_reminder_*, safety_warning, ride_cancelled, board_offer_*, schedule_match, locations_confirmed, details_accepted, rider_signal, ride_ended — folded into **Slice 7** |
+
+**Note:** Full 100+ row matrix is in the audit output ([Stage 8 workflow result](w5qvzke05)). Above shows the actionable rows (CONTRACT_DRIFT / WEB_MISSING / DRIFT / DEAD_CODE / AUDIT_LOG_VIOLATION / OPEN_QUESTION); PARITY + SERVER_ORPHAN + IOS_CANONICAL + SYSTEM_ONLY + ADMIN_LANE rows are omitted from this table for readability.
+
+### Sprint 12 slice plan
+
+**Slice 0: Verification spike**
+- Scope: Pin down 3 open questions that reshape later slices: (a) does GET `/api/rides/:rideId` actually return a full RideSnapshot or is iOS reading via Supabase RPC; (b) does web RideBoard.tsx fetch `/api/schedule/board` or read `ride_schedules` directly via Supabase; (c) does iOS VehicleRegistration write `vehicles.insert` directly or via a server route not enumerated.
+- iOS reference files: `GetRideEndpoint.swift`, `RideBoardViewModel.swift`, `VehicleRegistrationPage.swift`
+- Web files: read-only inspection
+- LoC estimate: 0 (documentation only)
+- Dependencies: none
+- Scope cuts: no code changes
+
+**Slice 1a: Ride flow contract fixes**
+- Scope: Align 6 ride-flow endpoint payloads — `/scan-driver` (token→driver_code + lat/lng), `/signal` (drop body), `/accept-location` (add `location_type`), `/driver-destination` (rename fields), `/suggest-transit-dropoff` (full 14-field payload), `/accept` (add driver_route_polyline + overlap_pct). Also remove direct Supabase `rides.update progress_pct` write (audit-log violation).
+- LoC estimate: 180
+- Dependencies: Slice 0
+- Endpoints: 6 ride-flow routes
+
+**Slice 1b: Payments + wallet contract fixes**
+- Scope: `/tip` (drop payment_method_id), `/retry-payment` (drop body), `/payment/default-method` (PUT→POST), `/wallet/topup` (drop payment_method_id), `/wallet/withdraw` Idempotency-Key verification.
+- LoC estimate: 90
+- Dependencies: none
+
+**Slice 1c: Scheduling contract fixes**
+- Scope: `/schedule/notify` (full payload), `/schedule/request` (11-field payload + caregiver_id), `/schedule/sync-routines` (add client_date), `/transit/preview` (flatten 6 lat/lng), `/schedule/by-id/:id` (correct path), fix 2 web ghost routes (`/api/schedule/:id/seats`, `/api/schedule/board/offers`) that 404 today.
+- LoC estimate: 140
+- Dependencies: Slice 0
+
+**Slice 1d: Notifications + preferences contract fixes**
+- Scope: `/notifications/:id/read` (POST→PATCH), `/notification-preferences` (PATCH→PUT), `/schedule/accept-board` + `/schedule/decline-board` (requestId→ride_id + reason), `/rides/snooze` (seconds→snooze_minutes).
+- LoC estimate: 80
+- Dependencies: none
+
+**Slice 1e: Safety contract fixes + dead code removal**
+- Scope: `/safety-warning-response` (correct action enum + render `trusted_contacts[]` + `share_token` from response), `/safety-end` (add reason enum), `/safety/share-location` (require `ride_id`). Delete dead `POST /api/safety/share-location/:token` call site (no such server route, silent 404).
+- LoC estimate: 90
+- Dependencies: none
+- Scope cuts: manual-end gate (>5min AND >1km) logic unchanged; only adds `reason` field
+
+**Slice 1f: Stripe Connect contract fixes**
+- Scope: `/connect/dashboard` (POST→GET), `/connect/onboard/complete` (POST→GET) — both currently return 405.
+- LoC estimate: 30
+- Dependencies: none
+
+**Slice 2a: WaitingRoom notification-status CTA**
+- Scope: New `useRideNotificationStatus` hook polling every 5s while ride status=`requested`. When `drivers_notified === 0`, surface "No drivers nearby — try Ride Board" CTA.
+- LoC estimate: 180
+- Dependencies: none
+
+**Slice 2b: Driver PWA-after-kill resume**
+- Scope: New `useDriverPendingOffer` hook on app focus + mount. Rehydrate RideSuggestion overlay if `{offer: ride}` returned.
+- LoC estimate: 150
+- Dependencies: none
+
+**Slice 3: Tap-to-call counterparty contact**
+- Scope: New `useCounterpartyContact` hook gated to status ∈ `accepted|coordinating|active`. New CallButton component — `tel:` link on mobile, copy-to-clipboard fallback on desktop. Mount in MessagingWindow header + both active-ride drawers.
+- LoC estimate: 350
+- Dependencies: none
+
+**Slice 4a: Pickup / dropoff point proposals via chat**
+- Scope: Wire `PATCH /api/rides/:id/pickup-point` + `PATCH /api/rides/:id/dropoff-point` into MessagingWindow's location-share button. Replaces dead pattern where web POSTs location fields to `/api/messages/:rideId` (server silently drops them). New `usePickupPoint` + `useDropoffPoint` hooks.
+- LoC estimate: 280
+- Dependencies: Slice 1a (accept-location contract aligned first)
+
+**Slice 4b: MyRidesPage seats edit**
+- Scope: Wire `PATCH /api/schedule/:id/seats` into MyRidesPage poster controls.
+- LoC estimate: 120
+- Dependencies: none
+
+**Slice 5a: RLS-safe profile write + driver_locations + accessibility fields**
+- Scope: Migrate 3 direct-Supabase profile writes to `POST /api/users/me/profile` (CreateProfile, ProfilePage is_driver toggle, ProfilePage avatar). Include `has_accessibility_needs`, `accessibility_profile`, `waive_caregiver_fee` per iOS contract. Migrate `DriverHomePage` `driver_locations.upsert` to `POST /api/users/me/location`. Resolves 3 audit-log violations.
+- LoC estimate: 320
+- Dependencies: none — critical-path
+
+**Slice 5b: ProfilePage stats tiles**
+- Scope: New `useMyStats` hook calling `GET /api/users/me/stats`. Render rides_completed, rating_avg, rating_count tiles.
+- LoC estimate: 110
+- Dependencies: Slice 5a
+
+**Slice 6: BoardOffer create — driver "make an offer" composer**
+- Scope: New `RideBoardOfferComposeSheet` mirroring iOS. New `useCreateBoardOffer` hook with full proposed_* payload. Wired from RideBoard.tsx driver-mode rider-post detail.
+- LoC estimate: 380
+- Dependencies: Slice 1c (transit-preview contract aligned first)
+
+**Slice 7: Chat realtime + FCM push handler coverage**
+- Scope: Replace polling in MessagingWindow with realtime subscriptions to `chat:{rideId}`, `chat-badge:{rideId}`, `chat-confirm:{rideId}`. Add `ride:{rideId}` subscription in DropoffSelection for `transit_suggestions`. Audit `src/lib/fcm.ts` `onMessage` vs server `data.type` (payment_received, payment_failed, dropoff_reminder_*, safety_warning, ride_cancelled, board_offer_*, schedule_match, locations_confirmed, details_accepted, rider_signal, ride_ended) and add missing routes.
+- LoC estimate: 400
+- Dependencies: Slices 1a-6 (don't touch surfaces still mid-fix)
+- Scope cuts: no React Query hook extraction (deferred to Sprint 13)
+
+### Cross-cutting notes
+- **HARD RULE — Prod env values on prod**: Slice 1b (payments) + 1f (Connect) touch Stripe/Supabase/Firebase surface; both are pure contract fixes (no env changes).
+- **Manual-end gate unchanged** — Slice 1e adds a `reason` field to the existing `/safety-end` call inside `rideManualEndGate.ts`. Gate logic (>5min AND >1km) stays intact.
+- **Wallet transactions stay single-transaction** — Slice 1b only changes wire shape; server-side `BEGIN/COMMIT` unchanged.
+- **Reviewer parity-check before every slice** — 3-column iOS↔web matrix in every handoff per the 2026-05-30 hard rule.
+- **Don't push without "go"** — per-feature green-light memory rule.
+- **Audit log discipline** — Slice 1a + Slice 5a remove the 3 direct-Supabase writes that bypass server audit. After Sprint 12 the only intentional client direct write is `ride_schedules.insert` (matches iOS pattern).
+- **Parallel admin lane** — no slice touches `src/components/admin/**` or `server/routes/admin/**`.
+- **Migration numbering** — Sprint 12 ships zero new migrations.
+
+### Out-of-scope (admin lane handoff)
+- All 178 `/api/admin/*` endpoints — parallel admin session
+- 23 `useAdmin*.ts` hooks — admin lane
+- `/api/live-activity/*` — iOS ActivityKit only
+- `/api/stripe/webhook`, `/api/webhooks/resend-inbound` — server-to-server
+- `/api/auth/session` POST/GET/DELETE — web-only PWA cookie mirror
+- `/api/ops/*`, cron jobs — system ops
+- `POST /api/connect/account-session` — iOS-canonical Embedded Components onboarding; web's redirect flow isn't a parity blocker
+- `POST /api/directions/validate-polyline` — iOS MapKit cost optimization
+- `GET /api/safety/track/:token` — intentionally web-only public viewer
+
+### Open questions (need Tarun's call)
+1. **Slice 0 must resolve**: does `GET /api/rides/:rideId` return a full RideSnapshot or is iOS reading via Supabase RPC?
+2. **Slice 0 must resolve**: does web `RideBoard.tsx` read `/api/schedule/board` or fall back to `ride_schedules` via Supabase direct?
+3. **Slice 0 must resolve**: does iOS `VehicleRegistrationPage` write `vehicles.insert` directly or via a server route?
+4. Should `useCaregivers` server routes be officially DEPRECATED, or kept as fallback for a future RLS tighten?
+5. `POST /api/report/:id/attachments` — ship in Sprint 13 or wait for iOS struct enumeration?
+6. **Sprint 13 hook-extraction sweep scope** — confirm extracting every WEB_INLINE row into `src/hooks/*` with React Query? ~1500 LoC standalone sprint.
+7. **Sprint 14 v1.3 catch-up scope** — confirm Suggestions hero + Rider Routines + project-routine + scan-routine + purge-routine? ~1200 LoC standalone sprint.
+
+### Deprecation candidates (server routes with no caller)
+- `GET /api/suggestions/board` — defined server-side + as iOS struct; zero callers
+- `POST/GET/PATCH/DELETE /api/caregivers/*` — both clients bypass per 2026-05-20
+- `POST /api/notifications/send` — defined; no caller
+- `GET /api/transit/options` — distinct from `POST /preview` which is used
+- `GET /api/rides/:id/qr` — no callers
+- `PATCH /api/rides/:id/confirm-dropoff`, `/decline-dropoff`, `POST /:id/accept-details`, `POST /:id/preview-overlap` — likely superseded by `/accept-location`; verify before removal
+- `GET /api/connect/onboard/refresh` — Stripe redirect target only
+
+### What this audit dropped from the initial matrix and why
+- **Slice 7 React Query extraction sweep (~1500 LoC, ~45 hooks)** → **deferred to Sprint 13**. Violated 400-LoC ceiling + "mergeable alone" rule; would rewrite code Slices 1a–6 just shipped.
+- **Slice 8 Suggestions hero + Rider Routines (~1200 LoC, two distinct features)** → **deferred to Sprint 14**.
+- **`POST /api/connect/account-session`** → out-of-scope. iOS-canonical UX upgrade, not a parity blocker.
+- **`POST /api/report/:id/attachments`** → deferred to Sprint 13 pending iOS struct verification (Open Q #5).
+
+### Critic verdicts
+- **Completeness**: PASS — 18 missed-endpoint findings folded in (full-RideSnapshot, chat realtime channels, 3 audit-log violations, FCM data.type handler coverage, accessibility fields on /me/profile, caregiver_id + origin_name on /rides/request, driver_route_polyline + overlap_pct on /accept, wallet/withdraw Idempotency-Key, safety-warning-response trusted_contacts surface, dead web call to /share-location/:token, ghost routes, messages.ts body field drop). 3 deferred (`/report/:id/attachments` pending iOS verification, `POST /api/messages/:rideId` extra fields superseded by Slice 4a, web-only multi-ride channels pending iOS verification).
+- **Contract**: PASS — 7 findings folded in (full RideSnapshot ambiguity → Slice 0 spike; dead /share-location/:token call → Slice 1e removal; /api/schedule/:id 404 promoted LOW→HIGH; PATCH /:id/read confirmed; /connect/onboard/complete + /connect/dashboard confirmed GET; /safety-end reason enum clarified).
+- **Sprint shape**: PASS — All 15 findings addressed. Slice 1 split into 1a-1f (6 domain slices, each 30-180 LoC). Slice 7 mega-extraction replaced with focused realtime/FCM slice; React Query sweep → Sprint 13. Slice 8 → Sprint 14. Slice 4 split 4a+4b. Slice 5 split 5a+5b. Slice 2 split 2a+2b for independent rollback. Slice 0 added as verification spike. Slice 3 estimate raised to 350 LoC. Final 13 slices, all under 400 LoC ceiling.
+
+### Sprint 12 summary
+
+| Status | Count |
+|---|---|
+| Not started | 13 slices (0, 1a, 1b, 1c, 1d, 1e, 1f, 2a, 2b, 3, 4a, 4b, 5a, 5b, 6, 7) |
+| In progress | 0 |
+| Done (awaiting QA) | 0 |
+| Done (verified + pushed) | 0 |
+
+Sprint 12 ships 13 small, independently-mergeable slices closing 24 contract-shape mismatches, 11 HIGH-severity WEB_MISSING endpoints, 3 audit-log-bypass direct-Supabase writes, 4 chat realtime subscription gaps, and dead-code calls to nonexistent server routes. The original mega-slices for React Query extraction (~1500 LoC) and v1.3 Suggestions/Rider Routines (~1200 LoC) are deferred to standalone Sprints 13 and 14 respectively so this sprint stays smallest-first and reversible. Slice 0 is a zero-LoC verification spike resolving three open questions before any code is written. Every slice has a single user-visible win, mandatory parity matrix in the handoff, explicit per-feature green-light wait, and no overlap with the parallel admin session lane.
 
 ---
 
