@@ -97,6 +97,29 @@ Three open questions blocked the next slices. All three answered via read-only i
 - **Slice 5a** unchanged — vehicles direct-Supabase write is intentional parity, not an audit-log violation.
 - **Audit-log violations remaining after Slice 0**: 3 (down from 4 — `vehicles.insert` removed from the list).
 
+### Slice 1a — verification findings (NO-OP, 2026-06-03)
+
+Started Slice 1a by reading each iOS endpoint + server handler + every web call site to confirm the audit's 6 claimed contract drifts. **5 of the 6 are false positives — web is already aligned.** Existing contract tests (DropoffSelection.test + RideSuggestion.test, 26 tests) pass.
+
+Verification table:
+
+| Endpoint | Audit claim | Actual web shape | Verdict |
+| --- | --- | --- | --- |
+| POST /api/rides/scan-driver | Web sends `{token}` only | RiderActiveRidePage:348 + RiderPickupPage:366 both send `{driver_code, lat, lng}` | ✅ Aligned |
+| POST /api/rides/:id/signal | Web sends `{kind}` | RiderPickupPage:416 sends no body | ✅ Aligned |
+| POST /api/rides/:id/accept-location | Missing `{location_type}` | MessagingWindow:1034 sends `{location_type: locationType}` | ✅ Aligned |
+| PATCH /api/rides/:id/driver-destination | Web `{lat,lng,address}` vs iOS `{destination_lat,_lng,_name}` | All 3 sites (DriverDestinationCard:91, RideSuggestion:555, DropoffSelection:201) send `{destination_lat, destination_lng, destination_name}` | ✅ Aligned |
+| POST /api/rides/:id/suggest-transit-dropoff | Web sends 3 fields; iOS sends 14 | TransitSuggestionCard:164-178 + DropoffSelection:348-362 both send all 14 fields verbatim | ✅ Aligned |
+| PATCH /api/rides/:id/accept | Missing driver_destination_* + driver_route_polyline + overlap_pct | Web's 2-stage pattern: `/accept` with `{}` then `/driver-destination` second. iOS optionally inlines destination in `/accept`. polyline/overlap_pct: iOS doesn't send these either (audit was wrong on this part). End state equivalent. | ⚠️ Different flow, same end state |
+
+**Audit-log violation claim — also wrong**: Audit said web's direct `rides.update progress_pct` write should be removed because "server already derives from /gps-ping". Reading `server/routes/rides.ts:5172-5195` confirms the `/gps-ping` handler updates `gps_distance_metres + last_gps_lat/lng` but **does NOT compute or write progress_pct**. The web direct-write at `RiderActiveRidePage:459` + `DriverActiveRidePage:383` is the ONLY writer for this column. Removing it without adding a server-side computer would null out the admin Live screen's progress bar.
+
+**Conclusion**: Slice 1a is effectively a no-op given the actual code state. The single remaining ambiguity is `/accept`'s flow difference, and even there the web 2-stage pattern produces identical server state to iOS's inline pattern — not a correctness issue.
+
+**Action taken**: zero code changes. Matrix rows reclassified to PARITY. Slice 1a is closed.
+
+**Lessons for the rest of Sprint 12**: the audit's per-slice contract-drift claims need per-slice verification on entry. Run the verification before applying edits — false positives are likely concentrated where the scout couldn't see recent fixes that landed in Sprint 9/10/11. Slices 1b through 6 should each begin with a 5-minute "read current shape" pass before writing any TypeScript.
+
 ### Current focus
 Close the largest cluster of iOS↔web drift left in the catalog: 24 contract-shape mismatches where web is sending wrong field names / methods / payloads to existing server routes, 11 HIGH-severity WEB_MISSING endpoints (notification-status, driver-pending-offer resume, tap-to-call, pickup/dropoff proposals, RLS-safe profile write, BoardOffer create), the chat realtime channels web silently dropped in favour of polling, and four direct-Supabase writes that bypass server audit. The sprint is sequenced smallest-first so each slice is independently mergeable, reversible, and tied to one user-visible win or one matrix row class.
 
