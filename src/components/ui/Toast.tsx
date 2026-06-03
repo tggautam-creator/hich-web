@@ -3,58 +3,15 @@
  * EmergencySheet (mirrors iOS `EmergencySheet.flashToast`).
  *
  * Default cadence: 2400ms visible window matching iOS. Caller
- * triggers via `useToast()` hook returned `flash(message)` — the
- * hook owns the timer + the message state so the EmergencySheet's
- * own component state stays focused on share-state semantics.
+ * triggers via the `useToast()` hook (lives in
+ * `@/hooks/useToast` so this file exports only the component —
+ * Fast Refresh requires component-only modules per
+ * `react-refresh/only-export-components`).
  *
  * Intentionally not a global / app-wide toast system — those usually
  * outgrow their scope. This is the focused subset the EmergencySheet
  * needs for copy/sent/revoke/mint-fail/revoke-fail confirmations.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
-
-const TOAST_VISIBLE_MS = 2400
-
-interface ToastState {
-  /** Auto-incrementing key — pinned by tests to assert a fresh
-   *  toast (vs. the same message lingering from a prior flash). */
-  key: number
-  message: string
-}
-
-export interface UseToastResult {
-  toast: ToastState | null
-  flash: (message: string) => void
-  dismiss: () => void
-}
-
-export function useToast(): UseToastResult {
-  const [toast, setToast] = useState<ToastState | null>(null)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const keyRef = useRef(0)
-
-  const dismiss = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = null
-    setToast(null)
-  }, [])
-
-  const flash = useCallback((message: string) => {
-    if (timerRef.current) clearTimeout(timerRef.current)
-    keyRef.current += 1
-    setToast({ key: keyRef.current, message })
-    timerRef.current = setTimeout(() => {
-      setToast(null)
-      timerRef.current = null
-    }, TOAST_VISIBLE_MS)
-  }, [])
-
-  useEffect(() => () => {
-    if (timerRef.current) clearTimeout(timerRef.current)
-  }, [])
-
-  return { toast, flash, dismiss }
-}
 
 interface ToastProps {
   message: string

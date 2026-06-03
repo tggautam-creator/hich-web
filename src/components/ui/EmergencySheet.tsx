@@ -7,7 +7,8 @@ import {
   SAFETY_REPORT_DETAILS_FOOTER,
   type SafetyReportCategoryValue,
 } from '@/lib/safetyReportCategories'
-import Toast, { useToast } from '@/components/ui/Toast'
+import Toast from '@/components/ui/Toast'
+import { useToast } from '@/hooks/useToast'
 
 // v1.3 Sprint 11 Slice 6 — verbatim iOS `composedMessageBody` for
 // the "Text my trusted contacts" SMS branch (mirrors iOS
