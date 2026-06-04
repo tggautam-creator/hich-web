@@ -1725,19 +1725,38 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         )}
       </div>
 
-      {/* ── Location status bar (hidden during active ride) ────────────────── */}
+      {/* ── Location status bar (hidden during active ride) ──────────────────
+          Mirrors iOS `MessagingStatusBar` (MessagingSubviews.swift:250-308):
+          dropoff first, then pickup — phase-aware emphasis so the user's eye
+          lands on the single decision they need to make right now. */}
       {ride.status !== 'active' && ride.status !== 'completed' && ride.status !== 'cancelled' && (
-      <div className="px-4 py-2 bg-surface border-b border-border flex items-center gap-3 shrink-0">
-        <div className="flex items-center gap-1.5">
-          <span className={`h-2.5 w-2.5 rounded-full ${pickupConfirmed ? 'bg-success' : 'bg-warning'}`} />
-          <span className="text-xs text-text-secondary">Pickup</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className={`h-2.5 w-2.5 rounded-full ${dropoffConfirmed ? 'bg-success' : 'bg-warning'}`} />
-          <span className="text-xs text-text-secondary">Dropoff</span>
-        </div>
+      <div data-testid="messaging-status-bar" className="px-4 py-2 bg-surface border-b border-border flex items-center gap-3 shrink-0">
+        {(() => {
+          const chipClasses = (confirmed: boolean, isActive: boolean) => {
+            if (confirmed) return 'bg-success/10 text-success'
+            if (isActive) return 'bg-warning/10 text-warning'
+            return 'bg-text-secondary/10 text-text-secondary'
+          }
+          const dotClasses = (confirmed: boolean, isActive: boolean) => {
+            if (confirmed) return 'bg-success'
+            if (isActive) return 'border-2 border-warning border-dashed bg-transparent'
+            return 'bg-text-secondary/50'
+          }
+          const renderChip = (label: string, confirmed: boolean, isActive: boolean) => (
+            <div className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 ${chipClasses(confirmed, isActive)}`}>
+              <span className={`h-2.5 w-2.5 rounded-full ${dotClasses(confirmed, isActive)}`} />
+              <span className="text-xs font-semibold">{label}</span>
+            </div>
+          )
+          return (
+            <>
+              {renderChip('Dropoff', dropoffConfirmed, negotiationPhase === 'dropoff')}
+              {renderChip('Pickup', pickupConfirmed, negotiationPhase === 'pickup')}
+            </>
+          )
+        })()}
         {bothConfirmed && (
-          <span className="ml-auto text-xs font-medium text-success">Both locations agreed!</span>
+          <span className="ml-auto text-xs font-medium text-success">Both agreed</span>
         )}
       </div>
       )}
@@ -2463,52 +2482,93 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         </div>
       )}
 
-      {/* ── Location proposal buttons (when not both confirmed) ────────────── */}
-      {/* Only show "Suggest" buttons when no proposal exists yet for that type.
-          Once a proposal exists, inline Accept/Counter buttons handle it.
-          Hide while the driver destination / transit suggestion flow is active
-          so the buttons don't overlap — they appear after the driver finishes. */}
+      {/* ── Location proposal action bar (when not both confirmed) ──────────
+          Single-step negotiation FSM (mirrors iOS `MessagingActionBar` +
+          `MessagesViewModel+Phase.swift`): dropoff first, pickup second.
+          The user only sees ONE active decision at a time — the inactive
+          phase shows as a muted "Up next" pill so they understand the
+          two-step flow without being asked to do both at once.
+          Hide while the driver destination / transit suggestion flow is
+          active so the buttons don't overlap — they appear after the
+          driver finishes. */}
       {!bothConfirmed && !driverDestFlowActive && ride.status !== 'active' && ride.status !== 'completed' && ride.status !== 'cancelled' && (
-        <div className="px-4 py-2.5 border-t border-border bg-surface flex gap-2 shrink-0">
-          {pickupConfirmed ? (
-            <div className="flex-1 rounded-2xl py-2.5 text-center text-xs font-semibold text-success bg-success/10">
-              &#x2713; Pickup Set
-            </div>
-          ) : !latestPickupProposal ? (
-            <button
-              data-testid="suggest-pickup-button"
-              onClick={() => openPinDropper('pickup')}
-              className="flex-1 rounded-2xl py-2.5 text-xs font-semibold text-white bg-success active:bg-success/90 transition-colors"
+        <div data-testid="messaging-action-bar" className="px-4 pt-2 pb-2.5 border-t border-border bg-surface shrink-0">
+          {/* Step hint — mirrors iOS stepHint
+              (MessagingSubviews.swift:460-477). Hidden when complete. */}
+          {negotiationPhase === 'dropoff' && (
+            <p
+              data-testid="action-bar-step-hint"
+              className="mb-1.5 text-center text-[11px] font-semibold text-text-secondary"
             >
-              &#x1F4CD; Suggest Pickup
-            </button>
-          ) : (
-            <div className="flex-1 rounded-2xl py-2.5 text-center text-xs font-semibold text-warning bg-warning/10">
-              Pickup pending
-            </div>
+              Step 1 of 2 &middot; Agree on a dropoff first
+            </p>
           )}
-          {dropoffConfirmed ? (
-            <div className="flex-1 rounded-2xl py-2.5 text-center text-xs font-semibold text-success bg-success/10">
-              &#x2713; Dropoff Set
-            </div>
-          ) : driverSelectingDropoff ? (
-            <div className="flex-1 rounded-2xl py-2.5 text-center text-xs font-semibold text-primary bg-primary/5 flex items-center justify-center gap-1.5">
-              <div className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
-              Driver choosing&hellip;
-            </div>
-          ) : !latestDropoffProposal ? (
-            <button
-              data-testid="suggest-dropoff-button"
-              onClick={() => openPinDropper('dropoff')}
-              className="flex-1 rounded-2xl py-2.5 text-xs font-semibold text-primary bg-primary/10 active:bg-primary/20 transition-colors"
+          {negotiationPhase === 'pickup' && (
+            <p
+              data-testid="action-bar-step-hint"
+              className="mb-1.5 text-center text-[11px] font-semibold text-text-secondary"
             >
-              &#x1F4CD; Suggest Dropoff
-            </button>
-          ) : (
-            <div className="flex-1 rounded-2xl py-2.5 text-center text-xs font-semibold text-warning bg-warning/10">
-              Dropoff pending
-            </div>
+              Step 2 of 2 &middot; Now agree on a pickup
+            </p>
           )}
+
+          <div className="flex gap-2">
+            {/* Dropoff branch — primary CTA when phase === 'dropoff'. */}
+            {dropoffConfirmed ? (
+              <div className="flex-1 rounded-2xl py-2.5 text-center text-xs font-semibold text-success bg-success/10">
+                &#x2713; Dropoff Set
+              </div>
+            ) : driverSelectingDropoff ? (
+              <div className="flex-1 rounded-2xl py-2.5 text-center text-xs font-semibold text-primary bg-primary/5 flex items-center justify-center gap-1.5">
+                <div className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
+                Driver choosing&hellip;
+              </div>
+            ) : negotiationPhase === 'dropoff' ? (
+              !latestDropoffProposal ? (
+                <button
+                  data-testid="suggest-dropoff-button"
+                  onClick={() => openPinDropper('dropoff')}
+                  className="flex-1 rounded-2xl py-2.5 text-xs font-semibold text-white bg-primary active:bg-primary/90 transition-colors"
+                >
+                  &#x1F4CD; Suggest Dropoff
+                </button>
+              ) : (
+                <div className="flex-1 rounded-2xl py-2.5 text-center text-xs font-semibold text-warning bg-warning/10">
+                  Dropoff pending
+                </div>
+              )
+            ) : null}
+
+            {/* Pickup branch — primary CTA when phase === 'pickup',
+                muted "Up next" pill when phase === 'dropoff' so the
+                rider sees the two-step flow without acting on it yet. */}
+            {pickupConfirmed ? (
+              <div className="flex-1 rounded-2xl py-2.5 text-center text-xs font-semibold text-success bg-success/10">
+                &#x2713; Pickup Set
+              </div>
+            ) : negotiationPhase === 'pickup' ? (
+              !latestPickupProposal ? (
+                <button
+                  data-testid="suggest-pickup-button"
+                  onClick={() => openPinDropper('pickup')}
+                  className="flex-1 rounded-2xl py-2.5 text-xs font-semibold text-white bg-success active:bg-success/90 transition-colors"
+                >
+                  &#x1F4CD; Suggest Pickup
+                </button>
+              ) : (
+                <div className="flex-1 rounded-2xl py-2.5 text-center text-xs font-semibold text-warning bg-warning/10">
+                  Pickup pending
+                </div>
+              )
+            ) : (
+              <div
+                data-testid="pickup-up-next-pill"
+                className="flex-1 rounded-2xl py-2.5 text-center text-xs font-semibold text-text-secondary bg-text-secondary/10"
+              >
+                Pickup &middot; Up next
+              </div>
+            )}
+          </div>
         </div>
       )}
 

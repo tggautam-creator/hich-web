@@ -745,6 +745,91 @@ describe('MessagingWindow', () => {
     })
   })
 
+  // ── Single-step negotiation FSM (iOS parity, 2026-06-04) ──────────────
+  // Mirrors `MessagesViewModel+Phase.swift` — dropoff first, pickup
+  // second. Pin the action-bar render branches + step hint so a future
+  // change can't accidentally re-overload the bar with both CTAs.
+
+  it('action bar shows ONLY the dropoff CTA + "Step 1 of 2" hint when neither location is confirmed', async () => {
+    setupMocks()
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('messaging-action-bar')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('action-bar-step-hint')).toHaveTextContent('Step 1 of 2')
+    expect(screen.getByTestId('action-bar-step-hint')).toHaveTextContent('Agree on a dropoff first')
+    expect(screen.getByTestId('suggest-dropoff-button')).toBeInTheDocument()
+    // Pickup is muted "Up next" pill, NOT a primary CTA.
+    expect(screen.queryByTestId('suggest-pickup-button')).not.toBeInTheDocument()
+    expect(screen.getByTestId('pickup-up-next-pill')).toHaveTextContent('Up next')
+  })
+
+  it('action bar advances to ONLY the pickup CTA + "Step 2 of 2" hint after dropoff is confirmed', async () => {
+    // Override the rides select so the loaded row has dropoff_confirmed = true.
+    setupMocks()
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'rides') {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({
+                data: { ...MOCK_RIDE, dropoff_confirmed: true, pickup_confirmed: false },
+                error: null,
+              }),
+            }),
+          }),
+        }
+      }
+      if (table === 'users') {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              single: vi.fn().mockResolvedValue({ data: MOCK_DRIVER, error: null }),
+            }),
+          }),
+        }
+      }
+      return {
+        select: vi.fn().mockReturnValue({
+          eq: vi.fn().mockReturnValue({
+            single: vi.fn().mockResolvedValue({ data: null, error: null }),
+            maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+            eq: vi.fn().mockReturnValue({
+              maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+            }),
+          }),
+        }),
+      }
+    })
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('action-bar-step-hint')).toHaveTextContent('Step 2 of 2')
+    })
+    expect(screen.getByTestId('action-bar-step-hint')).toHaveTextContent('Now agree on a pickup')
+    expect(screen.getByTestId('suggest-pickup-button')).toBeInTheDocument()
+    // Dropoff is now a confirmed pill, NOT a CTA.
+    expect(screen.queryByTestId('suggest-dropoff-button')).not.toBeInTheDocument()
+    expect(screen.getByText(/Dropoff Set/i)).toBeInTheDocument()
+    // No "Up next" pill anymore — pickup is the active phase.
+    expect(screen.queryByTestId('pickup-up-next-pill')).not.toBeInTheDocument()
+  })
+
+  it('top status bar reflects the active phase (dropoff during step 1)', async () => {
+    setupMocks()
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('messaging-status-bar')).toBeInTheDocument()
+    })
+    // Active-phase chip carries the warning tint; inactive chip is muted
+    // text-secondary. Both have the chip text "Dropoff" and "Pickup".
+    const statusBar = screen.getByTestId('messaging-status-bar')
+    expect(statusBar).toHaveTextContent('Dropoff')
+    expect(statusBar).toHaveTextContent('Pickup')
+    const dropoffChip = statusBar.querySelector('.bg-warning\\/10')
+    expect(dropoffChip).not.toBeNull()
+    expect(dropoffChip?.textContent).toContain('Dropoff')
+  })
+
   it('inserts a date-label day-divider when crossing a calendar day', async () => {
     setupMocks()
     // Two messages: one from "yesterday" (24h ago), one from now.
