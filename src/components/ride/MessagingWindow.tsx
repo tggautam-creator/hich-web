@@ -202,64 +202,107 @@ function ProposalMapOverlay({ data, onClose }: { data: MapOverlayData; onClose: 
     setTimeout(onClose, 250)
   }
 
+  // v1.3 — full-screen map with floating glass overlays (mirrors iOS
+  // ViewOnMapSheet.swift). The top bar and bottom legend used to
+  // sandwich the map; now they float over it so the map fills the
+  // viewport edge-to-edge — same Apple-native pattern iOS uses with
+  // `.ultraThinMaterial` capsules.
+  const title = data.type === 'pickup' ? 'Pickup Location' : 'Dropoff Location'
+  // Detect role by the caller-assigned color (PickupProposalCard /
+  // DropoffProposalCard handleViewMap enumerate these). Matches iOS
+  // ViewOnMapSheet.swift:136-148 "only include role-tints present".
+  const hasPickup = data.points.some((p) => p.color === '#22C55E')
+  const hasDropoff = data.points.some((p) => p.color === '#8B5CF6')
+  const hasDestination = data.points.some((p) => p.color === '#EF4444')
+
   return (
     <div
-      className="fixed inset-0 z-50 bg-background flex flex-col transition-transform duration-250 ease-out"
+      className="fixed inset-0 z-50 transition-transform duration-250 ease-out"
       style={{ transform: visible ? 'translateY(0)' : 'translateY(100%)' }}
       data-testid="proposal-map-overlay"
     >
-      {/* Header */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-surface" style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)' }}>
-        <button onClick={handleClose} className="h-8 w-8 rounded-full bg-surface-alt flex items-center justify-center" data-testid="overlay-close">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-5 w-5 text-text-primary" aria-hidden="true">
-            <path d="M19 12H5M12 19l-7-7 7-7" />
-          </svg>
-        </button>
-        <h2 className="text-sm font-semibold text-text-primary">
-          {data.type === 'pickup' ? 'Pickup Location' : 'Dropoff Location'}
-        </h2>
-      </div>
-      {/* Map */}
-      <div className="flex-1">
-        <Map
-          mapId={MAP_ID}
-          defaultCenter={data.points[0] ? { lat: data.points[0].lat, lng: data.points[0].lng } : { lat: 38.54, lng: -121.75 }}
-          defaultZoom={15}
-          gestureHandling="auto"
-          disableDefaultUI={false}
-          className="w-full h-full"
+      {/* Map — fills the full viewport behind the floating chrome */}
+      <Map
+        mapId={MAP_ID}
+        defaultCenter={data.points[0] ? { lat: data.points[0].lat, lng: data.points[0].lng } : { lat: 38.54, lng: -121.75 }}
+        defaultZoom={15}
+        gestureHandling="auto"
+        disableDefaultUI={false}
+        className="absolute inset-0"
+      >
+        {data.points.map((pt, i) => (
+          <AdvancedMarker key={i} position={{ lat: pt.lat, lng: pt.lng }}>
+            <div className="flex flex-col items-center">
+              <svg width="32" height="42" viewBox="0 0 36 48" aria-hidden="true">
+                <path d="M18 0C8.06 0 0 8.06 0 18c0 12.6 16.2 28.8 17.4 30 .36.36.84.36 1.2 0C19.8 46.8 36 30.6 36 18 36 8.06 27.94 0 18 0z" fill={pt.color} />
+                <circle cx="18" cy="18" r="7" fill="white" />
+              </svg>
+              <span className="mt-0.5 text-[10px] font-bold text-text-primary bg-white/90 px-1.5 py-0.5 rounded shadow-sm whitespace-nowrap">
+                {pt.label}
+              </span>
+            </div>
+          </AdvancedMarker>
+        ))}
+        {data.polyline && (
+          <RoutePolyline encodedPath={data.polyline} color="#6366F1" weight={4} fitBounds={false} />
+        )}
+        {data.walkPolyline && (
+          <RoutePolyline encodedPath={data.walkPolyline} color="#8B5CF6" weight={3} fitBounds={false} />
+        )}
+        <MapBoundsFitter points={data.points.map((p) => ({ lat: p.lat, lng: p.lng }))} />
+      </Map>
+
+      {/* Floating top bar — glass capsules (Done + title) */}
+      <div
+        className="absolute left-0 right-0 flex items-center justify-between gap-3 px-4 pointer-events-none"
+        style={{ top: 'max(env(safe-area-inset-top), 0.75rem)' }}
+      >
+        <button
+          onClick={handleClose}
+          data-testid="overlay-close"
+          className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full bg-white/85 px-3.5 py-2 text-xs font-semibold text-text-primary shadow-md backdrop-blur-md ring-1 ring-white/40 active:opacity-70"
         >
-          {data.points.map((pt, i) => (
-            <AdvancedMarker key={i} position={{ lat: pt.lat, lng: pt.lng }}>
-              <div className="flex flex-col items-center">
-                <svg width="32" height="42" viewBox="0 0 36 48" aria-hidden="true">
-                  <path d="M18 0C8.06 0 0 8.06 0 18c0 12.6 16.2 28.8 17.4 30 .36.36.84.36 1.2 0C19.8 46.8 36 30.6 36 18 36 8.06 27.94 0 18 0z" fill={pt.color} />
-                  <circle cx="18" cy="18" r="7" fill="white" />
-                </svg>
-                <span className="mt-0.5 text-[10px] font-bold text-text-primary bg-white/90 px-1.5 py-0.5 rounded shadow-sm whitespace-nowrap">
-                  {pt.label}
-                </span>
-              </div>
-            </AdvancedMarker>
-          ))}
-          {data.polyline && (
-            <RoutePolyline encodedPath={data.polyline} color="#6366F1" weight={4} fitBounds={false} />
-          )}
-          {data.walkPolyline && (
-            <RoutePolyline encodedPath={data.walkPolyline} color="#8B5CF6" weight={3} fitBounds={false} />
-          )}
-          <MapBoundsFitter points={data.points.map(p => ({ lat: p.lat, lng: p.lng }))} />
-        </Map>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-3.5 w-3.5" aria-hidden="true">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+          Done
+        </button>
+
+        <span className="pointer-events-auto inline-flex items-center rounded-full bg-white/85 px-3.5 py-2 text-xs font-semibold text-text-primary shadow-md backdrop-blur-md ring-1 ring-white/40">
+          {title}
+        </span>
+
+        {/* Invisible spacer keeps the title visually centered between
+            the Done capsule and the right edge. */}
+        <span aria-hidden="true" className="inline-block w-[68px]" />
       </div>
-      {/* Legend */}
-      <div className="px-4 py-3 border-t border-border bg-surface flex flex-wrap gap-3">
-        <div className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full shrink-0 bg-success" /><span className="text-xs text-text-primary font-medium">Pickup</span></div>
-        {data.type === 'dropoff' && (
-          <div className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: '#8B5CF6' }} /><span className="text-xs text-text-primary font-medium">Drop off</span></div>
-        )}
-        {data.type === 'dropoff' && data.points.length > 2 && (
-          <div className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full shrink-0 bg-danger" /><span className="text-xs text-text-primary font-medium">Destination</span></div>
-        )}
+
+      {/* Floating bottom legend — only renders role-tints present in
+          the points array (iOS ViewOnMapSheet.swift:136-148). */}
+      <div
+        className="absolute left-0 right-0 flex justify-center pointer-events-none"
+        style={{ bottom: 'max(env(safe-area-inset-bottom), 1rem)' }}
+      >
+        <div className="pointer-events-auto inline-flex items-center gap-4 rounded-full bg-white/85 px-4 py-2 shadow-md backdrop-blur-md ring-1 ring-white/40">
+          {hasPickup && (
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0 bg-success" />
+              <span className="text-xs text-text-primary font-semibold">Pickup</span>
+            </div>
+          )}
+          {hasDropoff && (
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: '#8B5CF6' }} />
+              <span className="text-xs text-text-primary font-semibold">Dropoff</span>
+            </div>
+          )}
+          {hasDestination && (
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0 bg-danger" />
+              <span className="text-xs text-text-primary font-semibold">Destination</span>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
