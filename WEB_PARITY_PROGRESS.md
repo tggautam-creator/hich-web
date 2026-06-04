@@ -308,10 +308,12 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 - Verified: iOS endpoint files end-to-end + server handlers at [rides.ts:2885-3056](server/routes/rides.ts#L2885-L3056) (pickup) + [rides.ts:3057-3217](server/routes/rides.ts#L3057-L3217) (dropoff) + every fetch call in MessagingWindow.tsx.
 - No code change. No hooks needed — `usePickupPoint` / `useDropoffPoint` extraction would be a refactor, not a parity fix.
 
-**Slice 4b: MyRidesPage seats edit**
-- Scope: Wire `PATCH /api/schedule/:id/seats` into MyRidesPage poster controls.
-- LoC estimate: 120
-- Dependencies: none
+**Slice 4b: MyRidesPage seats edit** ✅ verified 2026-06-04 — no-op (audit false positive)
+- Audit claim: web needs `PATCH /api/schedule/:id/seats` wired into MyRidesPage poster controls.
+- Reality: PATCH is already wired at [RideBoard.tsx:472-497](src/components/schedule/RideBoard.tsx#L472-L497) — `handleSaveSeats` PATCHes the iOS-aligned path with `{available_seats: integer}` body matching `UpdateScheduleSeatsEndpoint.swift` exactly. UI surface lives in the board detail sheet (lines 1095-1132) — "Edit Seats (N available)" button → − / + stepper (0-8) → Save, gated on `isOwn`. Optimistic local update on success + error toast on failure.
+- iOS parity: iOS mounts the same stepper in [RideBoardDetailSheet.swift:467-485](ios/Tago/Features/RideBoard/RideBoardDetailSheet.swift#L467-L485). MyRidesPage's "Open" button routes to `/rides/board/browse` with `openRideId` state → auto-opens the same detail sheet for the schedule.
+- iOS also has a richer in-place edit via SchedulePostPage in edit mode reached from `MyPostsCompactList`'s pencil → `scheduleEdit(ride:)` route. The web doesn't have a SchedulePage UPDATE branch — this is explicitly deferred as a future slice at [MyRidesPage.tsx:458-465](src/components/ride/MyRidesPage.tsx#L458-L465).
+- No code change. The seats-edit endpoint and visible UI parity are complete; the deeper SchedulePage UPDATE flow is a separate, larger feature outside Sprint 12's scope.
 
 **Slice 5a: RLS-safe profile write + driver_locations + accessibility fields**
 - Scope: Migrate 3 direct-Supabase profile writes to `POST /api/users/me/profile` (CreateProfile, ProfilePage is_driver toggle, ProfilePage avatar). Include `has_accessibility_needs`, `accessibility_profile`, `waive_caregiver_fee` per iOS contract. Migrate `DriverHomePage` `driver_locations.upsert` to `POST /api/users/me/location`. Resolves 3 audit-log violations.
@@ -388,10 +390,10 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 
 | Status | Count |
 |---|---|
-| Not started | 5 slices (4b, 5a, 5b, 6, 7) |
+| Not started | 4 slices (5a, 5b, 6, 7) |
 | In progress | 0 |
 | Done (awaiting QA) | 2 (2b, 3) |
-| Done (verified + pushed) | 9 (0, 1a, 1b, 1c, 1d, 1e, 1f, 2a, 4a no-op) |
+| Done (verified + pushed) | 10 (0, 1a, 1b, 1c, 1d, 1e, 1f, 2a, 4a no-op, 4b no-op) |
 
 Sprint 12 ships 13 small, independently-mergeable slices closing 24 contract-shape mismatches, 11 HIGH-severity WEB_MISSING endpoints, 3 audit-log-bypass direct-Supabase writes, 4 chat realtime subscription gaps, and dead-code calls to nonexistent server routes. The original mega-slices for React Query extraction (~1500 LoC) and v1.3 Suggestions/Rider Routines (~1200 LoC) are deferred to standalone Sprints 13 and 14 respectively so this sprint stays smallest-first and reversible. Slice 0 is a zero-LoC verification spike resolving three open questions before any code is written. Every slice has a single user-visible win, mandatory parity matrix in the handoff, explicit per-feature green-light wait, and no overlap with the parallel admin session lane.
 
