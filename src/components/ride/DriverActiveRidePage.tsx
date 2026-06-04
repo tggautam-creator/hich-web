@@ -815,6 +815,7 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
         hideEta
         progress={isActive ? progress : null}
         remainingLabel={routeEta ? `${routeEta} remaining` : undefined}
+        showCallButton
       />
 
       {/* Sprint 11 Slice 1 — portal-mounted safety pill + EmergencySheet.

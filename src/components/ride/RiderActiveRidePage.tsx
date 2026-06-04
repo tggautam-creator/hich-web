@@ -813,6 +813,7 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
         transitInfo={transitInfo}
         progress={isActive ? progress : null}
         remainingLabel={routeEta ? `${routeEta} remaining` : undefined}
+        showCallButton
       />
 
       {/* Sprint 11 Slice 1 — portal-mounted safety pill + EmergencySheet.

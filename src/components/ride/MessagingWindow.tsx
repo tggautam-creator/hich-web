@@ -17,6 +17,7 @@ import { MapBoundsFitter, RoutePolyline } from '@/components/map/RoutePreview'
 import { getDirectionsByLatLng } from '@/lib/directions'
 import { isScheduledRideApproaching, formatScheduledRideTime, getMinutesUntilRide } from '@/lib/datetime'
 import { calculateFare, formatCents } from '@/lib/fare'
+import CallButtonForRide from '@/components/ui/CallButtonForRide'
 
 // Single source of truth for the "Navigate to Pickup" approach window.
 // The threshold and the user-facing "Navigation opens at HH:MM" notice
@@ -1663,6 +1664,21 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
             )}
           </div>
         </div>
+
+        {/* v1.3 Sprint 12 Slice 3 — tap-to-call counterparty pill.
+            Hook is upstream-gated on the same status window the server
+            enforces; when outside, the wrapper renders null. */}
+        <CallButtonForRide
+          rideId={rideId ?? null}
+          partnerName={otherUser?.full_name ?? null}
+          size="compact"
+          enabled={
+            ride.status === 'accepted' ||
+            ride.status === 'coordinating' ||
+            ride.status === 'active'
+          }
+          data-testid="messaging-call-button"
+        />
 
         <span className={`text-xs font-medium px-2.5 py-1 rounded-full shrink-0 ${
           ride.status === 'active' ? 'text-success bg-success/10' :

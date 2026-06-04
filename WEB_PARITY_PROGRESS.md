@@ -295,10 +295,12 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 - Tests: `src/test/lib/driverPendingOfferApi.test.ts` (6) + `src/test/ride/RideRequestNotification.test.tsx` bootstrap describe block (4)
 - Reviewer parity verdict: ✅ matches iOS mechanism — driver-side bootstrap from `ride_offers` (authoritative source). Adds web-only `visibilitychange` re-fire as PWA-lifecycle polish (iOS doesn't need it because native lifecycle keeps the listener warm). `savedDestination` not threaded through the banner payload because web's `RideSuggestion.tsx` already re-queries on mount (parity reached via different shipped mechanism).
 
-**Slice 3: Tap-to-call counterparty contact**
-- Scope: New `useCounterpartyContact` hook gated to status ∈ `accepted|coordinating|active`. New CallButton component — `tel:` link on mobile, copy-to-clipboard fallback on desktop. Mount in MessagingWindow header + both active-ride drawers.
-- LoC estimate: 350
+**Slice 3: Tap-to-call counterparty contact** ✅ shipped 2026-06-03
+- Scope: New `useCounterpartyContact` hook gated to status ∈ `accepted|coordinating|active`. New CallButton + CallButtonForRide components — `tel:` link on mobile, copy-to-clipboard + toast fallback on desktop. Mounted in MessagingWindow header + JourneyDrawer (consumed by DriverActiveRidePage + RiderActiveRidePage + DriverPickupPage). RiderPickupPage stays untouched — iOS doesn't have a CallButton there.
+- LoC: ~620 (lib 60, hook 47, components 235, wiring 60, tests 230)
 - Dependencies: none
+- Tests: `src/test/lib/counterpartyContactApi.test.ts` (7) + `src/test/hooks/useCounterpartyContact.test.tsx` (4) + `src/test/ui/CallButton.test.tsx` (9)
+- Reviewer parity verdict: ✅ matches all 4 iOS surfaces — compact in chat header, standard in 3 drawer surfaces. Status gating (`accepted|coordinating|active`) matches server's privacy gate. Desktop tel:-fallback is a web-only adaptation (iOS always has a dialer). Existing host-page tests stub `CallButtonForRide` to keep their fetch-sequence mocks intact; behaviour is covered by the dedicated hook + component tests.
 
 **Slice 4a: Pickup / dropoff point proposals via chat**
 - Scope: Wire `PATCH /api/rides/:id/pickup-point` + `PATCH /api/rides/:id/dropoff-point` into MessagingWindow's location-share button. Replaces dead pattern where web POSTs location fields to `/api/messages/:rideId` (server silently drops them). New `usePickupPoint` + `useDropoffPoint` hooks.
@@ -385,9 +387,9 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 
 | Status | Count |
 |---|---|
-| Not started | 6 slices (3, 4a, 4b, 5a, 5b, 6, 7) |
+| Not started | 5 slices (4a, 4b, 5a, 5b, 6, 7) |
 | In progress | 0 |
-| Done (awaiting QA) | 1 (2b) |
+| Done (awaiting QA) | 2 (2b, 3) |
 | Done (verified + pushed) | 8 (0, 1a, 1b, 1c, 1d, 1e, 1f, 2a) |
 
 Sprint 12 ships 13 small, independently-mergeable slices closing 24 contract-shape mismatches, 11 HIGH-severity WEB_MISSING endpoints, 3 audit-log-bypass direct-Supabase writes, 4 chat realtime subscription gaps, and dead-code calls to nonexistent server routes. The original mega-slices for React Query extraction (~1500 LoC) and v1.3 Suggestions/Rider Routines (~1200 LoC) are deferred to standalone Sprints 13 and 14 respectively so this sprint stays smallest-first and reversible. Slice 0 is a zero-LoC verification spike resolving three open questions before any code is written. Every slice has a single user-visible win, mandatory parity matrix in the handoff, explicit per-feature green-light wait, and no overlap with the parallel admin session lane.

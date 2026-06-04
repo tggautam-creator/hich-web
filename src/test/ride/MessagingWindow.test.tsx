@@ -20,6 +20,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import MessagingWindow from '@/components/ride/MessagingWindow'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
@@ -38,6 +39,14 @@ vi.mock('@/lib/supabase', () => ({
     channel: mockChannel,
     removeChannel: mockRemoveChannel,
   },
+}))
+
+// v1.3 Sprint 12 Slice 3 — stub CallButtonForRide. The button's
+// behaviour is covered by dedicated CallButton + useCounterpartyContact
+// tests. Stubbing it here keeps the existing mockFetch sequences from
+// racing against the counterparty-contact fetch.
+vi.mock('@/components/ui/CallButtonForRide', () => ({
+  default: () => null,
 }))
 
 // ── Navigate mock ─────────────────────────────────────────────────────────────
@@ -171,12 +180,19 @@ function renderPage(opts?: { rideId?: string; state?: Record<string, unknown> })
     destinationLng: -121.79,
   }
 
+  // v1.3 Sprint 12 Slice 3 — MessagingWindow's header now hosts
+  // `CallButtonForRide` which uses `useQuery` internally. Wrap with
+  // a per-test QueryClient so the hook resolves cleanly without
+  // bleeding cache state between tests.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <MemoryRouter initialEntries={[{ pathname: `/ride/messaging/${id}`, state: locState }]}>
-      <Routes>
-        <Route path="/ride/messaging/:rideId" element={<MessagingWindow />} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[{ pathname: `/ride/messaging/${id}`, state: locState }]}>
+        <Routes>
+          <Route path="/ride/messaging/:rideId" element={<MessagingWindow />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 

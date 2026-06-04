@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { formatCents } from '@/lib/fare'
 import AppIcon from '@/components/ui/AppIcon'
+import CallButtonForRide from '@/components/ui/CallButtonForRide'
 import { getNavigationUrl } from '@/lib/pwa'
 import type { Ride, User, Vehicle } from '@/types/database'
 
@@ -64,6 +65,11 @@ interface JourneyDrawerProps {
   transitInfo?: TransitInfoData | null
   // Pickup note override
   pickupNote?: string | null
+  // v1.3 Sprint 12 Slice 3 — opt-in tap-to-call pill mirroring iOS
+  // `CallButtonForRide` (active-ride drawers + driver-pickup drawer).
+  // Pages that don't mirror an iOS mount (e.g. RiderPickupPage) leave
+  // this false so the surface stays at parity with iOS.
+  showCallButton?: boolean
   'data-testid'?: string
 }
 
@@ -89,10 +95,18 @@ export default function JourneyDrawer({
   hideEta,
   transitInfo,
   pickupNote,
+  showCallButton,
   'data-testid': testId = 'journey-drawer',
 }: JourneyDrawerProps) {
-  // Fixed-pixel collapsed height: only buttons visible, nothing else
-  const extraRows = (onSignal ? 1 : 0) + (startRideLabel ? 1 : 0) + (onEndRide ? 1 : 0) + (onCancelRide ? 1 : 0)
+  // Fixed-pixel collapsed height: only buttons visible, nothing else.
+  // showCallButton adds one extra row (mirrors Signal / StartRide /
+  // EndRide stacking pattern below the icon-action row).
+  const extraRows =
+    (onSignal ? 1 : 0)
+    + (startRideLabel ? 1 : 0)
+    + (onEndRide ? 1 : 0)
+    + (onCancelRide ? 1 : 0)
+    + (showCallButton ? 1 : 0)
   const collapsedPx = HANDLE_H + ACTION_ROW_H + extraRows * EXTRA_ROW_H
 
   const [expanded, setExpanded] = useState(false)
@@ -234,6 +248,28 @@ export default function JourneyDrawer({
               )}
             </button>
           </div>
+
+          {/* Tap-to-call counterparty — mirrors iOS active-ride +
+              driver-pickup drawers. Wrapper renders null while the
+              fetch is loading / errored / status outside window, so
+              the row collapses gracefully (its collapsedPx
+              contribution stays — accepted UX cost for the stable
+              fixed-height drawer footprint). */}
+          {showCallButton && (
+            <div className="px-4 py-2 border-b border-border/50 flex justify-center">
+              <CallButtonForRide
+                rideId={ride.id}
+                partnerName={otherPerson?.full_name ?? null}
+                size="standard"
+                enabled={
+                  ride.status === 'accepted'
+                  || ride.status === 'coordinating'
+                  || ride.status === 'active'
+                }
+                data-testid="drawer-call-button"
+              />
+            </div>
+          )}
 
           {/* Signal button — rider pickup only */}
           {onSignal && (

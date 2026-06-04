@@ -17,6 +17,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import DriverActiveRidePage from '@/components/ride/DriverActiveRidePage'
 
 // ── Mock @vis.gl/react-google-maps ────────────────────────────────────────────
@@ -94,6 +95,12 @@ vi.mock('@/lib/supabase', () => ({
   },
 }))
 
+// v1.3 Sprint 12 Slice 3 — stub CallButtonForRide. Its behaviour is
+// covered by dedicated CallButton + useCounterpartyContact tests.
+vi.mock('@/components/ui/CallButtonForRide', () => ({
+  default: () => null,
+}))
+
 // ── Navigate mock ─────────────────────────────────────────────────────────────
 
 const { mockNavigate } = vi.hoisted(() => ({ mockNavigate: vi.fn() }))
@@ -144,12 +151,17 @@ const RIDER = { id: 'rider-001', full_name: 'Jane Doe', avatar_url: null }
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function renderPage(rideId = 'ride-001') {
+  // v1.3 Sprint 12 Slice 3 — JourneyDrawer now hosts CallButtonForRide
+  // which uses useQuery. Wrap with a fresh per-test client.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <MemoryRouter initialEntries={[`/ride/active-driver/${rideId}`]}>
-      <Routes>
-        <Route path="/ride/active-driver/:rideId" element={<DriverActiveRidePage />} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[`/ride/active-driver/${rideId}`]}>
+        <Routes>
+          <Route path="/ride/active-driver/:rideId" element={<DriverActiveRidePage />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 

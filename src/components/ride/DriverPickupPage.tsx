@@ -714,6 +714,7 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
           unreadChat={unreadChat}
           startRideLabel="Show QR to Start Ride"
           pickupNote={ride.pickup_note}
+          showCallButton
         />
 
         {safetyElement}
