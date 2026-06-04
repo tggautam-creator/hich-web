@@ -288,10 +288,12 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 - LoC estimate: 180
 - Dependencies: none
 
-**Slice 2b: Driver PWA-after-kill resume**
-- Scope: New `useDriverPendingOffer` hook on app focus + mount. Rehydrate RideSuggestion overlay if `{offer: ride}` returned.
-- LoC estimate: 150
+**Slice 2b: Driver PWA-after-kill resume** ✅ shipped 2026-06-03
+- Scope: New `fetchDriverPendingOffer` helper on app focus + mount. Rehydrate the RideRequest banner if `{offer: ride}` returned.
+- LoC: ~190 (hook 110, wiring 40, tests 230)
 - Dependencies: none
+- Tests: `src/test/lib/driverPendingOfferApi.test.ts` (6) + `src/test/ride/RideRequestNotification.test.tsx` bootstrap describe block (4)
+- Reviewer parity verdict: ✅ matches iOS mechanism — driver-side bootstrap from `ride_offers` (authoritative source). Adds web-only `visibilitychange` re-fire as PWA-lifecycle polish (iOS doesn't need it because native lifecycle keeps the listener warm). `savedDestination` not threaded through the banner payload because web's `RideSuggestion.tsx` already re-queries on mount (parity reached via different shipped mechanism).
 
 **Slice 3: Tap-to-call counterparty contact**
 - Scope: New `useCounterpartyContact` hook gated to status ∈ `accepted|coordinating|active`. New CallButton component — `tel:` link on mobile, copy-to-clipboard fallback on desktop. Mount in MessagingWindow header + both active-ride drawers.
@@ -383,10 +385,10 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 
 | Status | Count |
 |---|---|
-| Not started | 13 slices (0, 1a, 1b, 1c, 1d, 1e, 1f, 2a, 2b, 3, 4a, 4b, 5a, 5b, 6, 7) |
+| Not started | 6 slices (3, 4a, 4b, 5a, 5b, 6, 7) |
 | In progress | 0 |
-| Done (awaiting QA) | 0 |
-| Done (verified + pushed) | 0 |
+| Done (awaiting QA) | 1 (2b) |
+| Done (verified + pushed) | 8 (0, 1a, 1b, 1c, 1d, 1e, 1f, 2a) |
 
 Sprint 12 ships 13 small, independently-mergeable slices closing 24 contract-shape mismatches, 11 HIGH-severity WEB_MISSING endpoints, 3 audit-log-bypass direct-Supabase writes, 4 chat realtime subscription gaps, and dead-code calls to nonexistent server routes. The original mega-slices for React Query extraction (~1500 LoC) and v1.3 Suggestions/Rider Routines (~1200 LoC) are deferred to standalone Sprints 13 and 14 respectively so this sprint stays smallest-first and reversible. Slice 0 is a zero-LoC verification spike resolving three open questions before any code is written. Every slice has a single user-visible win, mandatory parity matrix in the handoff, explicit per-feature green-light wait, and no overlap with the parallel admin session lane.
 

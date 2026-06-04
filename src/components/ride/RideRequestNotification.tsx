@@ -7,6 +7,7 @@ import { getDirectionsByLatLng } from '@/lib/directions'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { reverseGeocode } from '@/lib/geocode'
+import { fetchDriverPendingOffer } from '@/lib/driverPendingOfferApi'
 import AppIcon from '@/components/ui/AppIcon'
 import DeclineReasonSheet from '@/components/ride/DeclineReasonSheet'
 import { dispatchSnoozeChange } from '@/lib/snoozeEvents'
@@ -786,16 +787,65 @@ export default function RideRequestNotification({
       }
     }
 
+    /**
+     * v1.3 Sprint 12 Slice 2b — `GET /api/rides/driver-pending-offer`
+     * resume-after-kill backstop (mirrors iOS
+     * `RideRequestListener.bootstrapPendingOffer`).
+     *
+     * `bootstrapResume` above re-reads the *notifications inbox*. The
+     * inbox only has a row if the FCM push landed AND server-side
+     * insertion succeeded — both can fail (offline at request time,
+     * device on Wi-Fi without push, FCM token rotated mid-flight). This
+     * call reads the `ride_offers` table directly, which is the
+     * authoritative source of "is there a pending offer for me".
+     *
+     * Dedup: `handleRideRequest` already gates on `seenRideIdsRef` by
+     * `ride_id`, so the two bootstrap paths firing in parallel is safe
+     * — whichever resolves first owns the banner.
+     */
+    const bootstrapPendingOffer = async () => {
+      const offer = await fetchDriverPendingOffer()
+      if (cancelled || !offer) return
+      const data: RideRequestData = {
+        type: 'ride_request',
+        ride_id: offer.rideId,
+        rider_name: offer.riderName,
+        destination: offer.destination,
+        distance_km: offer.distanceKm != null ? String(offer.distanceKm) : undefined,
+        estimated_earnings_cents: String(offer.estimatedEarningsCents),
+        origin_lat: offer.originLat != null ? String(offer.originLat) : undefined,
+        origin_lng: offer.originLng != null ? String(offer.originLng) : undefined,
+        destination_lat: offer.destinationLat != null ? String(offer.destinationLat) : undefined,
+        destination_lng: offer.destinationLng != null ? String(offer.destinationLng) : undefined,
+        rider_rating: offer.riderRating != null ? String(offer.riderRating) : undefined,
+        rider_rating_count: String(offer.riderRatingCount),
+      }
+      handleRideRequest(data)
+    }
+
     // Bootstrap first (covers tab-killed-mid-banner cold-launch case),
     // THEN start the regular poll loop. Both share `seenInboxNotifIdsRef`
-    // so a row is never double-processed.
+    // so a row is never double-processed; the pending-offer fetch shares
+    // `seenRideIdsRef` (inside handleRideRequest) for the same reason.
     void bootstrapResume()
+    void bootstrapPendingOffer()
     void poll()
     const intervalId = setInterval(() => { void poll() }, 15000)
+
+    // Re-fire the pending-offer fetch when the driver brings the PWA
+    // back to foreground (iOS Safari can sleep the service worker for
+    // minutes; the 15s poll above takes up to 15s to catch up).
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void bootstrapPendingOffer()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
 
     return () => {
       cancelled = true
       clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [profile?.id, isDriver, handleRideRequest])
 

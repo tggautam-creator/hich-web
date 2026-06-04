@@ -64,6 +64,14 @@ vi.mock('@/stores/authStore', () => ({
     selector({ profile: { id: 'driver-123' }, isDriver: true }),
 }))
 
+// ── Driver pending-offer helper mock (Slice 2b) ──────────────────────────────
+const { mockFetchDriverPendingOffer } = vi.hoisted(() => ({
+  mockFetchDriverPendingOffer: vi.fn(),
+}))
+vi.mock('@/lib/driverPendingOfferApi', () => ({
+  fetchDriverPendingOffer: mockFetchDriverPendingOffer,
+}))
+
 // ── Navigate mock ─────────────────────────────────────────────────────────────
 
 const { mockNavigate } = vi.hoisted(() => ({ mockNavigate: vi.fn() }))
@@ -134,6 +142,7 @@ describe('RideRequestNotification', () => {
     vi.useFakeTimers()
     vi.clearAllMocks()
     capturedCallback = null
+    mockFetchDriverPendingOffer.mockResolvedValue(null)
   })
 
   afterEach(() => {
@@ -290,5 +299,100 @@ describe('RideRequestNotification', () => {
   it('registers a foreground message listener on mount', () => {
     renderComponent()
     expect(capturedCallback).not.toBeNull()
+  })
+
+  // ── Slice 2b — Driver PWA-after-kill resume ──────────────────────────────
+  // Pins the bootstrapPendingOffer wiring: GET /api/rides/driver-pending-offer
+  // result is funnelled through handleRideRequest with the same payload
+  // shape an FCM ride_request push would carry. Mirrors iOS
+  // `RideRequestListener.bootstrapPendingOffer`.
+  describe('bootstrapPendingOffer (resume after PWA kill)', () => {
+    it('rehydrates the banner when /driver-pending-offer returns an offer', async () => {
+      mockFetchDriverPendingOffer.mockResolvedValueOnce({
+        rideId: 'ride-resume-001',
+        offerCreatedAt: '2026-06-03T17:00:00.000Z',
+        riderName: 'Casey',
+        riderAvatarUrl: '',
+        riderRating: 4.8,
+        riderRatingCount: 12,
+        originName: 'Library',
+        destination: 'Dorm A',
+        originLat: 32.71,
+        originLng: -117.16,
+        destinationLat: 32.78,
+        destinationLng: -117.13,
+        estimatedEarningsCents: 642,
+        distanceKm: 3.4,
+        savedDestinationLat: null,
+        savedDestinationLng: null,
+        savedDestinationName: null,
+      })
+
+      renderComponent()
+      // Flush the microtask + bootstrap promise chain.
+      await act(async () => { await Promise.resolve() })
+      await act(async () => { await Promise.resolve() })
+
+      expect(mockFetchDriverPendingOffer).toHaveBeenCalled()
+      expect(screen.getByTestId('ride-request-notification')).toBeInTheDocument()
+      expect(screen.getByTestId('rider-name')).toHaveTextContent('Casey')
+      expect(screen.getByTestId('notification-destination')).toHaveTextContent('Dorm A')
+      // 642 cents → "$6.42"
+      expect(screen.getByTestId('notification-earnings')).toHaveTextContent('$6.42')
+    })
+
+    it('does not render the banner when /driver-pending-offer returns null', async () => {
+      mockFetchDriverPendingOffer.mockResolvedValue(null)
+      renderComponent()
+      await act(async () => { await Promise.resolve() })
+      await act(async () => { await Promise.resolve() })
+      expect(mockFetchDriverPendingOffer).toHaveBeenCalled()
+      expect(screen.queryByTestId('ride-request-notification')).not.toBeInTheDocument()
+    })
+
+    it('dedups against an FCM push for the same ride_id (single banner)', async () => {
+      mockFetchDriverPendingOffer.mockResolvedValueOnce({
+        rideId: 'ride-dedup-001',
+        offerCreatedAt: '2026-06-03T17:00:00.000Z',
+        riderName: 'Casey',
+        riderAvatarUrl: '',
+        riderRating: 5,
+        riderRatingCount: 1,
+        originName: 'Library',
+        destination: 'Dorm A',
+        originLat: null,
+        originLng: null,
+        destinationLat: null,
+        destinationLng: null,
+        estimatedEarningsCents: 800,
+        distanceKm: null,
+        savedDestinationLat: null,
+        savedDestinationLng: null,
+        savedDestinationName: null,
+      })
+
+      renderComponent()
+      await act(async () => { await Promise.resolve() })
+      await act(async () => { await Promise.resolve() })
+
+      // FCM push for the SAME ride fires next — must not double-render.
+      triggerRideRequest({ data: { ...RIDE_REQUEST_PAYLOAD.data, ride_id: 'ride-dedup-001' } })
+
+      expect(screen.getAllByTestId('ride-request-notification')).toHaveLength(1)
+    })
+
+    it('re-fires the fetch when the PWA returns to foreground (visibilitychange)', async () => {
+      renderComponent()
+      await act(async () => { await Promise.resolve() })
+      const initialCalls = mockFetchDriverPendingOffer.mock.calls.length
+
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      await act(async () => { await Promise.resolve() })
+
+      expect(mockFetchDriverPendingOffer.mock.calls.length).toBeGreaterThan(initialCalls)
+    })
   })
 })
