@@ -18,6 +18,7 @@ import { getDirectionsByLatLng } from '@/lib/directions'
 import { isScheduledRideApproaching, formatScheduledRideTime, getMinutesUntilRide } from '@/lib/datetime'
 import { calculateFare, formatCents } from '@/lib/fare'
 import CallButtonForRide from '@/components/ui/CallButtonForRide'
+import UserProfilePreviewSheet from '@/components/profile/UserProfilePreviewSheet'
 
 // Single source of truth for the "Navigate to Pickup" approach window.
 // The threshold and the user-facing "Navigation opens at HH:MM" notice
@@ -540,6 +541,11 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
 
   // Location acceptance state
   const [acceptingLocation, setAcceptingLocation] = useState<string | null>(null) // 'pickup' or 'dropoff'
+
+  // Partner profile sheet — mirrors iOS MessagingPage.swift:227-247
+  // (showPartnerProfile + UserProfilePreviewSheet). Opens when the
+  // rider taps the identity row in the chat header.
+  const [partnerProfileOpen, setPartnerProfileOpen] = useState(false)
 
   // Transit dropoff suggestion state (driver side)
   const [transitSuggestions, setTransitSuggestions] = useState<TransitDropoffSuggestion[]>([])
@@ -1672,19 +1678,52 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           </svg>
         </button>
 
-        <div className="flex items-center gap-3 flex-1 min-w-0">
-          <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-sm shrink-0">
-            {otherUser?.full_name?.[0]?.toUpperCase() ?? '?'}
-          </div>
-          <div className="min-w-0">
-            <p data-testid="other-user-name" className="text-sm font-semibold text-text-primary truncate">
-              {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')}
-            </p>
-            {otherUser?.rating_avg != null && (
-              <p className="text-xs text-text-secondary">&#x2B50; {otherUser.rating_avg.toFixed(1)}</p>
+        {/* Identity tile — tap opens the partner's profile preview.
+            Mirrors iOS MessagingPage.swift:592 (onTapIdentity).
+            Gated on `otherUser?.id` resolving so a tap during the
+            initial ride-row fetch doesn't open an empty sheet. */}
+        {otherUser?.id ? (
+          <button
+            type="button"
+            data-testid="messaging-partner-identity"
+            onClick={() => setPartnerProfileOpen(true)}
+            className="flex items-center gap-3 flex-1 min-w-0 text-left active:opacity-60"
+            aria-label={`Open ${otherUser.full_name ?? 'partner'}'s profile`}
+          >
+            {otherUser.avatar_url ? (
+              <img
+                src={otherUser.avatar_url}
+                alt=""
+                className="h-9 w-9 rounded-full object-cover shrink-0"
+              />
+            ) : (
+              <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-sm shrink-0">
+                {otherUser.full_name?.[0]?.toUpperCase() ?? '?'}
+              </div>
             )}
+            <div className="min-w-0">
+              <p data-testid="other-user-name" className="text-sm font-semibold text-text-primary truncate">
+                {otherUser.full_name ?? (isRider ? 'Driver' : 'Rider')}
+              </p>
+              {otherUser.rating_avg != null && (
+                <p className="text-xs text-text-secondary">&#x2B50; {otherUser.rating_avg.toFixed(1)}</p>
+              )}
+            </div>
+          </button>
+        ) : (
+          // Still loading — render the same layout as a non-tappable
+          // placeholder so the header doesn't jump on data arrival.
+          <div className="flex items-center gap-3 flex-1 min-w-0">
+            <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-sm shrink-0">
+              {otherUser?.full_name?.[0]?.toUpperCase() ?? '?'}
+            </div>
+            <div className="min-w-0">
+              <p data-testid="other-user-name" className="text-sm font-semibold text-text-primary truncate">
+                {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')}
+              </p>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* v1.3 Sprint 12 Slice 3 — tap-to-call counterparty pill.
             Hook is upstream-gated on the same status window the server
@@ -2577,6 +2616,22 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         <div className="px-4 py-1.5 bg-danger/10 shrink-0">
           <p className="text-xs text-danger text-center">{sendError}</p>
         </div>
+      )}
+
+      {/* ── Partner profile preview sheet (iOS parity) ─────────────────────
+          Opens when the rider taps the identity tile in the header.
+          Seeded with the cached `otherUser` so the sheet renders
+          immediately + the background fetch silently fills in bio /
+          school / vehicle / rest. */}
+      {otherUser?.id && (
+        <UserProfilePreviewSheet
+          isOpen={partnerProfileOpen}
+          onClose={() => setPartnerProfileOpen(false)}
+          userId={otherUser.id}
+          fallbackName={otherUser.full_name ?? null}
+          fallbackAvatarUrl={otherUser.avatar_url ?? null}
+          data-testid="messaging-partner-profile-sheet"
+        />
       )}
 
       {/* ── Cancel confirmation modal ────────────────────────────────────── */}

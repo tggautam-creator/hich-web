@@ -830,6 +830,27 @@ describe('MessagingWindow', () => {
     expect(dropoffChip?.textContent).toContain('Dropoff')
   })
 
+  // ── Partner profile preview (iOS parity, 2026-06-04) ──────────────────
+  // Mirrors iOS MessagingPage.swift:227-247 — tapping the identity tile
+  // in the header opens UserProfilePreviewSheet for the counterparty.
+
+  it('tapping the identity tile in the header opens the partner profile sheet', async () => {
+    const user = userEvent.setup()
+    setupMocks()
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('messaging-partner-identity')).toBeInTheDocument()
+    })
+    // Sheet starts closed.
+    expect(screen.queryByTestId('messaging-partner-profile-sheet')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('messaging-partner-identity'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('messaging-partner-profile-sheet')).toBeInTheDocument()
+    })
+  })
+
   it('inserts a date-label day-divider when crossing a calendar day', async () => {
     setupMocks()
     // Two messages: one from "yesterday" (24h ago), one from now.
