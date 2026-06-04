@@ -268,11 +268,17 @@ function ProposalMapOverlay({ data, onClose }: { data: MapOverlayData; onClose: 
 /** Text-based pickup proposal card — replaces mini map with readable info + View on Map */
 function PickupProposalCard({
   pickupName, originLat, originLng, pickupLat, pickupLng, isRider, driverId,
-  destLat, destLng, originalFareCents, onViewMap,
+  destLat, destLng, originalFareCents, caregiverFareCents, caregiverWaived, waiverDriverName, onViewMap,
 }: {
   pickupName?: string | null; originLat: number; originLng: number; pickupLat: number; pickupLng: number
   isRider: boolean; driverId?: string | null
   destLat?: number | null; destLng?: number | null; originalFareCents?: number | null
+  // v1.3 — caregiver context from server meta (mirrors iOS
+  // PickupProposalCard.swift:34-45). Renders an inline sub-line so the
+  // rider sees the fee fold OR the goodwill waive on every proposal.
+  caregiverFareCents?: number | null
+  caregiverWaived?: boolean
+  waiverDriverName?: string | null
   onViewMap: (data: MapOverlayData) => void
 }) {
   const [walkMin, setWalkMin] = useState<number | null>(null)
@@ -363,6 +369,21 @@ function PickupProposalCard({
             </span>
           </div>
         )}
+        {/* v1.3 — caregiver fold (mirrors iOS PickupProposalCard.swift:198-223).
+            Two mutually-exclusive states: waived (goodwill heart line) OR
+            included (transparency sub-line). Server zeros caregiver_fare_cents
+            in meta when waived, so the !waived branch only ever sees real $$. */}
+        {caregiverWaived ? (
+          <div data-testid="pickup-card-caregiver-waived" className="flex items-center gap-1.5 ml-3.5 text-[10.5px] text-primary">
+            <span aria-hidden="true">&#x2665;</span>
+            <span className="font-medium">Caregiver seat fee waived by {waiverDriverName || 'driver'}</span>
+          </div>
+        ) : caregiverFareCents != null && caregiverFareCents > 0 ? (
+          <div data-testid="pickup-card-caregiver-fold" className="flex items-center gap-1.5 ml-3.5 text-[10.5px] text-primary">
+            <span aria-hidden="true">&#x1F465;</span>
+            <span className="font-medium">Includes {formatCents(caregiverFareCents)} caregiver seat fee</span>
+          </div>
+        ) : null}
       </div>
       <button
         onClick={handleViewMap}
@@ -382,10 +403,19 @@ function PickupProposalCard({
 /** Text-based dropoff proposal card — replaces mini map with readable info + View on Map */
 function DropoffProposalCard({
   dropoffName, pickupLat, pickupLng, dropoffLat, dropoffLng,
-  riderDestLat, riderDestLng, riderDestName, onViewMap,
+  riderDestLat, riderDestLng, riderDestName,
+  serverFareCents, caregiverFareCents, caregiverWaived, waiverDriverName,
+  onViewMap,
 }: {
   dropoffName?: string | null; pickupLat: number; pickupLng: number; dropoffLat: number; dropoffLng: number
   riderDestLat?: number | null; riderDestLng?: number | null; riderDestName?: string | null
+  // v1.3 — server-frozen fare wins over local recompute (matches iOS
+  // DropoffProposalCard fare-display rule). Carries caregiver context
+  // through too.
+  serverFareCents?: number | null
+  caregiverFareCents?: number | null
+  caregiverWaived?: boolean
+  waiverDriverName?: string | null
   onViewMap: (data: MapOverlayData) => void
 }) {
   const [routeInfo, setRouteInfo] = useState<{ distance_km: number; duration_min: number; fare_cents: number; polyline: string } | null>(null)
@@ -415,33 +445,57 @@ function DropoffProposalCard({
     onViewMap({ type: 'dropoff', points, polyline: routeInfo?.polyline })
   }
 
+  // v1.3 — server-frozen fare wins over local recompute so both
+  // clients see the same number on the proposal (matches iOS rule).
+  const displayedFareCents = serverFareCents ?? routeInfo?.fare_cents ?? null
   return (
     <div className="rounded-lg bg-surface/60 p-2.5 mb-1.5">
       {dropoffName && (
         <p className="text-xs font-semibold text-text-primary mb-1.5 truncate">{dropoffName}</p>
       )}
-      {routeInfo ? (
-        <div className="flex items-center gap-3 text-[11px] mb-1.5">
-          <span className="font-medium text-text-primary">
-            {Math.round(routeInfo.duration_min)} min
-          </span>
-          <span className="text-text-secondary">&middot;</span>
-          <span className="font-medium text-text-primary">
-            {(routeInfo.distance_km * 0.621371).toFixed(1)} mi
-          </span>
-          <span className="text-text-secondary">&middot;</span>
-          <span className="font-semibold text-success">
-            {formatCents(routeInfo.fare_cents)}
-          </span>
-        </div>
-      ) : (
-        <div className="flex items-center gap-2 mb-1.5">
-          <div className="h-2.5 w-2.5 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
-          <span className="text-[11px] text-text-secondary">Calculating route...</span>
-        </div>
-      )}
+      {/* Vertical per-leg stack — mirrors iOS DropoffProposalCard.
+          Each row has a colored dot + label + value, so the rider can
+          scan distance / time / fare independently instead of parsing
+          the inline run of dots+spans. */}
+      <div className="space-y-1 text-[11px]">
+        {routeInfo ? (
+          <>
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block w-2 h-2 rounded-full bg-[#8B5CF6] shrink-0" />
+              <span className="text-text-primary font-medium">
+                Drive · {Math.round(routeInfo.duration_min)} min &middot; {(routeInfo.distance_km * 0.621371).toFixed(1)} mi
+              </span>
+            </div>
+            {displayedFareCents != null && (
+              <div className="flex items-center gap-1.5 pt-1 border-t border-border/50 mt-1">
+                <span className="inline-block w-2 h-2 rounded-full bg-[#F59E0B] shrink-0" />
+                <span className="text-text-primary font-bold">
+                  Fare · {formatCents(displayedFareCents)}
+                </span>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="flex items-center gap-2">
+            <div className="h-2.5 w-2.5 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
+            <span className="text-text-secondary">Calculating route&hellip;</span>
+          </div>
+        )}
+        {/* Caregiver fold — same shape as PickupProposalCard. */}
+        {caregiverWaived ? (
+          <div data-testid="dropoff-card-caregiver-waived" className="flex items-center gap-1.5 ml-3.5 text-[10.5px] text-primary">
+            <span aria-hidden="true">&#x2665;</span>
+            <span className="font-medium">Caregiver seat fee waived by {waiverDriverName || 'driver'}</span>
+          </div>
+        ) : caregiverFareCents != null && caregiverFareCents > 0 ? (
+          <div data-testid="dropoff-card-caregiver-fold" className="flex items-center gap-1.5 ml-3.5 text-[10.5px] text-primary">
+            <span aria-hidden="true">&#x1F465;</span>
+            <span className="font-medium">Includes {formatCents(caregiverFareCents)} caregiver seat fee</span>
+          </div>
+        ) : null}
+      </div>
       {riderDestName && (
-        <p className="text-[10px] text-text-secondary mb-1.5 truncate">
+        <p className="text-[10px] text-text-secondary mt-1.5 truncate">
           Rider&apos;s destination: {riderDestName}
         </p>
       )}
@@ -2028,7 +2082,15 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
 
           // ── Special message: pickup_suggestion — rich card with map + route info ──
           if (msg.type === 'pickup_suggestion') {
-            const meta = msg.meta as { lat?: number; lng?: number; note?: string | null; proposed_by?: string } | null
+            const meta = msg.meta as {
+              lat?: number
+              lng?: number
+              note?: string | null
+              proposed_by?: string
+              caregiver_fare_cents?: number | null
+              caregiver_waived?: boolean
+              waiver_driver_name?: string | null
+            } | null
             const hasLocation = meta?.lat != null && meta?.lng != null
             const isLatestPickup = msg.id === latestPickupProposal?.id
             // W-T1-M2 — gate Accept on negotiationPhase too: a stale
@@ -2038,19 +2100,28 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
               && pickupProposedByOther
               && !pickupConfirmed
               && negotiationPhase === 'pickup'
+            // v1.3 — outgoing-vs-incoming accent swap (mirrors iOS).
+            // `isMine` cards lean primary (the user's own colour);
+            // incoming stays on the success/green palette so the rider
+            // can pick out pickup vs dropoff on incoming rows at a
+            // glance.
+            const cardBorderClass = isMine ? 'border-primary/30 bg-primary/5' : 'border-success/30 bg-success/5'
+            const iconBubbleClass = isMine ? 'bg-primary/20' : 'bg-success/20'
+            const iconStrokeClass = isMine ? 'text-primary' : 'text-success'
+            const headerTextClass = isMine ? 'text-primary' : 'text-success'
             return (
               <div key={msg.id} data-testid={`message-${msg.id}`} className="space-y-2">
-                <div className="flex justify-center">
-                  <div className="w-full max-w-[85%] rounded-2xl border border-success/30 bg-success/5 px-4 py-3 text-left">
+                <div className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`w-full max-w-[85%] rounded-2xl border ${cardBorderClass} px-4 py-3 text-left`}>
                     <div className="flex items-center gap-2 mb-2">
-                      <div className="h-6 w-6 rounded-full bg-success/20 flex items-center justify-center shrink-0">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-success" aria-hidden="true">
+                      <div className={`h-6 w-6 rounded-full ${iconBubbleClass} flex items-center justify-center shrink-0`}>
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`h-3.5 w-3.5 ${iconStrokeClass}`} aria-hidden="true">
                           <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" />
                           <circle cx="12" cy="10" r="3" />
                         </svg>
                       </div>
-                      <p className="text-xs font-semibold text-success">
-                        {isMine ? 'You suggested a pickup point' : `${otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a pickup point`}
+                      <p className={`text-[10px] font-extrabold tracking-wider ${headerTextClass}`}>
+                        {isMine ? 'YOU SUGGESTED · PICKUP' : 'PICKUP PROPOSAL'}
                       </p>
                     </div>
                     {meta?.note && (
@@ -2068,6 +2139,9 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                         destLat={ride.destination ? (ride.destination as { coordinates: [number, number] }).coordinates[1] : null}
                         destLng={ride.destination ? (ride.destination as { coordinates: [number, number] }).coordinates[0] : null}
                         originalFareCents={ride.fare_cents}
+                        caregiverFareCents={meta.caregiver_fare_cents ?? null}
+                        caregiverWaived={meta.caregiver_waived ?? false}
+                        waiverDriverName={meta.waiver_driver_name ?? null}
                         onViewMap={setMapOverlay}
                       />
                     )}
@@ -2105,7 +2179,16 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
 
           // ── Special message: dropoff_suggestion — rich card with map + route info ──
           if (msg.type === 'dropoff_suggestion') {
-            const meta = msg.meta as { lat?: number; lng?: number; name?: string | null; proposed_by?: string } | null
+            const meta = msg.meta as {
+              lat?: number
+              lng?: number
+              name?: string | null
+              proposed_by?: string
+              fare_cents?: number | null
+              caregiver_fare_cents?: number | null
+              caregiver_waived?: boolean
+              waiver_driver_name?: string | null
+            } | null
             const hasLocation = meta?.lat != null && meta?.lng != null
             const isLatestDropoff = msg.id === latestDropoffProposal?.id
             // W-T1-M2 — gate Accept on negotiationPhase so the dropoff
@@ -2116,10 +2199,18 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
               && negotiationPhase === 'dropoff'
             const pLat = ride?.pickup_point?.coordinates?.[1] ?? ride?.origin?.coordinates?.[1]
             const pLng = ride?.pickup_point?.coordinates?.[0] ?? ride?.origin?.coordinates?.[0]
+            // v1.3 — outgoing-vs-incoming accent swap. Same logic as
+            // pickup_suggestion above; iOS uses an accent_color that
+            // flips on `isOutgoing` to keep the iMessage-like rhythm.
+            // Dropoff cards stay on the purple-ish primary palette
+            // either way (it's already the dropoff colour); incoming
+            // softens to keep mine-vs-theirs distinguishable.
+            const cardBorderClass = isMine ? 'border-primary/40 bg-primary/10' : 'border-primary/20 bg-primary/5'
+            const headerTextClass = isMine ? 'text-primary' : 'text-primary/80'
             return (
               <div key={msg.id} data-testid={`message-${msg.id}`} className="space-y-2">
-                <div className="flex justify-center">
-                  <div className="w-full max-w-[85%] rounded-2xl border border-primary/30 bg-primary/5 px-4 py-3 text-left">
+                <div className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`w-full max-w-[85%] rounded-2xl border ${cardBorderClass} px-4 py-3 text-left`}>
                     <div className="flex items-center gap-2 mb-2">
                       <div className="h-6 w-6 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-primary" aria-hidden="true">
@@ -2127,8 +2218,8 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                           <circle cx="12" cy="10" r="3" />
                         </svg>
                       </div>
-                      <p className="text-xs font-semibold text-primary">
-                        {isMine ? 'You suggested a dropoff point' : `${otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a dropoff point`}
+                      <p className={`text-[10px] font-extrabold tracking-wider ${headerTextClass}`}>
+                        {isMine ? 'YOU SUGGESTED · DROPOFF' : 'DROPOFF PROPOSAL'}
                       </p>
                     </div>
                     {/* Route info card + View on Map */}
@@ -2142,6 +2233,10 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                         riderDestLat={riderDestLat}
                         riderDestLng={riderDestLng}
                         riderDestName={ride?.destination_name}
+                        serverFareCents={meta?.fare_cents ?? null}
+                        caregiverFareCents={meta?.caregiver_fare_cents ?? null}
+                        caregiverWaived={meta?.caregiver_waived ?? false}
+                        waiverDriverName={meta?.waiver_driver_name ?? null}
                         onViewMap={setMapOverlay}
                       />
                     )}
