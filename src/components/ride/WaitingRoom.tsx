@@ -7,6 +7,7 @@ import type { PlaceSuggestion } from '@/lib/places'
 import { RoutePolyline, MapBoundsFitter } from '@/components/map/RoutePreview'
 import { MAP_ID } from '@/lib/mapConstants'
 import { useAuthStore } from '@/stores/authStore'
+import { useRideNotificationStatus } from '@/hooks/useRideNotificationStatus'
 import TrustBadges from '@/components/ui/TrustBadges'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -75,6 +76,16 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
   const [cancelToast, setCancelToast] = useState<string | null>(null)
   const [isCancelling, setCancelling] = useState(false)
   const [showFallback, setShowFallback] = useState(false)
+
+  // v1.3 Sprint 12 Slice 2a — driver-fanout telemetry. Polls every
+  // 5s while the ride is in `requested` so the "Reached N drivers"
+  // card surfaces within ~5s instead of the user staring at a bare
+  // spinner. Mirrors iOS WaitingRoomPage:633-643. Web's 90s
+  // showFallback CTA at line 657 stays — both cards coexist (info
+  // card on top, warning fallback below once 90s elapses).
+  const { data: notificationStatus } = useRideNotificationStatus(state?.rideId ?? null, {
+    enabled: phase === 'finding',
+  })
 
   const selectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -645,6 +656,35 @@ export default function WaitingRoom({ 'data-testid': testId }: WaitingRoomProps)
                 )}
               </div>
             ))}
+          </div>
+        )}
+
+        {/* v1.3 Sprint 12 Slice 2a — driver-fanout informational
+            status card. Renders after the first /notification-status
+            poll lands (≈5s) so the rider gets meaningful progress
+            feedback instead of a bare spinner. Mirrors iOS
+            WaitingRoomPage.fanoutStatusCard (info variant). The
+            empty-drivers warning variant is covered by the existing
+            90s `showFallback` block below — we don't duplicate it. */}
+        {notificationStatus
+          && phase === 'finding'
+          && offers.length === 0
+          && !showFallback
+          && notificationStatus.driversNotified > 0 && (
+          <div
+            data-testid="ride-notification-status-card"
+            data-drivers-notified={notificationStatus.driversNotified}
+            data-drivers-declined={notificationStatus.driversDeclined}
+            className="rounded-2xl bg-primary/5 border border-primary/20 p-4"
+          >
+            <p className="text-sm font-semibold text-text-primary">
+              Reached {notificationStatus.driversNotified} nearby driver{notificationStatus.driversNotified === 1 ? '' : 's'}
+            </p>
+            {notificationStatus.driversDeclined > 0 && (
+              <p className="mt-1 text-xs text-text-secondary">
+                {notificationStatus.driversDeclined} declined · {notificationStatus.driversPending} thinking
+              </p>
+            )}
           </div>
         )}
 

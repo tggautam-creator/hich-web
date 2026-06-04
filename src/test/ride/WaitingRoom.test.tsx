@@ -86,6 +86,31 @@ vi.mock('@/lib/supabase', () => ({
   },
 }))
 
+// v1.3 Sprint 12 Slice 2a — mock useRideNotificationStatus to control
+// the new fanout status card's render gating without needing a
+// QueryClientProvider in this test file. Each test sets
+// mockNotificationStatus.current to drive the card state.
+const { mockNotificationStatus } = vi.hoisted(() => ({
+  mockNotificationStatus: { current: undefined as
+    | undefined
+    | { driversNotified: number; driversPending: number; driversAccepted: number; driversDeclined: number }
+  },
+}))
+vi.mock('@/hooks/useRideNotificationStatus', () => ({
+  useRideNotificationStatus: () => ({
+    data: mockNotificationStatus.current
+      ? {
+          rideId: 'ride-001',
+          rideStatus: 'requested',
+          ...mockNotificationStatus.current,
+          driverId: null,
+        }
+      : undefined,
+    error: null,
+    isLoading: !mockNotificationStatus.current,
+  }),
+}))
+
 // ── Navigate mock ─────────────────────────────────────────────────────────────
 
 const { mockNavigate } = vi.hoisted(() => ({ mockNavigate: vi.fn() }))
@@ -367,5 +392,67 @@ describe('WaitingRoom', () => {
     const { unmount } = renderPage()
     unmount()
     expect(mockRemoveChannel).toHaveBeenCalled()
+  })
+
+  // ── Sprint 12 Slice 2a — fanout status card ──────────────────────────────
+
+  describe('fanout status card', () => {
+    afterEach(() => {
+      mockNotificationStatus.current = undefined
+    })
+
+    it('renders nothing before the first /notification-status poll resolves', () => {
+      mockNotificationStatus.current = undefined
+      renderPage()
+      expect(screen.queryByTestId('ride-notification-status-card')).not.toBeInTheDocument()
+    })
+
+    it('renders "Reached 1 nearby driver" (singular) when drivers_notified=1', () => {
+      mockNotificationStatus.current = {
+        driversNotified: 1, driversPending: 1, driversAccepted: 0, driversDeclined: 0,
+      }
+      renderPage()
+      const card = screen.getByTestId('ride-notification-status-card')
+      expect(card.textContent).toContain('Reached 1 nearby driver')
+      expect(card.textContent).not.toContain('drivers')
+    })
+
+    it('renders "Reached 3 nearby drivers" (plural) when drivers_notified=3', () => {
+      mockNotificationStatus.current = {
+        driversNotified: 3, driversPending: 2, driversAccepted: 0, driversDeclined: 1,
+      }
+      renderPage()
+      const card = screen.getByTestId('ride-notification-status-card')
+      expect(card.textContent).toContain('Reached 3 nearby drivers')
+      expect(card.textContent).toContain('1 declined')
+      expect(card.textContent).toContain('2 thinking')
+    })
+
+    it('does NOT show the secondary "N declined · M thinking" line when no declines yet', () => {
+      mockNotificationStatus.current = {
+        driversNotified: 2, driversPending: 2, driversAccepted: 0, driversDeclined: 0,
+      }
+      renderPage()
+      const card = screen.getByTestId('ride-notification-status-card')
+      expect(card.textContent).not.toContain('declined')
+    })
+
+    it('does NOT render the card when drivers_notified=0 (the 90s fallback CTA owns that state)', () => {
+      mockNotificationStatus.current = {
+        driversNotified: 0, driversPending: 0, driversAccepted: 0, driversDeclined: 0,
+      }
+      renderPage()
+      expect(screen.queryByTestId('ride-notification-status-card')).not.toBeInTheDocument()
+    })
+
+    it('exposes data-drivers-notified + data-drivers-declined attrs for downstream tests', () => {
+      mockNotificationStatus.current = {
+        driversNotified: 5, driversPending: 2, driversAccepted: 1, driversDeclined: 2,
+      }
+      renderPage()
+      const card = screen.getByTestId('ride-notification-status-card')
+      expect(card).toHaveAttribute('data-drivers-notified', '5')
+      expect(card).toHaveAttribute('data-drivers-declined', '2')
+    })
   })
 })
