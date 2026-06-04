@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { formatCents } from '@/lib/fare'
+import { updateMyProfile } from '@/lib/profileApi'
 import BottomNav from '@/components/ui/BottomNav'
 import DriverQrSheet from '@/components/ride/DriverQrSheet'
 import AppIcon from '@/components/ui/AppIcon'
@@ -243,6 +244,12 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
       .eq('user_id', profile.id)
     const remaining = (allVehicles ?? []).filter((v: { deleted_at: string | null }) => !v.deleted_at)
     if (!remaining || remaining.length === 0) {
+      // v1.3 Sprint 12 Slice 5a — `is_driver` stays a direct supabase
+      // write here for parity with iOS `UsersDriverFlagRepository` at
+      // ios/Tago/Core/Supabase/Repositories/VehiclesRepository.swift:148.
+      // POST /api/users/me/profile doesn't accept `is_driver` (it's
+      // not in the validated allow-list), and iOS itself uses direct
+      // RLS-gated update for this side-effect.
       await supabase.from('users').update({ is_driver: false }).eq('id', profile.id)
       await refreshProfile()
     } else {
@@ -304,8 +311,16 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
       .upload(path, file, { upsert: true, contentType: file.type })
     if (upErr) { setUploadingAvatar(false); return }
     const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(path)
-    await supabase.from('users').update({ avatar_url: urlData.publicUrl }).eq('id', profile.id)
-    await refreshProfile()
+    // v1.3 Sprint 12 Slice 5a — server-mediated profile write.
+    // Matches iOS AuthStore.upsertProfile path.
+    try {
+      await updateMyProfile({ avatar_url: urlData.publicUrl })
+      await refreshProfile()
+    } catch {
+      // Avatar upload succeeded but profile write failed — leave the
+      // file in storage; user can retry. Silent here keeps the avatar
+      // picker UX intact (no scary modal mid-upload).
+    }
     setUploadingAvatar(false)
   }
 
@@ -322,31 +337,23 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
     setEditError(null)
 
     const newPhone = editPhone.trim() || null
-    const phoneChanged = newPhone !== profile.phone
 
-    // When the phone number changes, mark it unverified. AuthGuard then
-    // gates access on the next session: if `VITE_SKIP_PHONE_VERIFICATION`
-    // is `true` (current dev + prod default while A2P 10DLC isn't
-    // registered yet), the user keeps using the app; once the env var
-    // flips to `false`, AuthGuard routes them to `/onboarding/verify-phone`
-    // and they're forced to verify before they can do anything else.
+    // v1.3 Sprint 12 Slice 5a — server-mediated profile write.
+    // Routes through POST /api/users/me/profile so this path stays
+    // parity-aligned with iOS `AuthStore.upsertProfile` + bypasses
+    // the RLS race the direct supabase.from('users').update used to
+    // hit on first-time signup-row creation.
     //
-    // We don't navigate to verify-phone directly here on purpose — the
-    // env-gated AuthGuard owns that routing so there's a single source
-    // of truth for whether OTP is required. Matches the iOS pattern
-    // (`EditProfileSheet.swift` defers to `RootView.isProfileIncomplete`).
-    // See WEB_PARITY_REPORT W-T0-8.
-    const updateData: Record<string, unknown> = { full_name: trimmedName, phone: newPhone }
-    if (phoneChanged) {
-      updateData.phone_verified = false
-    }
-
-    const { error } = await supabase
-      .from('users')
-      .update(updateData)
-      .eq('id', profile.id)
-
-    if (error) {
+    // `phone_verified` is intentionally NOT touched here. iOS
+    // EditProfileSheet doesn't flip it either — AuthGuard owns the
+    // verification routing on the next session via
+    // VITE_SKIP_PHONE_VERIFICATION. See WEB_PARITY_REPORT W-T0-8.
+    try {
+      await updateMyProfile({
+        full_name: trimmedName,
+        phone: newPhone,
+      })
+    } catch {
       setEditError('Failed to save changes')
       setSaving(false)
       return

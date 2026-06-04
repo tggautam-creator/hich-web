@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { validateFullName, validatePhone, validatePassword } from '@/lib/validation'
 import { trackEvent } from '@/lib/analytics'
+import { updateMyProfile } from '@/lib/profileApi'
 import InputField from '@/components/ui/InputField'
 import PrimaryButton from '@/components/ui/PrimaryButton'
 
@@ -159,33 +160,22 @@ export default function CreateProfilePage() {
         if (!isSamePassword) throw authErr
       }
 
-      // UPDATE existing row for this auth user; INSERT if none exists.
-      // This is RLS-safe: UPDATE USING (auth.uid()=id) only touches own row;
-      // INSERT WITH CHECK (auth.uid()=id) only allows own row.
-      const { data: updated, error: updateErr } = await supabase
-        .from('users')
-        .update({
-          full_name:     fullName.trim(),
-          phone:         fullPhone,
-          avatar_url:    avatarUrl,
-          date_of_birth: dateOfBirth,
-        })
-        .eq('id', user.id)
-        .select('id')
-      if (updateErr) throw updateErr
-
-      if (updated.length === 0) {
-        // No row yet for this auth user — first-time profile creation
-        const { error: insertErr } = await supabase.from('users').insert({
-          id:            user.id,
-          email:         user.email ?? '',
-          full_name:     fullName.trim(),
-          phone:         fullPhone,
-          avatar_url:    avatarUrl,
-          date_of_birth: dateOfBirth,
-        })
-        if (insertErr) throw insertErr
-      }
+      // v1.3 Sprint 12 Slice 5a — server-mediated upsert via
+      // POST /api/users/me/profile. Replaces the previous direct
+      // `from('users').{update,insert}` pair that hit Postgres 42501
+      // "new row violates row-level security policy" on first-time
+      // signup when the supabase-js session JWT lagged user.id.
+      //
+      // The server reads-then-updates-or-inserts atomically using
+      // the service role + resolves `email` from `auth.users`
+      // (never client-supplied), so a compromised JWT can't forge a
+      // row for another account.
+      await updateMyProfile({
+        full_name:     fullName.trim(),
+        phone:         fullPhone,
+        avatar_url:    avatarUrl,
+        date_of_birth: dateOfBirth,
+      })
 
       // Refresh the auth store so AuthGuard sees the new full_name
       await refreshProfile()

@@ -25,10 +25,17 @@ import ProfilePage from '@/components/ride/ProfilePage'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
-const { mockFrom } = vi.hoisted(() => {
+const { mockFrom, mockProfileFetch } = vi.hoisted(() => {
   const mockFrom = vi.fn()
-  return { mockFrom }
+  // v1.3 Sprint 12 Slice 5a — profile writes route through
+  // POST /api/users/me/profile via the shared profileApi helper.
+  const mockProfileFetch = vi.fn().mockResolvedValue({ id: 'user-001' })
+  return { mockFrom, mockProfileFetch }
 })
+
+vi.mock('@/lib/profileApi', () => ({
+  updateMyProfile: mockProfileFetch,
+}))
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
@@ -279,8 +286,11 @@ describe('ProfilePage', () => {
     await user.click(screen.getByTestId('save-profile-button'))
 
     await waitFor(() => {
-      // Should have called supabase.from('users').update(...)
-      expect(mockFrom).toHaveBeenCalledWith('users')
+      // v1.3 Sprint 12 Slice 5a — save now routes through
+      // POST /api/users/me/profile via updateMyProfile.
+      expect(mockProfileFetch).toHaveBeenCalledWith(
+        expect.objectContaining({ full_name: 'New Name' }),
+      )
       // Should have exited edit mode — name display visible again
       expect(screen.getByTestId('profile-name')).toBeInTheDocument()
     })

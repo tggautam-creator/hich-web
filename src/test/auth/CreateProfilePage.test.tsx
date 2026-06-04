@@ -27,21 +27,23 @@ import { validateFullName, validatePhone, validatePassword } from '@/lib/validat
 const {
   mockNavigate,
   mockGetUser,
+  mockGetSession,
   mockUpdateUser,
   mockStorageUpload,
   mockStorageGetPublicUrl,
-  mockDbUpdate,
-  mockDbSelect,
-  mockDbInsert,
+  mockProfileFetch,
 } = vi.hoisted(() => ({
   mockNavigate:            vi.fn(),
   mockGetUser:             vi.fn(),
+  mockGetSession:          vi.fn(),
   mockUpdateUser:          vi.fn(),
   mockStorageUpload:       vi.fn(),
   mockStorageGetPublicUrl: vi.fn(),
-  mockDbUpdate:  vi.fn(),
-  mockDbSelect:  vi.fn(),
-  mockDbInsert:  vi.fn(),
+  // v1.3 Sprint 12 Slice 5a — profile writes route through
+  // POST /api/users/me/profile via the shared profileApi helper.
+  // This spy is what each test asserts on instead of the legacy
+  // mockDbUpdate / mockDbInsert pair.
+  mockProfileFetch: vi.fn(),
 }))
 
 vi.mock('react-router-dom', async (importOriginal) => {
@@ -53,12 +55,9 @@ vi.mock('@/lib/supabase', () => ({
   supabase: {
     auth: {
       getUser:    mockGetUser,
+      getSession: mockGetSession,
       updateUser: mockUpdateUser,
     },
-    from: vi.fn().mockReturnValue({
-      update: mockDbUpdate,
-      insert: mockDbInsert,
-    }),
     storage: {
       from: vi.fn().mockReturnValue({
         upload:       mockStorageUpload,
@@ -66,6 +65,10 @@ vi.mock('@/lib/supabase', () => ({
       }),
     },
   },
+}))
+
+vi.mock('@/lib/profileApi', () => ({
+  updateMyProfile: mockProfileFetch,
 }))
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -108,16 +111,11 @@ function submitForm() {
 beforeEach(() => {
   vi.clearAllMocks()
 
-  // Default: returning user — update finds an existing row
-  mockDbSelect.mockResolvedValue({ data: [{ id: 'u-1' }], error: null })
-  mockDbUpdate.mockReturnValue({
-    eq: vi.fn().mockReturnValue({
-      select: mockDbSelect,
-    }),
-  })
-  mockDbInsert.mockResolvedValue({ error: null })
+  // Default success path: profile write resolves OK.
+  mockProfileFetch.mockResolvedValue({ id: 'u-1' })
 
   mockGetUser.mockResolvedValue({ data: { user: { id: 'u-1', email: 'jane@ucdavis.edu' } } })
+  mockGetSession.mockResolvedValue({ data: { session: { access_token: 'tok' } } })
   mockUpdateUser.mockResolvedValue({ error: null })
   mockStorageUpload.mockResolvedValue({ error: null })
   mockStorageGetPublicUrl.mockReturnValue({
@@ -383,12 +381,12 @@ describe('submit behavior', () => {
     })
   })
 
-  it('stores the full E.164 phone (dial code + local number) in the DB', async () => {
+  it('routes the full E.164 phone (dial code + local number) through updateMyProfile', async () => {
     renderPage()
     fillValidForm()   // US (+1) + 5551234567 → +15551234567
     submitForm()
     await waitFor(() => {
-      expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect(mockProfileFetch).toHaveBeenCalledWith(
         expect.objectContaining({
           full_name: 'Jane Smith',
           phone:     '+15551234567',
@@ -406,35 +404,27 @@ describe('submit behavior', () => {
     fireEvent.change(screen.getByTestId('dob-input'),           { target: { value: '2000-01-15' } })
     submitForm()
     await waitFor(() => {
-      expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect(mockProfileFetch).toHaveBeenCalledWith(
         expect.objectContaining({ phone: '+447700900000' }),
       )
     })
   })
 
-  it('does NOT call insert when update finds an existing row', async () => {
+  it('Slice 5a — server-mediated upsert: calls updateMyProfile once regardless of whether the row pre-exists', async () => {
+    // The server now does read-then-update-or-insert atomically.
+    // Client doesn't branch on existence anymore — it always POSTs the
+    // same body and trusts the server. This test pins that contract.
     renderPage()
     fillValidForm()
     submitForm()
     await waitFor(() => { expect(mockNavigate).toHaveBeenCalled() })
-    expect(mockDbInsert).not.toHaveBeenCalled()
-  })
-
-  it('calls insert when update finds no existing row (new-user path)', async () => {
-    mockDbSelect.mockResolvedValue({ data: [], error: null })
-    renderPage()
-    fillValidForm()
-    submitForm()
-    await waitFor(() => {
-      expect(mockDbInsert).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id:        'u-1',
-          email:     'jane@ucdavis.edu',
-          full_name: 'Jane Smith',
-          phone:     '+15551234567',
-        }),
-      )
-    })
+    expect(mockProfileFetch).toHaveBeenCalledTimes(1)
+    expect(mockProfileFetch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        full_name: 'Jane Smith',
+        phone:     '+15551234567',
+      }),
+    )
   })
 
   it('swallows "same password" error from Supabase and continues', async () => {
@@ -495,19 +485,8 @@ describe('submit behavior', () => {
     })
   })
 
-  it('shows submit error when update fails', async () => {
-    mockDbSelect.mockResolvedValue({ data: null, error: { message: 'DB error' } })
-    renderPage()
-    fillValidForm()
-    submitForm()
-    await waitFor(() => {
-      expect(screen.getByTestId('submit-error')).toBeDefined()
-    })
-  })
-
-  it('shows submit error when insert fails (new-user path)', async () => {
-    mockDbSelect.mockResolvedValue({ data: [], error: null })
-    mockDbInsert.mockResolvedValue({ error: { message: 'Insert failed' } })
+  it('shows submit error when updateMyProfile rejects', async () => {
+    mockProfileFetch.mockRejectedValueOnce(new Error('DB error'))
     renderPage()
     fillValidForm()
     submitForm()

@@ -315,10 +315,18 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 - iOS also has a richer in-place edit via SchedulePostPage in edit mode reached from `MyPostsCompactList`'s pencil → `scheduleEdit(ride:)` route. The web doesn't have a SchedulePage UPDATE branch — this is explicitly deferred as a future slice at [MyRidesPage.tsx:458-465](src/components/ride/MyRidesPage.tsx#L458-L465).
 - No code change. The seats-edit endpoint and visible UI parity are complete; the deeper SchedulePage UPDATE flow is a separate, larger feature outside Sprint 12's scope.
 
-**Slice 5a: RLS-safe profile write + driver_locations + accessibility fields**
-- Scope: Migrate 3 direct-Supabase profile writes to `POST /api/users/me/profile` (CreateProfile, ProfilePage is_driver toggle, ProfilePage avatar). Include `has_accessibility_needs`, `accessibility_profile`, `waive_caregiver_fee` per iOS contract. Migrate `DriverHomePage` `driver_locations.upsert` to `POST /api/users/me/location`. Resolves 3 audit-log violations.
-- LoC estimate: 320
-- Dependencies: none — critical-path
+**Slice 5a: RLS-safe profile write + accessibility fields** ✅ shipped 2026-06-04 (scope corrected)
+- Scope shipped: New `src/lib/profileApi.ts` helper POSTing to `/api/users/me/profile` (matches iOS `UserProfileUpsertEndpoint.swift`). Migrated 3 of 4 direct-Supabase profile writes:
+  - [CreateProfilePage.tsx:165-187](src/components/auth/CreateProfilePage.tsx#L165-L187) — INSERT-or-UPDATE pair → single `updateMyProfile` call. Server's read-then-upsert eliminates the supabase-js JWT race on first-time signup (Postgres 42501).
+  - [ProfilePage.tsx:307](src/components/ride/ProfilePage.tsx#L307) — avatar UPDATE → `updateMyProfile({ avatar_url })`
+  - [ProfilePage.tsx:344-356](src/components/ride/ProfilePage.tsx#L344-L356) — name+phone UPDATE → `updateMyProfile({ full_name, phone })`. Dropped the `phone_verified=false` client flip per iOS pattern (iOS `EditProfileSheet` doesn't touch it; AuthGuard owns verification routing).
+- Scope dropped (audit false positives):
+  - `ProfilePage is_driver=false toggle` — iOS uses direct `supabase.from('users').update(["is_driver": false])` at `VehiclesRepository.swift:148`. Server endpoint doesn't accept `is_driver`. Migrating would create parity drift. Left as-is with a parity comment.
+  - `DriverHomePage driver_locations.upsert` — iOS does the SAME direct upsert at [DriverHomePage.swift:1146-1147](ios/Tago/Features/DriverHome/DriverHomePage.swift#L1146-L1147). `POST /users/me/location` writes to `users.last_known_*` (different fields) and can't carry `is_online`. Migrating would break the driver online flow. Confirmed audit confused two unrelated concerns.
+- Accessibility fields (`has_accessibility_needs`, `accessibility_profile`, `waive_caregiver_fee`): helper accepts all three (matches iOS contract); no UI surfaces them on web yet — that's a future "Edit Profile accessibility editor" slice, blocked on building the editor itself.
+- LoC: ~280 (helper 110, migrations 60, tests 110)
+- Tests: `src/test/lib/profileApi.test.ts` (6 contract tests); refactored `CreateProfilePage.test.tsx` + `ProfilePage.test.tsx` to mock `updateMyProfile` instead of the direct `supabase.from('users')` chain.
+- Reviewer parity verdict: ✅ matches iOS — the 3 migrated writes use the same endpoint iOS calls. Server is a shared backend, contract is identical. 2 audit claims were dropped as parity-incorrect (iOS itself uses direct writes for `is_driver` + `driver_locations`).
 
 **Slice 5b: ProfilePage stats tiles**
 - Scope: New `useMyStats` hook calling `GET /api/users/me/stats`. Render rides_completed, rating_avg, rating_count tiles.
@@ -390,9 +398,9 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 
 | Status | Count |
 |---|---|
-| Not started | 4 slices (5a, 5b, 6, 7) |
+| Not started | 3 slices (5b, 6, 7) |
 | In progress | 0 |
-| Done (awaiting QA) | 2 (2b, 3) |
+| Done (awaiting QA) | 3 (2b, 3, 5a) |
 | Done (verified + pushed) | 10 (0, 1a, 1b, 1c, 1d, 1e, 1f, 2a, 4a no-op, 4b no-op) |
 
 Sprint 12 ships 13 small, independently-mergeable slices closing 24 contract-shape mismatches, 11 HIGH-severity WEB_MISSING endpoints, 3 audit-log-bypass direct-Supabase writes, 4 chat realtime subscription gaps, and dead-code calls to nonexistent server routes. The original mega-slices for React Query extraction (~1500 LoC) and v1.3 Suggestions/Rider Routines (~1200 LoC) are deferred to standalone Sprints 13 and 14 respectively so this sprint stays smallest-first and reversible. Slice 0 is a zero-LoC verification spike resolving three open questions before any code is written. Every slice has a single user-visible win, mandatory parity matrix in the handoff, explicit per-feature green-light wait, and no overlap with the parallel admin session lane.
