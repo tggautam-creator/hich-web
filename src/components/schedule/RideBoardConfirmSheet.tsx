@@ -347,9 +347,66 @@ export default function RideBoardConfirmSheet({
 
   const handleDriverSubmit = () => {
     const enrichment: RequestEnrichment = { destination_flexible: false }
+    // v1.3 Sprint 12 Slice 6 — driver-side pickup picker. Mirrors iOS
+    // `RideBoardConfirmPickupSection` + threads through to
+    // `proposed_pickup_*` on POST /api/schedule/board/offers. Optional:
+    // when the driver doesn't pick a pickup, the server falls back to
+    // the schedule's posted origin (the "tap Offer to drive" default).
+    if (selectedPickup?.lat != null && selectedPickup.lng != null) {
+      enrichment.pickup_lat = selectedPickup.lat
+      enrichment.pickup_lng = selectedPickup.lng
+      enrichment.pickup_name = selectedPickup.fullAddress
+    }
     if (note.trim()) enrichment.note = note.trim().slice(0, 200)
     onConfirm(enrichment)
   }
+
+  // v1.3 Sprint 12 Slice 6 — shared pickup picker markup. Same UI used
+  // for both the rider's "where should the driver pick me up?" flow and
+  // the new driver's "where will you pick the rider up?" flow.
+  const pickupPickerSection = (label: string, placeholder: string) => (
+    <div className="mb-5">
+      <p className="text-sm font-semibold text-text-primary mb-2">{label}</p>
+      <div className="relative">
+        <input
+          data-testid="pickup-search"
+          type="text"
+          value={pickupQuery}
+          onChange={(e) => handlePickupSearch(e.target.value)}
+          placeholder={placeholder}
+          className="w-full rounded-xl border border-border px-3 py-2.5 text-sm text-text-primary placeholder:text-text-secondary/60 focus:border-primary focus:outline-none"
+        />
+        {pickupResolving && (
+          <div className="absolute right-3 top-1/2 -translate-y-1/2">
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          </div>
+        )}
+        {selectedPickup && (
+          <div className="mt-2 flex items-center gap-2 rounded-xl bg-success/5 border border-success/20 px-3 py-2">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5 text-success shrink-0" aria-hidden="true">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            <p className="text-xs text-text-primary font-medium truncate">{selectedPickup.fullAddress}</p>
+          </div>
+        )}
+        {pickupSuggestions.length > 0 && !selectedPickup && (
+          <div className="absolute left-0 right-0 top-full mt-1 z-20 rounded-xl bg-white border border-border shadow-lg max-h-48 overflow-y-auto">
+            {pickupSuggestions.map((s) => (
+              <button
+                key={s.placeId}
+                data-testid="pickup-suggestion"
+                onClick={() => void handleSelectPickup(s)}
+                className="w-full text-left px-3 py-2.5 hover:bg-surface border-b border-border/50 last:border-b-0"
+              >
+                <p className="text-sm font-medium text-text-primary">{s.mainText}</p>
+                <p className="text-xs text-text-secondary">{s.secondaryText}</p>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
 
   const canRiderSubmit =
     selectedPickup != null && (useDriverDestination || selectedPlace != null)
@@ -471,9 +528,18 @@ export default function RideBoardConfirmSheet({
             </div>
           )}
 
-          {/* ── Driver-offering-on-rider-post: minimal review only ───────── */}
+          {/* ── Driver-offering-on-rider-post: pickup picker + note + send ─ */}
           {!isDriverPost && (
             <>
+              {/* v1.3 Sprint 12 Slice 6 — driver pickup picker. Mirrors
+                  iOS `RideBoardConfirmPickupSection`. Optional — leaving
+                  this blank lets the server fall back to the schedule's
+                  posted origin (one-tap "Offer to drive" default). */}
+              {pickupPickerSection(
+                'Where will you pick them up?',
+                'Search for a pickup location…',
+              )}
+
               <div className="mb-5">
                 <p className="text-sm font-semibold text-text-primary mb-2">
                   Add a note <span className="text-text-secondary font-normal">(optional)</span>
@@ -512,48 +578,10 @@ export default function RideBoardConfirmSheet({
           {/* ── Rider-requesting-driver-post: pickup + destination form ── */}
           {isDriverPost && (
             <>
-              <div className="mb-5">
-                <p className="text-sm font-semibold text-text-primary mb-2">Where should the driver pick you up?</p>
-                <div className="relative">
-                  <input
-                    data-testid="pickup-search"
-                    type="text"
-                    value={pickupQuery}
-                    onChange={(e) => handlePickupSearch(e.target.value)}
-                    placeholder="Search for your pickup location..."
-                    className="w-full rounded-xl border border-border px-3 py-2.5 text-sm text-text-primary placeholder:text-text-secondary/60 focus:border-primary focus:outline-none"
-                  />
-                  {pickupResolving && (
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                    </div>
-                  )}
-                  {selectedPickup && (
-                    <div className="mt-2 flex items-center gap-2 rounded-xl bg-success/5 border border-success/20 px-3 py-2">
-                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5 text-success shrink-0" aria-hidden="true">
-                        <polyline points="20 6 9 17 4 12" />
-                      </svg>
-                      <p className="text-xs text-text-primary font-medium truncate">{selectedPickup.fullAddress}</p>
-                    </div>
-                  )}
-
-                  {pickupSuggestions.length > 0 && !selectedPickup && (
-                    <div className="absolute left-0 right-0 top-full mt-1 z-20 rounded-xl bg-white border border-border shadow-lg max-h-48 overflow-y-auto">
-                      {pickupSuggestions.map((s) => (
-                        <button
-                          key={s.placeId}
-                          data-testid="pickup-suggestion"
-                          onClick={() => void handleSelectPickup(s)}
-                          className="w-full text-left px-3 py-2.5 hover:bg-surface border-b border-border/50 last:border-b-0"
-                        >
-                          <p className="text-sm font-medium text-text-primary">{s.mainText}</p>
-                          <p className="text-xs text-text-secondary">{s.secondaryText}</p>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
+              {pickupPickerSection(
+                'Where should the driver pick you up?',
+                'Search for your pickup location…',
+              )}
 
               <div className="mb-5">
                 <p className="text-sm font-semibold text-text-primary mb-3">Where are you headed?</p>

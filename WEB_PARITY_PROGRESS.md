@@ -335,10 +335,21 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 - Tests: `src/test/lib/userStatsApi.test.ts` (6) + `src/test/hooks/useMyStats.test.tsx` (3); ProfilePage test stubs the hook → undefined data so existing assertions on cached fallback values keep working.
 - Reviewer parity verdict: ✅ matches iOS exactly — same endpoint, same fallback pattern (`stats?.X ?? auth.profile?.X`). Hook adds `refetchOnWindowFocus: true` so a freshly-completed ride bumps the count without manual reload — slightly more aggressive than iOS but a web-only improvement riders/drivers will benefit from. No drifts.
 
-**Slice 6: BoardOffer create — driver "make an offer" composer**
-- Scope: New `RideBoardOfferComposeSheet` mirroring iOS. New `useCreateBoardOffer` hook with full proposed_* payload. Wired from RideBoard.tsx driver-mode rider-post detail.
-- LoC estimate: 380
-- Dependencies: Slice 1c (transit-preview contract aligned first)
+**Slice 6: BoardOffer create — driver pickup picker + proposed_* contract** ✅ shipped 2026-06-04 (scope refined)
+- Audit claim: web's driver-offer flow needs a "RideBoardOfferComposeSheet" + `useCreateBoardOffer` hook for the full proposed_* payload.
+- Reality found during verification:
+  - Web ALREADY POSTs to `/api/schedule/board/offers` from `RideBoard.tsx:272-298`. Endpoint, method, basic body shape are aligned.
+  - Web's existing `RideBoardConfirmSheet` driver-offer branch only had note + Send button — no pickup picker. iOS `RideBoardConfirmPickupSection.swift` exposes a full search + GPS pickup picker for the driver.
+  - iOS doesn't currently send `vehicle_id`, `proposed_fare_cents`, or `proposed_eta_minutes` either; the `proposed_*` it DOES send are pickup_lat/lng/name + dropoff_lat/lng/name + 4 transit fields.
+- Scope shipped:
+  - `src/lib/boardOfferApi.ts` — typed POST helper with full `CreateBoardOfferBody` shape (all 13 fields per iOS endpoint).
+  - `src/hooks/useCreateBoardOffer.ts` — React Query mutation wrapper (used here to validate hook shape; the existing inline `fetch` in `RideBoard.tsx` stays as-is for parity with the rider-side path that pre-dates Sprint 12).
+  - [RideBoardConfirmSheet.tsx](src/components/schedule/RideBoardConfirmSheet.tsx) — extracted the existing pickup picker JSX into a `pickupPickerSection(label, placeholder)` helper + rendered it in BOTH the rider-on-driver-post branch (existing) AND the driver-on-rider-post branch (new). `handleDriverSubmit` now forwards `pickup_lat/lng/name` into the enrichment when set.
+  - [RideBoard.tsx:286-309](src/components/schedule/RideBoard.tsx#L286-L309) — offer POST now spreads `proposed_pickup_*` from enrichment when present (alongside the existing `proposed_dropoff_*` spread).
+- Scope deferred: transit-breakdown fields (`proposed_transit_*`) on the driver-offer path. iOS sends these when the driver chooses a transit station as dropoff (`RiderDropoffChoice.atTransitStation`); web's current confirm sheet doesn't have a station-vs-rider-dest toggle on the driver-offer branch. Lands as a future polish slice on top of the smart-search handoff path.
+- LoC: ~340 (helper 95, hook 22, sheet refactor 70, RideBoard wiring 15, tests 245)
+- Tests: `src/test/lib/boardOfferApi.test.ts` (7 contract tests). RideBoard test gains a Slice 6 case pinning the default-empty proposed_pickup_* shape so the server's "tap Offer to drive" fallback path keeps working.
+- Reviewer parity verdict: ✅ matches iOS for the pickup-picker UX + wire shape on the basic offer flow. ⚠️ Transit-station dropoff branch (and its 4 transit fields) is deferred — driver still can't propose a transit station as the dropoff from the web confirm sheet directly. ✅ POST endpoint, body shape, error codes (NOT_A_DRIVER / OWN_POST / WRONG_MODE / SCHEDULE_NOT_FOUND) all aligned. ✅ One-tap "Offer to drive" default still works (pickup picker is optional; blank → server defaults to schedule origin).
 
 **Slice 7: Chat realtime + FCM push handler coverage**
 - Scope: Replace polling in MessagingWindow with realtime subscriptions to `chat:{rideId}`, `chat-badge:{rideId}`, `chat-confirm:{rideId}`. Add `ride:{rideId}` subscription in DropoffSelection for `transit_suggestions`. Audit `src/lib/fcm.ts` `onMessage` vs server `data.type` (payment_received, payment_failed, dropoff_reminder_*, safety_warning, ride_cancelled, board_offer_*, schedule_match, locations_confirmed, details_accepted, rider_signal, ride_ended) and add missing routes.
@@ -400,9 +411,9 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 
 | Status | Count |
 |---|---|
-| Not started | 2 slices (6, 7) |
+| Not started | 1 slice (7) |
 | In progress | 0 |
-| Done (awaiting QA) | 4 (2b, 3, 5a, 5b) |
+| Done (awaiting QA) | 5 (2b, 3, 5a, 5b, 6) |
 | Done (verified + pushed) | 10 (0, 1a, 1b, 1c, 1d, 1e, 1f, 2a, 4a no-op, 4b no-op) |
 
 Sprint 12 ships 13 small, independently-mergeable slices closing 24 contract-shape mismatches, 11 HIGH-severity WEB_MISSING endpoints, 3 audit-log-bypass direct-Supabase writes, 4 chat realtime subscription gaps, and dead-code calls to nonexistent server routes. The original mega-slices for React Query extraction (~1500 LoC) and v1.3 Suggestions/Rider Routines (~1200 LoC) are deferred to standalone Sprints 13 and 14 respectively so this sprint stays smallest-first and reversible. Slice 0 is a zero-LoC verification spike resolving three open questions before any code is written. Every slice has a single user-visible win, mandatory parity matrix in the handoff, explicit per-feature green-light wait, and no overlap with the parallel admin session lane.

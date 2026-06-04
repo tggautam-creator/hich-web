@@ -283,8 +283,22 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
             // destination_lat/lng/name — wire it through to
             // `proposed_dropoff_*` so the rider sees the actual
             // proposal on their BoardOfferAcceptPage card.
+            //
+            // v1.3 Sprint 12 Slice 6 — also forward `proposed_pickup_*`
+            // when the driver picked a pickup in the confirm sheet
+            // (mirrors iOS RideBoardConfirmViewModel:765-768). Leaving
+            // pickup blank keeps the one-tap "Offer to drive" default.
             body: JSON.stringify({
               schedule_id: confirmRide.id,
+              ...(enrichment?.pickup_lat != null && enrichment?.pickup_lng != null
+                ? {
+                    proposed_pickup_lat: enrichment.pickup_lat,
+                    proposed_pickup_lng: enrichment.pickup_lng,
+                  }
+                : {}),
+              ...(enrichment?.pickup_name
+                ? { proposed_pickup_name: enrichment.pickup_name }
+                : {}),
               ...(enrichment?.destination_lat != null && enrichment?.destination_lng != null
                 ? {
                     proposed_dropoff_lat: enrichment.destination_lat,
