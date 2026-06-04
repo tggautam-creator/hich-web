@@ -351,11 +351,19 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 - Tests: `src/test/lib/boardOfferApi.test.ts` (7 contract tests). RideBoard test gains a Slice 6 case pinning the default-empty proposed_pickup_* shape so the server's "tap Offer to drive" fallback path keeps working.
 - Reviewer parity verdict: ✅ matches iOS for the pickup-picker UX + wire shape on the basic offer flow. ⚠️ Transit-station dropoff branch (and its 4 transit fields) is deferred — driver still can't propose a transit station as the dropoff from the web confirm sheet directly. ✅ POST endpoint, body shape, error codes (NOT_A_DRIVER / OWN_POST / WRONG_MODE / SCHEDULE_NOT_FOUND) all aligned. ✅ One-tap "Offer to drive" default still works (pickup picker is optional; blank → server defaults to schedule origin).
 
-**Slice 7: Chat realtime + FCM push handler coverage**
-- Scope: Replace polling in MessagingWindow with realtime subscriptions to `chat:{rideId}`, `chat-badge:{rideId}`, `chat-confirm:{rideId}`. Add `ride:{rideId}` subscription in DropoffSelection for `transit_suggestions`. Audit `src/lib/fcm.ts` `onMessage` vs server `data.type` (payment_received, payment_failed, dropoff_reminder_*, safety_warning, ride_cancelled, board_offer_*, schedule_match, locations_confirmed, details_accepted, rider_signal, ride_ended) and add missing routes.
-- LoC estimate: 400
-- Dependencies: Slices 1a-6 (don't touch surfaces still mid-fix)
-- Scope cuts: no React Query hook extraction (deferred to Sprint 13)
+**Slice 7: Chat realtime + FCM push handler coverage** ✅ shipped 2026-06-04 (scope corrected)
+- Verification found 4 of 5 audit claims false-positive after reading the actual code:
+  1. ❌ "Replace polling in MessagingWindow with realtime" — realtime IS already wired (`chat:{rideId}` channel with 5 event handlers + `msg-driver:{userId}` channel). The 12s poll is intentional belt-and-suspenders, and [MessagesViewModel.swift:218](ios/Tago/Features/Messaging/MessagesViewModel.swift#L218) shows iOS uses the exact same 12s polling-fallback pattern. Removing it would weaken both clients' missed-broadcast recovery.
+  2. ❌ "Subscribe to `chat-badge:{rideId}` from MessagingWindow" — that channel is for OTHER screens (the 4 host pages with the unread badge: DriverActiveRidePage, RiderActiveRidePage, DriverPickupPage, RiderPickupPage — all already wired). MessagingWindow IS the chat surface, so it doesn't need badge messages.
+  3. ❌ "Subscribe to `chat-confirm:{rideId}` from MessagingWindow" — web already hears `locations_confirmed` via the user-level `msg-driver:{currentUserId}` channel at [MessagingWindow.tsx:772](src/components/ride/MessagingWindow.tsx#L772). `chat-confirm:{rideId}` is a redundant server-side broadcast that neither web nor iOS subscribes to.
+  4. ❌ "Audit fcm.ts onMessage coverage vs 11+ server data.type strings" — `fcm.ts` is transport, not router. The actual router is `ForegroundPushToast` which handles 8 types + default-fallback, plus `RideRequestNotification` which handles 9 more (in `HANDLED_ELSEWHERE`). Cross-checked against server's 26 emitted types and iOS PushManager: only `suggested_match` is unhandled on web — but web has NO Suggestions surface to refresh, so routing it has no destination. iOS handles it because iOS has the Suggestions feature; web doesn't yet.
+  5. ✅ REAL GAP — "Subscribe to `ride:{rideId}` for `transit_suggestions`" — server broadcasts there at [rides.ts:2765](server/routes/rides.ts#L2765) (driver routine auto-detect) and [rides.ts:6016](server/routes/rides.ts#L6016) (driver edits destination mid-flow). Neither MessagingWindow nor DropoffSelection subscribed. MessagingWindow had a dead `transit_suggestions` handler bound to `chat:{rideId}` that never fired.
+- Scope shipped:
+  - [MessagingWindow.tsx](src/components/ride/MessagingWindow.tsx) — moved the `transit_suggestions` handler from the dead `chat:{rideId}` subscription to a new `ride:{rideId}` subscription. Handler preserves `auto_detected` ride-row refresh path.
+  - [DropoffSelection.tsx](src/components/ride/DropoffSelection.tsx) — new `ride:{rideId}` subscription that pushes broadcast suggestions into `setSuggestions` and selects index 0 (matches the post-fetch behaviour).
+- LoC: ~140 (MessagingWindow refactor 40, DropoffSelection add 25, test 100, mock additions 15)
+- Tests: `src/test/ride/DropoffSelection.transitSubscription.test.tsx` (2 tests pinning channel name + handler registration + cleanup). DropoffSelection.test.tsx supabase mock gains `channel` + `removeChannel` to support the new subscription.
+- Reviewer parity verdict: ✅ closes the only real gap. ⚠️ `suggested_match` push handler not added — depends on a Suggestions feature that doesn't exist on web yet; out-of-scope for Sprint 12. Sprint 14 covers Suggestions porting; that's the right time to wire the push handler.
 
 ### Cross-cutting notes
 - **HARD RULE — Prod env values on prod**: Slice 1b (payments) + 1f (Connect) touch Stripe/Supabase/Firebase surface; both are pure contract fixes (no env changes).
@@ -411,10 +419,12 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 
 | Status | Count |
 |---|---|
-| Not started | 1 slice (7) |
+| Not started | 0 |
 | In progress | 0 |
-| Done (awaiting QA) | 5 (2b, 3, 5a, 5b, 6) |
+| Done (awaiting QA) | 6 (2b, 3, 5a, 5b, 6, 7) |
 | Done (verified + pushed) | 10 (0, 1a, 1b, 1c, 1d, 1e, 1f, 2a, 4a no-op, 4b no-op) |
+
+🎉 **Sprint 12 complete** — 16 slices closed (10 already verified/pushed + 6 shipped this sprint awaiting QA). 9 of the 13 originally-planned slices were audit false positives (0, 1a-1f, 4a, 4b) that needed only verification documentation; 5 shipped real code changes (2a, 2b, 3, 5a, 5b, 6); Slice 7 was 4-false-positives-plus-1-real-gap. Sprint 13 (React Query extraction) and Sprint 14 (Suggestions + Rider Routines) follow.
 
 Sprint 12 ships 13 small, independently-mergeable slices closing 24 contract-shape mismatches, 11 HIGH-severity WEB_MISSING endpoints, 3 audit-log-bypass direct-Supabase writes, 4 chat realtime subscription gaps, and dead-code calls to nonexistent server routes. The original mega-slices for React Query extraction (~1500 LoC) and v1.3 Suggestions/Rider Routines (~1200 LoC) are deferred to standalone Sprints 13 and 14 respectively so this sprint stays smallest-first and reversible. Slice 0 is a zero-LoC verification spike resolving three open questions before any code is written. Every slice has a single user-visible win, mandatory parity matrix in the handoff, explicit per-feature green-light wait, and no overlap with the parallel admin session lane.
 

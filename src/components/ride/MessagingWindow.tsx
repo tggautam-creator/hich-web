@@ -739,24 +739,45 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
           if (data) setRide(data)
         })
       })
-      .on('broadcast', { event: 'transit_suggestions' }, (msg) => {
-        const payload = msg.payload as { suggestions?: TransitDropoffSuggestion[]; auto_detected?: boolean }
-        if (payload.suggestions) {
-          setTransitSuggestions(payload.suggestions)
-          // Refresh ride data so driver_destination check updates (especially for auto-detected)
-          if (payload.auto_detected) {
-            void supabase.from('rides').select('*').eq('id', rideId as string).single().then(({ data }) => {
-              if (data) setRide(data)
-            })
-          }
-        }
-      })
       .subscribe()
 
     return () => {
       void supabase.removeChannel(channel)
     }
   }, [rideId, isRider, navigate, state?.destination, state?.destinationLat, state?.destinationLng])
+
+  // ── Live transit suggestions (Slice 7) ──────────────────────────────────
+  //
+  // Server broadcasts `transit_suggestions` on `ride:{rideId}` (NOT on
+  // `chat:{rideId}` — the previous handler in the chat subscription was
+  // wired to the wrong channel and never fired). Fires when:
+  //   - the driver matched a `driver_routine` on selection
+  //     (rides.ts:2765 — `auto_detected: true`)
+  //   - the driver edits their destination mid-flow
+  //     (rides.ts:6016 — `auto_detected` absent)
+  useEffect(() => {
+    if (!rideId) return
+    const channel = supabase
+      .channel(`ride:${rideId}`)
+      .on('broadcast', { event: 'transit_suggestions' }, (msg) => {
+        const payload = msg.payload as {
+          suggestions?: TransitDropoffSuggestion[]
+          auto_detected?: boolean
+        }
+        if (!payload.suggestions) return
+        setTransitSuggestions(payload.suggestions)
+        if (payload.auto_detected) {
+          void supabase
+            .from('rides')
+            .select('*')
+            .eq('id', rideId)
+            .single()
+            .then(({ data }) => { if (data) setRide(data) })
+        }
+      })
+      .subscribe()
+    return () => { void supabase.removeChannel(channel) }
+  }, [rideId])
 
   // ── Listen for location confirmations on user channels ──────────────────
   useEffect(() => {

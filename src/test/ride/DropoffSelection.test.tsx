@@ -49,6 +49,14 @@ vi.mock('@/lib/supabase', () => ({
       }
       return {}
     },
+    // v1.3 Sprint 12 Slice 7 — `ride:{rideId}` realtime subscription
+    // for live transit_suggestions. Tests don't drive the realtime
+    // path; they just need the chain to not throw on subscribe/unsub.
+    channel: vi.fn().mockReturnValue({
+      on: vi.fn().mockReturnThis(),
+      subscribe: vi.fn().mockReturnThis(),
+    }),
+    removeChannel: vi.fn(),
   },
 }))
 

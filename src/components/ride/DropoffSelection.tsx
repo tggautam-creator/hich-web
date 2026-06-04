@@ -185,6 +185,28 @@ export default function DropoffSelection({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rideId, effLat])
 
+  // v1.3 Sprint 12 Slice 7 — live transit_suggestions on
+  // `ride:{rideId}`. Server broadcasts here when the driver's
+  // routine auto-detects a destination on selection
+  // (rides.ts:2765) or when the driver edits their destination
+  // mid-flow (rides.ts:6016). Without this subscription the rider
+  // sees a stale suggestion list until the next manual refresh.
+  useEffect(() => {
+    if (!rideId) return
+    const channel = supabase
+      .channel(`ride:${rideId}`)
+      .on('broadcast', { event: 'transit_suggestions' }, (msg) => {
+        const payload = msg.payload as {
+          suggestions?: TransitDropoffSuggestion[]
+        }
+        if (!payload.suggestions) return
+        setSuggestions(payload.suggestions)
+        if (payload.suggestions.length > 0) setSelectedIdx(0)
+      })
+      .subscribe()
+    return () => { void supabase.removeChannel(channel) }
+  }, [rideId])
+
   async function fetchSuggestions(lat: number, lng: number, name: string) {
     setLoading(true)
     setError(null)
