@@ -302,10 +302,11 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 - Tests: `src/test/lib/counterpartyContactApi.test.ts` (7) + `src/test/hooks/useCounterpartyContact.test.tsx` (4) + `src/test/ui/CallButton.test.tsx` (9)
 - Reviewer parity verdict: ✅ matches all 4 iOS surfaces — compact in chat header, standard in 3 drawer surfaces. Status gating (`accepted|coordinating|active`) matches server's privacy gate. Desktop tel:-fallback is a web-only adaptation (iOS always has a dialer). Existing host-page tests stub `CallButtonForRide` to keep their fetch-sequence mocks intact; behaviour is covered by the dedicated hook + component tests.
 
-**Slice 4a: Pickup / dropoff point proposals via chat**
-- Scope: Wire `PATCH /api/rides/:id/pickup-point` + `PATCH /api/rides/:id/dropoff-point` into MessagingWindow's location-share button. Replaces dead pattern where web POSTs location fields to `/api/messages/:rideId` (server silently drops them). New `usePickupPoint` + `useDropoffPoint` hooks.
-- LoC estimate: 280
-- Dependencies: Slice 1a (accept-location contract aligned first)
+**Slice 4a: Pickup / dropoff point proposals via chat** ✅ verified 2026-06-03 — no-op (audit false positive)
+- Audit claim: web POSTs location fields to `/api/messages/:rideId` (server silently drops), needs migration to `PATCH /api/rides/:id/{pickup,dropoff}-point`.
+- Reality: web `handleSubmitProposal` at [MessagingWindow.tsx:956-1017](src/components/ride/MessagingWindow.tsx#L956-L1017) ALREADY PATCHes both endpoints with iOS-aligned bodies (pickup `{lat, lng, note?}` matches `ProposePickupPointEndpoint.swift`; dropoff `{lat, lng, name?}` matches `ProposeRiderDropoffEndpoint.swift` — note/name field rename correctly applied). `sendMessageNetwork` at [MessagingWindow.tsx:867-883](src/components/ride/MessagingWindow.tsx#L867-L883) only sends `{content}` — location fields are never attached to that path, so the "server silently drops" path doesn't exist.
+- Verified: iOS endpoint files end-to-end + server handlers at [rides.ts:2885-3056](server/routes/rides.ts#L2885-L3056) (pickup) + [rides.ts:3057-3217](server/routes/rides.ts#L3057-L3217) (dropoff) + every fetch call in MessagingWindow.tsx.
+- No code change. No hooks needed — `usePickupPoint` / `useDropoffPoint` extraction would be a refactor, not a parity fix.
 
 **Slice 4b: MyRidesPage seats edit**
 - Scope: Wire `PATCH /api/schedule/:id/seats` into MyRidesPage poster controls.
@@ -387,10 +388,10 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 
 | Status | Count |
 |---|---|
-| Not started | 5 slices (4a, 4b, 5a, 5b, 6, 7) |
+| Not started | 5 slices (4b, 5a, 5b, 6, 7) |
 | In progress | 0 |
 | Done (awaiting QA) | 2 (2b, 3) |
-| Done (verified + pushed) | 8 (0, 1a, 1b, 1c, 1d, 1e, 1f, 2a) |
+| Done (verified + pushed) | 9 (0, 1a, 1b, 1c, 1d, 1e, 1f, 2a, 4a no-op) |
 
 Sprint 12 ships 13 small, independently-mergeable slices closing 24 contract-shape mismatches, 11 HIGH-severity WEB_MISSING endpoints, 3 audit-log-bypass direct-Supabase writes, 4 chat realtime subscription gaps, and dead-code calls to nonexistent server routes. The original mega-slices for React Query extraction (~1500 LoC) and v1.3 Suggestions/Rider Routines (~1200 LoC) are deferred to standalone Sprints 13 and 14 respectively so this sprint stays smallest-first and reversible. Slice 0 is a zero-LoC verification spike resolving three open questions before any code is written. Every slice has a single user-visible win, mandatory parity matrix in the handoff, explicit per-feature green-light wait, and no overlap with the parallel admin session lane.
 
