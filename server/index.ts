@@ -1,15 +1,7 @@
 import { app } from './app.ts'
 import { getServerEnv, validateStripeEnv } from './env.ts'
-import { checkUpcomingRides, clearExpiredSnoozes, clearStaleOnlineFlags, expireMissedRides, expirePendingBoardOffers, expireStaleRequests, syncAllRoutines } from './lib/scheduledReminders.ts'
-import { checkActiveRides } from './lib/rideSafetyNet.ts'
 import { startRideEtaTick } from './lib/rideEtaTick.ts'
-import { sendPendingPaymentNudges } from './jobs/paymentDunning.ts'
-import { dispatchSuggestionNotifications, expireStaleSuggestions, runSuggestionBackstopScan } from './lib/suggestionEngine.ts'
-import { tryGenerateDailyStories } from './lib/marketing/storyGenerator.ts'
-import { tryGenerateDailyPoster } from './lib/marketing/posterGenerator.ts'
-import { tryGenerateDailyBriefing } from './lib/marketing/dailyFocusGenerator.ts'
-import { tryGenerateAndSendWeeklyReview } from './lib/marketing/weeklyReviewGenerator.ts'
-import { trySweepWelcomeEmails } from './lib/email/welcomeEmailSweep.ts'
+import { runAllSweeps } from './cron/runAllSweeps.ts'
 
 const env = getServerEnv()
 const { PORT, STRIPE_SECRET_KEY, SUPABASE_URL, FIREBASE_SERVICE_ACCOUNT_PATH } = env
@@ -91,124 +83,11 @@ async function runReminderSweep(reason: string): Promise<void> {
   reminderSweepRunning = true
 
   try {
-    console.log(`[cron/fallback] Starting reminder sweep (${reason})`)
-    const [reminders, expiry, missed, safetyNet, sync, dunning, snooze, staleOnline, offerExpiry, suggestBackstop, suggestPushes, suggestExpired, marketingStories, marketingPosters, marketingBrief, marketingWeekly, welcomeEmails] = await Promise.all([
-      checkUpcomingRides(),
-      expireStaleRequests(),
-      expireMissedRides(),
-      checkActiveRides(),
-      syncAllRoutines(),
-      // Z4b (2026-04-30) — wire the 24/48/72h payment-dunning cron
-      // into the auto-sweep. Bucket logic + UNIQUE constraint on
-      // `payment_nudges (ride_id, bucket)` mean firing every 5 min
-      // can't double-push: only one pass per ride per bucket sends
-      // a nudge, the rest no-op via INSERT 23505. Defensive .catch()
-      // so a query error in this branch doesn't tank the other
-      // sweeps via Promise.all rejection.
-      sendPendingPaymentNudges().catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[cron/fallback] dunning failed: ${msg}`)
-        return { scanned: 0, nudged: 0, skipped: 0, errors: [] }
-      }),
-      // 2026-05-01 — clear expired driver snoozes + fire "you're
-      // back online" FCM push. Layer 1 of the 4-layer snooze-expiry
-      // fix; iOS local Timer (layer 2) handles sub-second feedback,
-      // this cron is the source of truth in case the app was killed
-      // during the snooze window.
-      clearExpiredSnoozes().catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[cron/fallback] snooze sweep failed: ${msg}`)
-        return { cleared: 0, notified: 0 }
-      }),
-      // 2026-05-04 — flip is_online=false on driver_locations rows
-      // whose recorded_at is older than 6h. Replaces the per-request
-      // freshness filter the matcher used to apply on Stage 1
-      // fallback (removed same day to unblock force-quit drivers).
-      clearStaleOnlineFlags().catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[cron/fallback] stale-online sweep failed: ${msg}`)
-        return { cleared: 0, notified: 0 }
-      }),
-      // 2026-05-17 — mirror the rider-request expiry behaviour for
-      // driver-on-rider-post offers. Defensive .catch() so a query
-      // error here doesn't tank the rest of the sweep via the
-      // Promise.all rejection path.
-      expirePendingBoardOffers().catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[cron/fallback] offer-expiry sweep failed: ${msg}`)
-        return { checked: 0, expired: 0 }
-      }),
-      // v1.3 Suggested Rides (2026-05-25) — three independent
-      // sweeps, each defensively .catch()'d so a failure in one
-      // can't tank the others via Promise.all rejection.
-      //   (a) Backstop scan picks up posts/routines whose on-write
-      //       trigger missed (driver_routines have no server-side
-      //       create endpoint, so this is their only scan path).
-      //   (b) Notification dispatch fires instant pushes for
-      //       relevance > 0.7 OR trip_date = today; everything else
-      //       is held for the 7am digest (Phase E).
-      //   (c) Expiry purge deletes suggestion rows past expires_at.
-      runSuggestionBackstopScan().catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[cron/fallback] suggestion backstop scan failed: ${msg}`)
-        return { scanned: 0, inserted: 0 }
-      }),
-      dispatchSuggestionNotifications().catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[cron/fallback] suggestion notifications failed: ${msg}`)
-        return { pushed: 0, deferred: 0, suppressed: 0 }
-      }),
-      expireStaleSuggestions().catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[cron/fallback] suggestion expiry failed: ${msg}`)
-        return { deleted: 0 }
-      }),
-      // 2026-05-24 — marketing panel daily story generator. Internally
-      // gated to only fire once per day after 7 AM PT (the rest of
-      // the 5-min ticks are a single SELECT). The UNIQUE constraint
-      // on marketing_story_batches(for_date, source='cron') is the
-      // backstop. Defensively .catch()'d so a Gemini outage can't
-      // tank the rest of the sweep.
-      tryGenerateDailyStories().catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[cron/fallback] marketing stories failed: ${msg}`)
-        return { generated: false, reason: 'error' }
-      }),
-      // 2026-05-24 — marketing panel Phase 2: daily themed poster.
-      // Same gating discipline as stories (>=7 AM PT, cron source,
-      // idempotent via partial unique index). One poster/day.
-      tryGenerateDailyPoster().catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[cron/fallback] marketing posters failed: ${msg}`)
-        return { generated: false, reason: 'error' }
-      }),
-      // 2026-05-31 — Feature 3: daily focus brief. Same 7 AM PT gate +
-      // idempotent via UNIQUE(for_date) on marketing_daily_briefings.
-      tryGenerateDailyBriefing().catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[cron/fallback] marketing brief failed: ${msg}`)
-        return { generated: false, reason: 'error' }
-      }),
-      // 2026-05-31 — Feature 4: weekly Slack review. Monday-only +
-      // after 9 AM PT gate. Generates last week's recap + posts to
-      // SLACK_MARKETING_WEBHOOK_URL. Idempotent on both steps.
-      tryGenerateAndSendWeeklyReview().catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[cron/fallback] marketing weekly review failed: ${msg}`)
-        return { generated: false, sent: false, reason: 'error' }
-      }),
-      // 2026-06-02 — welcome email sweep. Picks up users with
-      // onboarding_completed=true who haven't received the
-      // 'welcome-new-user' template yet. SQL UNIQUE index + the
-      // in-app sentSet filter prevent double-sends across overlapping
-      // sweep ticks.
-      trySweepWelcomeEmails().catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[cron/fallback] welcome email sweep failed: ${msg}`)
-        return { attempted: 0, sent: 0, failed: 0, reason: 'error' }
-      }),
-    ])
-    console.log(`[cron/fallback] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, sync: users=${sync.users} inserted=${sync.inserted}, dunning: scanned=${dunning.scanned} nudged=${dunning.nudged}, snooze: cleared=${snooze.cleared} notified=${snooze.notified}, staleOnline: cleared=${staleOnline.cleared} notified=${staleOnline.notified}, offerExpiry: checked=${offerExpiry.checked} expired=${offerExpiry.expired}, suggestions: backstop=${suggestBackstop.scanned}/${suggestBackstop.inserted} pushes=${suggestPushes.pushed}/${suggestPushes.deferred}/${suggestPushes.suppressed} expired=${suggestExpired.deleted}, marketingStories: ${marketingStories.generated ? 'generated' : 'skipped'}/${marketingStories.reason}, marketingPosters: ${marketingPosters.generated ? 'generated' : 'skipped'}/${marketingPosters.reason}, marketingBrief: ${marketingBrief.generated ? 'generated' : 'skipped'}/${marketingBrief.reason}, marketingWeekly: ${marketingWeekly.generated ? 'generated' : 'skipped'}+${marketingWeekly.sent ? 'sent' : 'unsent'}/${marketingWeekly.reason}, welcomeEmails: ${welcomeEmails.sent}/${welcomeEmails.attempted}${welcomeEmails.failed > 0 ? `(failed=${welcomeEmails.failed})` : ''}`)
+    // Canonical sweep list lives in cron/runAllSweeps.ts so the PM2
+    // cron worker (server/cron/reminders.ts) runs the exact same set.
+    // See that file's header for the history of why both entry points
+    // share one source of truth.
+    await runAllSweeps(`fallback:${reason}`)
   } catch (err) {
     console.error('[cron/fallback] Failed reminder sweep:', err)
   } finally {
