@@ -328,10 +328,12 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 - Tests: `src/test/lib/profileApi.test.ts` (6 contract tests); refactored `CreateProfilePage.test.tsx` + `ProfilePage.test.tsx` to mock `updateMyProfile` instead of the direct `supabase.from('users')` chain.
 - Reviewer parity verdict: ✅ matches iOS — the 3 migrated writes use the same endpoint iOS calls. Server is a shared backend, contract is identical. 2 audit claims were dropped as parity-incorrect (iOS itself uses direct writes for `is_driver` + `driver_locations`).
 
-**Slice 5b: ProfilePage stats tiles**
-- Scope: New `useMyStats` hook calling `GET /api/users/me/stats`. Render rides_completed, rating_avg, rating_count tiles.
-- LoC estimate: 110
-- Dependencies: Slice 5a
+**Slice 5b: ProfilePage stats tiles** ✅ shipped 2026-06-04
+- Scope shipped: New `src/lib/userStatsApi.ts` fetch helper + `src/hooks/useMyStats.ts` React Query wrapper for `GET /api/users/me/stats`. Wired into [ProfilePage.tsx:495-502](src/components/ride/ProfilePage.tsx#L495-L502) — `TrustBadges` now reads `ratingAvg` / `ratingCount` / `ridesCompleted` from server-fresh stats with cached `auth.profile` fallback so the row never pops in.
+- Replaces: the previous `ridesCompleted={rides.length}` count which under-counted any user with >50 rides (the loadRides query caps at 50 per role); plus the stale `rating_avg / rating_count` read off the cached `auth.profile` row (only refreshed on `auth.refreshProfile()`).
+- LoC: ~205 (helper 67, hook 30, wiring 12, tests 96)
+- Tests: `src/test/lib/userStatsApi.test.ts` (6) + `src/test/hooks/useMyStats.test.tsx` (3); ProfilePage test stubs the hook → undefined data so existing assertions on cached fallback values keep working.
+- Reviewer parity verdict: ✅ matches iOS exactly — same endpoint, same fallback pattern (`stats?.X ?? auth.profile?.X`). Hook adds `refetchOnWindowFocus: true` so a freshly-completed ride bumps the count without manual reload — slightly more aggressive than iOS but a web-only improvement riders/drivers will benefit from. No drifts.
 
 **Slice 6: BoardOffer create — driver "make an offer" composer**
 - Scope: New `RideBoardOfferComposeSheet` mirroring iOS. New `useCreateBoardOffer` hook with full proposed_* payload. Wired from RideBoard.tsx driver-mode rider-post detail.
@@ -398,9 +400,9 @@ We start with a tiny verification spike (Slice 0) to resolve two blocking open q
 
 | Status | Count |
 |---|---|
-| Not started | 3 slices (5b, 6, 7) |
+| Not started | 2 slices (6, 7) |
 | In progress | 0 |
-| Done (awaiting QA) | 3 (2b, 3, 5a) |
+| Done (awaiting QA) | 4 (2b, 3, 5a, 5b) |
 | Done (verified + pushed) | 10 (0, 1a, 1b, 1c, 1d, 1e, 1f, 2a, 4a no-op, 4b no-op) |
 
 Sprint 12 ships 13 small, independently-mergeable slices closing 24 contract-shape mismatches, 11 HIGH-severity WEB_MISSING endpoints, 3 audit-log-bypass direct-Supabase writes, 4 chat realtime subscription gaps, and dead-code calls to nonexistent server routes. The original mega-slices for React Query extraction (~1500 LoC) and v1.3 Suggestions/Rider Routines (~1200 LoC) are deferred to standalone Sprints 13 and 14 respectively so this sprint stays smallest-first and reversible. Slice 0 is a zero-LoC verification spike resolving three open questions before any code is written. Every slice has a single user-visible win, mandatory parity matrix in the handoff, explicit per-feature green-light wait, and no overlap with the parallel admin session lane.

@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { formatCents } from '@/lib/fare'
 import { updateMyProfile } from '@/lib/profileApi'
+import { useMyStats } from '@/hooks/useMyStats'
 import BottomNav from '@/components/ui/BottomNav'
 import DriverQrSheet from '@/components/ride/DriverQrSheet'
 import AppIcon from '@/components/ui/AppIcon'
@@ -49,6 +50,15 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
   const [rides, setRides] = useState<RideWithRole[]>([])
   const [loadingRides, setLoadingRides] = useState(true)
   const [signingOut, setSigningOut] = useState(false)
+
+  // v1.3 Sprint 12 Slice 5b — server-fresh ride count + rating.
+  // Replaces the previous `rides.length` count which under-counted
+  // any user with more than 50 rides as either rider or driver
+  // (the loadRides query caps at 50 per role). Matches iOS
+  // ProfilePage.loadUserStats() pattern: cached `auth.profile`
+  // values seed TrustBadges so the row never pops in — it just
+  // sharpens once the server response lands.
+  const { data: stats } = useMyStats({ enabled: Boolean(profile?.id) })
 
   // Edit mode state
   const [editing, setEditing] = useState(false)
@@ -494,9 +504,9 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
                 )}
                 <TrustBadges
                   email={profile?.email}
-                  ratingAvg={profile?.rating_avg ?? null}
-                  ratingCount={profile?.rating_count ?? 0}
-                  ridesCompleted={rides.length}
+                  ratingAvg={stats?.ratingAvg ?? profile?.rating_avg ?? null}
+                  ratingCount={stats?.ratingCount ?? profile?.rating_count ?? 0}
+                  ridesCompleted={stats?.ridesCompleted ?? rides.length}
                   size="md"
                   className="mt-1.5"
                 />

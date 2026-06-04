@@ -106,6 +106,15 @@ vi.mock('@/components/profile/TrustedContactsSection', () => ({
   default: () => <div data-testid="trusted-contacts-section-stub" />,
 }))
 
+// v1.3 Sprint 12 Slice 5b — useMyStats is a React Query hook; this
+// test file doesn't wrap with QueryClientProvider. Stub the hook to
+// return undefined data so TrustBadges falls back to the cached
+// profile values the test fixtures already supply. The hook's own
+// behaviour is covered by src/test/hooks/useMyStats.test.tsx.
+vi.mock('@/hooks/useMyStats', () => ({
+  useMyStats: () => ({ data: undefined, error: null, isLoading: false }),
+}))
+
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 const MOCK_ROUTINES = [
