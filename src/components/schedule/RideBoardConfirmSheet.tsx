@@ -99,6 +99,17 @@ export default function RideBoardConfirmSheet({
   const [note, setNote] = useState('')
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Driver-offering-on-rider-post: the driver's OWN destination.
+  // Mirrors iOS RideBoardOfferDestinationSection ("Where are you
+  // heading?", required field). Without it the server can't compute
+  // the driver's route → can't compute transit handoff stations →
+  // the whole offer-side transit feature is dead. Slice 1.
+  const [driverDestQuery, setDriverDestQuery] = useState('')
+  const [driverDestSuggestions, setDriverDestSuggestions] = useState<PlaceSuggestion[]>([])
+  const [selectedDriverDest, setSelectedDriverDest] = useState<PlaceSuggestion | null>(null)
+  const [driverDestResolving, setDriverDestResolving] = useState(false)
+  const driverDestDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   // Transit suggestions (rider-on-driver-post flow only)
   interface TransitSuggestion {
     station_name: string
@@ -344,6 +355,31 @@ export default function RideBoardConfirmSheet({
     setResolving(false)
     if (coords) {
       setSelectedPlace({ ...place, lat: coords.lat, lng: coords.lng })
+    }
+  }, [])
+
+  const handleDriverDestSearch = useCallback((value: string) => {
+    setDriverDestQuery(value)
+    setSelectedDriverDest(null)
+    if (driverDestDebounceRef.current) clearTimeout(driverDestDebounceRef.current)
+    if (value.trim().length < 2) { setDriverDestSuggestions([]); return }
+    driverDestDebounceRef.current = setTimeout(() => {
+      void searchPlaces(value).then(setDriverDestSuggestions)
+    }, 300)
+  }, [])
+
+  const handleSelectDriverDest = useCallback(async (place: PlaceSuggestion) => {
+    setDriverDestQuery(place.fullAddress)
+    setDriverDestSuggestions([])
+    if (place.lat != null && place.lng != null) {
+      setSelectedDriverDest(place)
+      return
+    }
+    setDriverDestResolving(true)
+    const coords = await getPlaceCoordinates(place.placeId)
+    setDriverDestResolving(false)
+    if (coords) {
+      setSelectedDriverDest({ ...place, lat: coords.lat, lng: coords.lng })
     }
   }, [])
 
@@ -699,6 +735,61 @@ export default function RideBoardConfirmSheet({
                 'Where will you pick them up?',
                 'Search for a pickup location…',
               )}
+
+              {/* "Where are you heading?" — required driver dest input.
+                  Mirrors iOS RideBoardOfferDestinationSection. Without
+                  this the server can't compute transit handoff stations,
+                  which is why the whole feature was dead on this flow
+                  before. Same debounced-Places-autocomplete pattern as
+                  the pickup picker above; selection upgrades to a chip
+                  + triggers the transit fetch in the next effect. */}
+              <div className="mb-5">
+                <div className="flex items-baseline gap-2 mb-1">
+                  <p className="text-sm font-semibold text-text-primary">Where are you heading?</p>
+                  <span className="text-[11px] text-text-secondary">(required)</span>
+                </div>
+                <p className="text-[11px] text-text-secondary mb-2 leading-snug">
+                  Lets us check for transit hand-off options if your route doesn&rsquo;t quite match theirs.
+                </p>
+                <div className="relative">
+                  <input
+                    data-testid="driver-dest-search"
+                    type="text"
+                    value={driverDestQuery}
+                    onChange={(e) => handleDriverDestSearch(e.target.value)}
+                    placeholder="Search for your destination…"
+                    className="w-full rounded-xl border border-border px-3 py-2.5 text-sm text-text-primary placeholder:text-text-secondary/60 focus:border-primary focus:outline-none"
+                  />
+                  {driverDestResolving && (
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                    </div>
+                  )}
+                  {driverDestSuggestions.length > 0 && !selectedDriverDest && (
+                    <div className="absolute left-0 right-0 top-full mt-1 z-20 rounded-xl bg-white border border-border shadow-lg max-h-48 overflow-y-auto">
+                      {driverDestSuggestions.map((s) => (
+                        <button
+                          key={s.placeId}
+                          data-testid="driver-dest-suggestion"
+                          onClick={() => void handleSelectDriverDest(s)}
+                          className="w-full text-left px-3 py-2.5 hover:bg-surface border-b border-border/50 last:border-b-0"
+                        >
+                          <p className="text-sm font-medium text-text-primary">{s.mainText}</p>
+                          <p className="text-xs text-text-secondary">{s.secondaryText}</p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {selectedDriverDest && (
+                  <div data-testid="driver-dest-selected" className="mt-2 flex items-center gap-2 rounded-xl bg-success/5 border border-success/20 px-3 py-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5 text-success shrink-0" aria-hidden="true">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                    <p className="text-xs text-text-primary font-medium truncate">{selectedDriverDest.fullAddress}</p>
+                  </div>
+                )}
+              </div>
 
               {/* v1.3 — driver-offer transit-station dropoff. Mirrors
                   iOS RiderDropoffChoice.atTransitStation. Default:
