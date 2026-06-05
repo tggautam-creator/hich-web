@@ -1,16 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { APIProvider, Map, AdvancedMarker } from '@vis.gl/react-google-maps'
-import { env } from '@/lib/env'
 
 import { supabase } from '@/lib/supabase'
 import { reverseGeocode } from '@/lib/geocode'
+import { useAuthStore } from '@/stores/authStore'
 import BottomNav from '@/components/ui/BottomNav'
-import { MAP_ID, DEFAULT_CENTER, DEFAULT_ZOOM } from '@/lib/mapConstants'
 import SpotlightOverlay from '@/components/onboarding/SpotlightOverlay'
 import { useOnboardingStore } from '@/stores/onboardingStore'
 import PwaInstallBanner from '@/components/ui/PwaInstallBanner'
 import SuggestedRidesHero from '@/components/suggestions/SuggestedRidesHero'
+import { useSuggestionsTop } from '@/hooks/useSuggestions'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -20,20 +19,49 @@ interface RiderHomePageProps {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
+/**
+ * Rider home — iOS-parity vertical scroll redesign (2026-06-05).
+ *
+ * Replaces the previous map-first floating-card layout with the
+ * scroll-and-stack pattern from
+ * `ios/Tago/Features/RiderHome/RiderHomePage.swift`. The map UI moved
+ * inside `DestinationSearchPage` / `MapPickerPage`; home is now a
+ * static information surface (greeting + hero + pills + suggestions +
+ * how-it-works), so users land on something readable instead of a
+ * full-screen map they don't need until they're actively searching.
+ *
+ * Sections (top → bottom):
+ *   1. PWA install banner (web-only) + slim TAGO wordmark + floating
+ *      bell (top-right)
+ *   2. Greeting: "Hi there, {firstName}!" + "Where would you like to go?"
+ *   3. Primary hero: "Find your ride" capsule → /rides/board
+ *   4. Secondary pills: "Instant carpool" + "Ride board"
+ *   5. "Suggested for you" card (wraps SuggestedRidesHero)
+ *   6. "Get matched with a driver" card with routine + post CTAs
+ *   7. "How Instant Carpool works" placeholder card
+ *
+ * Bottom-docked:
+ *   - Active-ride banner (when there's a ride in flight)
+ *   - BottomNav
+ *
+ * Functionality preserved from the old map-first layout:
+ *   - Geolocation watch for reverse-geocoded `locationName`
+ *   - Active rides count + unread notifications
+ *   - Realtime-availability advisory modal (web-only — fires from
+ *     the Instant Carpool pill, surfaced when driver supply is low)
+ *   - Spotlight onboarding overlay
+ */
 export default function RiderHomePage({ 'data-testid': testId }: RiderHomePageProps) {
   const navigate = useNavigate()
+  const profile = useAuthStore((s) => s.profile)
   const hasSeenWalkthrough = useOnboardingStore((s) => s.hasSeenWalkthrough)
 
-  const [center,       setCenter]       = useState(DEFAULT_CENTER)
-  const [hasGps,       setHasGps]       = useState(false)
   const [locationName, setLocationName] = useState('Current Location')
   const [activeRideCount, setActiveRideCount] = useState(0)
   const [unreadCount, setUnreadCount] = useState(0)
-  const [userPanned, setUserPanned] = useState(false)
   const [showRealtimeNotice, setShowRealtimeNotice] = useState(false)
   const gpsFixedRef = useRef(false)
-  const gpsLocationRef = useRef(DEFAULT_CENTER)
-  const mapRef = useRef<google.maps.Map | null>(null)
+  const gpsLocationRef = useRef<{ lat: number; lng: number } | null>(null)
 
   // Fetch active ride count + unread notifications
   useEffect(() => {
@@ -65,16 +93,7 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
       (pos) => {
         const lat = pos.coords.latitude
         const lng = pos.coords.longitude
-        const newLocation = { lat, lng }
-        gpsLocationRef.current = newLocation
-        setCenter(newLocation)
-        setHasGps(true)
-
-        // Only pan map if user hasn't manually panned
-        if (!userPanned && mapRef.current) {
-          mapRef.current.panTo(newLocation)
-        }
-
+        gpsLocationRef.current = { lat, lng }
         // Reverse-geocode only on the first GPS fix
         if (!gpsFixedRef.current) {
           gpsFixedRef.current = true
@@ -85,84 +104,36 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
       { enableHighAccuracy: true, timeout: 10_000, maximumAge: 5_000 },
     )
     return () => { navigator.geolocation.clearWatch(watchId) }
-  }, [userPanned])
-
-  const handleCameraChange = useCallback((ev: { detail: { center: { lat: number; lng: number }; zoom: number }; map: google.maps.Map }) => {
-    // Capture map instance
-    if (!mapRef.current && ev.map) {
-      mapRef.current = ev.map
-    }
   }, [])
 
-  const apiKey = env.GOOGLE_MAPS_KEY ?? ''
-
-  function continueToInstantMatch() {
+  const continueToInstantMatch = useCallback(() => {
     setShowRealtimeNotice(false)
-    navigate('/ride/search', { state: { locationName, originLat: center.lat, originLng: center.lng } })
-  }
+    const coord = gpsLocationRef.current
+    navigate('/ride/search', {
+      state: coord
+        ? { locationName, originLat: coord.lat, originLng: coord.lng }
+        : { locationName },
+    })
+  }, [navigate, locationName])
+
+  const greetingText = (() => {
+    const full = profile?.full_name?.trim() ?? ''
+    const first = full.split(/\s+/)[0] ?? ''
+    return first ? `Hi there, ${first}!` : 'Hi there!'
+  })()
 
   return (
     <div
       data-testid={testId ?? 'rider-home-page'}
-      className="relative h-dvh w-full overflow-hidden font-sans"
+      className="relative min-h-dvh w-full font-sans bg-surface"
     >
-
       {/* ── PWA install banner ──────────────────────────────────────────── */}
       <PwaInstallBanner />
-
-      {/* ── Full-screen map ────────────────────────────────────────────────── */}
-      <APIProvider apiKey={apiKey}>
-        <Map
-          data-testid="map-container"
-          mapId={MAP_ID}
-          defaultCenter={DEFAULT_CENTER}
-          defaultZoom={DEFAULT_ZOOM}
-          gestureHandling="greedy"
-          disableDefaultUI
-          className="h-full w-full"
-          onCameraChanged={handleCameraChange}
-          onDragstart={() => setUserPanned(true)}
-        >
-          {hasGps && (
-            <AdvancedMarker position={center} title="You are here">
-              <div data-testid="blue-dot-marker" className="relative flex items-center justify-center">
-                <span className="absolute h-6 w-6 rounded-full bg-primary/30 animate-ping" />
-                <span className="relative h-3 w-3 rounded-full bg-primary border-2 border-white shadow-md" />
-              </div>
-            </AdvancedMarker>
-          )}
-        </Map>
-      </APIProvider>
-
-      {/* ── Re-center button (shown when user panned away) ──────────────────── */}
-      {userPanned && hasGps && (
-        <button
-          data-testid="recenter-button"
-          onClick={() => {
-            setUserPanned(false)
-            if (mapRef.current) {
-              mapRef.current.panTo(gpsLocationRef.current)
-            }
-          }}
-          aria-label="Re-center to my location"
-          className="absolute right-4 z-[1000] h-10 w-10 rounded-full bg-white shadow-lg flex items-center justify-center active:scale-95 transition-transform"
-          style={{ top: 'calc(max(env(safe-area-inset-top), 0.75rem) + 4rem)' }}
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-            <circle cx="12" cy="12" r="3" />
-            <circle cx="12" cy="12" r="10" />
-            <line x1="12" y1="2" x2="12" y2="4" />
-            <line x1="12" y1="20" x2="12" y2="22" />
-            <line x1="2" y1="12" x2="4" y2="12" />
-            <line x1="20" y1="12" x2="22" y2="12" />
-          </svg>
-        </button>
-      )}
 
       {/* ── Slim frosted top bar — wordmark + notifications ────────────────── */}
       <div
         data-testid="top-bar"
-        className="absolute left-0 right-0 top-0 z-[1000] bg-white/90 backdrop-blur-sm border-b border-border flex items-center justify-between px-4"
+        className="sticky top-0 z-[40] bg-white/90 backdrop-blur-sm border-b border-border flex items-center justify-between px-4"
         style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
       >
         <span className="font-bold text-lg text-primary tracking-widest select-none">
@@ -187,20 +158,157 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
         </button>
       </div>
 
-      {/* ── Stacked: active ride banner + suggestions + search + ride board cards ─ */}
-      <div
-        className="absolute left-0 right-0 z-[1000] px-4 flex flex-col gap-2"
-        style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 4.5rem)' }}
-      >
-        {/* v1.3 Sprint 14 — Suggested Rides hero (rider side). Self-
-            hides when empty so the map-first UX is preserved. iOS
-            mounts the same component at the same position on
-            RiderHomePage+Sections.swift:116. */}
-        <SuggestedRidesHero side="rider" />
+      {/* ── Scroll content ──────────────────────────────────────────────── */}
+      <div className="px-4 pt-8 pb-32 flex flex-col gap-5">
+        {/* Greeting block */}
+        <div className="flex flex-col items-center gap-1 mt-6 mb-2">
+          <h1
+            data-testid="rider-home-greeting"
+            className="text-3xl font-bold text-text-primary text-center"
+          >
+            {greetingText}
+          </h1>
+          <p className="text-sm text-text-secondary text-center">
+            Where would you like to go?
+          </p>
+        </div>
 
-        {/* Active ride banner — stacks above search card naturally */}
-        {activeRideCount > 0 && (
+        {/* Primary hero — "Find your ride" */}
+        <button
+          type="button"
+          data-testid="rider-home-find-ride-hero"
+          onClick={() => navigate('/rides/board', { state: { fromTab: 'home' } })}
+          className="w-full flex items-center gap-3 rounded-3xl bg-white border border-border/60 px-5 py-5 shadow-[0_4px_12px_rgba(0,0,0,0.06)] active:scale-[0.99] transition-transform text-left"
+        >
+          <span className="h-11 w-11 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
+              <path d="M3 11l18-8-8 18-2-8-8-2z" />
+            </svg>
+          </span>
+          <div className="flex-1 min-w-0">
+            <p className="text-base font-bold text-text-primary">Find your ride</p>
+            <p className="text-xs text-text-secondary mt-0.5">Pick from rides heading your way</p>
+          </div>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4 text-text-secondary/50 shrink-0" aria-hidden="true">
+            <path d="M5 12h14M13 5l7 7-7 7" />
+          </svg>
+        </button>
+
+        {/* Secondary pills row — Instant carpool + Ride board */}
+        <div className="grid grid-cols-2 gap-3">
           <button
+            type="button"
+            data-testid="rider-home-instant-carpool-pill"
+            onClick={() => setShowRealtimeNotice(true)}
+            className="flex flex-col items-start gap-1.5 rounded-2xl bg-white border border-border/60 px-4 py-3.5 shadow-sm active:scale-[0.98] transition-transform text-left"
+          >
+            <span className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary" aria-hidden="true">
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+            </span>
+            <p className="text-sm font-bold text-text-primary">Instant carpool</p>
+            <p className="text-[11px] text-text-secondary">Need one right now?</p>
+          </button>
+
+          <button
+            type="button"
+            data-testid="rider-home-ride-board-pill"
+            onClick={() => navigate('/rides/board', { state: { fromTab: 'home' } })}
+            className="flex flex-col items-start gap-1.5 rounded-2xl bg-white border border-border/60 px-4 py-3.5 shadow-sm active:scale-[0.98] transition-transform text-left"
+          >
+            <span className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                <line x1="16" y1="2" x2="16" y2="6" />
+                <line x1="8" y1="2" x2="8" y2="6" />
+                <line x1="3" y1="10" x2="21" y2="10" />
+              </svg>
+            </span>
+            <p className="text-sm font-bold text-text-primary">Ride board</p>
+            <p className="text-[11px] text-text-secondary">See every ride posted</p>
+          </button>
+        </div>
+
+        {/* Suggested for you card — wraps the shared SuggestedRidesHero */}
+        <SuggestedForYouCard />
+
+        {/* Get matched — post a trip + add routine entry points */}
+        <div className="rounded-2xl bg-white border border-primary/10 p-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)] flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+              <line x1="16" y1="2" x2="16" y2="6" />
+              <line x1="8" y1="2" x2="8" y2="6" />
+              <line x1="3" y1="10" x2="21" y2="10" />
+              <line x1="12" y1="14" x2="12" y2="18" />
+              <line x1="10" y1="16" x2="14" y2="16" />
+            </svg>
+            <h2 className="text-sm font-bold text-text-primary">Get matched with a driver</h2>
+          </div>
+          <p className="text-xs text-text-secondary leading-relaxed">
+            Post a trip or add a routine so we can match you with drivers heading the same way.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              data-testid="rider-home-add-routine"
+              onClick={() => navigate('/schedule/rider', { state: { tripType: 'routine' } })}
+              className="rounded-xl bg-primary text-white px-3 py-2.5 text-xs font-semibold active:opacity-90"
+            >
+              + Add routine
+            </button>
+            <button
+              type="button"
+              data-testid="rider-home-post-trip"
+              onClick={() => navigate('/schedule/rider')}
+              className="rounded-xl bg-primary/10 text-primary px-3 py-2.5 text-xs font-semibold active:bg-primary/20"
+            >
+              + Post a trip
+            </button>
+          </div>
+        </div>
+
+        {/* How it works — placeholder for the carousel (iOS:
+            HowItWorksCarousel). The slides are aspirational copy; web
+            ships a static three-step list for parity until the
+            swipeable carousel is built. */}
+        <div className="rounded-2xl bg-white border border-primary/10 p-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)] flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary" aria-hidden="true">
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+              <circle cx="12" cy="12" r="10" />
+            </svg>
+            <h2 className="text-sm font-bold text-text-primary">How Instant Carpool works</h2>
+          </div>
+          <ol className="flex flex-col gap-2">
+            {[
+              { n: 1, title: 'Set your destination', body: 'Search for where you\'re going. We show the closest student drivers.' },
+              { n: 2, title: 'Pick a ride', body: 'Tap a driver heading your way. They confirm, then you\'re matched.' },
+              { n: 3, title: 'Meet at pickup', body: 'Coordinate in chat. Scan the QR to start the ride and pay on completion.' },
+            ].map((s) => (
+              <li key={s.n} className="flex items-start gap-2.5">
+                <span className="h-5 w-5 rounded-full bg-primary/10 text-primary text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5">{s.n}</span>
+                <div>
+                  <p className="text-xs font-semibold text-text-primary">{s.title}</p>
+                  <p className="text-[11px] text-text-secondary leading-relaxed">{s.body}</p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
+      </div>
+
+      {/* ── Bottom: docked active-ride banner + nav ──────────────────────── */}
+      {activeRideCount > 0 && (
+        <div
+          className="fixed left-0 right-0 z-[30] px-4"
+          style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 4.5rem)' }}
+        >
+          <button
+            type="button"
             data-testid="active-ride-banner"
             onClick={() => navigate('/rides')}
             className="w-full rounded-2xl bg-primary px-4 py-3 shadow-lg flex items-center gap-3 active:opacity-90 transition-opacity"
@@ -214,73 +322,19 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
               </p>
               <p className="text-xs text-white/70">Tap to view</p>
             </div>
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-white/70 shrink-0" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4 text-white/70 shrink-0" aria-hidden="true">
               <path d="M9 18l6-6-6-6" />
             </svg>
           </button>
-        )}
-        {/* Full-width search card */}
-        <button
-          data-testid="search-bar"
-          onClick={() => { setShowRealtimeNotice(true) }}
-          aria-label="Search for a destination"
-          className="w-full bg-white rounded-2xl shadow-lg px-4 py-3 text-left active:scale-[0.99] transition-transform"
-        >
-          {/* From line */}
-          <div className="flex items-center gap-3">
-            <span className="h-2.5 w-2.5 rounded-full bg-primary shrink-0" />
-            <span
-              data-testid="from-label"
-              className="text-sm text-text-secondary truncate"
-            >
-              From &middot; {locationName}
-            </span>
-          </div>
+        </div>
+      )}
 
-          {/* Dotted connector */}
-          <div className="ml-[4.5px] h-4 border-l border-dashed border-text-secondary/30" />
-
-          {/* Where to? */}
-          <div className="flex items-center gap-3">
-            <span className="h-2.5 w-2.5 rounded-full bg-success shrink-0" />
-            <span className="text-base font-medium text-text-primary">
-              Where to?
-            </span>
-          </div>
-        </button>
-
-        {/* Full-width ride board button */}
-        <button
-          data-testid="ride-board-button"
-          onClick={() => { navigate('/rides/board', { state: { fromTab: 'home' } }) }}
-          aria-label="Browse ride board"
-          className="w-full bg-white rounded-2xl shadow-lg px-4 py-3 flex items-center gap-3 active:scale-[0.99] transition-transform"
-        >
-          <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary" aria-hidden="true">
-              <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
-              <line x1="16" y1="2" x2="16" y2="6" />
-              <line x1="8" y1="2" x2="8" y2="6" />
-              <line x1="3" y1="10" x2="21" y2="10" />
-              <circle cx="12" cy="16" r="1.5" fill="currentColor" stroke="none" />
-            </svg>
-          </div>
-          <span className="flex-1 text-sm font-semibold text-text-primary text-left">
-            Browse upcoming rides
-          </span>
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
-            <path d="M9 18l6-6-6-6" />
-          </svg>
-        </button>
-      </div>
-
-      {/* ── Bottom navigation ──────────────────────────────────────────────── */}
       <BottomNav activeTab="home" />
 
       {/* ── Realtime availability advisory overlay ─────────────────────────── */}
       {showRealtimeNotice && (
         <div
-          className="absolute inset-0 z-[1200] bg-background/55 backdrop-blur-[2px] p-4 flex items-center justify-center"
+          className="fixed inset-0 z-[1200] bg-background/55 backdrop-blur-[2px] p-4 flex items-center justify-center"
           onClick={() => setShowRealtimeNotice(false)}
         >
           <div
@@ -289,76 +343,71 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
           >
             <div className="h-1.5 w-full bg-gradient-to-r from-warning via-primary to-success" />
             <div className="p-5 flex flex-col gap-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-wide text-warning">Instant Match Update</p>
-                <h2 className="mt-1 text-2xl leading-tight font-extrabold text-text-primary">Fewer Drivers Online Right Now</h2>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wide text-warning">Instant Match Update</p>
+                  <h2 className="mt-1 text-2xl leading-tight font-extrabold text-text-primary">Fewer Drivers Online Right Now</h2>
+                </div>
+                <button
+                  type="button"
+                  data-testid="realtime-notice-close"
+                  onClick={() => setShowRealtimeNotice(false)}
+                  aria-label="Close availability notice"
+                  className="h-9 w-9 rounded-full bg-surface text-text-secondary hover:text-text-primary text-xl leading-none"
+                >
+                  ×
+                </button>
               </div>
-              <button
-                type="button"
-                data-testid="realtime-notice-close"
-                onClick={() => setShowRealtimeNotice(false)}
-                aria-label="Close availability notice"
-                className="h-9 w-9 rounded-full bg-surface text-text-secondary hover:text-text-primary text-xl leading-none"
-              >
-                ×
-              </button>
-            </div>
 
-            <p className="text-base leading-8 text-text-secondary">
-              Instant Match is the feature that finds a nearby student driver right away, similar to Uber or Lyft.
-            </p>
+              <p className="text-base leading-8 text-text-secondary">
+                Instant Match is the feature that finds a nearby student driver right away, similar to Uber or Lyft.
+              </p>
 
-            <p className="text-base leading-8 text-text-secondary">
-              Right now, campus driver supply is low, so opening this fully could mean long waits and a poor experience. We are actively onboarding more student drivers and expanding coverage.
-            </p>
+              <p className="text-base leading-8 text-text-secondary">
+                Right now, campus driver supply is low, so opening this fully could mean long waits and a poor experience. We are actively onboarding more student drivers and expanding coverage.
+              </p>
 
-            <p className="text-sm font-medium text-text-primary">
-              Best options today:
-            </p>
+              <p className="text-sm font-medium text-text-primary">
+                Best options today:
+              </p>
 
-            <div className="grid grid-cols-1 gap-2">
-              <button
-                data-testid="realtime-notice-post-ride"
-                onClick={() => { setShowRealtimeNotice(false); navigate('/schedule/rider') }}
-                className="w-full rounded-xl bg-primary text-white px-4 py-2.5 text-sm font-semibold text-left"
-              >
-                Schedule a Ride Request
-              </button>
+              <div className="grid grid-cols-1 gap-2">
+                <button
+                  data-testid="realtime-notice-post-ride"
+                  onClick={() => { setShowRealtimeNotice(false); navigate('/schedule/rider') }}
+                  className="w-full rounded-xl bg-primary text-white px-4 py-2.5 text-sm font-semibold text-left"
+                >
+                  Schedule a Ride Request
+                </button>
 
-              {/* v1.3 — rider routine entry point. Mirrors iOS
-                  RiderHomePage onAddRoutine callback that opens
-                  SchedulePostPage(mode: .rider, tripType: .routine).
-                  For weekly commutes (school, work) — saves the rider
-                  the per-day re-post. */}
-              <button
-                data-testid="realtime-notice-add-routine"
-                onClick={() => { setShowRealtimeNotice(false); navigate('/schedule/rider', { state: { tripType: 'routine' } }) }}
-                className="w-full rounded-xl border border-border bg-white px-4 py-2.5 text-sm font-semibold text-text-primary text-left"
-              >
-                Save a Recurring Ride
-              </button>
+                <button
+                  data-testid="realtime-notice-add-routine"
+                  onClick={() => { setShowRealtimeNotice(false); navigate('/schedule/rider', { state: { tripType: 'routine' } }) }}
+                  className="w-full rounded-xl border border-border bg-white px-4 py-2.5 text-sm font-semibold text-text-primary text-left"
+                >
+                  Save a Recurring Ride
+                </button>
+
+                <button
+                  data-testid="realtime-notice-ride-board"
+                  onClick={() => { setShowRealtimeNotice(false); navigate('/rides/board', { state: { fromTab: 'home' } }) }}
+                  className="w-full rounded-xl border border-border bg-white px-4 py-2.5 text-sm font-semibold text-text-primary text-left"
+                >
+                  Browse Ride Board
+                </button>
+              </div>
 
               <button
-                data-testid="realtime-notice-ride-board"
-                onClick={() => { setShowRealtimeNotice(false); navigate('/rides/board', { state: { fromTab: 'home' } }) }}
-                className="w-full rounded-xl border border-border bg-white px-4 py-2.5 text-sm font-semibold text-text-primary text-left"
+                data-testid="realtime-notice-continue-search"
+                onClick={continueToInstantMatch}
+                className="w-full rounded-xl bg-warning/10 text-warning px-4 py-2.5 text-sm font-semibold"
               >
-                Browse Ride Board
+                Try Instant Match Anyway
               </button>
-            </div>
 
-            <button
-              data-testid="realtime-notice-continue-search"
-              onClick={continueToInstantMatch}
-              className="w-full rounded-xl bg-warning/10 text-warning px-4 py-2.5 text-sm font-semibold"
-            >
-              Try Instant Match Anyway
-            </button>
-
-            <p className="text-xs text-text-secondary text-center">
-              Thanks for helping us build a better ride network for students.
-            </p>
+              <p className="text-xs text-text-secondary text-center">
+                Thanks for helping us build a better ride network for students.
+              </p>
             </div>
           </div>
         </div>
@@ -366,6 +415,39 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
 
       {/* ── Spotlight walkthrough for new users ──────────────────────────── */}
       {!hasSeenWalkthrough && <SpotlightOverlay />}
+    </div>
+  )
+}
+
+// ── Subcomponents ──────────────────────────────────────────────────
+
+/**
+ * Wraps SuggestedRidesHero in a labeled card matching iOS
+ * `suggestedRidesCard` (RiderHomePage+Sections.swift:105). The card
+ * is always present (with empty-state copy when there are no
+ * matches) so users learn the feature exists even before they have
+ * matches — iOS uses the same `.embedded` presentation pattern.
+ */
+function SuggestedForYouCard() {
+  const { data, isLoading } = useSuggestionsTop('rider')
+  const suggestions = data ?? []
+  return (
+    <div className="rounded-2xl bg-white border border-primary/10 p-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)] flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary" aria-hidden="true">
+          <path d="M12 2l2.4 6.6L21 9l-5.4 3.9L17.4 19 12 15.6 6.6 19l1.8-6.1L3 9l6.6-.4z" />
+        </svg>
+        <h2 className="text-sm font-bold text-text-primary">Suggested for you</h2>
+      </div>
+      {isLoading ? (
+        <p className="text-xs text-text-secondary py-2">Looking for matches&hellip;</p>
+      ) : suggestions.length === 0 ? (
+        <p data-testid="suggested-empty-state" className="text-xs text-text-secondary py-2 leading-relaxed">
+          No matches yet. Post a trip or add a routine and we&rsquo;ll find drivers heading the same way.
+        </p>
+      ) : (
+        <SuggestedRidesHero side="rider" hideWhenEmpty={false} />
+      )}
     </div>
   )
 }
