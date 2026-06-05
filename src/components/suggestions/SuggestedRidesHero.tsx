@@ -17,10 +17,12 @@
  *
  * Dismiss → useDismissSuggestion (optimistic remove).
  */
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSuggestionsTop, useDismissSuggestion } from '@/hooks/useSuggestions'
 import type { Suggestion, SuggestionSide } from '@/lib/suggestionsApi'
 import SuggestedRideCard from './SuggestedRideCard'
+import SuggestionDetailSheet from './SuggestionDetailSheet'
 
 interface SuggestedRidesHeroProps {
   /** Which side the viewer is on — drives both the server filter
@@ -40,6 +42,8 @@ export default function SuggestedRidesHero({
   const navigate = useNavigate()
   const { data, isLoading } = useSuggestionsTop(side)
   const dismissMutation = useDismissSuggestion()
+  // v1.3 Sprint 14 Slice C — tap card body → open detail sheet.
+  const [detailSuggestion, setDetailSuggestion] = useState<Suggestion | null>(null)
 
   const suggestions = data ?? []
 
@@ -69,15 +73,27 @@ export default function SuggestedRidesHero({
   }
 
   return (
-    <div data-testid={testId} className="w-full flex flex-col gap-2">
-      {suggestions.map((s) => (
-        <SuggestedRideCard
-          key={s.id}
-          suggestion={s}
-          onAct={() => handleAct(s)}
-          onDismiss={() => handleDismiss(s)}
+    <>
+      <div data-testid={testId} className="w-full flex flex-col gap-2">
+        {suggestions.map((s) => (
+          <SuggestedRideCard
+            key={s.id}
+            suggestion={s}
+            onAct={() => handleAct(s)}
+            onDismiss={() => handleDismiss(s)}
+            onTap={() => setDetailSuggestion(s)}
+          />
+        ))}
+      </div>
+
+      {detailSuggestion && (
+        <SuggestionDetailSheet
+          isOpen={detailSuggestion !== null}
+          onClose={() => setDetailSuggestion(null)}
+          suggestion={detailSuggestion}
+          onAct={() => handleAct(detailSuggestion)}
         />
-      ))}
-    </div>
+      )}
+    </>
   )
 }
