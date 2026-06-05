@@ -345,21 +345,27 @@ export async function lookupDriverWaivesCaregiverFee(
  */
 export async function lookupDriverWaiveInfo(
   driverId: string | null | undefined,
-): Promise<{ waives: boolean; firstName: string | null; fullName: string | null }> {
-  if (!driverId) return { waives: false, firstName: null, fullName: null }
+): Promise<{ waives: boolean; waivesCompanion: boolean; firstName: string | null; fullName: string | null }> {
+  if (!driverId) return { waives: false, waivesCompanion: false, firstName: null, fullName: null }
   const { data } = await supabaseAdmin
     .from('users')
-    .select('waive_caregiver_fee, full_name' as never)
+    // V4 F1 A.4 — `waive_companion_fee` (migration 119) surfaced so the
+    // end-of-ride settlement can zero the companion fee independently of
+    // the caregiver one. The toggle that SETS it is A.6/B.5; until then
+    // it defaults false (no behaviour change for existing drivers).
+    .select('waive_caregiver_fee, waive_companion_fee, full_name' as never)
     .eq('id', driverId)
     .single()
   const row = data as unknown as {
     waive_caregiver_fee?: boolean | null
+    waive_companion_fee?: boolean | null
     full_name?: string | null
   } | null
   const fullName = row?.full_name?.trim() || null
   const firstName = fullName?.split(/\s+/)[0] || null
   return {
     waives: row?.waive_caregiver_fee === true,
+    waivesCompanion: row?.waive_companion_fee === true,
     firstName,
     fullName,
   }
@@ -4139,6 +4145,32 @@ ridesRouter.post(
     let timeCostCents = singleRiderFare.time_cost_cents
     const gasPricePerGallonCents = singleRiderFare.gas_price_per_gallon_cents
 
+    // V4 F1 A.4 — caregiver + companion seat fees, RECOMPUTED from the
+    // real driven distance (this rider's pickup→dropoff, the same
+    // distance `computeRideFare` used). Applies to BOTH single- and
+    // multi-rider settlement. The stored `*_fare_cents` were request-time
+    // estimates; this is the canonical charge. Each fee is zeroed
+    // independently when the driver waives it. Single-rider trips folded
+    // these in NOWHERE before A.4 — this closes that gap for caregiver too.
+    const realDistanceKmForFees = KM_TO_MILES > 0
+      ? singleRiderFare.distance_miles / KM_TO_MILES
+      : 0
+    const hasCaregiverOnRide = (ride as unknown as { caregiver_id: string | null }).caregiver_id != null
+    const companionCountOnRide =
+      ((ride as unknown as { companion_a_id: string | null }).companion_a_id != null ? 1 : 0)
+      + ((ride as unknown as { companion_b_id: string | null }).companion_b_id != null ? 1 : 0)
+    // Only hit the DB for the driver's waive prefs when there's actually a
+    // fee that could be waived — skip the query for normal (no-addon) rides.
+    const endWaiveInfo = (hasCaregiverOnRide || companionCountOnRide > 0)
+      ? await lookupDriverWaiveInfo(ride.driver_id as string | null)
+      : { waives: false, waivesCompanion: false, firstName: null, fullName: null }
+    const caregiverShareCents = (hasCaregiverOnRide && !endWaiveInfo.waives)
+      ? caregiverFareCentsFor(realDistanceKmForFees)
+      : 0
+    const companionShareCents = (companionCountOnRide > 0 && !endWaiveInfo.waivesCompanion)
+      ? companionFareCentsFor(realDistanceKmForFees) * companionCountOnRide
+      : 0
+
     // v1.2 F17 — segmented split fare for multi-rider trips.
     //
     // If this rides row's parent trip has ≥2 rider rows, we route this
@@ -4175,20 +4207,11 @@ ridesRouter.post(
         isMultiRiderTrip = (tripRideCount ?? 1) >= 2
 
         if (isMultiRiderTrip) {
-          // Per-rider split share. Caregiver + companion fold on top.
+          // Per-rider split share. Caregiver + companion fold on top —
+          // both recomputed from the real distance above (A.4), waive
+          // already applied.
           const { baseShareCents, gasShareCents, timeShareCents, segmentsInCount } =
             await computeRiderBaseShare(tripRes.tripId, ride.rider_id as string)
-
-          const caregiverFareCentsRaw = (ride as unknown as {
-            caregiver_fare_cents: number | null
-          }).caregiver_fare_cents ?? 0
-          const driverWaiveInfo = await lookupDriverWaiveInfo(ride.driver_id as string | null)
-          const caregiverShareCents = driverWaiveInfo.waives ? 0 : Math.max(0, caregiverFareCentsRaw)
-
-          // Companion fee — F16 not yet implemented; default to 0.
-          // When F16 lands, read ride.companion_fare_cents and apply
-          // the same min(0) clamp pattern.
-          const companionShareCents = 0
 
           const totals = computeRiderTotals({
             baseShareCents,
@@ -4221,6 +4244,20 @@ ridesRouter.post(
     } catch (err) {
       console.error(`[rides/end] F17 settlement error for ${rideId}:`, err)
       // Fall through — single-rider fare stays in effect.
+    }
+
+    // V4 F1 A.4 — single-rider trips: computeRideFare returned the BASE
+    // fare only, so fold the recomputed caregiver + companion seat fees
+    // on top here (the multi-rider path already did this via
+    // computeRiderTotals). Without this, single-rider caregiver/companion
+    // fees were never charged at all.
+    if (!isMultiRiderTrip) {
+      const seatFeeCents = caregiverShareCents + companionShareCents
+      if (seatFeeCents > 0) {
+        fareCents += seatFeeCents
+        platformFeeCents = Math.round(fareCents * PLATFORM_FEE_RATE)
+        driverEarnsCents = fareCents - platformFeeCents
+      }
     }
 
     // Charge rider's card to TAGO's platform balance BEFORE marking the ride
@@ -4286,6 +4323,14 @@ ridesRouter.post(
     // 'qr_scan_completed' (vs auto_* paths set by rideSafetyNet), +
     // the fare-breakdown intermediates (gas + time cost) and the EIA
     // gas price used at this moment.
+    // V4 F1 A.4 — persist the recomputed seat fees so the ride summary +
+    // admin show what was actually charged: invariant
+    // fare_cents = base(gas+time) + caregiver_fare_cents + companion_fare_cents.
+    // Spread as a loose Record so the columns don't fight generated types.
+    const settledSeatFeeFields: Record<string, unknown> = {
+      caregiver_fare_cents: caregiverShareCents,
+      companion_fare_cents: companionShareCents,
+    }
     const { error: updateErr } = await supabaseAdmin
       .from('rides')
       .update({
@@ -4299,6 +4344,7 @@ ridesRouter.post(
         time_cost_cents: timeCostCents,
         gas_price_per_gallon_cents: gasPricePerGallonCents,
         dropoff_scan_at: endedAt,
+        ...settledSeatFeeFields,
         ...(typeof lat === 'number' ? { dropoff_scan_lat: lat } : {}),
         ...(typeof lng === 'number' ? { dropoff_scan_lng: lng } : {}),
         ...(paymentIntentId ? { payment_intent_id: paymentIntentId } : {}),
@@ -4658,6 +4704,27 @@ ridesRouter.post(
     let scanTimeCostCents = scanSingleRiderFare.time_cost_cents
     const scanGasPricePerGallonCents = scanSingleRiderFare.gas_price_per_gallon_cents
 
+    // V4 F1 A.4 — caregiver + companion seat fees recomputed from the real
+    // driven distance (mirrors /:id/end). Applied to BOTH single- and
+    // multi-rider settlement; each zeroed independently when the driver
+    // waives. Single-rider folded these in nowhere before A.4.
+    const scanRealDistanceKmForFees = KM_TO_MILES > 0
+      ? scanSingleRiderFare.distance_miles / KM_TO_MILES
+      : 0
+    const scanHasCaregiver = (ride as unknown as { caregiver_id: string | null }).caregiver_id != null
+    const scanCompanionCount =
+      ((ride as unknown as { companion_a_id: string | null }).companion_a_id != null ? 1 : 0)
+      + ((ride as unknown as { companion_b_id: string | null }).companion_b_id != null ? 1 : 0)
+    const scanEndWaiveInfo = (scanHasCaregiver || scanCompanionCount > 0)
+      ? await lookupDriverWaiveInfo(ride.driver_id as string | null)
+      : { waives: false, waivesCompanion: false, firstName: null, fullName: null }
+    const scanCaregiverShareCents = (scanHasCaregiver && !scanEndWaiveInfo.waives)
+      ? caregiverFareCentsFor(scanRealDistanceKmForFees)
+      : 0
+    const scanCompanionShareCents = (scanCompanionCount > 0 && !scanEndWaiveInfo.waivesCompanion)
+      ? companionFareCentsFor(scanRealDistanceKmForFees) * scanCompanionCount
+      : 0
+
     // v1.2 F17 — segmented split fare for multi-rider trips.
     // Same branching logic as /:id/end. Single-rider trips fall through
     // to the existing fare numbers; multi-rider trips override fareCents
@@ -4687,17 +4754,10 @@ ridesRouter.post(
           const { baseShareCents, gasShareCents, timeShareCents, segmentsInCount } =
             await computeRiderBaseShare(tripRes.tripId, ride.rider_id as string)
 
-          const caregiverFareCentsRaw = (ride as unknown as {
-            caregiver_fare_cents: number | null
-          }).caregiver_fare_cents ?? 0
-          const driverWaiveInfo = await lookupDriverWaiveInfo(ride.driver_id as string | null)
-          const caregiverShareCents = driverWaiveInfo.waives ? 0 : Math.max(0, caregiverFareCentsRaw)
-          const companionShareCents = 0
-
           const totals = computeRiderTotals({
             baseShareCents,
-            caregiverFareCents: caregiverShareCents,
-            companionFareCents: companionShareCents,
+            caregiverFareCents: scanCaregiverShareCents,
+            companionFareCents: scanCompanionShareCents,
             segmentsInCount,
           })
 
@@ -4718,6 +4778,17 @@ ridesRouter.post(
       }
     } catch (err) {
       console.error(`[rides/scan-driver/end] F17 settlement error for ${ride.id}:`, err)
+    }
+
+    // V4 F1 A.4 — single-rider: fold the recomputed caregiver + companion
+    // seat fees onto the base fare (multi-rider did it via
+    // computeRiderTotals). platformFeeCents is 0, so driver earns it all.
+    if (!scanIsMultiRiderTrip) {
+      const seatFeeCents = scanCaregiverShareCents + scanCompanionShareCents
+      if (seatFeeCents > 0) {
+        fareCents += seatFeeCents
+        driverEarnsCents = fareCents - platformFeeCents
+      }
     }
 
     // Charge to platform balance BEFORE marking completed. On success, credit
@@ -4788,6 +4859,8 @@ ridesRouter.post(
         time_cost_cents: scanTimeCostCents,
         gas_price_per_gallon_cents: scanGasPricePerGallonCents,
         dropoff_scan_at: endedAt,
+        // V4 F1 A.4 — persist recomputed seat fees (see /:id/end).
+        ...({ caregiver_fare_cents: scanCaregiverShareCents, companion_fare_cents: scanCompanionShareCents } as Record<string, unknown>),
         ...(typeof lat === 'number' ? { dropoff_scan_lat: lat } : {}),
         ...(typeof lng === 'number' ? { dropoff_scan_lng: lng } : {}),
         ...(scanPaymentIntentId ? { payment_intent_id: scanPaymentIntentId } : {}),
