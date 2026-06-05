@@ -429,8 +429,13 @@ describe('ProfilePage', () => {
     })
   })
 
-  it('hides saved routes section for non-drivers', async () => {
+  it('hides saved routines section for non-drivers when they have no rider routines', async () => {
+    // v1.3 — Saved Routines section is now visible for ANY user with
+    // routines (rider OR driver). Non-drivers with zero routines
+    // still don't see the section since there's nothing to render +
+    // no need to clutter their profile with an empty state.
     currentProfile = { ...mockProfile, is_driver: false }
+    setupMocks({ routines: [] })
     renderPage()
 
     await waitFor(() => {
@@ -438,7 +443,25 @@ describe('ProfilePage', () => {
     })
 
     expect(screen.queryByTestId('routes-list')).not.toBeInTheDocument()
-    expect(screen.queryByText('Saved Routes')).not.toBeInTheDocument()
+    expect(screen.queryByText('Saved Routines')).not.toBeInTheDocument()
+  })
+
+  it('shows saved routines section for non-drivers when they have rider routines (v1.3)', async () => {
+    // Non-driver with at least one rider routine sees the section
+    // + can manage their routines from Profile (matches iOS
+    // ProfileRoutinesSection.swift). Previously web hid this whole
+    // section behind is_driver.
+    currentProfile = { ...mockProfile, is_driver: false }
+    const riderRoutine = { ...MOCK_ROUTINES[0], mode: 'rider' as const }
+    setupMocks({ routines: [riderRoutine] })
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Saved Routines')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('routes-list')).toBeInTheDocument()
+    expect(screen.getByTestId(`route-mode-${riderRoutine.id}`)).toHaveTextContent('Rider')
+    expect(screen.getByTestId('add-routine-button')).toBeInTheDocument()
   })
 
   // ── Accessibility editor (v1.3, iOS parity) ───────────────────────────

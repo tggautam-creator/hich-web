@@ -326,6 +326,19 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
                 Schedule a Ride Request
               </button>
 
+              {/* v1.3 — rider routine entry point. Mirrors iOS
+                  RiderHomePage onAddRoutine callback that opens
+                  SchedulePostPage(mode: .rider, tripType: .routine).
+                  For weekly commutes (school, work) — saves the rider
+                  the per-day re-post. */}
+              <button
+                data-testid="realtime-notice-add-routine"
+                onClick={() => { setShowRealtimeNotice(false); navigate('/schedule/rider', { state: { tripType: 'routine' } }) }}
+                className="w-full rounded-xl border border-border bg-white px-4 py-2.5 text-sm font-semibold text-text-primary text-left"
+              >
+                Save a Recurring Ride
+              </button>
+
               <button
                 data-testid="realtime-notice-ride-board"
                 onClick={() => { setShowRealtimeNotice(false); navigate('/rides/board', { state: { fromTab: 'home' } }) }}

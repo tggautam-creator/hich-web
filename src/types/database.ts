@@ -770,6 +770,13 @@ export type Database = {
         Row: {
           id: string
           user_id: string
+          // Migration 103 (Session A unification) — driver_routines now
+          // stores BOTH driver routines AND rider routines via the
+          // mode column. Migration 106 dropped the DB default, so
+          // every INSERT must specify mode explicitly (failing to do
+          // so silently coerced rider routines into driver routines
+          // and surfaced riders as driver matches in suggestions).
+          mode: 'driver' | 'rider'
           route_name: string
           origin: GeoPoint
           destination: GeoPoint
@@ -796,6 +803,7 @@ export type Database = {
         Insert: {
           id?: string
           user_id: string
+          mode: 'driver' | 'rider'
           route_name: string
           origin: GeoPoint
           destination: GeoPoint
@@ -817,6 +825,7 @@ export type Database = {
         Update: {
           id?: string
           user_id?: string
+          mode?: 'driver' | 'rider'
           route_name?: string
           origin?: GeoPoint
           destination?: GeoPoint

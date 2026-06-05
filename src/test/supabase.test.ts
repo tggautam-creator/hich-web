@@ -182,7 +182,7 @@ describe('database types — row aliases', () => {
 
   it('DriverRoutine day_of_week is an array', () => {
     const r: DriverRoutine = {
-      id: 'dr1', user_id: 'u1', route_name: 'Home → Campus',
+      id: 'dr1', user_id: 'u1', mode: 'driver', route_name: 'Home → Campus',
       origin: { type: 'Point', coordinates: [-121.74, 38.54] },
       destination: { type: 'Point', coordinates: [-121.75, 38.55] },
       destination_bearing: 315, direction_type: 'one_way',

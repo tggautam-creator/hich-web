@@ -156,6 +156,7 @@ describe('scaffold — @/ alias and database types', () => {
     const routine: DriverRoutine = {
       id: 'r1',
       user_id: 'u1',
+      mode: 'driver',
       route_name: 'Home → Campus',
       origin: { type: 'Point', coordinates: [-121.7405, 38.5382] },
       destination: { type: 'Point', coordinates: [-121.7491, 38.5449] },

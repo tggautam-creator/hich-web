@@ -1088,17 +1088,46 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
       )}
 
       {/* ── Saved Routes ──────────────────────────────────────────────────── */}
-      {profile?.is_driver && (
+      {/* v1.3 — visible for ALL users (rider + driver). Routines unified
+          under driver_routines + mode column (migration 103). Previously
+          gated on is_driver so rider-only users couldn't see their own
+          rider routines — closes the iOS-parity gap where
+          ProfileRoutinesSection.swift renders both kinds. */}
+      {(profile?.is_driver || routines.length > 0) && (
         <div className="mx-4 mt-6">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-text-primary">Saved Routes</h2>
-            <button
-              data-testid="add-routine-button"
-              onClick={() => navigate('/schedule/driver', { state: { tripType: 'routine' } })}
-              className="text-xs font-semibold text-primary"
-            >
-              + Add Routine
-            </button>
+            <h2 className="text-sm font-semibold text-text-primary">Saved Routines</h2>
+            <div className="flex items-center gap-2">
+              {/* Drivers see "+ Driver" + "+ Rider"; non-drivers see
+                  just "+ Add Routine" (rider-side, since they can't
+                  drive without a vehicle). */}
+              {profile?.is_driver ? (
+                <>
+                  <button
+                    data-testid="add-driver-routine-button"
+                    onClick={() => navigate('/schedule/driver', { state: { tripType: 'routine' } })}
+                    className="text-xs font-semibold text-primary"
+                  >
+                    + Driver
+                  </button>
+                  <button
+                    data-testid="add-rider-routine-button"
+                    onClick={() => navigate('/schedule/rider', { state: { tripType: 'routine' } })}
+                    className="text-xs font-semibold text-primary"
+                  >
+                    + Rider
+                  </button>
+                </>
+              ) : (
+                <button
+                  data-testid="add-routine-button"
+                  onClick={() => navigate('/schedule/rider', { state: { tripType: 'routine' } })}
+                  className="text-xs font-semibold text-primary"
+                >
+                  + Add Routine
+                </button>
+              )}
+            </div>
           </div>
 
           {loadingRoutines ? (
@@ -1117,10 +1146,23 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
                   data-testid={`route-${routine.id}`}
                   className="bg-white rounded-2xl px-4 py-3 border border-border"
                 >
-                  <div className="flex items-center justify-between mb-1.5">
+                  <div className="flex items-center justify-between mb-1.5 gap-2">
                     <p className="text-sm font-semibold text-text-primary truncate flex-1">
                       {routine.route_name}
                     </p>
+                    {/* v1.3 — mode badge so users with both rider AND
+                        driver routines can tell them apart at a glance.
+                        Matches iOS ProfileRoutinesSection.swift:401. */}
+                    <span
+                      data-testid={`route-mode-${routine.id}`}
+                      className={`text-[10px] font-bold tracking-wider uppercase px-2 py-0.5 rounded-full ${
+                        routine.mode === 'rider'
+                          ? 'bg-primary/10 text-primary'
+                          : 'bg-success/10 text-success'
+                      }`}
+                    >
+                      {routine.mode === 'rider' ? 'Rider' : 'Driver'}
+                    </span>
                     <span
                       data-testid={`route-status-${routine.id}`}
                       className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
