@@ -550,6 +550,41 @@ scheduleRouter.get(
       }
     })
 
+    // V4 F4 — attach a caregiver PROFILE (name/relationship/avatar; NO
+    // phone pre-accept, per F18.5) to rider posts that carry a caregiver,
+    // so the board detail can show "+$X caregiver seat fee" + a tappable
+    // profile. caregiver_id + caregiver_fare_cents already ride along via
+    // `...s`. caregivers is RLS-user-scoped, so we join with the admin
+    // client. Driver posts never carry a caregiver — skip them.
+    const ridesArr = rides as Array<Record<string, unknown>>
+    const boardCaregiverIds = [...new Set(
+      ridesArr
+        .filter((r) => r['mode'] === 'rider' && r['caregiver_id'] != null)
+        .map((r) => r['caregiver_id'] as string),
+    )]
+    if (boardCaregiverIds.length > 0) {
+      const { data: caregiverRows } = await supabaseAdmin
+        .from('caregivers')
+        .select('id, name, relationship, avatar_url')
+        .in('id', boardCaregiverIds)
+      const caregiverMap = new Map(
+        ((caregiverRows ?? []) as Array<{
+          id: string
+          name: string
+          relationship: string | null
+          avatar_url: string | null
+        }>).map((c) => [
+          c.id,
+          { name: c.name, relationship: c.relationship, avatar_url: c.avatar_url },
+        ]),
+      )
+      for (const r of ridesArr) {
+        if (r['mode'] === 'rider' && r['caregiver_id'] != null) {
+          r['caregiver'] = caregiverMap.get(r['caregiver_id'] as string) ?? null
+        }
+      }
+    }
+
     // Sort by relevance score (descending) if scoring was applied, else keep chronological
     if (hasLocation || hasDest || userTime) {
       rides.sort((a, b) => b.relevance_score - a.relevance_score)
