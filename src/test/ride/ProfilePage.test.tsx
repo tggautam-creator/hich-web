@@ -18,6 +18,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
@@ -253,10 +254,16 @@ function setupMocks(opts: { routines?: typeof MOCK_ROUTINES; rides?: unknown[] }
 }
 
 function renderPage() {
+  // ProfilePage now uses useQueryClient directly (for on-focus
+  // invalidation), so we need a real provider here. useMyStats is
+  // still mocked above so no actual network query runs.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <MemoryRouter initialEntries={['/profile']}>
-      <ProfilePage />
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={['/profile']}>
+        <ProfilePage />
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
@@ -633,6 +640,26 @@ describe('ProfilePage', () => {
       expect(screen.getByTestId('payouts-link')).toBeInTheDocument()
     })
     expect(screen.getByTestId('profile-quick-links').contains(screen.getByTestId('payouts-link'))).toBe(true)
+  })
+
+  // ── On-focus refetch (iOS scenePhase parity) ──────────────────────
+
+  it('refreshes profile on visibilitychange to visible', async () => {
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('profile-name')).toBeInTheDocument()
+    })
+    mockRefreshProfile.mockClear()
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+    document.dispatchEvent(new Event('visibilitychange'))
+
+    await waitFor(() => {
+      expect(mockRefreshProfile).toHaveBeenCalled()
+    })
   })
 
   // ── Version footer + section order ──────────────────────────────────

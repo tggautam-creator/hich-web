@@ -1,5 +1,6 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { formatCents } from '@/lib/fare'
@@ -320,6 +321,30 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
   }, [profile?.id])
 
   useEffect(() => { void loadAddresses() }, [loadAddresses])
+
+  // ── On-focus refetch (iOS scenePhase parity) ────────────────────
+  // iOS ProfilePage bumps `refreshSignal` on .refreshable + reloads
+  // user stats on .task; every child section watches the signal and
+  // re-fetches its own data. Web closest analogue is the
+  // document `visibilitychange` event — when the tab regains focus,
+  // refresh the auth profile (wallet balance, settings flags), kick
+  // the `users/me/stats` React Query cache, and re-run the three
+  // useCallback loaders for routines / vehicles / addresses so the
+  // page converges silently after a webhook lands or another tab
+  // mutates user data.
+  const queryClient = useQueryClient()
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return
+      void refreshProfile()
+      void queryClient.invalidateQueries({ queryKey: ['users', 'me', 'stats'] })
+      void loadRoutines()
+      void loadVehicles()
+      void loadAddresses()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [refreshProfile, queryClient, loadRoutines, loadVehicles, loadAddresses])
 
   const handleDeleteAddress = async (id: string) => {
     setDeletingAddress(id)
