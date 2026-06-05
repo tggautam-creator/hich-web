@@ -10,6 +10,8 @@ import { useOnboardingStore } from '@/stores/onboardingStore'
 import PwaInstallBanner from '@/components/ui/PwaInstallBanner'
 import SuggestedRidesHero from '@/components/suggestions/SuggestedRidesHero'
 import { useSuggestionsTop } from '@/hooks/useSuggestions'
+import HowItWorksCarousel from '@/components/home/HowItWorksCarousel'
+import { RIDER_HOW_IT_WORKS } from '@/components/home/howItWorksSlides'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -215,7 +217,7 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
           <button
             type="button"
             data-testid="rider-home-ride-board-pill"
-            onClick={() => navigate('/rides/board', { state: { fromTab: 'home' } })}
+            onClick={() => navigate('/rides/board/browse', { state: { fromTab: 'home' } })}
             className="flex flex-col items-start gap-1.5 rounded-2xl bg-white border border-border/60 px-4 py-3.5 shadow-sm active:scale-[0.98] transition-transform text-left"
           >
             <span className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
@@ -227,7 +229,7 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
               </svg>
             </span>
             <p className="text-sm font-bold text-text-primary">Ride board</p>
-            <p className="text-[11px] text-text-secondary">See every ride posted</p>
+            <p className="text-[11px] text-text-secondary">See every posted ride</p>
           </button>
         </div>
 
@@ -270,10 +272,10 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
           </div>
         </div>
 
-        {/* How it works — placeholder for the carousel (iOS:
-            HowItWorksCarousel). The slides are aspirational copy; web
-            ships a static three-step list for parity until the
-            swipeable carousel is built. */}
+        {/* How Instant Carpool works — swipeable 7-slide carousel
+            mirroring ios/Tago/Features/RiderHome/HowItWorksCarousel.
+            Replaces the prior static 3-step <ol> placeholder so web
+            matches iOS's swipeable cold-start explainer. */}
         <div className="rounded-2xl bg-white border border-primary/10 p-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)] flex flex-col gap-3">
           <div className="flex items-center gap-2">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary" aria-hidden="true">
@@ -281,23 +283,13 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
               <line x1="12" y1="17" x2="12.01" y2="17" />
               <circle cx="12" cy="12" r="10" />
             </svg>
-            <h2 className="text-sm font-bold text-text-primary">How Instant Carpool works</h2>
+            <h2 className="text-sm font-bold text-text-primary flex-1">How Instant Carpool works</h2>
+            <span className="text-[10px] font-semibold text-text-secondary">Swipe</span>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-3 w-3 text-text-secondary" aria-hidden="true">
+              <path d="M21.71 11.29l-9-9a.996.996 0 0 0-1.41 0l-9 9a.996.996 0 1 0 1.41 1.41L4 11.41V20a1 1 0 0 0 1 1h6v-7h2v7h6a1 1 0 0 0 1-1v-8.59l.29.29a1 1 0 0 0 1.42-1.41z" />
+            </svg>
           </div>
-          <ol className="flex flex-col gap-2">
-            {[
-              { n: 1, title: 'Set your destination', body: 'Search for where you\'re going. We show the closest student drivers.' },
-              { n: 2, title: 'Pick a ride', body: 'Tap a driver heading your way. They confirm, then you\'re matched.' },
-              { n: 3, title: 'Meet at pickup', body: 'Coordinate in chat. Scan the QR to start the ride and pay on completion.' },
-            ].map((s) => (
-              <li key={s.n} className="flex items-start gap-2.5">
-                <span className="h-5 w-5 rounded-full bg-primary/10 text-primary text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5">{s.n}</span>
-                <div>
-                  <p className="text-xs font-semibold text-text-primary">{s.title}</p>
-                  <p className="text-[11px] text-text-secondary leading-relaxed">{s.body}</p>
-                </div>
-              </li>
-            ))}
-          </ol>
+          <HowItWorksCarousel slides={RIDER_HOW_IT_WORKS} tint="primary" data-testid="rider-how-it-works" />
         </div>
       </div>
 
@@ -390,7 +382,7 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
 
                 <button
                   data-testid="realtime-notice-ride-board"
-                  onClick={() => { setShowRealtimeNotice(false); navigate('/rides/board', { state: { fromTab: 'home' } }) }}
+                  onClick={() => { setShowRealtimeNotice(false); navigate('/rides/board/browse', { state: { fromTab: 'home' } }) }}
                   className="w-full rounded-xl border border-border bg-white px-4 py-2.5 text-sm font-semibold text-text-primary text-left"
                 >
                   Browse Ride Board

@@ -216,10 +216,17 @@ describe('DriverHomePage', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/rides/board', { state: { fromTab: 'drive' } })
   })
 
-  it('Ride board pill navigates to /rides/board', async () => {
+  it('Ride board pill navigates to the list view (/rides/board/browse) — iOS rideBoardListPill parity', async () => {
     const user = userEvent.setup()
     renderPage()
     await user.click(screen.getByTestId('driver-home-ride-board-pill'))
+    expect(mockNavigate).toHaveBeenCalledWith('/rides/board/browse', { state: { fromTab: 'drive' } })
+  })
+
+  it('"Find riders" hero stays on the smart-search /rides/board (iOS onOpenRideBoard parity)', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByTestId('driver-home-find-riders-hero'))
     expect(mockNavigate).toHaveBeenCalledWith('/rides/board', { state: { fromTab: 'drive' } })
   })
 

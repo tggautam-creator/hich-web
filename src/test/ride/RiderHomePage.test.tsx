@@ -190,10 +190,17 @@ describe('RiderHomePage', () => {
     )
   })
 
-  it('Ride board pill navigates to /rides/board', async () => {
+  it('Ride board pill navigates to the list view (/rides/board/browse) — iOS onBrowseRideBoardList parity', async () => {
     const user = userEvent.setup()
     renderPage()
     await user.click(screen.getByTestId('rider-home-ride-board-pill'))
+    expect(mockNavigate).toHaveBeenCalledWith('/rides/board/browse', { state: { fromTab: 'home' } })
+  })
+
+  it('"Find your ride" hero stays on the smart-search /rides/board (iOS onOpenRideBoard parity)', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByTestId('rider-home-find-ride-hero'))
     expect(mockNavigate).toHaveBeenCalledWith('/rides/board', { state: { fromTab: 'home' } })
   })
 
