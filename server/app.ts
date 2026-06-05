@@ -24,9 +24,11 @@ import { opsRouter } from './routes/ops.ts'
 import { vehicleRouter } from './routes/vehicle.ts'
 import { reportRouter } from './routes/report.ts'
 import { emailPublicRouter } from './routes/email.ts'
+import { appGateRouter } from './routes/appGate.ts'
 import { accountRouter } from './routes/account.ts'
 import { usersRouter } from './routes/users.ts'
 import { caregiversRouter } from './routes/caregivers.ts'
+import { companionsRouter } from './routes/companions.ts'
 import { liveActivityRouter } from './routes/liveActivity.ts'
 import { publicCampaignsRouter } from './routes/publicCampaigns.ts'
 import { suggestionsRouter } from './routes/suggestions.ts'
@@ -137,6 +139,7 @@ app.use('/api/payment', paymentRouter)
 app.use('/api/safety', safetyRouter)
 app.use('/api/auth', authRouter)
 app.use('/api/gas-price', gasPriceRouter)
+app.use('/api/app', appGateRouter)
 app.use('/api/addresses', addressesRouter)
 app.use('/api/vehicle', vehicleRouter)
 app.use('/api/report', reportRouter)
@@ -156,6 +159,8 @@ app.use('/api/users', usersRouter)
 // caregiver audit (iOS components were ready but server-side was
 // missing the route + the FCM/rides enrichment).
 app.use('/api/caregivers', caregiversRouter)
+// V4 F1 — companions CRUD (travel-with friends/family, max 2 per ride).
+app.use('/api/companions', companionsRouter)
 app.use('/api/live-activity', liveActivityRouter)
 // Public read of admin-broadcast campaigns by slug. Anonymous —
 // powers the /c/:slug marketing surface that admin pushes deep-link
