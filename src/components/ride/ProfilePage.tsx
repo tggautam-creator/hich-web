@@ -50,6 +50,9 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
   const [rides, setRides] = useState<RideWithRole[]>([])
   const [loadingRides, setLoadingRides] = useState(true)
   const [signingOut, setSigningOut] = useState(false)
+  // iOS ProfilePage uses .confirmationDialog("Sign out?") before
+  // actually signing out — mirrors the destructive-action confirm.
+  const [showSignOutConfirm, setShowSignOutConfirm] = useState(false)
 
   // v1.3 Sprint 12 Slice 5b — server-fresh ride count + rating.
   // Replaces the previous `rides.length` count which under-counted
@@ -846,22 +849,12 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
         </button>
       </div>
 
-      {/* v1.2 Sprint 6 Slice 2 — Caregivers section. Gated on
-          has_accessibility_needs so non-accessibility riders never
-          see it (matching iOS ProfilePage gate). */}
-      {profile?.has_accessibility_needs === true && (
-        <Suspense fallback={null}>
-          <CaregiversSection />
-        </Suspense>
-      )}
-
-      {/* v1.3 Sprint 11 Slice 2 — Trusted Contacts section. NOT
-          gated — every signed-in user can save up to 5 emergency
-          contacts. Mirrors iOS canonical mount on
-          ProfilePage.swift:113 (ProfileSafetySection). The
-          EmergencySheet's "Text my trusted contacts" CTA and the
-          Slice 4b RideSafetyCheckOverlay "Get help" branch both
-          read this list. */}
+      {/* v1.3 Sprint 11 Slice 2 — Trusted Contacts (safety) section.
+          NOT gated — every signed-in user can save up to 5 emergency
+          contacts. Mirrors iOS ProfilePage.swift:113
+          (ProfileSafetySection — first card after Quick Links so
+          safety surfaces are reachable before more discretionary
+          settings). */}
       <Suspense fallback={null}>
         <TrustedContactsSection />
       </Suspense>
@@ -1264,6 +1257,16 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
         </div>
       )}
 
+      {/* v1.2 Sprint 6 Slice 2 — Caregivers section. Gated on
+          has_accessibility_needs so non-accessibility riders never
+          see it. Mounts AFTER Routines to match iOS ProfilePage
+          section order (Routines → Caregivers → RideHistory). */}
+      {profile?.has_accessibility_needs === true && (
+        <Suspense fallback={null}>
+          <CaregiversSection />
+        </Suspense>
+      )}
+
       {/* ── Ride History (compact — max 3, link to full page) ────────────── */}
       <div className="mx-4 mt-6">
         <div className="flex items-center justify-between mb-3">
@@ -1350,17 +1353,75 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
         </div>
       )}
 
-      {/* ── Sign out ──────────────────────────────────────────────────────── */}
+      {/* ── Sign out ──────────────────────────────────────────────────────
+          iOS ProfilePage.swift:302 wraps the destructive sign-out
+          action in a .confirmationDialog so a missed tap doesn't
+          throw the user out of their session. The button now opens
+          the confirm modal below; signOut only fires when the user
+          confirms. */}
       <div className="mx-4 mt-6">
         <button
           data-testid="sign-out-button"
-          onClick={() => { void handleSignOut() }}
+          onClick={() => setShowSignOutConfirm(true)}
           disabled={signingOut}
           className="w-full rounded-2xl py-3 text-sm font-semibold text-danger bg-danger/10 active:bg-danger/20 transition-colors disabled:opacity-50"
         >
           {signingOut ? 'Signing out…' : 'Sign Out'}
         </button>
       </div>
+
+      {/* ── Version footer ───────────────────────────────────────────────
+          iOS ProfilePage.swift:670 (`versionFooter`) — Logo + version
+          string at the bottom of the scroll so a returning user has
+          a quick "I'm on Tago, this is the build" signal without
+          digging into Settings. Web uses the TAGO wordmark (same
+          treatment the rider/driver home top bar uses) since there's
+          no logo SVG asset wired up. */}
+      <div data-testid="profile-version-footer" className="mt-8 mb-2 flex flex-col items-center gap-1">
+        <span className="font-bold text-base text-primary tracking-[0.18em] select-none">TAGO</span>
+        <p className="text-[11px] text-text-secondary">web v{import.meta.env.VITE_APP_VERSION ?? '0.1.0'}</p>
+      </div>
+
+      {/* ── Sign-out confirmation modal ──────────────────────────────── */}
+      {showSignOutConfirm && (
+        <div
+          data-testid="sign-out-confirm-overlay"
+          className="fixed inset-0 z-[1200] bg-background/55 backdrop-blur-[2px] p-4 flex items-center justify-center"
+          onClick={() => setShowSignOutConfirm(false)}
+        >
+          <div
+            data-testid="sign-out-confirm-sheet"
+            className="w-full max-w-sm rounded-3xl bg-white shadow-[0_24px_60px_rgba(15,23,42,0.18)] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-5 flex flex-col gap-2 text-center">
+              <h2 className="text-base font-bold text-text-primary">Sign out?</h2>
+              <p className="text-xs text-text-secondary">
+                You&rsquo;ll be returned to the sign-in screen. Active rides keep running on the server.
+              </p>
+            </div>
+            <div className="border-t border-border grid grid-cols-2 divide-x divide-border">
+              <button
+                type="button"
+                data-testid="sign-out-confirm-cancel"
+                onClick={() => setShowSignOutConfirm(false)}
+                className="py-3 text-sm font-medium text-text-primary active:bg-surface"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                data-testid="sign-out-confirm-yes"
+                onClick={() => { setShowSignOutConfirm(false); void handleSignOut() }}
+                disabled={signingOut}
+                className="py-3 text-sm font-bold text-danger active:bg-danger/10 disabled:opacity-50"
+              >
+                {signingOut ? 'Signing out…' : 'Sign out'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── QR Sheet ───────────────────────────────────────────────────── */}
       {profile?.is_driver && (

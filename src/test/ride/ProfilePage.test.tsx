@@ -635,9 +635,55 @@ describe('ProfilePage', () => {
     expect(screen.getByTestId('profile-quick-links').contains(screen.getByTestId('payouts-link'))).toBe(true)
   })
 
+  // ── Version footer + section order ──────────────────────────────────
+
+  it('renders the version footer with the TAGO wordmark + version', async () => {
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('profile-version-footer')).toBeInTheDocument()
+    })
+    const footer = screen.getByTestId('profile-version-footer')
+    expect(footer.textContent).toContain('TAGO')
+    expect(footer.textContent).toMatch(/web v[\d.]+/)
+  })
+
+  it('renders Trusted Contacts before Saved Places (iOS safety-first section order)', async () => {
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('saved-places-section')).toBeInTheDocument()
+    })
+    const trusted = screen.getByTestId('trusted-contacts-section-stub')
+    const saved = screen.getByTestId('saved-places-section')
+    expect(trusted.compareDocumentPosition(saved) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   // ── Sign out ────────────────────────────────────────────────────────────
 
-  it('sign out button calls signOut and navigates', async () => {
+  it('sign out button opens the confirmation modal (iOS confirmationDialog parity)', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('sign-out-button')).toBeInTheDocument()
+    })
+    await user.click(screen.getByTestId('sign-out-button'))
+    expect(screen.getByTestId('sign-out-confirm-sheet')).toBeInTheDocument()
+    // Modal opens; sign-out must NOT fire until the user confirms.
+    expect(mockSignOut).not.toHaveBeenCalled()
+  })
+
+  it('Cancel on the sign-out modal closes it without signing out', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('sign-out-button')).toBeInTheDocument()
+    })
+    await user.click(screen.getByTestId('sign-out-button'))
+    await user.click(screen.getByTestId('sign-out-confirm-cancel'))
+    expect(screen.queryByTestId('sign-out-confirm-sheet')).not.toBeInTheDocument()
+    expect(mockSignOut).not.toHaveBeenCalled()
+  })
+
+  it('Confirming the sign-out modal calls signOut and navigates', async () => {
     const user = userEvent.setup()
     renderPage()
 
@@ -646,6 +692,7 @@ describe('ProfilePage', () => {
     })
 
     await user.click(screen.getByTestId('sign-out-button'))
+    await user.click(screen.getByTestId('sign-out-confirm-yes'))
 
     await waitFor(() => {
       expect(mockSignOut).toHaveBeenCalled()
