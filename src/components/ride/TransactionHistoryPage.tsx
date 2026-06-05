@@ -100,6 +100,21 @@ export default function TransactionHistoryPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // ── On-focus refetch (iOS-parity for scenePhase == .active) ──────
+  // iOS TransactionHistoryPage re-runs reload() (which resets the
+  // cursor) when the app foregrounds. Web mirrors via
+  // visibilitychange — fresh page from the newest entry every time
+  // the user tabs back in.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return
+      void load(true)
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   useEffect(() => {
     const node = sentinelRef.current
     if (!node) return

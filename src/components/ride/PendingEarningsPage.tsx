@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { formatCents } from '@/lib/fare'
 import BottomNav from '@/components/ui/BottomNav'
@@ -52,12 +52,28 @@ function formatDate(iso: string): string {
 
 export default function PendingEarningsPage() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['wallet-pending-earnings'],
     queryFn: fetchPendingEarnings,
   })
   const pending = data?.pending ?? []
   const total = data?.total_cents ?? 0
+
+  // ── On-focus refetch (iOS-parity for scenePhase == .active) ──────
+  // iOS PendingEarningsPage re-runs load() whenever the app
+  // foregrounds. React Query's default refetchOnWindowFocus catches
+  // most of this; the explicit invalidate ensures the call goes
+  // even if staleTime hasn't elapsed (e.g. user paid down a debt
+  // outside the app and immediately backgrounded < 30s).
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return
+      void queryClient.invalidateQueries({ queryKey: ['wallet-pending-earnings'] })
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [queryClient])
 
   const [nudgingRideId, setNudgingRideId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)

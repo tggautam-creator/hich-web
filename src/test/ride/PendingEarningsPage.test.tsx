@@ -197,6 +197,30 @@ describe('PendingEarningsPage', () => {
     expect(screen.getByTestId('pending-earnings-retry')).toBeInTheDocument()
   })
 
+  // ── On-focus refetch (iOS scenePhase parity) ───────────────────────
+
+  it('refetches pending earnings on visibilitychange to visible', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ pending: mockPending, total_cents: 1450 }),
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    renderPage()
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
+    const firstCallCount = fetchSpy.mock.calls.length
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+    document.dispatchEvent(new Event('visibilitychange'))
+
+    await waitFor(() => {
+      expect(fetchSpy.mock.calls.length).toBeGreaterThan(firstCallCount)
+    })
+  })
+
   it('back button routes to /wallet', async () => {
     renderPage()
     await waitFor(() => {

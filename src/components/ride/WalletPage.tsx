@@ -61,6 +61,25 @@ export default function WalletPage() {
   // Refresh profile once on mount to get latest wallet_balance from DB
   useEffect(() => { void refreshProfile() }, [refreshProfile])
 
+  // ── On-focus refetch (iOS-parity for scenePhase == .active) ──────
+  // iOS WalletHubPage re-runs refreshProfile + loadRecentTransactions
+  // + loadPendingEarnings whenever the app foregrounds. Web's
+  // closest analogue is visibilitychange — fire the same fan-out so
+  // a webhook-landed top-up / settled withdrawal converges without
+  // requiring the user to navigate away and back. React Query's
+  // default refetchOnWindowFocus handles the queries, but profile
+  // lives in Zustand and needs an explicit refresh call.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return
+      void refreshProfile()
+      void queryClient.invalidateQueries({ queryKey: ['wallet-transactions'] })
+      void queryClient.invalidateQueries({ queryKey: ['wallet-pending-earnings'] })
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [refreshProfile, queryClient])
+
   const balance = profile?.wallet_balance ?? 0
   const hasBank = profile?.stripe_onboarding_complete === true
   const isDriver = profile?.is_driver === true

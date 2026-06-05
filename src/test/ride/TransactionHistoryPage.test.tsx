@@ -172,6 +172,30 @@ describe('TransactionHistoryPage', () => {
     expect(amounts[2].className).toContain('text-success')
   })
 
+  // ── On-focus refetch (iOS scenePhase parity) ───────────────────────
+
+  it('reloads the first page on visibilitychange to visible', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ transactions: mockTx, next_cursor: null }),
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    renderPage()
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled())
+    const firstCallCount = fetchSpy.mock.calls.length
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+    document.dispatchEvent(new Event('visibilitychange'))
+
+    await waitFor(() => {
+      expect(fetchSpy.mock.calls.length).toBeGreaterThan(firstCallCount)
+    })
+  })
+
   it('does not show "That\'s everything." footer for short histories', async () => {
     renderPage()
     await waitFor(() => {

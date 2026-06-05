@@ -319,6 +319,35 @@ describe('WalletPage', () => {
     expect(banner.textContent).toContain('$42.50')
   })
 
+  // ── On-focus refetch (iOS scenePhase parity) ───────────────────────
+
+  it('refreshes profile + invalidates queries on visibilitychange to visible', async () => {
+    const refreshSpy = vi.fn().mockResolvedValue(undefined)
+    profileRef.current = { id: 'user-001', wallet_balance: 2350 }
+    // Monkey-patch the mocked useAuthStore so refreshProfile is spy-able.
+    const authMod = await import('@/stores/authStore')
+    vi.mocked(authMod.useAuthStore).mockImplementation((selector) => {
+      const state = { profile: profileRef.current, refreshProfile: refreshSpy }
+      // selector may be undefined when test code calls useAuthStore() bare
+      return (selector ? selector(state as never) : state) as never
+    })
+
+    renderWallet()
+    await waitFor(() => expect(refreshSpy).toHaveBeenCalled())
+    refreshSpy.mockClear()
+
+    // Simulate the tab regaining focus.
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+    document.dispatchEvent(new Event('visibilitychange'))
+
+    await waitFor(() => {
+      expect(refreshSpy).toHaveBeenCalled()
+    })
+  })
+
   // ── Recent activity preview + View all (iOS-parity) ─────────────────
 
   it('renders the "Recent activity" eyebrow above the transaction list', async () => {
