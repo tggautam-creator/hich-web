@@ -117,6 +117,21 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
   const driverAnimatedPos = useAnimatedPosition(driverTarget)
   const prevDriverRef = useRef<{ lat: number; lng: number } | null>(null)
   const [driverBearing, setDriverBearing] = useState<number>(0)
+
+  // Apply the same RAF-tween smoothing to the RIDER's live position so
+  // the driver watching the pickup map sees the rider's dot glide
+  // between 10s broadcasts instead of teleporting. Mirrors what
+  // RiderPickupPage already does for the driver marker — same hook,
+  // same easing, same 600ms tween. Closes a visible polish drift vs
+  // iOS, which has been smooth-gliding the rider dot since R.13.
+  const riderTarget = useMemo(
+    () =>
+      riderLiveLat != null && riderLiveLng != null
+        ? { lat: riderLiveLat, lng: riderLiveLng }
+        : null,
+    [riderLiveLat, riderLiveLng],
+  )
+  const riderAnimatedPos = useAnimatedPosition(riderTarget)
   useEffect(() => {
     if (driverTarget) {
       const prev = prevDriverRef.current
@@ -625,9 +640,14 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
               </AdvancedMarker>
             )}
 
-            {/* Live rider marker with ETA badge */}
-            {riderLiveLat != null && riderLiveLng != null && (
-              <AdvancedMarker position={{ lat: riderLiveLat, lng: riderLiveLng }} title="Rider">
+            {/* Live rider marker with ETA badge. Position smoothed via
+                useAnimatedPosition so the dot glides between 10s
+                broadcasts (iOS parity, R.13). ETA badge still reads
+                the raw broadcast coords so the distance/time number
+                jumps in step with each broadcast instead of trailing
+                the dot — better signal-to-noise on the badge text. */}
+            {riderAnimatedPos && riderLiveLat != null && riderLiveLng != null && (
+              <AdvancedMarker position={riderAnimatedPos} title="Rider">
                 <div data-testid="rider-live-marker" className="flex flex-col items-center">
                   <div className={`${riderArriving ? 'bg-success animate-pulse' : 'bg-[#6366F1]'} text-white rounded-full px-2 py-0.5 text-[10px] font-bold shadow-lg mb-0.5 whitespace-nowrap`}>
                     {riderArriving ? (
