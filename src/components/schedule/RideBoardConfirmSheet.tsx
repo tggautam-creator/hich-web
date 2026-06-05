@@ -1307,6 +1307,26 @@ export default function RideBoardConfirmSheet({
                       Finding transit stops...
                     </div>
                   )}
+                  {/* Slice 5 — rider-side empty-state. iOS shows this
+                      under the destination once the fetch resolves
+                      with zero stations (no transit lines pass near
+                      the driver's route → the rider's destination).
+                      Without it the rider just sees their selected
+                      destination and nothing else, which reads as a
+                      broken UI rather than "transit doesn't help here." */}
+                  {selectedPlace && !loadingTransit && transitSuggestions.length === 0 && (
+                    <div
+                      data-testid="rider-transit-empty"
+                      className="mt-3 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2.5"
+                    >
+                      <p className="text-xs font-semibold text-text-primary">
+                        No transit hand-off options on this route.
+                      </p>
+                      <p className="text-[11px] text-text-secondary mt-0.5 leading-snug">
+                        The driver will drop you at this destination directly.
+                      </p>
+                    </div>
+                  )}
 
                   {suggestions.length > 0 && !selectedPlace && (
                     <div className="absolute left-0 right-0 top-full mt-1 z-20 rounded-xl bg-white border border-border shadow-lg max-h-48 overflow-y-auto">
