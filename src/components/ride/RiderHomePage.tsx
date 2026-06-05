@@ -160,8 +160,17 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
         </button>
       </div>
 
-      {/* ── Scroll content ──────────────────────────────────────────────── */}
-      <div className="px-4 pt-8 pb-32 flex flex-col gap-5">
+      {/* ── Scroll content ────────────────────────────────────────────────
+          Top brand-hue backdrop bleeds from under the greeting down to
+          ~40% of the scroll, mirroring the soft gradient that lives on
+          Profile + Wallet so all four primary tabs share the same
+          chrome rhythm. */}
+      <div
+        className="px-4 pt-8 pb-32 flex flex-col gap-5"
+        style={{
+          background: 'linear-gradient(180deg, rgba(58,90,228,0.12) 0%, rgba(58,90,228,0.04) 35%, transparent 60%)',
+        }}
+      >
         {/* Greeting block */}
         <div className="flex flex-col items-center gap-1 mt-6 mb-2">
           <h1

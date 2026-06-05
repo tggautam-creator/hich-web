@@ -452,8 +452,13 @@ export default function MyRidesPage({
         )}
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 pb-24">
+      {/* Content — brand-hue backdrop matches Profile + Wallet + Home. */}
+      <div
+        className="flex-1 overflow-y-auto px-4 py-4 pb-24"
+        style={{
+          background: 'linear-gradient(180deg, rgba(58,90,228,0.10) 0%, rgba(58,90,228,0.03) 30%, transparent 55%)',
+        }}
+      >
         {(() => {
           const todays = rides.filter((r) => isAnytimeToday(r))
           if (todays.length === 0) return null

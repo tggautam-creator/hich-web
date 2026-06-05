@@ -425,8 +425,16 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         </div>
       )}
 
-      {/* ── Scroll content ──────────────────────────────────────────────── */}
-      <div className="px-4 pt-8 pb-48 flex flex-col gap-5">
+      {/* ── Scroll content ────────────────────────────────────────────────
+          Top brand-hue backdrop matches Profile + Wallet + RiderHome.
+          Driver gets the success/green tint so the chrome reads
+          driver-mode at a glance without changing the gradient shape. */}
+      <div
+        className="px-4 pt-8 pb-48 flex flex-col gap-5"
+        style={{
+          background: 'linear-gradient(180deg, rgba(34,197,94,0.12) 0%, rgba(34,197,94,0.04) 35%, transparent 60%)',
+        }}
+      >
         {/* Greeting */}
         <div className="flex flex-col items-center gap-1 mt-6 mb-2">
           <h1
