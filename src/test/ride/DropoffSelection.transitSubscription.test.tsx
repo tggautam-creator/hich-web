@@ -30,7 +30,7 @@ const { mockChannel, mockOn, mockSubscribe, mockRemoveChannel } = vi.hoisted(() 
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
-    auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { access_token: 'tok' } } }) },
+    auth: { getSession: vi.fn().mockResolvedValue({ data: { session: { access_token: 'tok', user: { id: 'driver-001' } } } }) },
     from: () => ({
       select: () => ({
         eq: () => ({

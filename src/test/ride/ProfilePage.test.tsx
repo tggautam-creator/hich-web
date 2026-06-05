@@ -131,6 +131,16 @@ vi.mock('@/components/profile/TrustedContactsSection', () => ({
   default: () => <div data-testid="trusted-contacts-section-stub" />,
 }))
 
+// CaregiversSection uses `useMyCaregivers` (React Query) and mounts
+// only when `has_accessibility_needs === true`. Tests that flip that
+// flag (e.g. "clears all sub-fields when the top toggle is turned
+// off") otherwise crash the tree because this file doesn't wrap with
+// QueryClientProvider. Stub the section out — its own tests live in
+// src/test/profile/CaregiversSection.test.tsx.
+vi.mock('@/components/profile/CaregiversSection', () => ({
+  default: () => <div data-testid="caregivers-section-stub" />,
+}))
+
 // v1.3 Sprint 12 Slice 5b — useMyStats is a React Query hook; this
 // test file doesn't wrap with QueryClientProvider. Stub the hook to
 // return undefined data so TrustBadges falls back to the cached

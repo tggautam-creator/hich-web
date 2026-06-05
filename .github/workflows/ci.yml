@@ -11,14 +11,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          # 2026-05-20 — bumped 20 → 22 (LTS). Node 20 will be removed
-          # from GitHub Actions runners on 2026-09-16; Node 24 becomes
-          # the default 2026-06-02. Staying on LTS 22 keeps CI stable
-          # until we hit a forcing function to move to 24.
+          # 2026-06-05 — bumped actions/checkout + actions/setup-node
+          # 4 → 5 so the runners use Node 24 instead of the deprecated
+          # Node 20 (forced default 2026-06-16). Node version installed
+          # for the build itself stays on LTS 22.
           node-version: 22
           cache: npm
 
