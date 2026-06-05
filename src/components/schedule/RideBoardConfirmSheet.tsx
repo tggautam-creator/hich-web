@@ -229,19 +229,37 @@ export default function RideBoardConfirmSheet({
     }
   }, [ride?.id, ride?.dest_address, initialEnrichment])
 
-  // v1.3 — driver-offer transit fetch. Fires when the driver opens
-  // the offer composer (only on `!isDriverPost`) AND the rider's
-  // posted board entry has resolvable pickup + dropoff coords.
-  // Treats the rider's posted route as the driver's route (since the
-  // driver is offering to drive exactly that pair) and asks the
-  // server for transit stops on the route. Driver can then propose
-  // a station instead of dropping the rider at their posted dest.
-  // Mirrors iOS RideBoardConfirmViewModel transit fetch path.
+  // Driver-offer transit fetch. Slice 2 rewire: fires when the driver
+  // PICKS THEIR OWN destination (selectedDriverDest), not when the
+  // sheet opens. Old behaviour passed the rider's posted dest as both
+  // the driver's dest AND the rider's dest, which asked the server
+  // for transit stops along a zero-length route (rider's pickup to
+  // rider's dest, with the "rider" already at their destination).
+  // The server returned empty / nonsensical suggestions and the
+  // driver saw nothing.
+  //
+  // Correct shape matching iOS RideBoardConfirmViewModel:
+  //   driver_origin = effective driver pickup (alt pickup OR rider's posted pickup)
+  //   driver_dest   = the driver's OWN destination (new input from Slice 1)
+  //   rider_dest    = rider's posted destination
+  // Now the server can compute stations that fall along the driver's
+  // actual route + ALSO line up with the rider's final destination
+  // via transit.
   useEffect(() => {
     if (!ride) return
     if (ride.mode !== 'rider') return // driver-offering-on-rider-post path only
     if (ride.origin_lat == null || ride.origin_lng == null) return
     if (ride.dest_lat == null || ride.dest_lng == null) return
+    if (selectedDriverDest?.lat == null || selectedDriverDest?.lng == null) {
+      // No driver dest yet → can't compute. Clear any stale suggestions
+      // from a previous selection so the UI doesn't show outdated stops.
+      setDriverOfferStations([])
+      return
+    }
+
+    // Driver origin = alt pickup if picked, else rider's posted pickup.
+    const driverOriginLat = selectedPickup?.lat ?? ride.origin_lat
+    const driverOriginLng = selectedPickup?.lng ?? ride.origin_lng
 
     let cancelled = false
     setLoadingDriverOfferTransit(true)
@@ -252,10 +270,10 @@ export default function RideBoardConfirmSheet({
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token ?? ''}` },
           body: JSON.stringify({
-            driver_origin_lat: ride.origin_lat,
-            driver_origin_lng: ride.origin_lng,
-            driver_dest_lat: ride.dest_lat,
-            driver_dest_lng: ride.dest_lng,
+            driver_origin_lat: driverOriginLat,
+            driver_origin_lng: driverOriginLng,
+            driver_dest_lat: selectedDriverDest.lat,
+            driver_dest_lng: selectedDriverDest.lng,
             rider_dest_lat: ride.dest_lat,
             rider_dest_lng: ride.dest_lng,
           }),
@@ -273,7 +291,7 @@ export default function RideBoardConfirmSheet({
     })()
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ride?.id, ride?.mode, ride?.origin_lat, ride?.origin_lng, ride?.dest_lat, ride?.dest_lng])
+  }, [ride?.id, ride?.mode, ride?.origin_lat, ride?.origin_lng, ride?.dest_lat, ride?.dest_lng, selectedDriverDest?.lat, selectedDriverDest?.lng, selectedPickup?.lat, selectedPickup?.lng])
 
   // Fetch transit suggestions when rider selects a destination on a
   // driver post. iOS RideBoardConfirmViewModel.swift:494-502 falls back
