@@ -23,6 +23,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { onForegroundMessage } from '@/lib/fcm'
 
 interface ToastState {
@@ -65,12 +66,20 @@ const TINT_CLASSES: Record<ToastState['tint'], string> = {
 
 export default function ForegroundPushToast() {
   const navigate = useNavigate()
+  // v1.3 Sprint 14 Slice D — `suggested_match` push handler needs
+  // access to React Query to invalidate the suggestions cache.
+  // Mirrors iOS PushManager.swift:864
+  // (NotificationCenter.post(.suggestionsRefreshRequested) →
+  // SuggestedRidesHero.task re-fetches on the next render).
+  const queryClient = useQueryClient()
   const [toast, setToast] = useState<ToastState | null>(null)
 
   // Keep the latest navigate in a ref so the FCM callback closure doesn't
   // capture a stale reference (the callback only runs once on mount).
   const navigateRef = useRef(navigate)
   useEffect(() => { navigateRef.current = navigate }, [navigate])
+  const queryClientRef = useRef(queryClient)
+  useEffect(() => { queryClientRef.current = queryClient }, [queryClient])
 
   useEffect(() => {
     const unsub = onForegroundMessage((payload) => {
@@ -180,6 +189,22 @@ export default function ForegroundPushToast() {
             body: fallbackBody ?? 'A rider posted a trip that matches your route.',
             tint: 'primary',
             onTap: () => navigateRef.current('/rides/board'),
+          }
+          break
+
+        case 'suggested_match':
+          // v1.3 Sprint 14 Slice D — refresh the SuggestedRidesHero so a
+          // fresh match shows up immediately instead of waiting for the
+          // next window-focus refetch. Mirrors iOS
+          // PushManager.swift:864 NotificationCenter post →
+          // SuggestedRidesHero observer re-fetch.
+          void queryClientRef.current.invalidateQueries({ queryKey: ['suggestions'] })
+          next = {
+            id: `${type}-${Date.now()}`,
+            title: fallbackTitle ?? 'New suggested ride',
+            body: fallbackBody ?? 'Tap to see the suggested ride.',
+            tint: 'primary',
+            onTap: () => navigateRef.current('/home/rider'),
           }
           break
 

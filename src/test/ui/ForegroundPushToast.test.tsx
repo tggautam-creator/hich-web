@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 type Payload = { title?: string; body?: string; data?: Record<string, string> }
 let triggers: Array<(p: Payload) => void> = []
@@ -29,10 +30,17 @@ function fire(payload: Payload) {
 }
 
 function mount() {
+  // v1.3 Sprint 14 Slice D — ForegroundPushToast now reads
+  // useQueryClient (to invalidate `suggestions` queries on
+  // `suggested_match` push). Wrap with a fresh per-test client so
+  // the hook has a context to resolve against.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <MemoryRouter>
-      <ForegroundPushToast />
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <ForegroundPushToast />
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
@@ -161,5 +169,23 @@ describe('ForegroundPushToast — pre-existing types still work', () => {
     })
 
     expect(screen.queryByTestId('foreground-toast')).toBeNull()
+  })
+
+  // v1.3 Sprint 14 Slice D — suggested_match push handler.
+  it('suggested_match renders a primary toast that routes to /home/rider on tap', () => {
+    mount()
+    fire({
+      data: {
+        type: 'suggested_match',
+        suggestion_id: 'sug-1',
+        side: 'rider',
+        title: 'New suggested ride',
+        body: 'Tap to see the suggested ride.',
+      },
+    })
+
+    expect(screen.getByText('New suggested ride')).toBeDefined()
+    fireEvent.click(screen.getByRole('button'))
+    expect(mockNavigate).toHaveBeenCalledWith('/home/rider')
   })
 })
