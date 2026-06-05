@@ -257,6 +257,11 @@ interface RideRequestBody {
    *  ALWAYS recomputed server-side via `caregiverFareCentsFor` so the
    *  client can't underbid. */
   caregiver_id?: string
+  /** V4 F1 — optional companions (up to 2). Validated server-side
+   *  against `companions.user_id == riderId`. Per-companion fee is
+   *  recomputed server-side via `companionFareCentsFor`. */
+  companion_a_id?: string
+  companion_b_id?: string
 }
 
 /** v1.2 F6 tiered caregiver seat fee. Computed server-side; client
@@ -268,6 +273,18 @@ export function caregiverFareCentsFor(distanceKm: number): number {
   if (mi < 10) return 300       // $3 — short trip (< 10 mi)
   if (mi <= 50) return 500      // $5 — medium trip (10–50 mi)
   return 800                    // $8 — long trip (> 50 mi)
+}
+
+/** V4 F1 — per-companion tiered seat fee. Same mile breakpoints as
+ *  caregiver but pricier: <10mi $4 · 10–50mi $6 · >50mi $10. The TOTAL
+ *  companion fee = this × companion count (max 2). Recomputed
+ *  server-side at end-of-ride from the real distance (F1 A.4); the
+ *  request-time value is an estimate for the preview + driver push. */
+export function companionFareCentsFor(distanceKm: number): number {
+  const mi = distanceKm * 0.621371
+  if (mi < 10) return 400       // $4 — short trip (< 10 mi)
+  if (mi <= 50) return 600      // $6 — medium trip (10–50 mi)
+  return 1000                   // $10 — long trip (> 50 mi)
 }
 
 /** v1.2 F6.1 — fold the caregiver tier fee into the rider's final
@@ -635,6 +652,49 @@ ridesRouter.post(
       caregiverFareCents = caregiverFareCentsFor(distanceKm)
     }
 
+    // V4 F1 — companion attachment (up to 2). Mirrors the caregiver
+    // ownership check: every requested companion must belong to the
+    // rider, else 404 (hide existence). Per-companion fee = tier × count;
+    // recomputed at end-of-ride (A.4), this is the request-time estimate.
+    let companionAId: string | null = null
+    let companionBId: string | null = null
+    let companionFareCents: number | null = null
+    const companionNames: string[] = []
+    {
+      const companionIds = [...new Set(
+        [body.companion_a_id, body.companion_b_id]
+          .filter((v): v is string => typeof v === 'string' && v.length > 0),
+      )].slice(0, 2)
+      if (companionIds.length > 0) {
+        const { data: companionRows } = await supabaseAdmin
+          .from('companions')
+          .select('id, user_id, name')
+          .in('id', companionIds)
+        const rows = (companionRows ?? []) as Array<{ id: string; user_id: string; name: string }>
+        const ownedAll = rows.length === companionIds.length
+          && companionIds.every((cid) => rows.some((r) => r.id === cid && r.user_id === riderId))
+        if (!ownedAll) {
+          res.status(404).json({
+            error: {
+              code: 'COMPANION_NOT_FOUND',
+              message: "We couldn't find that companion on your profile.",
+            },
+          })
+          return
+        }
+        companionAId = companionIds[0] ?? null
+        companionBId = companionIds[1] ?? null
+        for (const cid of companionIds) {
+          const row = rows.find((r) => r.id === cid)
+          if (row) companionNames.push(row.name)
+        }
+        const distanceKm = typeof body.distance_km === 'number' && body.distance_km > 0
+          ? body.distance_km
+          : 0
+        companionFareCents = companionFareCentsFor(distanceKm) * companionIds.length
+      }
+    }
+
     const destinationGeo = (typeof body.destination_lat === 'number' && typeof body.destination_lng === 'number')
       ? { type: 'Point' as const, coordinates: [body.destination_lng, body.destination_lat] as [number, number] }
       : null
@@ -665,6 +725,10 @@ ridesRouter.post(
         // no caregiver attached.
         caregiver_id: caregiverIdValidated,
         caregiver_fare_cents: caregiverFareCents,
+        // V4 F1 — companion columns (up to 2). Validated above.
+        companion_a_id: companionAId,
+        companion_b_id: companionBId,
+        companion_fare_cents: companionFareCents,
       } as never)
       .select('id')
       .single()
@@ -866,6 +930,12 @@ ridesRouter.post(
       has_caregiver: caregiverIdValidated != null ? 'true' : 'false',
       caregiver_name: caregiverName ?? '',
       caregiver_fare_cents: caregiverFareCents != null ? String(caregiverFareCents) : '',
+      // V4 F1 — companion context (count + names; NO phones pre-accept,
+      // same privacy stance as caregiver). Phones release post-accept.
+      has_companions: companionAId != null ? 'true' : 'false',
+      companion_count: String(companionNames.length),
+      companion_names: companionNames.join(', '),
+      companion_fare_cents: companionFareCents != null ? String(companionFareCents) : '',
     }
 
     // Rich title + body so the long-press preview gives the driver

@@ -47,7 +47,7 @@
 |---|---|---|
 | A.1 | Migration 119: companions table + rides/ride_schedules companion_a/b_id + companion_fare_cents + users.waive_companion_fee + RLS | ✅ gates green (2026-06-05) — **Tarun must apply mig 119 to dev** |
 | A.2 | companions CRUD route (`/api/companions`, mirrors caregivers) + validators + registered | ✅ gates green — server typecheck + eslint clean (2026-06-05). No server test (mirrors caregivers; no server test harness — iOS XCTests cover later slices). |
-| A.3 | companionFareCentsFor + fold + waive lookup; wire request + FCM payload + tests | ⬜ |
+| A.3 | `companionFareCentsFor` ($4/$6/$10 per companion) + attach ≤2 at /api/rides/request (ownership-checked, persist a/b ids + estimate) + FCM (has_companions/count/names, no phones) | ✅ gates green (2026-06-05) — server typecheck + eslint clean. Not user-visible until B.3 sends the ids. |
 | A.4 | End-of-ride recompute (caregiver + companion from real distance) + tests | ⬜ |
 | A.5 | Schedule/board path + /rides/active companion identity post-accept + tests | ⬜ |
 | A.6 | /users/profile waive_companion_fee read/write + tests | ⬜ |
