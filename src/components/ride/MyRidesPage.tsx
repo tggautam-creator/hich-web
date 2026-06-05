@@ -106,6 +106,10 @@ async function fetchActiveRides(): Promise<ActiveRide[]> {
 // `ride_schedules` (trip_date >= today) + active `driver_routines`.
 interface MyPostsRoutine {
   id: string
+  // v1.3 — migration 103 added the mode column ('driver' / 'rider');
+  // server's /api/schedule/my-posts now returns it. Used by the
+  // Rides-tab role filter at the top of the page.
+  mode: 'driver' | 'rider'
   route_name: string
   day_of_week: number[]
   departure_time: string | null
@@ -233,6 +237,13 @@ export default function MyRidesPage({
   /** Schedule pending a "Withdraw this post?" confirm dialog. */
   const [pendingWithdraw, setPendingWithdraw] = useState<ScheduledRide | null>(null)
 
+  // v1.3 — three-segment role filter (mirrors iOS
+  // RidesTabViewModel.RoleFilter at line 94). Lets a "both" user
+  // (driver who also rides) tighten their view to a single role
+  // without scrolling through the merged feed.
+  type RoleFilter = 'all' | 'as_rider' | 'as_driver'
+  const [roleFilter, setRoleFilter] = useState<RoleFilter>('all')
+
   /** Dedup: a posted schedule whose id matches an active ride's
    *  schedule_id is hidden here so the same trip doesn't render
    *  twice (Posted AND Active). Mirrors iOS `filteredPostedSchedules`. */
@@ -318,11 +329,29 @@ export default function MyRidesPage({
     }
   }
 
+  // v1.3 — apply role filter BEFORE grouping. Counts below are
+  // pre-filter (computed from `rides`) so the chip labels reflect
+  // the full slate ("As rider (3)" stays at 3 even when filtered to
+  // As driver). Matches iOS pattern.
+  const ridesAsRiderCount = rides.filter((r) => r.my_role === 'rider').length
+  const ridesAsDriverCount = rides.filter((r) => r.my_role === 'driver').length
+  const filteredRides = roleFilter === 'all'
+    ? rides
+    : roleFilter === 'as_rider'
+      ? rides.filter((r) => r.my_role === 'rider')
+      : rides.filter((r) => r.my_role === 'driver')
+  const filteredPostedSchedules = roleFilter === 'all'
+    ? visiblePostedSchedules
+    : visiblePostedSchedules.filter((s) => (roleFilter === 'as_rider' ? s.mode === 'rider' : s.mode === 'driver'))
+  const filteredRoutines = roleFilter === 'all'
+    ? myRoutines
+    : myRoutines.filter((r) => (roleFilter === 'as_rider' ? r.mode === 'rider' : r.mode === 'driver'))
+
   // Group driver rides that share a schedule_id (multi-rider trips)
   const driverGroups = new Map<string, MultiRiderGroup>()
   const ungroupedRides: ActiveRide[] = []
 
-  for (const ride of rides) {
+  for (const ride of filteredRides) {
     if (ride.my_role === 'driver' && ride.schedule_id) {
       const existing = driverGroups.get(ride.schedule_id)
       if (existing) {
@@ -383,6 +412,35 @@ export default function MyRidesPage({
             )}
           </button>
         </div>
+
+        {/* v1.3 — role filter pills (iOS parity, RidesTabPage.swift:195).
+            Only renders when the user has both rider AND driver content
+            so single-role users don't see a filter that does nothing. */}
+        {(ridesAsRiderCount > 0 || myPostedSchedules.some((s) => s.mode === 'rider') || myRoutines.some((r) => r.mode === 'rider')) &&
+         (ridesAsDriverCount > 0 || myPostedSchedules.some((s) => s.mode === 'driver') || myRoutines.some((r) => r.mode === 'driver')) && (
+          <div className="mt-3 flex gap-1.5">
+            {([
+              { key: 'all' as RoleFilter, label: 'All', count: rides.length },
+              { key: 'as_rider' as RoleFilter, label: 'As rider', count: ridesAsRiderCount },
+              { key: 'as_driver' as RoleFilter, label: 'As driver', count: ridesAsDriverCount },
+            ]).map((opt) => (
+              <button
+                key={opt.key}
+                type="button"
+                data-testid={`role-filter-${opt.key}`}
+                onClick={() => setRoleFilter(opt.key)}
+                className={[
+                  'flex-1 py-1.5 text-xs font-semibold rounded-full transition-colors',
+                  roleFilter === opt.key
+                    ? 'bg-primary text-white'
+                    : 'bg-surface text-text-secondary border border-border',
+                ].join(' ')}
+              >
+                {opt.label}{opt.count > 0 ? ` (${opt.count})` : ''}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Content */}
@@ -407,7 +465,7 @@ export default function MyRidesPage({
           </div>
         )}
 
-        {!loading && rides.length === 0 && visiblePostedSchedules.length === 0 && myRoutines.length === 0 && (
+        {!loading && filteredRides.length === 0 && filteredPostedSchedules.length === 0 && filteredRoutines.length === 0 && (
           <div className="text-center py-16 px-6">
             <div className="flex justify-center mb-3"><div className="h-14 w-14 rounded-full bg-surface flex items-center justify-center"><AppIcon name="car-request" className="h-7 w-7 text-text-secondary" /></div></div>
             <p className="text-text-secondary text-sm font-medium">No active rides</p>
@@ -428,13 +486,13 @@ export default function MyRidesPage({
             pending ride-board posts. Edit routes through SchedulePage's
             existing prefill plumbing; withdraw confirms via dialog
             then calls DELETE /api/schedule/:id. */}
-        {!loading && visiblePostedSchedules.length > 0 && (
+        {!loading && filteredPostedSchedules.length > 0 && (
           <section className="mt-4">
             <h2 className="px-1 pb-2 text-xs font-bold tracking-wider text-text-secondary">
               POSTED, AWAITING MATCH
             </h2>
             <ul className="flex flex-col gap-2">
-              {visiblePostedSchedules.map((s) => (
+              {filteredPostedSchedules.map((s) => (
                 <li
                   key={s.id}
                   className="rounded-2xl bg-white p-3 border border-border shadow-sm"
@@ -491,13 +549,13 @@ export default function MyRidesPage({
         {/* 2026-05-18 W4 — Routines summary. Tapping a row navigates
             to the existing RideBoard routines sheet for full
             edit/pause/resume/delete UX. */}
-        {!loading && myRoutines.length > 0 && (
+        {!loading && filteredRoutines.length > 0 && (
           <section className="mt-6">
             <h2 className="px-1 pb-2 text-xs font-bold tracking-wider text-text-secondary">
               ROUTINES
             </h2>
             <ul className="flex flex-col gap-2">
-              {myRoutines.map((r) => {
+              {filteredRoutines.map((r) => {
                 const time = r.departure_time
                   ? `Departs ${r.departure_time.slice(0, 5)}`
                   : r.arrival_time ? `Arrives ${r.arrival_time.slice(0, 5)}` : null
@@ -533,7 +591,7 @@ export default function MyRidesPage({
           </section>
         )}
 
-        {!loading && rides.length > 0 && (
+        {!loading && filteredRides.length > 0 && (
           <div className="space-y-3">
             {listItems.map((item) => {
               if (item.type === 'group') {
