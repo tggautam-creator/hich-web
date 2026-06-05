@@ -10,6 +10,7 @@ import { MAP_ID, DEFAULT_CENTER, DEFAULT_ZOOM } from '@/lib/mapConstants'
 import SpotlightOverlay from '@/components/onboarding/SpotlightOverlay'
 import { useOnboardingStore } from '@/stores/onboardingStore'
 import PwaInstallBanner from '@/components/ui/PwaInstallBanner'
+import SuggestedRidesHero from '@/components/suggestions/SuggestedRidesHero'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -186,11 +187,17 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
         </button>
       </div>
 
-      {/* ── Stacked: active ride banner + search + ride board cards ────── */}
+      {/* ── Stacked: active ride banner + suggestions + search + ride board cards ─ */}
       <div
         className="absolute left-0 right-0 z-[1000] px-4 flex flex-col gap-2"
         style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 4.5rem)' }}
       >
+        {/* v1.3 Sprint 14 — Suggested Rides hero (rider side). Self-
+            hides when empty so the map-first UX is preserved. iOS
+            mounts the same component at the same position on
+            RiderHomePage+Sections.swift:116. */}
+        <SuggestedRidesHero side="rider" />
+
         {/* Active ride banner — stacks above search card naturally */}
         {activeRideCount > 0 && (
           <button

@@ -9,6 +9,7 @@ import { MAP_ID, DEFAULT_CENTER, DEFAULT_ZOOM } from '@/lib/mapConstants'
 import BottomNav from '@/components/ui/BottomNav'
 import PwaInstallBanner from '@/components/ui/PwaInstallBanner'
 import BankOnboardPrompt from '@/components/ride/BankOnboardPrompt'
+import SuggestedRidesHero from '@/components/suggestions/SuggestedRidesHero'
 import { onSnoozeChange, dispatchSnoozeChange } from '@/lib/snoozeEvents'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -478,6 +479,11 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         className="absolute left-0 right-0 z-[1000] px-4 flex flex-col gap-3"
         style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 4.5rem)' }}
       >
+        {/* v1.3 Sprint 14 — Suggested Rides hero (driver side). Self-
+            hides when empty so the map-first UX is preserved. iOS
+            mounts the same component at DriverHomePage+Sections.swift:154. */}
+        <SuggestedRidesHero side="driver" />
+
         {activeRideCount > 0 && (
           <button
             data-testid="active-ride-banner"

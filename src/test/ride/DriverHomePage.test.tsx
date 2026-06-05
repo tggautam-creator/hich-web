@@ -85,6 +85,13 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => mockNavigate }
 })
 
+// v1.3 Sprint 14 Slice B — SuggestedRidesHero uses React Query.
+// Stub it here so this test file doesn't need a QueryClientProvider
+// — its dedicated tests live at src/test/suggestions/.
+vi.mock('@/components/suggestions/SuggestedRidesHero', () => ({
+  default: () => null,
+}))
+
 // ── Geolocation mock ──────────────────────────────────────────────────────────
 
 type GeoSuccessCallback = (pos: GeolocationPosition) => void
