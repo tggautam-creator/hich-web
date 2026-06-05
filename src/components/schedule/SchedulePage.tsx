@@ -20,6 +20,7 @@ import { rememberLastSeats } from '@/lib/lastSeats'
 import { caregiverFareCents } from '@/lib/fare'
 import { useMyCaregivers } from '@/hooks/useCaregivers'
 import CaregiverPickerSection from '@/components/profile/CaregiverPickerSection'
+import type { ScheduledRide } from './boardTypes'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,13 @@ interface ScheduleLocationState {
   /** Optional override for the flash message — defaults to a
    * generic "Posted!" if not provided. */
   returnFlashMessage?: string
+  /** v1.3 — when set, SchedulePage opens in edit mode and hydrates
+   *  the form from this ride row. Mirrors iOS
+   *  SchedulePostViewModel.prefill(from:) at line 370. The submit
+   *  branch UPDATEs `ride_schedules` instead of INSERTing. Only
+   *  one-time schedules are editable here — recurring routine edits
+   *  go through `RoutinesSheet` (same scope as iOS). */
+  editingRide?: ScheduledRide
 }
 
 export default function SchedulePage({ mode: initialMode, 'data-testid': testId }: SchedulePageProps) {
@@ -86,38 +94,97 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
   const location = useLocation()
   const prefill = location.state as ScheduleLocationState | null
 
+  // v1.3 — edit mode state (mirrors iOS SchedulePostViewModel.editingScheduleID).
+  // Captured from `location.state.editingRide` on mount + persisted as
+  // local state so navigation away and back doesn't accidentally
+  // re-enter insert mode mid-flow.
+  // Read-only after mount — edit mode stays sticky through any
+  // intra-page navigation. The setter is intentionally unused.
+  const [editingScheduleId] = useState<string | null>(
+    prefill?.editingRide?.id ?? null,
+  )
+  const isEditing = editingScheduleId !== null
+
   // Step state
   const [step, setStep] = useState<Step>('details')
   const [showConfirmation, setShowConfirmation] = useState(false)
 
+  // v1.3 — synthesize PlaceSuggestion entries from the editingRide's
+  // stored address + coords (mirrors iOS prefill() at line 381-403).
+  // Place IDs are intentionally synthetic ("edit:<id>:origin") so the
+  // submit branch can detect "user kept the original" vs "user picked
+  // a fresh address from autocomplete" and avoid overwriting the real
+  // Google place_id with the synthetic one.
+  const editPrefillFrom: PlaceSuggestion | null =
+    prefill?.editingRide?.origin_lat != null && prefill?.editingRide?.origin_lng != null
+      ? {
+          placeId: `edit:${prefill.editingRide.id}:origin`,
+          mainText: prefill.editingRide.origin_address,
+          secondaryText: '',
+          fullAddress: prefill.editingRide.origin_address,
+          lat: prefill.editingRide.origin_lat,
+          lng: prefill.editingRide.origin_lng,
+        }
+      : null
+  const editPrefillTo: PlaceSuggestion | null =
+    prefill?.editingRide?.dest_lat != null && prefill?.editingRide?.dest_lng != null
+      ? {
+          placeId: `edit:${prefill.editingRide.id}:dest`,
+          mainText: prefill.editingRide.dest_address,
+          secondaryText: '',
+          fullAddress: prefill.editingRide.dest_address,
+          lat: prefill.editingRide.dest_lat,
+          lng: prefill.editingRide.dest_lng,
+        }
+      : null
+
   // Driver/rider toggle state
   const [activeMode, setActiveMode] = useState<'driver' | 'rider'>(
-    prefill?.prefillMode ?? initialMode,
+    prefill?.editingRide?.mode ?? prefill?.prefillMode ?? initialMode,
   )
 
   // Form state
-  const [routeName, setRouteName] = useState('')
-  const [fromLocation, setFromLocation] = useState<PlaceSuggestion | null>(prefill?.prefillFrom ?? null)
-  const [toLocation, setToLocation] = useState<PlaceSuggestion | null>(prefill?.prefillTo ?? null)
-  const [tripType, setTripType] = useState<TripType>(prefill?.tripType ?? 'one-time')
-  const [availableSeats, setAvailableSeats] = useState(
-    prefill?.prefillAvailableSeats ?? 1,
+  const [routeName, setRouteName] = useState(prefill?.editingRide?.route_name ?? '')
+  const [fromLocation, setFromLocation] = useState<PlaceSuggestion | null>(
+    editPrefillFrom ?? prefill?.prefillFrom ?? null,
   )
-  const [note, setNote] = useState('')
+  const [toLocation, setToLocation] = useState<PlaceSuggestion | null>(
+    editPrefillTo ?? prefill?.prefillTo ?? null,
+  )
+  // Edit mode is one-time only — recurring routine edits go through
+  // RoutinesSheet (same scope as iOS prefill()).
+  const [tripType, setTripType] = useState<TripType>(
+    prefill?.editingRide ? 'one-time' : prefill?.tripType ?? 'one-time',
+  )
+  const [availableSeats, setAvailableSeats] = useState(
+    prefill?.editingRide?.available_seats ?? prefill?.prefillAvailableSeats ?? 1,
+  )
+  const [note, setNote] = useState(prefill?.editingRide?.note ?? '')
 
   // One-time schedule state
-  const [tripDate, setTripDate] = useState(prefill?.prefillTripDate ?? '')
-  const [timeType, setTimeType] = useState<TimeType>('departure')
+  const [tripDate, setTripDate] = useState(
+    prefill?.editingRide?.trip_date ?? prefill?.prefillTripDate ?? '',
+  )
+  const [timeType, setTimeType] = useState<TimeType>(
+    (prefill?.editingRide?.time_type === 'arrival' ? 'arrival' : 'departure') as TimeType,
+  )
   // `prefillTripTime` is `HH:mm` — matches the native time input.
   // When prefillAnytime is true the time field stays blank under the
   // Anytime toggle (noon placeholder is submitted at insert time).
-  const [tripTime, setTripTime] = useState(
-    prefill?.prefillAnytime ? '' : prefill?.prefillTripTime ?? '',
-  )
+  // For edit mode, `trip_time` comes as `HH:mm:ss` from the DB — strip
+  // the seconds for the native input format.
+  const [tripTime, setTripTime] = useState(() => {
+    if (prefill?.editingRide?.time_flexible) return ''
+    const editTime = prefill?.editingRide?.trip_time
+    if (editTime) return editTime.slice(0, 5) // "HH:mm:ss" → "HH:mm"
+    return prefill?.prefillAnytime ? '' : prefill?.prefillTripTime ?? ''
+  })
   // When true, the poster doesn't care about the hour — only the date.
   // We still submit a noon placeholder for trip_time to satisfy the NOT NULL
   // constraint and keep legacy sort-by-time stable; UI renders "Anytime".
-  const [timeFlexible, setTimeFlexible] = useState(prefill?.prefillAnytime ?? false)
+  const [timeFlexible, setTimeFlexible] = useState(
+    prefill?.editingRide?.time_flexible ?? prefill?.prefillAnytime ?? false,
+  )
   const [isSubmitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
@@ -364,33 +431,74 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
         caregiverFareCentsValue = caregiverFareCents(km)
       }
 
-      const { data: inserted, error } = await supabase
-        .from('ride_schedules')
-        .insert({
-          user_id:          user.id,
-          mode:             activeMode,
-          route_name:       routeName.trim(),
-          origin_place_id:  fromLocation.placeId,
-          origin_address:   fromLocation.fullAddress,
-          dest_place_id:    toLocation.placeId,
-          dest_address:     toLocation.fullAddress,
-          direction_type:   'one_way',
-          trip_date:        tripDate,
-          time_type:        timeType,
-          trip_time:        submittedTripTime,
-          time_flexible:    timeFlexible,
-          available_seats:  activeMode === 'driver' ? availableSeats : null,
-          note:             note.trim() || null,
-          origin_lat:       fromCoords?.lat ?? null,
-          origin_lng:       fromCoords?.lng ?? null,
-          dest_lat:         toCoords?.lat ?? null,
-          dest_lng:         toCoords?.lng ?? null,
-          // v1.2 F7.1 — both fields nullable when no caregiver attached.
-          caregiver_id:        wantsCaregiverAttach ? selectedCaregiverId : null,
-          caregiver_fare_cents: caregiverFareCentsValue,
-        })
-        .select('id')
-        .single()
+      // v1.3 — INSERT for new posts, UPDATE for the edit branch
+      // (mirrors iOS SchedulePostViewModel+Submit.swift:71-82, 188-252).
+      // Synthetic "edit:<id>:origin|dest" place IDs are stripped on the
+      // UPDATE so we don't overwrite the real Google place_id with a
+      // placeholder when the user kept the original address.
+      let inserted: { id: string } | null = null
+      let error: { message: string } | null = null
+      if (isEditing && editingScheduleId) {
+        const fromIsSynthetic = fromLocation.placeId.startsWith('edit:')
+        const toIsSynthetic = toLocation.placeId.startsWith('edit:')
+        const { error: updateErr } = await supabase
+          .from('ride_schedules')
+          .update({
+            route_name:       routeName.trim(),
+            ...(fromIsSynthetic ? {} : { origin_place_id: fromLocation.placeId }),
+            origin_address:   fromLocation.fullAddress,
+            ...(toIsSynthetic ? {} : { dest_place_id: toLocation.placeId }),
+            dest_address:     toLocation.fullAddress,
+            trip_date:        tripDate,
+            time_type:        timeType,
+            trip_time:        submittedTripTime,
+            time_flexible:    timeFlexible,
+            available_seats:  activeMode === 'driver' ? availableSeats : null,
+            note:             note.trim() || null,
+            origin_lat:       fromCoords?.lat ?? null,
+            origin_lng:       fromCoords?.lng ?? null,
+            dest_lat:         toCoords?.lat ?? null,
+            dest_lng:         toCoords?.lng ?? null,
+            caregiver_id:        wantsCaregiverAttach ? selectedCaregiverId : null,
+            caregiver_fare_cents: caregiverFareCentsValue,
+          })
+          .eq('id', editingScheduleId)
+        if (updateErr) {
+          error = updateErr
+        } else {
+          inserted = { id: editingScheduleId }
+        }
+      } else {
+        const result = await supabase
+          .from('ride_schedules')
+          .insert({
+            user_id:          user.id,
+            mode:             activeMode,
+            route_name:       routeName.trim(),
+            origin_place_id:  fromLocation.placeId,
+            origin_address:   fromLocation.fullAddress,
+            dest_place_id:    toLocation.placeId,
+            dest_address:     toLocation.fullAddress,
+            direction_type:   'one_way',
+            trip_date:        tripDate,
+            time_type:        timeType,
+            trip_time:        submittedTripTime,
+            time_flexible:    timeFlexible,
+            available_seats:  activeMode === 'driver' ? availableSeats : null,
+            note:             note.trim() || null,
+            origin_lat:       fromCoords?.lat ?? null,
+            origin_lng:       fromCoords?.lng ?? null,
+            dest_lat:         toCoords?.lat ?? null,
+            dest_lng:         toCoords?.lng ?? null,
+            // v1.2 F7.1 — both fields nullable when no caregiver attached.
+            caregiver_id:        wantsCaregiverAttach ? selectedCaregiverId : null,
+            caregiver_fare_cents: caregiverFareCentsValue,
+          })
+          .select('id')
+          .single()
+        inserted = result.data as { id: string } | null
+        error = result.error as { message: string } | null
+      }
 
       if (error) {
         setSubmitError(error.message)
@@ -780,18 +888,22 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
           </button>
         )}
         <h1 className="text-xl font-bold text-text-primary">
-          {step === 'one-time-schedule'
-            ? 'Pick Date & Time'
-            : step === 'routine-schedule'
-              ? 'Pick Your Days'
-              : `Schedule a ${activeMode === 'driver' ? 'Drive' : 'Ride'}`}
+          {isEditing
+            ? 'Edit Ride'
+            : step === 'one-time-schedule'
+              ? 'Pick Date & Time'
+              : step === 'routine-schedule'
+                ? 'Pick Your Days'
+                : `Schedule a ${activeMode === 'driver' ? 'Drive' : 'Ride'}`}
         </h1>
         <p className="text-sm text-text-secondary mt-1">
-          {step === 'one-time-schedule'
-            ? 'When do you want to travel?'
-            : step === 'routine-schedule'
-              ? 'Select the days you travel and set your times'
-              : 'Where do you usually travel?'}
+          {isEditing
+            ? 'Update the trip details below and save.'
+            : step === 'one-time-schedule'
+              ? 'When do you want to travel?'
+              : step === 'routine-schedule'
+                ? 'Select the days you travel and set your times'
+                : 'Where do you usually travel?'}
         </p>
       </div>
 
@@ -952,7 +1064,7 @@ export default function SchedulePage({ mode: initialMode, 'data-testid': testId 
               onClick={() => { void handleSubmitSchedule() }}
               isLoading={isSubmitting}
             >
-              Schedule Trip
+              {isEditing ? 'Save Changes' : 'Schedule Trip'}
             </PrimaryButton>
             <SecondaryButton
               data-testid="back-button"

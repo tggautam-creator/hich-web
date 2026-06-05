@@ -73,10 +73,16 @@ function mockInsertReturn(result: { data?: unknown; error: unknown }) {
 }
 
 const mockInsert = vi.fn().mockReturnValue(mockInsertReturn({ data: [{ id: 'test-id' }], error: null }))
+// v1.3 — edit-mode update mock. Existing tests don't use update so
+// adding it here is backward-compatible; the edit-mode test below
+// drives this branch.
+const mockUpdate = vi.fn().mockReturnValue({
+  eq: vi.fn().mockResolvedValue({ data: null, error: null }),
+})
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
-    from: () => ({ insert: mockInsert }),
+    from: () => ({ insert: mockInsert, update: mockUpdate }),
     auth: {
       getSession: () => Promise.resolve({ data: { session: { access_token: 'test-token' } } }),
     },

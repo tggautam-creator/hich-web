@@ -455,25 +455,23 @@ export default function MyRidesPage({
                     {formatDate(s.trip_date)} · {s.time_flexible ? 'Anytime' : formatTime(s.trip_time)}
                   </div>
                   <div className="mt-2 flex gap-2">
-                    {/* 2026-05-18 — web's SchedulePage doesn't have an
-                        UPDATE branch yet (only INSERT). The browse page's
-                        detail sheet already exposes the own-post Edit
-                        + Withdraw actions, so route there with the
-                        `openRideId` state hint to auto-open the sheet
-                        for this schedule. iOS has a richer in-place
-                        edit flow; web parity for that lands as its
-                        own slice. */}
+                    {/* v1.3 — direct edit-mode route to SchedulePage.
+                        Was routing to /rides/board/browse with an
+                        openRideId hint while SchedulePage only had
+                        INSERT; that workaround is now unwound. Mirrors
+                        iOS MyPostsCompactList pencil → scheduleEdit
+                        route. */}
                     <button
                       type="button"
                       onClick={() => {
-                        navigate('/rides/board/browse', {
-                          state: { openRideId: s.id },
+                        navigate(s.mode === 'driver' ? '/schedule/driver' : '/schedule/rider', {
+                          state: { editingRide: s },
                         })
                       }}
                       className="flex-1 rounded-full bg-surface px-3 py-1.5 text-xs font-semibold text-textPrimary border border-border"
                       data-testid="my-posts-edit"
                     >
-                      Open
+                      Edit
                     </button>
                     <button
                       type="button"
