@@ -4,7 +4,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuthStore } from '@/stores/authStore'
 import { supabase } from '@/lib/supabase'
 import { formatCents } from '@/lib/fare'
-import PrimaryButton from '@/components/ui/PrimaryButton'
 import BottomNav from '@/components/ui/BottomNav'
 import WithdrawSheet from '@/components/ride/WithdrawSheet'
 
@@ -276,82 +275,157 @@ export default function WalletPage() {
   }
 
   return (
-    <div className="min-h-screen bg-surface pb-20 safe-top" data-testid="wallet-page">
-      {/* Header */}
-      <div className="bg-primary px-6 pb-8 pt-12 text-white">
-        <p className="text-sm text-white/80" id="wallet-balance-label">
-          {showBankBanner ? 'Pending payout' : 'Your balance'}
+    <div className="min-h-screen bg-surface pb-24 safe-top" data-testid="wallet-page">
+      {/* ── Brand-gradient hero ─────────────────────────────────────────
+          iOS WalletHubPage.swift:169 — eyebrow + 36pt balance + role-
+          aware sub-copy. Driver sees "AVAILABLE TO WITHDRAW" + payout
+          settle hint; rider sees "TAGO CREDIT" + top-up hint. */}
+      <div
+        data-testid="wallet-hub-hero"
+        className="px-6 pt-10 pb-8 text-center flex flex-col items-center gap-1.5"
+        style={{
+          background: 'linear-gradient(180deg, rgba(58,90,228,0.12) 0%, rgba(58,90,228,0.04) 60%, transparent 100%)',
+        }}
+      >
+        <p
+          id="wallet-balance-label"
+          data-testid="wallet-hub-eyebrow"
+          className="text-[11px] font-extrabold tracking-[0.16em] text-text-secondary uppercase"
+        >
+          {isDriver ? 'Available to withdraw' : 'Tago credit'}
         </p>
-        {/* Slice 12: bare <p> gave screen readers no landmark + no
-            announcement context. <h1> + aria-labelledby reads as
-            "Your balance: $25.30" / "Pending payout: $25.30". */}
         <h1
-          className="text-4xl font-bold"
+          className="text-4xl font-extrabold text-text-primary"
           data-testid="wallet-balance"
           aria-labelledby="wallet-balance-label"
           aria-live="polite"
         >
           {formatCents(balance)}
         </h1>
+        <p className="text-xs text-text-secondary max-w-xs">
+          {isDriver
+            ? 'Earnings settle to your bank ~2 business days after withdraw.'
+            : 'Use credit toward rides — top up anytime.'}
+        </p>
       </div>
 
-      {/* Bank-not-connected banner for drivers with earnings */}
-      {showBankBanner && (
-        <div className="px-6 pt-4">
-          <div
-            data-testid="wallet-bank-banner"
-            className="rounded-2xl border border-primary/20 bg-primary/5 px-4 py-3 flex items-start gap-3"
-          >
-            <div className="h-8 w-8 shrink-0 rounded-full bg-primary/10 flex items-center justify-center">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-primary" aria-hidden="true">
+      {/* ── Quick-actions grid ──────────────────────────────────────────
+          iOS WalletHubPage.swift:216 — 2×2 for driver (Add funds /
+          Withdraw / Cards / Payouts); 1×2 for rider (Add funds +
+          Cards only). Withdraw routes through WithdrawSheet when a
+          bank is linked + balance > 0; otherwise it drops into the
+          Stripe payouts onboarding (mirrors iOS `showPayouts`
+          fallback). */}
+      <div className="px-6 pt-4">
+        <div className={['grid gap-3', isDriver ? 'grid-cols-2' : 'grid-cols-2'].join(' ')}>
+          <WalletActionCard
+            testId="wallet-hub-action-add-funds"
+            aliasTestId="add-funds-button"
+            iconBg="bg-primary/10"
+            iconColor="text-primary"
+            title="Add funds"
+            subtitle="Top up your credit"
+            onClick={() => navigate('/wallet/add')}
+            icon={
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 8v8M8 12h8" />
+              </svg>
+            }
+          />
+          {isDriver && (
+            <WalletActionCard
+              testId="wallet-hub-action-withdraw"
+              aliasTestId="withdraw-button"
+              iconBg="bg-success/10"
+              iconColor="text-success"
+              title="Withdraw"
+              subtitle="Send to your bank"
+              disabled={!canWithdraw && hasBank}
+              onClick={() => {
+                if (!hasBank) {
+                  navigate('/stripe/payouts')
+                  return
+                }
+                if (!canWithdraw) return
+                setWithdrawOpen(true)
+              }}
+              icon={
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M8 12l4 4 4-4M12 8v8" />
+                </svg>
+              }
+            />
+          )}
+          <WalletActionCard
+            testId="wallet-hub-action-cards"
+            aliasTestId="payment-methods-link"
+            iconBg="bg-primary/10"
+            iconColor="text-primary"
+            title="Cards"
+            subtitle="Manage payment methods"
+            onClick={() => navigate('/payment/methods')}
+            icon={
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
                 <rect x="2" y="6" width="20" height="14" rx="2" />
-                <path d="M2 10h20" />
-                <path d="M6 14h.01" />
-                <path d="M10 14h4" />
+                <line x1="2" y1="10" x2="22" y2="10" />
+              </svg>
+            }
+          />
+          {isDriver && (
+            <WalletActionCard
+              testId="wallet-hub-action-payouts"
+              iconBg="bg-warning/10"
+              iconColor="text-warning"
+              title="Payouts"
+              subtitle="Bank + payout settings"
+              onClick={() => navigate('/stripe/payouts')}
+              icon={
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+                  <path d="M3 21h18" />
+                  <path d="M5 21V9l7-5 7 5v12" />
+                  <path d="M9 21v-6h6v6" />
+                </svg>
+              }
+            />
+          )}
+        </div>
+      </div>
+
+      {/* ── Bank prompt (driver, no bank, balance > 0) ────────────────
+          iOS WalletHubPage.swift:324 — glass card with warning border
+          + chevron pointing into /stripe/payouts. Replaces the older
+          wallet-bank-banner; same `wallet-bank-banner` testid retained
+          for backwards compatibility with existing tests. */}
+      {showBankBanner && (
+        <div className="px-6 pt-3">
+          <button
+            type="button"
+            data-testid="wallet-bank-banner"
+            onClick={() => navigate('/stripe/payouts')}
+            className="w-full rounded-2xl border border-warning/60 bg-white px-4 py-3 flex items-center gap-3 active:scale-[0.99] transition-transform shadow-[0_2px_8px_rgba(0,0,0,0.04)] text-left"
+          >
+            <div className="h-9 w-9 shrink-0 rounded-full bg-warning/15 flex items-center justify-center">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-warning" aria-hidden="true">
+                <path d="M3 21h18" />
+                <path d="M5 21V9l7-5 7 5v12" />
+                <path d="M9 21v-6h6v6" />
               </svg>
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-text-primary">Add a bank to withdraw</p>
+              <p className="text-sm font-semibold text-text-primary">Add a bank to cash out</p>
               <p className="text-xs text-text-secondary mt-0.5">
-                You've earned {formatCents(balance)}. Link a bank to cash out.
+                {formatCents(balance)} is waiting in your wallet
               </p>
-              <button
-                data-testid="wallet-bank-banner-cta"
-                onClick={() => navigate('/stripe/payouts')}
-                className="mt-2 text-xs font-semibold text-primary active:opacity-70"
-              >
-                Link Bank Account →
-              </button>
             </div>
-          </div>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+            <span data-testid="wallet-bank-banner-cta" className="sr-only">Link Bank Account</span>
+          </button>
         </div>
       )}
-
-      {/* Add Funds / Withdraw */}
-      <div className="px-6 py-4 space-y-2">
-        <PrimaryButton
-          onClick={() => navigate('/wallet/add')}
-          data-testid="add-funds-button"
-        >
-          Add Funds
-        </PrimaryButton>
-        {canWithdraw && (
-          <button
-            data-testid="withdraw-button"
-            onClick={() => setWithdrawOpen(true)}
-            className="w-full rounded-xl border border-primary py-3 text-sm font-semibold text-primary active:opacity-70"
-          >
-            Withdraw to Bank
-          </button>
-        )}
-        <button
-          data-testid="payment-methods-link"
-          onClick={() => navigate('/payment/methods')}
-          className="w-full py-2 text-sm font-medium text-text-secondary active:opacity-70"
-        >
-          Manage payment methods →
-        </button>
-      </div>
 
       {/* Payments in limbo — driver-only */}
       {isDriver && pendingList.length > 0 && (
@@ -605,5 +679,61 @@ export default function WalletPage() {
         }}
       />
     </div>
+  )
+}
+
+// ── Subcomponents ──────────────────────────────────────────────────
+
+/**
+ * Glass-style quick-action card matching iOS WalletHubPage.swift:272
+ * (`actionCard`). Square-ish tile with icon chip on top, title +
+ * subtitle below, hairline border + soft shadow. `aliasTestId` keeps
+ * existing test selectors (`add-funds-button`, `withdraw-button`,
+ * `payment-methods-link`) clickable so the old test suite passes
+ * without rewriting every selector.
+ */
+function WalletActionCard({
+  testId,
+  aliasTestId,
+  iconBg,
+  iconColor,
+  title,
+  subtitle,
+  onClick,
+  icon,
+  disabled = false,
+}: {
+  testId: string
+  aliasTestId?: string
+  iconBg: string
+  iconColor: string
+  title: string
+  subtitle: string
+  onClick: () => void
+  icon: React.ReactNode
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      data-alias-testid={aliasTestId}
+      onClick={onClick}
+      disabled={disabled}
+      className={[
+        'flex flex-col items-start gap-2 rounded-2xl bg-white border border-border/60 p-4 min-h-[110px]',
+        'shadow-[0_2px_8px_rgba(0,0,0,0.05)] active:scale-[0.98] transition-transform text-left',
+        disabled ? 'opacity-60 cursor-not-allowed' : '',
+      ].join(' ')}
+    >
+      <span className={['h-9 w-9 rounded-full flex items-center justify-center shrink-0', iconBg, iconColor].join(' ')}>
+        {icon}
+      </span>
+      <span className="text-sm font-bold text-text-primary">{title}</span>
+      <span className="text-[11px] text-text-secondary leading-snug">{subtitle}</span>
+      {aliasTestId && (
+        <span data-testid={aliasTestId} className="sr-only">{title}</span>
+      )}
+    </button>
   )
 }

@@ -98,6 +98,8 @@ function renderWallet() {
         <Routes>
           <Route path="/wallet" element={<WalletPage />} />
           <Route path="/wallet/add" element={<div data-testid="add-funds-page">Add Funds</div>} />
+          <Route path="/payment/methods" element={<div data-testid="payment-methods-page">Methods</div>} />
+          <Route path="/stripe/payouts" element={<div data-testid="payouts-page">Payouts</div>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -248,6 +250,72 @@ describe('WalletPage', () => {
       expect(screen.getByTestId('transaction-list')).toBeInTheDocument()
     })
     expect(screen.queryByTestId('tx-pending-payout-tag')).not.toBeInTheDocument()
+  })
+
+  // ── iOS-parity hub redesign — hero + quick-actions grid ──────────────
+
+  it('renders the iOS-parity hero with rider eyebrow "Tago credit" by default', () => {
+    renderWallet()
+    const eyebrow = screen.getByTestId('wallet-hub-eyebrow')
+    expect(eyebrow.textContent).toContain('Tago credit')
+  })
+
+  it('renders driver eyebrow "Available to withdraw" when is_driver', () => {
+    profileRef.current = { id: 'driver-001', wallet_balance: 4250, is_driver: true, stripe_onboarding_complete: true }
+    renderWallet()
+    const eyebrow = screen.getByTestId('wallet-hub-eyebrow')
+    expect(eyebrow.textContent).toContain('Available to withdraw')
+  })
+
+  it('renders Add funds + Cards tiles for riders (no driver-only tiles)', () => {
+    renderWallet()
+    expect(screen.getByTestId('wallet-hub-action-add-funds')).toBeInTheDocument()
+    expect(screen.getByTestId('wallet-hub-action-cards')).toBeInTheDocument()
+    expect(screen.queryByTestId('wallet-hub-action-withdraw')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('wallet-hub-action-payouts')).not.toBeInTheDocument()
+  })
+
+  it('renders all four action tiles for drivers', () => {
+    profileRef.current = { id: 'driver-001', wallet_balance: 4250, is_driver: true, stripe_onboarding_complete: true }
+    renderWallet()
+    expect(screen.getByTestId('wallet-hub-action-add-funds')).toBeInTheDocument()
+    expect(screen.getByTestId('wallet-hub-action-withdraw')).toBeInTheDocument()
+    expect(screen.getByTestId('wallet-hub-action-cards')).toBeInTheDocument()
+    expect(screen.getByTestId('wallet-hub-action-payouts')).toBeInTheDocument()
+  })
+
+  it('Cards tile navigates to /payment/methods', async () => {
+    renderWallet()
+    fireEvent.click(screen.getByTestId('wallet-hub-action-cards'))
+    await waitFor(() => {
+      expect(screen.getByTestId('payment-methods-page')).toBeInTheDocument()
+    })
+  })
+
+  it('Payouts tile (driver) navigates to /stripe/payouts', async () => {
+    profileRef.current = { id: 'driver-001', wallet_balance: 4250, is_driver: true, stripe_onboarding_complete: true }
+    renderWallet()
+    fireEvent.click(screen.getByTestId('wallet-hub-action-payouts'))
+    await waitFor(() => {
+      expect(screen.getByTestId('payouts-page')).toBeInTheDocument()
+    })
+  })
+
+  it('Withdraw tile (driver, no bank) routes to /stripe/payouts onboarding instead of WithdrawSheet', async () => {
+    profileRef.current = { id: 'driver-001', wallet_balance: 4250, is_driver: true, stripe_onboarding_complete: false }
+    renderWallet()
+    fireEvent.click(screen.getByTestId('wallet-hub-action-withdraw'))
+    await waitFor(() => {
+      expect(screen.getByTestId('payouts-page')).toBeInTheDocument()
+    })
+  })
+
+  it('shows the bank prompt banner with chevron for drivers with balance but no bank', () => {
+    profileRef.current = { id: 'driver-001', wallet_balance: 4250, is_driver: true, stripe_onboarding_complete: false }
+    renderWallet()
+    const banner = screen.getByTestId('wallet-bank-banner')
+    expect(banner.textContent).toContain('Add a bank to cash out')
+    expect(banner.textContent).toContain('$42.50')
   })
 
   // ── Sprint 3 W-T1-P5 — live nudge cooldown countdown ─────────────────
