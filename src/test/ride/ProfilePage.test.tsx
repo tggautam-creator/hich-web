@@ -578,6 +578,53 @@ describe('ProfilePage', () => {
     expect(screen.queryByTestId('edit-waive-caregiver-fee')).not.toBeInTheDocument()
   })
 
+  // ── iOS-parity hero + quick links ───────────────────────────────────
+
+  it('renders the sticky top bar + iOS-parity hero', async () => {
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('profile-top-bar')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('profile-hero')).toBeInTheDocument()
+    expect(screen.getByTestId('profile-hero').textContent).toContain('Test User')
+  })
+
+  it('renders the registered driver pill in the hero for drivers', async () => {
+    currentProfile = { ...currentProfile, is_driver: true }
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('profile-registered-driver-pill')).toBeInTheDocument()
+    })
+  })
+
+  it('does NOT render the registered driver pill for non-drivers', async () => {
+    currentProfile = { ...currentProfile, is_driver: false }
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('profile-hero')).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId('profile-registered-driver-pill')).not.toBeInTheDocument()
+  })
+
+  it('renders the Quick Links card with Payment Methods + Profile Details', async () => {
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('profile-quick-links')).toBeInTheDocument()
+    })
+    const card = screen.getByTestId('profile-quick-links')
+    expect(card.contains(screen.getByTestId('payment-methods-link'))).toBe(true)
+    expect(card.contains(screen.getByTestId('profile-details-button'))).toBe(true)
+  })
+
+  it('includes the Payouts link in Quick Links only for drivers', async () => {
+    currentProfile = { ...currentProfile, is_driver: true }
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('payouts-link')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('profile-quick-links').contains(screen.getByTestId('payouts-link'))).toBe(true)
+  })
+
   // ── Sign out ────────────────────────────────────────────────────────────
 
   it('sign out button calls signOut and navigates', async () => {

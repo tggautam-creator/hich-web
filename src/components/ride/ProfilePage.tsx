@@ -460,17 +460,21 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
   return (
     <div data-testid={testId ?? 'profile-page'} className="flex min-h-dvh flex-col bg-surface font-sans pb-20">
 
-      {/* ── Header ──────────────────────────────────────────────────────────── */}
+      {/* ── Sticky top bar ──────────────────────────────────────────────
+          iOS ProfilePage uses .navigationTitle("Profile") inline + a
+          settings gear in the toolbar. Web mirrors with a sticky
+          translucent bar matching the rider/driver home pattern. */}
       <div
-        className="bg-white px-5 border-b border-border flex items-center justify-between"
-        style={{ paddingTop: 'max(env(safe-area-inset-top), 1.25rem)', paddingBottom: '1.25rem' }}
+        data-testid="profile-top-bar"
+        className="sticky top-0 z-30 bg-white/90 backdrop-blur-sm border-b border-border flex items-center justify-between px-4"
+        style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
       >
-        <h1 className="text-lg font-bold text-text-primary">Profile</h1>
+        <h1 className="text-base font-bold text-text-primary">Profile</h1>
         <button
           data-testid="settings-button"
           onClick={() => navigate('/settings')}
           aria-label="Settings"
-          className="p-1.5 rounded-lg hover:bg-surface transition-colors"
+          className="p-1.5 rounded-lg active:bg-surface transition-colors"
         >
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-text-secondary" aria-hidden="true">
             <circle cx="12" cy="12" r="3" />
@@ -479,18 +483,45 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
         </button>
       </div>
 
-      {/* ── User card ───────────────────────────────────────────────────────── */}
-      <div className="bg-white mx-4 mt-4 rounded-2xl p-5 shadow-sm border border-border">
-        <div className="flex items-center gap-4">
+      {/* ── iOS-parity hero ────────────────────────────────────────────
+          ios/Tago/Features/Profile/ProfilePage.swift:351 (`profileHero`).
+          Brand-gradient backdrop that bleeds to the screen edges, large
+          centered avatar, name in heavy display type, identity rows
+          (email + phone) stacked underneath, education chip + registered
+          driver pill, trust badges row, Edit pill anchored in the
+          top-right. Replaces the prior tight horizontal user-card. */}
+      <div
+        data-testid="profile-hero"
+        className="relative px-6 pt-6 pb-6"
+        style={{
+          background: 'linear-gradient(180deg, rgba(58,90,228,0.18) 0%, rgba(58,90,228,0.06) 55%, transparent 100%)',
+        }}
+      >
+        {/* Edit pill — top-right, anchored absolutely so the avatar
+            stays centered without competing for space. */}
+        <button
+          data-testid="edit-profile-button"
+          onClick={() => setEditing(true)}
+          className="absolute right-4 top-4 inline-flex items-center gap-1 rounded-full bg-white/85 backdrop-blur-sm px-3 py-1.5 text-xs font-extrabold text-primary border border-white/70 shadow-sm active:scale-95 transition-transform"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-3 w-3" aria-hidden="true">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+          </svg>
+          Edit
+        </button>
+
+        <div className="flex flex-col items-center gap-2">
+          {/* Avatar — 96px tap target, opens the file picker. */}
           <button
             data-testid="avatar-button"
             type="button"
             onClick={() => avatarInputRef.current?.click()}
             disabled={uploadingAvatar}
-            className="h-14 w-14 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-xl shrink-0 overflow-hidden relative disabled:opacity-50"
+            className="h-24 w-24 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-3xl shrink-0 overflow-hidden relative disabled:opacity-50 border-4 border-white shadow-md"
           >
             {uploadingAvatar ? (
-              <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+              <div className="h-7 w-7 animate-spin rounded-full border-2 border-primary border-t-transparent" />
             ) : profile?.avatar_url ? (
               <img src={profile.avatar_url} alt="Avatar" className="h-full w-full object-cover" />
             ) : (
@@ -504,121 +535,126 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
             className="hidden"
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleAvatarUpload(f) }}
           />
-          <div className="flex-1 min-w-0">
-            {editing ? (
-              <div className="space-y-2">
-                <input
-                  data-testid="edit-name-input"
-                  type="text"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  placeholder="Full name"
-                  className="w-full rounded-lg border border-border px-3 py-1.5 text-base text-text-primary focus:border-primary focus:outline-none"
-                />
-                <input
-                  data-testid="edit-phone-input"
-                  type="tel"
-                  value={editPhone}
-                  onChange={(e) => setEditPhone(e.target.value)}
-                  placeholder="Phone number"
-                  className="w-full rounded-lg border border-border px-3 py-1.5 text-base text-text-primary focus:border-primary focus:outline-none"
-                />
-                {editError && (
-                  <p data-testid="edit-error" className="text-xs text-danger">{editError}</p>
-                )}
-              </div>
-            ) : (
-              <>
-                <p data-testid="profile-name" className="text-base font-semibold text-text-primary truncate">
-                  {profile?.full_name ?? 'User'}
-                </p>
-                <p data-testid="profile-email" className="text-xs text-text-secondary truncate">
-                  {profile?.email ?? ''}
-                </p>
-                {profile?.phone && (
-                  <p data-testid="profile-phone" className="text-xs text-text-secondary truncate">
-                    {profile.phone}
-                  </p>
-                )}
-                {/* v1.2 F1.2 — bio subtitle. 3-line clamp so a long bio
-                    doesn't dominate the hero (full bio reads from
-                    EditProfileSheet). */}
-                {profile?.bio && profile.bio.length > 0 && (
-                  <p
-                    data-testid="profile-bio"
-                    className="mt-1 text-xs text-text-secondary line-clamp-3"
-                  >
-                    {profile.bio}
-                  </p>
-                )}
-                <TrustBadges
-                  email={profile?.email}
-                  ratingAvg={stats?.ratingAvg ?? profile?.rating_avg ?? null}
-                  ratingCount={stats?.ratingCount ?? profile?.rating_count ?? 0}
-                  ridesCompleted={stats?.ridesCompleted ?? rides.length}
-                  size="md"
-                  className="mt-1.5"
-                />
-                {/* v1.2 F1.2 — education chip: "school · major · class of YYYY".
-                    Renders only when at least one piece is set, matching iOS
-                    `ProfilePage.swift::educationLabel`. */}
-                {(() => {
-                  const parts: string[] = []
-                  if (profile?.school) parts.push(profile.school)
-                  if (profile?.major)  parts.push(profile.major)
-                  if (profile?.graduation_year) parts.push(`Class of ${profile.graduation_year}`)
-                  if (parts.length === 0) return null
-                  return (
-                    <div
-                      data-testid="profile-education-chip"
-                      className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary"
-                    >
-                      <AppIcon name="graduation" className="h-3 w-3" />
-                      <span className="truncate">{parts.join(' · ')}</span>
-                    </div>
-                  )
-                })()}
-              </>
+
+          {/* Name + bio + identity rows */}
+          <h2
+            data-testid="profile-name"
+            className="text-2xl font-extrabold text-text-primary text-center tracking-tight mt-1"
+          >
+            {profile?.full_name ?? '—'}
+          </h2>
+          {profile?.bio && profile.bio.length > 0 && (
+            <p
+              data-testid="profile-bio"
+              className="text-sm text-text-secondary text-center line-clamp-3 max-w-xs"
+            >
+              {profile.bio}
+            </p>
+          )}
+          <div className="flex flex-col items-center gap-0.5">
+            {profile?.email && (
+              <p data-testid="profile-email" className="text-xs text-text-secondary">
+                {profile.email}
+              </p>
+            )}
+            {profile?.phone && (
+              <p data-testid="profile-phone" className="text-xs text-text-secondary">
+                {profile.phone}
+              </p>
             )}
           </div>
 
-          {/* Edit / Save / Cancel buttons */}
-          {editing ? (
-            <div className="flex flex-col gap-1.5 shrink-0">
-              <button
-                data-testid="save-profile-button"
-                onClick={() => { void handleSave() }}
-                disabled={saving}
-                className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
-              >
-                {saving ? 'Saving…' : 'Save'}
-              </button>
-              <button
-                data-testid="cancel-edit-button"
-                onClick={() => setEditing(false)}
-                className="rounded-lg bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              data-testid="edit-profile-button"
-              onClick={() => setEditing(true)}
-              className="shrink-0 rounded-lg bg-surface px-3 py-1.5 text-xs font-medium text-primary"
+          {/* Driver pill — iOS registeredDriverPill */}
+          {profile?.is_driver && (
+            <div
+              data-testid="profile-registered-driver-pill"
+              className="inline-flex items-center gap-1.5 rounded-full bg-success/15 border border-success/30 px-2.5 py-1 text-[10px] font-extrabold tracking-wider text-success uppercase mt-1"
             >
-              Edit
-            </button>
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-3 w-3" aria-hidden="true">
+                <path fillRule="evenodd" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" clipRule="evenodd" />
+              </svg>
+              Registered Driver
+            </div>
           )}
-        </div>
 
-        {/* v1.3 — Accessibility editor (mirrors iOS EditProfileSheet
-            accessNeedsSection + waiveCaregiverFeeSection). Only renders
-            in edit mode so the read-only profile view stays compact.
-            All three states (has_accessibility_needs, accessibility_profile
-            JSONB, waive_caregiver_fee) save through the same updateMyProfile
-            call as name/phone via handleSave. */}
-        {editing && (
+          {/* Education chip — iOS schoolMajorChip */}
+          {(() => {
+            const parts: string[] = []
+            if (profile?.school) parts.push(profile.school)
+            if (profile?.major) parts.push(profile.major)
+            if (profile?.graduation_year) parts.push(`Class of ${profile.graduation_year}`)
+            if (parts.length === 0) return null
+            return (
+              <div
+                data-testid="profile-education-chip"
+                className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 border border-primary/25 px-2.5 py-1 text-[11px] font-semibold text-primary"
+              >
+                <AppIcon name="graduation" className="h-3 w-3" />
+                <span className="truncate max-w-[18rem]">{parts.join(' · ')}</span>
+              </div>
+            )
+          })()}
+
+          {/* Trust badges */}
+          <TrustBadges
+            email={profile?.email}
+            ratingAvg={stats?.ratingAvg ?? profile?.rating_avg ?? null}
+            ratingCount={stats?.ratingCount ?? profile?.rating_count ?? 0}
+            ridesCompleted={stats?.ridesCompleted ?? rides.length}
+            size="md"
+            className="mt-1"
+          />
+        </div>
+      </div>
+
+      {/* ── Inline edit panel ────────────────────────────────────────
+          Wraps the existing name + phone inputs (and accessibility
+          editor + save / cancel actions) in a card below the hero
+          when editing=true. iOS uses an EditProfileSheet for richer
+          fields; web keeps the inline quick-edit path on a separate
+          card so the existing tests don't change. */}
+      {editing && (
+        <div data-testid="profile-edit-panel" className="bg-white mx-4 mt-4 rounded-2xl p-4 shadow-sm border border-border space-y-3">
+          <p className="text-xs font-bold tracking-wider text-text-secondary uppercase">
+            Edit profile
+          </p>
+          <input
+            data-testid="edit-name-input"
+            type="text"
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+            placeholder="Full name"
+            className="w-full rounded-lg border border-border px-3 py-2 text-base text-text-primary focus:border-primary focus:outline-none"
+          />
+          <input
+            data-testid="edit-phone-input"
+            type="tel"
+            value={editPhone}
+            onChange={(e) => setEditPhone(e.target.value)}
+            placeholder="Phone number"
+            className="w-full rounded-lg border border-border px-3 py-2 text-base text-text-primary focus:border-primary focus:outline-none"
+          />
+          {editError && (
+            <p data-testid="edit-error" className="text-xs text-danger">{editError}</p>
+          )}
+          <div className="flex gap-2 pt-1">
+            <button
+              data-testid="save-profile-button"
+              onClick={() => { void handleSave() }}
+              disabled={saving}
+              className="flex-1 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              data-testid="cancel-edit-button"
+              onClick={() => setEditing(false)}
+              className="flex-1 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-text-secondary"
+            >
+              Cancel
+            </button>
+          </div>
+          {/* Accessibility editor — same testids preserved */}
           <div data-testid="profile-accessibility-editor" className="mt-4 rounded-2xl bg-surface p-4 space-y-3">
             <p className="text-xs font-bold tracking-wider text-text-secondary uppercase">
               Access needs
@@ -740,73 +776,71 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
               </div>
             )}
           </div>
-        )}
+        </div>
+      )}
 
-        {/* Payment & Payouts links */}
-        <div className="mt-4 space-y-2">
-          <button
-            data-testid="payment-methods-link"
-            onClick={() => { navigate('/payment/methods') }}
-            className="w-full flex items-center justify-between rounded-2xl bg-surface px-4 py-3"
-          >
-            <div className="flex items-center gap-2">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary" aria-hidden="true">
+      {/* ── Quick Links section ────────────────────────────────────────
+          iOS ProfilePage.swift:552 (`quickLinksSection`). Wraps
+          Payment Methods + Payouts (driver) + Profile Details into a
+          single card with row dividers, instead of nesting them
+          inside the user-card chrome. */}
+      <div data-testid="profile-quick-links" className="mx-4 mt-4 rounded-2xl bg-white border border-border divide-y divide-border overflow-hidden">
+        <button
+          data-testid="payment-methods-link"
+          onClick={() => { navigate('/payment/methods') }}
+          className="w-full flex items-center justify-between px-4 py-3 active:bg-surface transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <span className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-primary">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
                 <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
                 <line x1="1" y1="10" x2="23" y2="10" />
               </svg>
-              <span className="text-sm text-text-secondary">Payment Methods</span>
-            </div>
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary" aria-hidden="true">
-              <path d="M9 18l6-6-6-6" />
-            </svg>
-          </button>
+            </span>
+            <span className="text-sm font-medium text-text-primary">Payment Methods</span>
+          </div>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4 text-text-secondary" aria-hidden="true">
+            <path d="M9 18l6-6-6-6" />
+          </svg>
+        </button>
 
-          {profile?.is_driver && (
-            <button
-              data-testid="payouts-link"
-              onClick={() => { navigate('/stripe/payouts') }}
-              className="w-full flex items-center justify-between rounded-2xl bg-surface px-4 py-3"
-            >
-              <div className="flex items-center gap-2">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-success" aria-hidden="true">
+        {profile?.is_driver && (
+          <button
+            data-testid="payouts-link"
+            onClick={() => { navigate('/stripe/payouts') }}
+            className="w-full flex items-center justify-between px-4 py-3 active:bg-surface transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <span className="h-8 w-8 rounded-full bg-success/10 flex items-center justify-center text-success">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
                   <line x1="12" y1="1" x2="12" y2="23" />
                   <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
                 </svg>
-                <span className="text-sm text-text-secondary">Payouts</span>
-              </div>
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary" aria-hidden="true">
-                <path d="M9 18l6-6-6-6" />
-              </svg>
-            </button>
-          )}
-        </div>
-
-        {/* Driver badge */}
-        {profile?.is_driver && (
-          <div className="mt-3 flex items-center gap-2 rounded-2xl bg-success/10 px-4 py-2.5">
-            <AppIcon name="verified" className="h-4 w-4 text-success" />
-            <span className="text-xs font-medium text-success">Registered Driver</span>
-          </div>
+              </span>
+              <span className="text-sm font-medium text-text-primary">Payouts</span>
+            </div>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4 text-text-secondary" aria-hidden="true">
+              <path d="M9 18l6-6-6-6" />
+          </svg>
+          </button>
         )}
 
-        {/* v1.2 Sprint 7 Slice 2 — profile details (bio/gender/education/
-            accessibility + driver waive). Opens the EditProfileSheet.
-            Separate from the inline name+phone edit above so the quick-
-            edit path stays one tap. */}
         <button
           type="button"
           data-testid="profile-details-button"
           onClick={() => setProfileDetailsOpen(true)}
-          className="mt-3 w-full flex items-center justify-between rounded-2xl bg-surface px-4 py-3"
+          className="w-full flex items-center justify-between px-4 py-3 active:bg-surface transition-colors"
         >
-          <div className="flex items-center gap-2 min-w-0">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
-              <circle cx="12" cy="7" r="4" />
-              <path d="M5.5 21a6.5 6.5 0 0 1 13 0" />
-            </svg>
-            <span className="text-sm text-text-secondary truncate">Bio, education & access needs</span>
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-primary">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+                <circle cx="12" cy="7" r="4" />
+                <path d="M5.5 21a6.5 6.5 0 0 1 13 0" />
+              </svg>
+            </span>
+            <span className="text-sm font-medium text-text-primary truncate">Bio, education & access needs</span>
           </div>
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
             <path d="M9 18l6-6-6-6" />
           </svg>
         </button>
