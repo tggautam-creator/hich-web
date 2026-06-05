@@ -1,12 +1,17 @@
 /**
- * DriverHomePage tests
+ * DriverHomePage tests — iOS-parity vertical scroll layout (2026-06-05).
  *
- * Layout: frosted top bar (online/offline pill + TAGO DRIVER + bell)
- *         full-screen map with GPS green dot
- *         ride board button
- *         bottom nav
+ * Layout: sticky top bar (online/snoozed pill + TAGO DRIVER + bell)
+ *         scroll content: greeting → "Find riders" hero → "Ride board"
+ *           pill → "Get matched" card → "Suggested for you" card →
+ *           bank info card → preferences card → "How it works" card
+ *         bottom-docked: active-ride banner (when present) +
+ *           bank slim banner (at cap) + online toggle / resume button +
+ *           pending earnings pill (when present) + bottom nav
  *
- * GPS polling: posts to driver_locations every 10s when online
+ * GPS still posts to driver_locations every 30s while online; the
+ * static driver-self map is gone (drivers don't need a map of where
+ * they currently are on the home surface).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -14,16 +19,6 @@ import { render, screen, act, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import DriverHomePage from '@/components/ride/DriverHomePage'
-
-// ── Mock @vis.gl/react-google-maps ────────────────────────────────────────────
-
-vi.mock('@vis.gl/react-google-maps', () => ({
-  APIProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  Map: ({ children, 'data-testid': tid }: { children?: React.ReactNode; 'data-testid'?: string; [k: string]: unknown }) => (
-    <div data-testid={tid ?? 'map-container'}>{children}</div>
-  ),
-  AdvancedMarker: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
-}))
 
 // ── Mock env ──────────────────────────────────────────────────────────────────
 
@@ -38,7 +33,13 @@ vi.mock('@/lib/env', () => ({
 // ── Mock authStore ─────────────────────────────────────────────────────────────
 
 const mockRefreshProfile = vi.fn().mockResolvedValue(undefined)
-let mockProfile: { id: string; stripe_onboarding_complete?: boolean; wallet_balance?: number } | null = { id: 'driver-001', stripe_onboarding_complete: true }
+let mockProfile: {
+  id: string
+  full_name?: string | null
+  stripe_onboarding_complete?: boolean
+  wallet_balance?: number
+  waive_caregiver_fee?: boolean
+} | null = { id: 'driver-001', full_name: 'Dana Park', stripe_onboarding_complete: true }
 
 vi.mock('@/stores/authStore', () => ({
   useAuthStore: vi.fn(
@@ -50,13 +51,14 @@ vi.mock('@/stores/authStore', () => ({
 // ── Mock supabase ──────────────────────────────────────────────────────────────
 
 const mockUpsert = vi.fn().mockResolvedValue({ data: null, error: null })
-// By default return is_online: true so tests that expect "online by default" still pass
+const mockUpdateEq = vi.fn().mockResolvedValue({ data: null, error: null })
 const mockMaybeSingle = vi.fn().mockResolvedValue({ data: { is_online: true }, error: null })
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
-    from: () => ({
+    from: (_table: string) => ({
       upsert: mockUpsert,
+      update: (_payload: unknown) => ({ eq: mockUpdateEq }),
       select: () => ({
         eq: () => ({
           maybeSingle: mockMaybeSingle,
@@ -69,8 +71,7 @@ vi.mock('@/lib/supabase', () => ({
   },
 }))
 
-// ── Mock FCM (used by RideRequestNotification) ───────────────────────────────
-
+// ── Mock FCM (used by foreground push surfaces if loaded indirectly) ───
 vi.mock('@/lib/fcm', () => ({
   onForegroundMessage: () => () => { /* unsubscribe stub */ },
   requestAndSaveFcmToken: vi.fn(),
@@ -85,11 +86,17 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => mockNavigate }
 })
 
-// v1.3 Sprint 14 Slice B — SuggestedRidesHero uses React Query.
-// Stub it here so this test file doesn't need a QueryClientProvider
-// — its dedicated tests live at src/test/suggestions/.
+// SuggestedRidesHero uses React Query — stub here so this test file
+// doesn't need a QueryClientProvider. Its dedicated tests live at
+// src/test/suggestions/.
 vi.mock('@/components/suggestions/SuggestedRidesHero', () => ({
   default: () => null,
+}))
+
+// DriverSuggestedForYouCard wraps useSuggestionsTop — stub the hook
+// so the card always renders the empty state.
+vi.mock('@/hooks/useSuggestions', () => ({
+  useSuggestionsTop: () => ({ data: [], isLoading: false }),
 }))
 
 // ── Geolocation mock ──────────────────────────────────────────────────────────
@@ -145,39 +152,161 @@ describe('DriverHomePage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     capturedWatch = null
-    mockProfile = { id: 'driver-001', stripe_onboarding_complete: true }
+    mockProfile = { id: 'driver-001', full_name: 'Dana Park', stripe_onboarding_complete: true }
     mockMaybeSingle.mockResolvedValue({ data: { is_online: true }, error: null })
-    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ rides: [], count: 0 }) })
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ rides: [], count: 0, pending: [], total_cents: 0 }) })
   })
 
   afterEach(() => {
     vi.useRealTimers()
   })
 
-  // ── Rendering ──────────────────────────────────────────────────────────────
+  // ── Page wrapper + chrome ──────────────────────────────────────────────────
 
   it('renders the page wrapper with default data-testid', () => {
     renderPage()
     expect(screen.getByTestId('driver-home-page')).toBeInTheDocument()
   })
 
-  it('renders the map container', () => {
+  it('renders the top bar with TAGO DRIVER wordmark', () => {
     renderPage()
-    expect(screen.getByTestId('map-container')).toBeInTheDocument()
+    expect(screen.getByTestId('top-bar')).toBeInTheDocument()
+    expect(screen.getByTestId('top-bar').textContent).toContain('TAGO DRIVER')
   })
 
-  // ── GPS / green dot ────────────────────────────────────────────────────────
-
-  it('does NOT show the green dot before a GPS fix', () => {
+  it('renders the notifications bell in the top bar', () => {
     renderPage()
-    expect(screen.queryByTestId('green-dot-marker')).not.toBeInTheDocument()
+    expect(screen.getByTestId('notifications-bell')).toBeInTheDocument()
   })
 
-  it('shows the green dot after a GPS fix is received', () => {
+  it('does not have a hamburger menu', () => {
     renderPage()
-    fireGpsSuccess()
-    expect(screen.getByTestId('green-dot-marker')).toBeInTheDocument()
+    expect(screen.queryByTestId('hamburger-menu')).not.toBeInTheDocument()
   })
+
+  it('does not have a QR button', () => {
+    renderPage()
+    expect(screen.queryByTestId('qr-button')).not.toBeInTheDocument()
+  })
+
+  // ── Greeting ───────────────────────────────────────────────────────────────
+
+  it('renders "Hi there, {firstName}!" when the profile has a name', () => {
+    renderPage()
+    expect(screen.getByTestId('driver-home-greeting')).toHaveTextContent('Hi there, Dana!')
+  })
+
+  it('renders "Hi there!" when the profile has no name', () => {
+    mockProfile = { id: 'driver-001', full_name: null, stripe_onboarding_complete: true }
+    renderPage()
+    expect(screen.getByTestId('driver-home-greeting')).toHaveTextContent('Hi there!')
+  })
+
+  // ── Find riders hero + ride board pill ─────────────────────────────────────
+
+  it('renders the "Find riders" primary hero', () => {
+    renderPage()
+    expect(screen.getByTestId('driver-home-find-riders-hero')).toBeInTheDocument()
+  })
+
+  it('Find riders hero tap navigates to /rides/board', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByTestId('driver-home-find-riders-hero'))
+    expect(mockNavigate).toHaveBeenCalledWith('/rides/board', { state: { fromTab: 'drive' } })
+  })
+
+  it('Ride board pill navigates to /rides/board', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByTestId('driver-home-ride-board-pill'))
+    expect(mockNavigate).toHaveBeenCalledWith('/rides/board', { state: { fromTab: 'drive' } })
+  })
+
+  // ── Get matched card ───────────────────────────────────────────────────────
+
+  it('Add routine routes to /schedule with routine tripType', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByTestId('driver-home-add-routine'))
+    expect(mockNavigate).toHaveBeenCalledWith('/schedule', { state: { tripType: 'routine' } })
+  })
+
+  it('Post a ride routes to /schedule', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByTestId('driver-home-post-trip'))
+    expect(mockNavigate).toHaveBeenCalledWith('/schedule')
+  })
+
+  // ── Suggested for you ──────────────────────────────────────────────────────
+
+  it('Suggested-for-you card shows empty state when there are no matches', () => {
+    renderPage()
+    expect(screen.getByText('Suggested for you')).toBeInTheDocument()
+    expect(screen.getByTestId('driver-suggested-empty-state')).toBeInTheDocument()
+  })
+
+  // ── Bank info card ─────────────────────────────────────────────────────────
+
+  it('Bank info card shows Wallet balance when bank is linked', () => {
+    mockProfile = { id: 'driver-001', stripe_onboarding_complete: true, wallet_balance: 4250 }
+    renderPage()
+    const card = screen.getByTestId('driver-home-bank-info-card')
+    expect(card.textContent).toContain('Wallet balance')
+    expect(card.textContent).toContain('$42.50')
+    expect(screen.queryByTestId('driver-home-bank-connect')).not.toBeInTheDocument()
+  })
+
+  it('Bank info card shows Connect bank CTA + progress bar when no bank', () => {
+    mockProfile = { id: 'driver-001', stripe_onboarding_complete: false, wallet_balance: 2500 }
+    renderPage()
+    const card = screen.getByTestId('driver-home-bank-info-card')
+    expect(card.textContent).toContain('Earnings waiting')
+    expect(card.textContent).toContain('$25.00')
+    expect(screen.getByTestId('driver-home-bank-connect')).toBeInTheDocument()
+    expect(screen.getByTestId('driver-home-bank-progress')).toBeInTheDocument()
+  })
+
+  it('Bank Connect CTA navigates to /stripe/payouts', async () => {
+    mockProfile = { id: 'driver-001', stripe_onboarding_complete: false }
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByTestId('driver-home-bank-connect'))
+    expect(mockNavigate).toHaveBeenCalledWith('/stripe/payouts')
+  })
+
+  // ── Preferences card ───────────────────────────────────────────────────────
+
+  it('Waive caregiver fee toggle reflects profile state', () => {
+    mockProfile = {
+      id: 'driver-001',
+      stripe_onboarding_complete: true,
+      waive_caregiver_fee: true,
+    }
+    renderPage()
+    expect(screen.getByTestId('driver-home-waive-caregiver-toggle')).toBeChecked()
+  })
+
+  it('Toggling Waive caregiver fee writes to users table + refreshes profile', async () => {
+    mockProfile = {
+      id: 'driver-001',
+      stripe_onboarding_complete: true,
+      waive_caregiver_fee: false,
+    }
+    renderPage()
+    const toggle = screen.getByTestId('driver-home-waive-caregiver-toggle')
+    expect(toggle).not.toBeChecked()
+
+    await act(async () => { fireEvent.click(toggle) })
+
+    await waitFor(() => {
+      expect(mockUpdateEq).toHaveBeenCalled()
+    })
+    expect(mockRefreshProfile).toHaveBeenCalled()
+  })
+
+  // ── GPS lifecycle ──────────────────────────────────────────────────────────
 
   it('calls clearWatch on unmount', () => {
     const { unmount } = renderPage()
@@ -185,11 +314,11 @@ describe('DriverHomePage', () => {
     expect(mockClearWatch).toHaveBeenCalledTimes(1)
   })
 
-  // ── GPS polling ────────────────────────────────────────────────────────────
+  // ── GPS polling to driver_locations ────────────────────────────────────────
 
-  it('posts GPS to driver_locations once online state is loaded', async () => {
+  it('posts GPS to driver_locations once online + after a fix', async () => {
     renderPage()
-    // Wait for the maybeSingle() fetch to resolve and set isOnline = true
+    fireGpsSuccess()
     await waitFor(() => {
       expect(mockUpsert).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -204,7 +333,7 @@ describe('DriverHomePage', () => {
   it('posts GPS every 30 seconds while online', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     renderPage()
-    // Wait for online state to load
+    fireGpsSuccess()
     await waitFor(() => expect(mockUpsert).toHaveBeenCalled())
     mockUpsert.mockClear()
 
@@ -218,7 +347,7 @@ describe('DriverHomePage', () => {
   it('stops GPS polling on unmount', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const { unmount } = renderPage()
-    // Wait for online state to load
+    fireGpsSuccess()
     await waitFor(() => expect(mockUpsert).toHaveBeenCalled())
     mockUpsert.mockClear()
     unmount()
@@ -238,31 +367,12 @@ describe('DriverHomePage', () => {
 
   it('toggles to offline when clicked', async () => {
     renderPage()
-    // Wait for online state to load first
     await waitFor(() => {
       expect(screen.getByTestId('online-toggle')).not.toBeDisabled()
     })
 
     act(() => { fireEvent.click(screen.getByTestId('online-toggle')) })
     expect(screen.getByTestId('online-toggle').textContent).toContain('Offline')
-  })
-
-  // ── Top bar ────────────────────────────────────────────────────────────────
-
-  it('renders the top bar with TAGO DRIVER wordmark', () => {
-    renderPage()
-    expect(screen.getByTestId('top-bar')).toBeInTheDocument()
-    expect(screen.getByTestId('top-bar').textContent).toContain('TAGO DRIVER')
-  })
-
-  it('does not have a hamburger menu', () => {
-    renderPage()
-    expect(screen.queryByTestId('hamburger-menu')).not.toBeInTheDocument()
-  })
-
-  it('does not have a QR button', () => {
-    renderPage()
-    expect(screen.queryByTestId('qr-button')).not.toBeInTheDocument()
   })
 
   // ── Bottom nav ─────────────────────────────────────────────────────────────
@@ -293,24 +403,20 @@ describe('DriverHomePage', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/profile')
   })
 
-  // ── Bank setup banner ──────────────────────────────────────────────────────
+  // ── F2: soft bank nudge ────────────────────────────────────────────────────
 
-  it('shows bank setup banner when stripe_onboarding_complete is false', () => {
+  it('does NOT show the slim bank banner under the cap (only the card)', () => {
     mockProfile = { id: 'driver-001', stripe_onboarding_complete: false }
     renderPage()
-    expect(screen.getByTestId('bank-setup-banner')).toBeInTheDocument()
-    expect(screen.getByTestId('setup-bank-button')).toBeInTheDocument()
-  })
-
-  it('hides bank setup banner when stripe_onboarding_complete is true', () => {
-    mockProfile = { id: 'driver-001', stripe_onboarding_complete: true }
-    renderPage()
+    // The slim banner is the bottom-docked one — only shown at the cap.
     expect(screen.queryByTestId('bank-setup-banner')).not.toBeInTheDocument()
+    // The bank info card always renders + has its connect CTA when no bank.
+    expect(screen.getByTestId('driver-home-bank-info-card')).toBeInTheDocument()
+    expect(screen.getByTestId('driver-home-bank-connect')).toBeInTheDocument()
   })
 
   it('allows going online without bank setup (F2: soft nudge, not a gate)', async () => {
     mockProfile = { id: 'driver-001', stripe_onboarding_complete: false }
-    // Default record: offline. Driver toggles online without a bank.
     mockMaybeSingle.mockResolvedValueOnce({ data: { is_online: false }, error: null })
     renderPage()
 
@@ -318,26 +424,17 @@ describe('DriverHomePage', () => {
 
     act(() => { fireEvent.click(screen.getByTestId('online-toggle')) })
 
-    // Went online, no blocking dialog.
     expect(screen.queryByTestId('bank-required-dialog')).not.toBeInTheDocument()
     expect(screen.getByTestId('online-indicator')).toHaveTextContent('Online')
   })
 
-  it('still shows soft bank-setup banner when no bank is connected', () => {
-    mockProfile = { id: 'driver-001', stripe_onboarding_complete: false }
-    renderPage()
-    expect(screen.getByTestId('bank-setup-banner')).toBeInTheDocument()
-    expect(screen.getByTestId('bank-setup-banner').textContent).toContain('withdraw')
-  })
-
-  // ── F3: $100 wallet cap gate ───────────────────────────────────────────
+  // ── F3: $100 wallet cap gate ───────────────────────────────────────────────
 
   it('disables Go Online and swaps copy when wallet >= $100 without bank', async () => {
     mockProfile = { id: 'driver-001', stripe_onboarding_complete: false, wallet_balance: 10_000 }
     mockMaybeSingle.mockResolvedValueOnce({ data: { is_online: false }, error: null })
     renderPage()
 
-    // Button stays disabled even after load because cap applies.
     await waitFor(() => {
       expect(screen.getByTestId('online-toggle')).toBeDisabled()
     })
@@ -356,7 +453,7 @@ describe('DriverHomePage', () => {
     expect(screen.getByTestId('online-toggle').textContent).toContain('Offline — tap')
   })
 
-  // ── Sprint 2 W-T1-D2 — snoozed pill + Resume button ──────────────────
+  // ── Snooze surfaces ─────────────────────────────────────────────────────
 
   it('renders snoozed indicator + Resume button when snoozed_until is in the future', async () => {
     const inOneHour = new Date(Date.now() + 60 * 60 * 1000).toISOString()
@@ -369,9 +466,7 @@ describe('DriverHomePage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('snoozed-indicator')).toBeInTheDocument()
     })
-    // Online/Offline pill is hidden when snoozed
     expect(screen.queryByTestId('online-indicator')).not.toBeInTheDocument()
-    // Toggle replaced by Resume button
     expect(screen.getByTestId('resume-snooze-button')).toBeInTheDocument()
     expect(screen.queryByTestId('online-toggle')).not.toBeInTheDocument()
   })
@@ -392,9 +487,6 @@ describe('DriverHomePage', () => {
   })
 
   it('picks up cross-screen snooze event from the decline sheet (no remount needed)', async () => {
-    // Driver lands on home with no snooze, the decline sheet fires
-    // `tago:driver-snoozed` from elsewhere, home should switch to the
-    // Resume button without waiting for a remount or page refresh.
     mockMaybeSingle.mockResolvedValueOnce({
       data: { is_online: true, snoozed_until: null },
       error: null,
