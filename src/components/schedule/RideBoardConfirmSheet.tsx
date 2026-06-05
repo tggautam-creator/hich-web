@@ -117,6 +117,33 @@ export default function RideBoardConfirmSheet({
   // before the Send button enables.
   const [driverOfferTransitMode, setDriverOfferTransitMode] = useState(false)
 
+  // Slice 4 — auto-same-dest detection. iOS uses 300m as the proximity
+  // threshold (matches the handoff engine's "same place" rule). When
+  // the driver's destination is within 300m of the rider's posted
+  // destination, transit handoff makes no sense — collapse the radio
+  // matrix into a confirmation card instead.
+  const driverDestMatchesRiderDest = (() => {
+    if (!selectedDriverDest?.lat || !selectedDriverDest?.lng) return false
+    if (ride?.dest_lat == null || ride?.dest_lng == null) return false
+    return haversineMetres(
+      selectedDriverDest.lat,
+      selectedDriverDest.lng,
+      ride.dest_lat,
+      ride.dest_lng,
+    ) <= 300
+  })()
+
+  // Clear transit mode + any committed station whenever the auto-
+  // same-dest path activates — otherwise a stale "transit handoff"
+  // selection from before the driver edited their destination would
+  // keep the Send button gated.
+  useEffect(() => {
+    if (driverDestMatchesRiderDest) {
+      setDriverOfferTransitMode(false)
+      setDriverOfferStation(null)
+    }
+  }, [driverDestMatchesRiderDest])
+
   // Transit suggestions (rider-on-driver-post flow only)
   interface TransitSuggestion {
     station_name: string
@@ -816,13 +843,38 @@ export default function RideBoardConfirmSheet({
                 )}
               </div>
 
+              {/* Slice 4 — auto-same-dest banner. When the driver's
+                  destination is within 300m of the rider's posted dest,
+                  transit handoff is moot — skip the radio + transit
+                  picker entirely and surface a green confirmation card
+                  matching iOS sameDestinationCard. */}
+              {selectedDriverDest && driverDestMatchesRiderDest && (
+                <div
+                  data-testid="driver-offer-same-dest-card"
+                  className="mb-5 rounded-2xl border border-success/30 bg-success/10 p-3 flex items-start gap-3"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5 text-success shrink-0 mt-0.5" aria-hidden="true">
+                    <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1 14.5L6.5 12l1.4-1.4 3.1 3.1 6.6-6.6L19 8.5l-8 8z" />
+                  </svg>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-text-primary">
+                      You&rsquo;re heading to the same place
+                    </p>
+                    <p className="text-[11px] text-text-secondary mt-0.5">
+                      We&rsquo;ll drop them at {ride.dest_address}.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {/* Slice 3 — Dropoff matrix. Mirrors iOS
                   RideBoardOfferDropoffSection. Renders once the driver
                   has picked a destination so transit suggestions can
                   be meaningfully gated against the radio. Before that
                   the rider's posted dest is the only sensible choice
-                  anyway, so the matrix stays hidden. */}
-              {selectedDriverDest && (
+                  anyway, so the matrix stays hidden. Skipped entirely
+                  when the auto-same-dest card above is showing. */}
+              {selectedDriverDest && !driverDestMatchesRiderDest && (
                 <div className="mb-5">
                   <p className="text-sm font-semibold text-text-primary mb-2">
                     Where will the rider be dropped off?
@@ -900,6 +952,24 @@ export default function RideBoardConfirmSheet({
                           <div className="flex items-center gap-2 px-3 py-2 text-xs text-text-secondary">
                             <span className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" aria-hidden="true" />
                             Looking for transit hand-off options&hellip;
+                          </div>
+                        )}
+                        {/* Slice 4 — empty-state copy matching iOS
+                            emptyTransitNotice. Surfaces when the
+                            fetch resolved but the server returned no
+                            stations (no transit lines pass near the
+                            driver's route + the rider's destination). */}
+                        {!loadingDriverOfferTransit && driverOfferStations.length === 0 && (
+                          <div
+                            data-testid="driver-offer-transit-empty"
+                            className="rounded-xl border border-warning/30 bg-warning/10 px-3 py-2.5"
+                          >
+                            <p className="text-xs font-semibold text-text-primary">
+                              No transit hand-off options on this route.
+                            </p>
+                            <p className="text-[11px] text-text-secondary mt-0.5 leading-snug">
+                              Switch back to &ldquo;Drop at their destination&rdquo; if you&rsquo;re willing to detour, or close this offer.
+                            </p>
                           </div>
                         )}
                         {driverOfferStations.map((s) => {
