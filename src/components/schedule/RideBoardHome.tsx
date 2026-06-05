@@ -369,6 +369,22 @@ export default function RideBoardHome() {
         >
           <span className="text-base">📥</span>
         </button>
+        {/* iOS RideBoardHomePage header carries three buttons: back +
+            my-posts + my-routines. Web was missing the third — drivers
+            with recurring routes had no in-flow shortcut to manage
+            them from the search-first home. Routes to the browse list
+            with state.openRoutines so the existing routines sheet
+            auto-opens (same hint plumbing used by the Rides tab). */}
+        <button
+          type="button"
+          onClick={() => { navigate('/rides/board/browse', { state: { openRoutines: true } }) }}
+          className="flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-sm border border-border"
+          aria-label="My routines"
+          data-testid="board-home-my-routines"
+          title="My routines"
+        >
+          <span className="text-base">🔁</span>
+        </button>
       </header>
 
       <h1 className="px-4 pt-6 text-3xl font-extrabold text-textPrimary">
