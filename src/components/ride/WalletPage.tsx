@@ -82,86 +82,8 @@ export default function WalletPage() {
     queryFn: fetchPendingEarnings,
     enabled: isDriver,
   })
-  const pendingList = pendingEarnings?.pending ?? []
+  const pendingCount = pendingEarnings?.pending?.length ?? 0
   const pendingTotal = pendingEarnings?.total_cents ?? 0
-
-  const [nudgingRideId, setNudgingRideId] = useState<string | null>(null)
-  const [nudgeError, setNudgeError] = useState<string | null>(null)
-  const [nudgedRideIds, setNudgedRideIds] = useState<Set<string>>(new Set())
-  // Per-ride cooldown end (epoch ms). The server returns 429 with
-  // `retry_after_seconds` when the driver re-nudges before the
-  // 60 s window expires; we honour it by displaying a live tick so
-  // the driver sees the actual remaining time instead of a button
-  // that's permanently disabled. Mirrors iOS
-  // `PendingEarningsPage::nudgeCooldownRemaining` (W-T1-P5).
-  const [nudgeCooldownUntil, setNudgeCooldownUntil] = useState<Record<string, number>>({})
-  // Tick state — re-renders the countdown labels every second while
-  // any cooldown is still in the future.
-  const [nudgeNowTick, setNudgeNowTick] = useState(() => Date.now())
-
-  useEffect(() => {
-    // Bail when there's nothing to count down — avoids a perpetual
-    // tick that wakes the page every second after every cooldown
-    // has expired.
-    const hasActive = Object.values(nudgeCooldownUntil).some((until) => until > Date.now())
-    if (!hasActive) return
-    const id = window.setInterval(() => setNudgeNowTick(Date.now()), 1000)
-    return () => window.clearInterval(id)
-  }, [nudgeCooldownUntil])
-
-  async function handleNudge(rideId: string) {
-    setNudgingRideId(rideId)
-    setNudgeError(null)
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) { setNudgeError('Please sign in.'); return }
-      const resp = await fetch(`/api/rides/${rideId}/nudge-rider`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      })
-      if (!resp.ok) {
-        const body = (await resp.json().catch(() => ({}))) as {
-          error?: { message?: string }
-          retry_after_seconds?: number
-        }
-        // 429 cooldown: stash the per-ride deadline so the button
-        // can show a live "Try again in 42s" countdown.
-        if (resp.status === 429 && typeof body.retry_after_seconds === 'number') {
-          const deadline = Date.now() + body.retry_after_seconds * 1000
-          setNudgeCooldownUntil((prev) => ({ ...prev, [rideId]: deadline }))
-          setNudgeNowTick(Date.now())
-          // Don't surface a separate error — the countdown IS the
-          // feedback. Clear any pre-existing error so it doesn't
-          // linger above an unrelated row.
-          setNudgeError(null)
-          return
-        }
-        setNudgeError(body.error?.message ?? 'Could not send nudge.')
-        return
-      }
-      setNudgedRideIds((prev) => {
-        const next = new Set(prev)
-        next.add(rideId)
-        return next
-      })
-      // Successful nudge also kicks the cooldown so re-tap is
-      // pre-blocked until the server window expires.
-      const deadline = Date.now() + 60_000
-      setNudgeCooldownUntil((prev) => ({ ...prev, [rideId]: deadline }))
-      setNudgeNowTick(Date.now())
-    } catch {
-      setNudgeError('Network error. Please try again.')
-    } finally {
-      setNudgingRideId(null)
-    }
-  }
-
-  function nudgeCooldownSecondsRemaining(rideId: string): number {
-    const until = nudgeCooldownUntil[rideId]
-    if (!until) return 0
-    const remaining = Math.ceil((until - nudgeNowTick) / 1000)
-    return remaining > 0 ? remaining : 0
-  }
 
   function formatDate(iso: string): string {
     const d = new Date(iso)
@@ -427,74 +349,38 @@ export default function WalletPage() {
         </div>
       )}
 
-      {/* Payments in limbo — driver-only */}
-      {isDriver && pendingList.length > 0 && (
-        <div className="px-6 pb-2" data-testid="pending-earnings-section">
-          <div className="flex items-baseline justify-between mb-3">
-            <h2 className="text-lg font-semibold text-text-primary">Payments in limbo</h2>
-            <span className="text-sm font-semibold text-warning" data-testid="pending-earnings-total">
-              {formatCents(pendingTotal)}
-            </span>
-          </div>
-          <p className="mb-2 text-xs text-text-secondary">
-            The rider hasn't completed payment yet. You'll be credited once they do.
-          </p>
-          {nudgeError && (
-            <p data-testid="nudge-error" className="mb-2 text-xs text-danger">{nudgeError}</p>
-          )}
-          <div className="space-y-2">
-            {pendingList.map((p) => {
-              const alreadyNudged = nudgedRideIds.has(p.ride_id)
-              const nudging = nudgingRideId === p.ride_id
-              const cooldownSec = nudgeCooldownSecondsRemaining(p.ride_id)
-              const inCooldown = cooldownSec > 0
-              return (
-                <div
-                  key={p.ride_id}
-                  className="rounded-2xl bg-white px-4 py-3"
-                  data-testid="pending-earning-item"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="font-medium text-text-primary truncate">
-                        {p.rider_name ?? 'Rider'}
-                        {p.destination_name && (
-                          <span className="text-text-secondary font-normal"> · {p.destination_name}</span>
-                        )}
-                      </p>
-                      {/* Payment-status pill — same role-neutral copy
-                          as the iOS WalletHubPage row. Drivers don't
-                          see "PAYMENT FAILED" on their own
-                          earnings list either (W-T1-P9 parity). */}
-                      <p className="mt-0.5 text-xs text-text-secondary">
-                        {formatDate(p.ended_at)}
-                        <span className="ml-2 rounded-full bg-warning/10 px-2 py-0.5 text-[10px] font-semibold text-warning">
-                          Payment pending
-                        </span>
-                      </p>
-                    </div>
-                    <p className="shrink-0 font-semibold text-text-primary">
-                      {formatCents(p.fare_cents)}
-                    </p>
-                  </div>
-                  <button
-                    data-testid="nudge-rider-button"
-                    onClick={() => { void handleNudge(p.ride_id) }}
-                    disabled={nudging || alreadyNudged || inCooldown}
-                    className="mt-2 text-xs font-semibold text-primary active:opacity-70 disabled:opacity-50"
-                  >
-                    {alreadyNudged
-                      ? 'Nudge sent ✓'
-                      : nudging
-                        ? 'Sending…'
-                        : inCooldown
-                          ? `Try again in ${cooldownSec}s`
-                          : 'Nudge rider →'}
-                  </button>
-                </div>
-              )
-            })}
-          </div>
+      {/* ── Pending-earnings banner ───────────────────────────────────
+          iOS WalletHubPage.swift:489 — driver-only, 1-line glass card
+          with hourglass icon + total/count + chevron. Routes to
+          /wallet/pending where the full list + per-ride Nudge CTAs
+          live (mirrors iOS PendingEarningsPage). The inline list
+          that used to render here moved into PendingEarningsPage. */}
+      {isDriver && pendingCount > 0 && (
+        <div className="px-6 pt-3">
+          <button
+            type="button"
+            data-testid="pending-earnings-banner"
+            onClick={() => navigate('/wallet/pending')}
+            className="w-full rounded-2xl bg-white border border-warning/60 px-4 py-3 flex items-center gap-3 active:scale-[0.99] transition-transform shadow-[0_2px_8px_rgba(0,0,0,0.04)] text-left"
+          >
+            <div className="h-9 w-9 shrink-0 rounded-full bg-warning/15 flex items-center justify-center">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-warning" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <polyline points="12 7 12 12 15 14" />
+              </svg>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-text-primary truncate">
+                <span data-testid="pending-earnings-banner-total">{formatCents(pendingTotal)}</span> waiting on {pendingCount} ride{pendingCount === 1 ? '' : 's'}
+              </p>
+              <p className="text-xs text-text-secondary mt-0.5 truncate">
+                Tap to nudge riders to update payment
+              </p>
+            </div>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4 text-text-secondary shrink-0" aria-hidden="true">
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+          </button>
         </div>
       )}
 
