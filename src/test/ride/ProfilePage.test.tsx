@@ -63,6 +63,31 @@ vi.mock('react-router-dom', async () => {
 
 // ── AuthStore mock ────────────────────────────────────────────────────────────
 
+// v1.3 — `mockProfile` typed loose so tests can extend it with the
+// accessibility fields (has_accessibility_needs / accessibility_profile
+// / waive_caregiver_fee) without TS narrowing the literal shape.
+interface MockProfile {
+  id: string
+  email: string
+  full_name: string
+  phone: string
+  wallet_balance: number
+  is_driver: boolean
+  rating_avg: number
+  rating_count: number
+  avatar_url: string | null
+  stripe_customer_id: string | null
+  home_location: unknown
+  created_at: string
+  has_accessibility_needs?: boolean
+  accessibility_profile?: {
+    needs_wheelchair?: boolean
+    needs_caregiver?: boolean
+    other_notes?: string | null
+  }
+  waive_caregiver_fee?: boolean
+}
+
 const { mockProfile, mockSignOut, mockRefreshProfile } = vi.hoisted(() => ({
   mockProfile: {
     id: 'user-001',
@@ -73,16 +98,16 @@ const { mockProfile, mockSignOut, mockRefreshProfile } = vi.hoisted(() => ({
     is_driver: true,
     rating_avg: 4.7,
     rating_count: 15,
-    avatar_url: null,
-    stripe_customer_id: null,
-    home_location: null,
+    avatar_url: null as string | null,
+    stripe_customer_id: null as string | null,
+    home_location: null as unknown,
     created_at: '2026-01-01T00:00:00Z',
-  },
+  } as MockProfile,
   mockSignOut: vi.fn().mockResolvedValue(undefined),
   mockRefreshProfile: vi.fn().mockResolvedValue(undefined),
 }))
 
-let currentProfile = { ...mockProfile }
+let currentProfile: MockProfile = { ...mockProfile }
 
 vi.mock('@/stores/authStore', () => ({
   useAuthStore: vi.fn(
@@ -414,6 +439,120 @@ describe('ProfilePage', () => {
 
     expect(screen.queryByTestId('routes-list')).not.toBeInTheDocument()
     expect(screen.queryByText('Saved Routes')).not.toBeInTheDocument()
+  })
+
+  // ── Accessibility editor (v1.3, iOS parity) ───────────────────────────
+  // Mirrors iOS EditProfileSheet accessNeedsSection + waiveCaregiverFeeSection.
+  // Pin the editor's render gating + the save-fold of all three fields.
+
+  it('shows the accessibility editor only in edit mode', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('edit-profile-button')).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId('profile-accessibility-editor')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('edit-profile-button'))
+    expect(screen.getByTestId('profile-accessibility-editor')).toBeInTheDocument()
+  })
+
+  it('seeds the editor from profile + sends has_accessibility_needs + accessibility_profile on save', async () => {
+    currentProfile = {
+      ...mockProfile,
+      has_accessibility_needs: true,
+      accessibility_profile: {
+        needs_wheelchair: true,
+        needs_caregiver: false,
+        other_notes: null,
+      },
+    }
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('edit-profile-button')).toBeInTheDocument()
+    })
+    await user.click(screen.getByTestId('edit-profile-button'))
+
+    // Seeded — top toggle ON + wheelchair sub-toggle ON.
+    expect((screen.getByTestId('edit-has-accessibility-needs') as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByTestId('edit-needs-wheelchair') as HTMLInputElement).checked).toBe(true)
+
+    // Save without changes — request body MUST carry both fields.
+    await user.click(screen.getByTestId('save-profile-button'))
+    await waitFor(() => {
+      expect(mockProfileFetch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          has_accessibility_needs: true,
+          accessibility_profile: expect.objectContaining({
+            needs_wheelchair: true,
+            needs_caregiver: false,
+            other_notes: null,
+          }),
+        }),
+      )
+    })
+  })
+
+  it('clears all sub-fields when the top toggle is turned off', async () => {
+    currentProfile = {
+      ...mockProfile,
+      has_accessibility_needs: true,
+      accessibility_profile: {
+        needs_wheelchair: true,
+        needs_caregiver: true,
+        other_notes: 'I have a service dog',
+      },
+    }
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('edit-profile-button')).toBeInTheDocument()
+    })
+    await user.click(screen.getByTestId('edit-profile-button'))
+    await user.click(screen.getByTestId('edit-has-accessibility-needs'))
+    await user.click(screen.getByTestId('save-profile-button'))
+    await waitFor(() => {
+      expect(mockProfileFetch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          has_accessibility_needs: false,
+          accessibility_profile: {
+            needs_wheelchair: false,
+            needs_caregiver: false,
+            other_notes: null,
+          },
+        }),
+      )
+    })
+  })
+
+  it('shows the waive-caregiver-fee toggle only for drivers + sends the value on save', async () => {
+    currentProfile = { ...mockProfile, is_driver: true, waive_caregiver_fee: false }
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('edit-profile-button')).toBeInTheDocument()
+    })
+    await user.click(screen.getByTestId('edit-profile-button'))
+
+    expect(screen.getByTestId('edit-waive-caregiver-fee')).toBeInTheDocument()
+    await user.click(screen.getByTestId('edit-waive-caregiver-fee'))
+    await user.click(screen.getByTestId('save-profile-button'))
+    await waitFor(() => {
+      expect(mockProfileFetch).toHaveBeenCalledWith(
+        expect.objectContaining({ waive_caregiver_fee: true }),
+      )
+    })
+  })
+
+  it('hides the waive-caregiver-fee toggle for non-drivers', async () => {
+    currentProfile = { ...mockProfile, is_driver: false }
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('edit-profile-button')).toBeInTheDocument()
+    })
+    await user.click(screen.getByTestId('edit-profile-button'))
+    expect(screen.queryByTestId('edit-waive-caregiver-fee')).not.toBeInTheDocument()
   })
 
   // ── Sign out ────────────────────────────────────────────────────────────

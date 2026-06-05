@@ -67,6 +67,16 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
 
+  // v1.3 — accessibility editor state (mirrors iOS EditProfileSheet
+  // accessNeedsSection + waiveCaregiverFeeSection). Seeded from
+  // profile on entering edit mode; saved through `updateMyProfile`.
+  const [editHasAccessibilityNeeds, setEditHasAccessibilityNeeds] = useState(false)
+  const [editNeedsWheelchair, setEditNeedsWheelchair] = useState(false)
+  const [editNeedsCaregiver, setEditNeedsCaregiver] = useState(false)
+  const [editNeedsOther, setEditNeedsOther] = useState(false)
+  const [editOtherNotes, setEditOtherNotes] = useState('')
+  const [editWaiveCaregiverFee, setEditWaiveCaregiverFee] = useState(false)
+
   // Saved routes state
   const [routines, setRoutines] = useState<DriverRoutine[]>([])
   const [loadingRoutines, setLoadingRoutines] = useState(true)
@@ -105,9 +115,21 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
     if (editing) {
       setEditName(profile?.full_name ?? '')
       setEditPhone(profile?.phone ?? '')
+      // v1.3 — accessibility seed. Mirrors iOS EditProfileSheet onAppear
+      // (EditProfileSheet.swift:160-168). Loads the current values so
+      // toggles render in the right state; save sends only what changed.
+      const accProfile = profile?.accessibility_profile ?? {}
+      const hasNeeds = profile?.has_accessibility_needs === true
+      const notes = accProfile.other_notes ?? ''
+      setEditHasAccessibilityNeeds(hasNeeds)
+      setEditNeedsWheelchair(accProfile.needs_wheelchair === true)
+      setEditNeedsCaregiver(accProfile.needs_caregiver === true)
+      setEditNeedsOther(notes.length > 0)
+      setEditOtherNotes(notes)
+      setEditWaiveCaregiverFee(profile?.waive_caregiver_fee === true)
       setEditError(null)
     }
-  }, [editing, profile?.full_name, profile?.phone])
+  }, [editing, profile])
 
   // ── Load ride history ──────────────────────────────────────────────────
   useEffect(() => {
@@ -358,10 +380,37 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
     // EditProfileSheet doesn't flip it either — AuthGuard owns the
     // verification routing on the next session via
     // VITE_SKIP_PHONE_VERIFICATION. See WEB_PARITY_REPORT W-T0-8.
+    // v1.3 — accessibility fold (mirrors iOS EditProfileSheet.save).
+    // When the top toggle is off, we send empty sub-fields so the
+    // server clears any previously-saved wheelchair/caregiver/other
+    // state. When on, the JSONB profile carries only the fields the
+    // user enabled — empty other_notes maps to null so the column
+    // doesn't accumulate stale strings after the user turns off
+    // "Other".
+    const otherNotesClean = editOtherNotes.trim().slice(0, 200)
+    const accessibilityProfile = editHasAccessibilityNeeds
+      ? {
+          needs_wheelchair: editNeedsWheelchair,
+          needs_caregiver: editNeedsCaregiver,
+          other_notes: editNeedsOther && otherNotesClean.length > 0 ? otherNotesClean : null,
+        }
+      : {
+          needs_wheelchair: false,
+          needs_caregiver: false,
+          other_notes: null,
+        }
+
     try {
       await updateMyProfile({
         full_name: trimmedName,
         phone: newPhone,
+        has_accessibility_needs: editHasAccessibilityNeeds,
+        accessibility_profile: accessibilityProfile,
+        // Driver-only flag — sending it from a non-driver is harmless
+        // (server validates booleans + ignores invalid values), but the
+        // toggle UI is also gated on `profile.is_driver` so this only
+        // changes when a driver explicitly flipped it.
+        ...(profile?.is_driver ? { waive_caregiver_fee: editWaiveCaregiverFee } : {}),
       })
     } catch {
       setEditError('Failed to save changes')
@@ -562,6 +611,136 @@ export default function ProfilePage({ 'data-testid': testId }: ProfilePageProps)
             </button>
           )}
         </div>
+
+        {/* v1.3 — Accessibility editor (mirrors iOS EditProfileSheet
+            accessNeedsSection + waiveCaregiverFeeSection). Only renders
+            in edit mode so the read-only profile view stays compact.
+            All three states (has_accessibility_needs, accessibility_profile
+            JSONB, waive_caregiver_fee) save through the same updateMyProfile
+            call as name/phone via handleSave. */}
+        {editing && (
+          <div data-testid="profile-accessibility-editor" className="mt-4 rounded-2xl bg-surface p-4 space-y-3">
+            <p className="text-xs font-bold tracking-wider text-text-secondary uppercase">
+              Access needs
+            </p>
+
+            {/* Top toggle */}
+            <label className="flex items-center justify-between gap-3 cursor-pointer">
+              <span className="text-sm text-text-primary">I have accessibility needs</span>
+              <input
+                data-testid="edit-has-accessibility-needs"
+                type="checkbox"
+                checked={editHasAccessibilityNeeds}
+                onChange={(e) => setEditHasAccessibilityNeeds(e.target.checked)}
+                className="h-5 w-5 rounded text-primary focus:ring-primary"
+              />
+            </label>
+
+            {editHasAccessibilityNeeds && (
+              <div className="space-y-3 pl-3 border-l-2 border-primary/20">
+                {/* Wheelchair */}
+                <label className="flex items-center justify-between gap-3 cursor-pointer">
+                  <span className="text-sm text-text-primary inline-flex items-center gap-2">
+                    <span aria-hidden="true">&#x267F;</span> Wheelchair
+                  </span>
+                  <input
+                    data-testid="edit-needs-wheelchair"
+                    type="checkbox"
+                    checked={editNeedsWheelchair}
+                    onChange={(e) => setEditNeedsWheelchair(e.target.checked)}
+                    className="h-5 w-5 rounded text-primary focus:ring-primary"
+                  />
+                </label>
+
+                {/* Caregiver — only shown when wheelchair is on, matching
+                    iOS wheelchairCaregiverSubsection scope. */}
+                {editNeedsWheelchair && (
+                  <>
+                    <label className="flex items-center justify-between gap-3 cursor-pointer">
+                      <span className="text-sm text-text-primary">Caregiver usually with me</span>
+                      <input
+                        data-testid="edit-needs-caregiver"
+                        type="checkbox"
+                        checked={editNeedsCaregiver}
+                        onChange={(e) => setEditNeedsCaregiver(e.target.checked)}
+                        className="h-5 w-5 rounded text-primary focus:ring-primary"
+                      />
+                    </label>
+                    {/* Tiered fare explainer (iOS EditProfileSheet:419-432) */}
+                    <div className="rounded-xl bg-primary/5 p-3 text-xs">
+                      <p className="font-semibold text-text-secondary mb-1.5">Caregiver seat fee</p>
+                      <div className="space-y-0.5 text-text-primary">
+                        <div className="flex justify-between"><span>Short trip (&lt;10 mi)</span><span className="font-semibold">+$3</span></div>
+                        <div className="flex justify-between"><span>Medium trip (10–50 mi)</span><span className="font-semibold">+$5</span></div>
+                        <div className="flex justify-between"><span>Long trip (&gt;50 mi)</span><span className="font-semibold">+$8</span></div>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* Other */}
+                <label className="flex items-center justify-between gap-3 cursor-pointer">
+                  <span className="text-sm text-text-primary inline-flex items-center gap-2">
+                    <span aria-hidden="true">&#x1F4AC;</span> Other (tell us)
+                  </span>
+                  <input
+                    data-testid="edit-needs-other"
+                    type="checkbox"
+                    checked={editNeedsOther}
+                    onChange={(e) => setEditNeedsOther(e.target.checked)}
+                    className="h-5 w-5 rounded text-primary focus:ring-primary"
+                  />
+                </label>
+                {editNeedsOther && (
+                  <div>
+                    <textarea
+                      data-testid="edit-other-notes"
+                      value={editOtherNotes}
+                      onChange={(e) => setEditOtherNotes(e.target.value.slice(0, 200))}
+                      placeholder="Tell us what you need"
+                      rows={2}
+                      className="w-full rounded-lg border border-border px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary/60 focus:border-primary focus:outline-none resize-none"
+                    />
+                    <div className="flex items-start justify-between gap-2 mt-1">
+                      <p className="text-[11px] text-text-secondary leading-tight">
+                        We don&rsquo;t have a feature for this yet — we&rsquo;d love to hear how Tago can help.
+                      </p>
+                      <span className="text-[11px] text-text-secondary shrink-0">{editOtherNotes.length}/200</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <p className="text-[11px] text-text-secondary pt-1">
+              Helps us match you with the right rides. Editable any time.
+            </p>
+
+            {/* Waive caregiver fees — driver-only (iOS:382-407) */}
+            {profile?.is_driver && (
+              <div className="mt-2 pt-3 border-t border-border">
+                <label className="flex items-start justify-between gap-3 cursor-pointer">
+                  <span className="flex-1">
+                    <span className="block text-sm font-semibold text-text-primary">Waive caregiver seat fees</span>
+                    <span className="block text-[11px] text-text-secondary leading-snug mt-0.5">
+                      When on, you won&rsquo;t charge the $3–$8 caregiver add-on on any ride you accept. Riders still need a payment method; they just won&rsquo;t be charged the fee.
+                    </span>
+                  </span>
+                  <input
+                    data-testid="edit-waive-caregiver-fee"
+                    type="checkbox"
+                    checked={editWaiveCaregiverFee}
+                    onChange={(e) => setEditWaiveCaregiverFee(e.target.checked)}
+                    className="h-5 w-5 rounded text-primary focus:ring-primary mt-0.5"
+                  />
+                </label>
+                <p className="text-[11px] text-text-secondary mt-1.5 leading-snug">
+                  An act of goodwill — your call. Either choice is fine; the fee compensates you for the extra effort of helping with mobility aids and loading.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Payment & Payouts links */}
         <div className="mt-4 space-y-2">
