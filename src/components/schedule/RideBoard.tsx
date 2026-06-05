@@ -786,6 +786,23 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
     }
   }, [profile?.id, fetchRides])
 
+  // Honour an openRoutines hint passed in navigation state. The Rides
+  // tab's routines section sends `{ state: { openRoutines: true } }`
+  // so a tap on a routine summary row deep-links straight into this
+  // page's RoutinesSheet instead of dumping the user on the board
+  // home — matches iOS RidesTabPage's inline-sheet pattern.
+  useEffect(() => {
+    const incoming = location.state as { openRoutines?: boolean } | null
+    if (incoming?.openRoutines) {
+      // Clear the state immediately so a back-nav / refresh doesn't
+      // re-trigger the sheet on the next mount.
+      navigate(location.pathname, { replace: true, state: null })
+      void handleOpenRoutinesRef.current?.()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state])
+  const handleOpenRoutinesRef = useRef<(() => Promise<void>) | null>(null)
+
   const handleOpenRoutines = useCallback(async () => {
     setRoutinesOpen(true)
     void fetchRoutines()
@@ -810,6 +827,13 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
       }
     } catch { /* non-fatal */ }
   }, [fetchRoutines, fetchRides])
+
+  // Keep the ref pointing at the latest callback so the openRoutines-
+  // hint effect above can fire it without taking handleOpenRoutines as
+  // a dependency (would create a stale-ref loop with the navigate call).
+  useEffect(() => {
+    handleOpenRoutinesRef.current = handleOpenRoutines
+  }, [handleOpenRoutines])
 
   const postRideUrl = postAsDriver ? '/schedule/driver' : '/schedule/rider'
 

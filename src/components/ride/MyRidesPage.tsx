@@ -579,7 +579,14 @@ export default function MyRidesPage({
                   >
                     <button
                       type="button"
-                      onClick={() => { navigate('/rides/board/browse') }}
+                      onClick={() => {
+                        // iOS RidesTabPage opens RoutinesSheet inline on
+                        // routine tap. Web routes to /rides/board/browse
+                        // and signals via location state to auto-open
+                        // its routines sheet on mount — same canonical
+                        // pause / resume / edit / delete surface.
+                        navigate('/rides/board/browse', { state: { openRoutines: true } })
+                      }}
                       className="flex w-full items-center justify-between"
                     >
                       <div className="text-left">
