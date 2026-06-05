@@ -264,10 +264,22 @@ export default function RideBoardConfirmSheet({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ride?.id, ride?.mode, ride?.origin_lat, ride?.origin_lng, ride?.dest_lat, ride?.dest_lng])
 
-  // Fetch transit suggestions when rider selects a destination
+  // Fetch transit suggestions when rider selects a destination on a
+  // driver post. iOS RideBoardConfirmViewModel.swift:494-502 falls back
+  // from the legacy `driver_origin_lat/lng` + `driver_dest_lat/lng`
+  // (pre-migration-048 fields, only populated on posts that pre-date
+  // 2026-05) to the canonical post-048 `origin_lat/lng` + `dest_lat/lng`
+  // — which are populated on EVERY post regardless of routine
+  // attachment. Web was only checking the legacy fields, so the fetch
+  // bailed silently on every modern driver post → user saw no transit
+  // suggestions even when iOS does. Mirror the iOS fallback chain.
+  const driverOriginLat = ride?.driver_origin_lat ?? ride?.origin_lat ?? null
+  const driverOriginLng = ride?.driver_origin_lng ?? ride?.origin_lng ?? null
+  const driverDestLat = ride?.driver_dest_lat ?? ride?.dest_lat ?? null
+  const driverDestLng = ride?.driver_dest_lng ?? ride?.dest_lng ?? null
   useEffect(() => {
     if (!selectedPlace?.lat || !selectedPlace?.lng || !ride) return
-    if (!ride.driver_origin_lat || !ride.driver_origin_lng || !ride.driver_dest_lat || !ride.driver_dest_lng) return
+    if (driverOriginLat == null || driverOriginLng == null || driverDestLat == null || driverDestLng == null) return
 
     let cancelled = false
     setLoadingTransit(true)
@@ -282,10 +294,10 @@ export default function RideBoardConfirmSheet({
             Authorization: `Bearer ${token ?? ''}`,
           },
           body: JSON.stringify({
-            driver_origin_lat: ride.driver_origin_lat,
-            driver_origin_lng: ride.driver_origin_lng,
-            driver_dest_lat: ride.driver_dest_lat,
-            driver_dest_lng: ride.driver_dest_lng,
+            driver_origin_lat: driverOriginLat,
+            driver_origin_lng: driverOriginLng,
+            driver_dest_lat: driverDestLat,
+            driver_dest_lng: driverDestLng,
             rider_dest_lat: selectedPlace.lat,
             rider_dest_lng: selectedPlace.lng,
           }),
@@ -306,7 +318,7 @@ export default function RideBoardConfirmSheet({
     })()
 
     return () => { cancelled = true }
-  }, [selectedPlace?.lat, selectedPlace?.lng, ride])
+  }, [selectedPlace?.lat, selectedPlace?.lng, ride, driverOriginLat, driverOriginLng, driverDestLat, driverDestLng])
 
   const handleSearch = useCallback((value: string) => {
     setQuery(value)
@@ -894,11 +906,15 @@ export default function RideBoardConfirmSheet({
                               ...(selectedPlace.lat != null && selectedPlace.lng != null
                                 ? [{ lat: selectedPlace.lat, lng: selectedPlace.lng }]
                                 : []),
-                              ...(ride?.driver_origin_lat != null && ride.driver_origin_lng != null
-                                ? [{ lat: ride.driver_origin_lat, lng: ride.driver_origin_lng }]
+                              // Same iOS legacy → canonical fallback used
+                              // in the transit fetch above so the driver
+                              // origin / dest pins land on the mini-map
+                              // for modern (post-048) driver posts too.
+                              ...(driverOriginLat != null && driverOriginLng != null
+                                ? [{ lat: driverOriginLat, lng: driverOriginLng }]
                                 : []),
-                              ...(ride?.driver_dest_lat != null && ride.driver_dest_lng != null
-                                ? [{ lat: ride.driver_dest_lat, lng: ride.driver_dest_lng }]
+                              ...(driverDestLat != null && driverDestLng != null
+                                ? [{ lat: driverDestLat, lng: driverDestLng }]
                                 : []),
                             ]
                         return (
