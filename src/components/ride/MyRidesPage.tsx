@@ -261,12 +261,19 @@ export default function MyRidesPage({
   useEffect(() => {
     if (!profile?.id) return
 
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        void queryClient.invalidateQueries({ queryKey: ['active-rides'] })
-      }
+    // iOS RidesTabPage on scenePhase active runs viewModel.refresh()
+    // which re-fetches active rides + posted schedules + routines +
+    // the unread bell count. Mirror the same fan-out on web so a tab
+    // returning from background converges all three lists at once.
+    const invalidateAll = () => {
+      void queryClient.invalidateQueries({ queryKey: ['active-rides'] })
+      void queryClient.invalidateQueries({ queryKey: ['my-posts'] })
+      void queryClient.invalidateQueries({ queryKey: ['unread-count'] })
     }
-    const handleFocus = () => void queryClient.invalidateQueries({ queryKey: ['active-rides'] })
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') invalidateAll()
+    }
+    const handleFocus = () => invalidateAll()
     document.addEventListener('visibilitychange', handleVisibility)
     window.addEventListener('focus', handleFocus)
 
@@ -380,23 +387,25 @@ export default function MyRidesPage({
       data-testid={testId}
       className="flex min-h-dvh flex-col bg-surface font-sans"
     >
-      {/* Header */}
+      {/* ── Sticky top bar ──────────────────────────────────────────────
+          iOS RidesTabPage uses .navigationTitle("Rides") inline + a
+          bell toolbar item. Web mirrors with the same sticky
+          translucent strip used on home/profile so the chrome reads
+          consistent across the three primary tabs. */}
       <div
-        className="bg-white border-b border-border px-4 pb-3"
-        style={{ paddingTop: 'max(env(safe-area-inset-top), 1rem)' }}
+        data-testid="rides-top-bar"
+        className="sticky top-0 z-30 bg-white/90 backdrop-blur-sm border-b border-border px-4"
+        style={{ paddingTop: 'calc(max(env(safe-area-inset-top), 0.75rem) + 0.25rem)', paddingBottom: '0.75rem' }}
       >
         <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-bold text-text-primary">My Rides</h1>
-            <p className="text-xs text-text-secondary mt-0.5">Upcoming & active rides</p>
-          </div>
+          <h1 className="text-base font-bold text-text-primary">Rides</h1>
 
           {/* Bell icon for notifications */}
           <button
             data-testid="notifications-bell"
             onClick={() => navigate('/notifications')}
             aria-label="Notifications"
-            className="relative p-2 rounded-full hover:bg-surface transition-colors"
+            className="relative p-1.5 rounded-lg active:bg-surface transition-colors"
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-text-primary" aria-hidden="true">
               <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
@@ -820,6 +829,26 @@ export default function MyRidesPage({
           </button>
         )}
       </div>
+
+      {/* ── Post-trip FAB ───────────────────────────────────────────────
+          Mirrors iOS RidesTabPage.swift:431 `postRideFAB`. Sits
+          bottom-right above the BottomNav so the user can publish a
+          new ride from anywhere in the scrolled list without bouncing
+          back to home. Routes to /schedule/driver for drivers,
+          /schedule/rider for riders. */}
+      <button
+        type="button"
+        data-testid="rides-post-trip-fab"
+        onClick={() => navigate(profile?.is_driver ? '/schedule/driver' : '/schedule/rider')}
+        aria-label="Post a trip"
+        className="fixed right-4 z-30 h-14 w-14 rounded-full bg-primary text-white shadow-[0_8px_20px_rgba(58,90,228,0.35)] flex items-center justify-center active:scale-95 transition-transform"
+        style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 5rem)' }}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6" aria-hidden="true">
+          <line x1="12" y1="5" x2="12" y2="19" />
+          <line x1="5" y1="12" x2="19" y2="12" />
+        </svg>
+      </button>
 
       <BottomNav activeTab="rides" />
 
