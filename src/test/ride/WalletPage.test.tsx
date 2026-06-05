@@ -98,6 +98,7 @@ function renderWallet() {
         <Routes>
           <Route path="/wallet" element={<WalletPage />} />
           <Route path="/wallet/add" element={<div data-testid="add-funds-page">Add Funds</div>} />
+          <Route path="/wallet/history" element={<div data-testid="wallet-history-page">History</div>} />
           <Route path="/payment/methods" element={<div data-testid="payment-methods-page">Methods</div>} />
           <Route path="/stripe/payouts" element={<div data-testid="payouts-page">Payouts</div>} />
         </Routes>
@@ -316,6 +317,42 @@ describe('WalletPage', () => {
     const banner = screen.getByTestId('wallet-bank-banner')
     expect(banner.textContent).toContain('Add a bank to cash out')
     expect(banner.textContent).toContain('$42.50')
+  })
+
+  // ── Recent activity preview + View all (iOS-parity) ─────────────────
+
+  it('renders the "Recent activity" eyebrow above the transaction list', async () => {
+    renderWallet()
+    await waitFor(() => {
+      expect(screen.getByText('Recent activity')).toBeInTheDocument()
+    })
+  })
+
+  it('"View all" link routes to /wallet/history when transactions are present', async () => {
+    renderWallet()
+    await waitFor(() => {
+      expect(screen.getByTestId('wallet-view-all-history')).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByTestId('wallet-view-all-history'))
+    await waitFor(() => {
+      expect(screen.getByTestId('wallet-history-page')).toBeInTheDocument()
+    })
+  })
+
+  it('hides the "View all" link when there are no transactions', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ transactions: [] }),
+    }))
+    try {
+      renderWallet()
+      await waitFor(() => {
+        expect(screen.getByTestId('empty-state')).toBeInTheDocument()
+      })
+      expect(screen.queryByTestId('wallet-view-all-history')).not.toBeInTheDocument()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   // ── Pending-earnings banner (iOS-parity, replaces the inline list) ───

@@ -89,6 +89,7 @@ const WalletPage = lazy(() => import('@/components/ride/WalletPage'))
 const TransactionDetailPage = lazy(() => import('@/components/ride/TransactionDetailPage'))
 const AddFundsPage = lazy(() => import('@/components/ride/AddFundsPage'))
 const PendingEarningsPage = lazy(() => import('@/components/ride/PendingEarningsPage'))
+const TransactionHistoryPage = lazy(() => import('@/components/ride/TransactionHistoryPage'))
 const PaymentMethodsPage = lazy(() => import('@/components/payment/PaymentMethodsPage'))
 const SaveCardPage = lazy(() => import('@/components/payment/SaveCardPage'))
 const RideHistoryPage = lazy(() => import('@/components/ride/RideHistoryPage'))
@@ -220,6 +221,7 @@ createRoot(rootEl).render(
               <Route path="/wallet/transaction/:id" element={<Suspense fallback={<FormPageSkeleton />}><TransactionDetailPage /></Suspense>} />
               <Route path="/wallet/add" element={<Suspense fallback={<FormPageSkeleton />}><AddFundsPage /></Suspense>} />
               <Route path="/wallet/pending" element={<Suspense fallback={<ListPageSkeleton />}><PendingEarningsPage /></Suspense>} />
+              <Route path="/wallet/history" element={<Suspense fallback={<ListPageSkeleton />}><TransactionHistoryPage /></Suspense>} />
               <Route path="/payment/methods" element={<Suspense fallback={<ListPageSkeleton />}><PaymentMethodsPage /></Suspense>} />
               <Route path="/payment/add" element={<Suspense fallback={<FormPageSkeleton />}><SaveCardPage /></Suspense>} />
 

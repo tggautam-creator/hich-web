@@ -6,22 +6,20 @@ import { supabase } from '@/lib/supabase'
 import { formatCents } from '@/lib/fare'
 import BottomNav from '@/components/ui/BottomNav'
 import WithdrawSheet from '@/components/ride/WithdrawSheet'
+import {
+  formatTxDate,
+  isCredit,
+  isDriverEarning,
+  transactionTitle,
+  typeIcon,
+  withdrawalEta,
+  withdrawalEtaDate,
+  type WalletTransaction,
+} from '@/lib/transactionDisplay'
 
-interface Transaction {
-  id: string
-  type: string
-  amount_cents: number
-  balance_after_cents: number
-  description: string | null
-  created_at: string
-  ride_id?: string | null
-  counterparty_name?: string | null
-  // Set when the withdrawal row has been tied to a Stripe Transfer.
-  // The "landed" flip is derived cosmetically from created_at + 2
-  // business days (see WalletPage.withdrawalEtaDate); transfer_paid_at
-  // exists in the schema for forward-compat but isn't read by the UI.
-  transfer_id?: string | null
-}
+// Limit the wallet hub's inline preview to the most recent N rows;
+// matches iOS WalletHubPage.swift:462 `WalletTransactionsEndpoint(limit: 5)`.
+const RECENT_PREVIEW_LIMIT = 5
 
 interface PendingEarning {
   ride_id: string
@@ -33,14 +31,14 @@ interface PendingEarning {
   payment_status: 'pending' | 'failed'
 }
 
-async function fetchTransactions(): Promise<Transaction[]> {
+async function fetchTransactions(): Promise<WalletTransaction[]> {
   const { data: { session } } = await supabase.auth.getSession()
   if (!session) throw new Error('Not authenticated')
-  const res = await fetch('/api/wallet/transactions', {
+  const res = await fetch(`/api/wallet/transactions?limit=${RECENT_PREVIEW_LIMIT}`, {
     headers: { Authorization: `Bearer ${session.access_token}` },
   })
   if (!res.ok) throw new Error('Failed to fetch transactions')
-  const json = await res.json() as { transactions: Transaction[] }
+  const json = await res.json() as { transactions: WalletTransaction[] }
   return json.transactions
 }
 
@@ -85,116 +83,6 @@ export default function WalletPage() {
   const pendingCount = pendingEarnings?.pending?.length ?? 0
   const pendingTotal = pendingEarnings?.total_cents ?? 0
 
-  function formatDate(iso: string): string {
-    const d = new Date(iso)
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-  }
-
-  function typeLabel(type: string): string {
-    switch (type) {
-      case 'topup': return 'Added funds'
-      case 'fare_debit': return 'Ride fare'
-      case 'fare_credit': return 'Ride earnings'
-      case 'ride_earning': return 'Ride earnings'
-      case 'fare_reversal': return 'Refunded — payment failed'
-      case 'wallet_refund': return 'Refund — payment failed'
-      case 'refund': return 'Refund'
-      case 'tip_debit': return 'Tip to driver'
-      case 'tip_credit': return 'Tip from rider'
-      case 'withdrawal': return 'Withdrawal to bank'
-      case 'withdrawal_failed_refund': return 'Refund — withdrawal failed'
-      default: return type
-    }
-  }
-
-  // Slice 8: refund/reversal rows all surface as the same generic label
-  // ("Refund — payment failed") even though they come from three distinct
-  // server paths. Parse the description prefix the server writes so the
-  // rider/driver can tell *why* the refund happened. No schema change —
-  // pure read-side enrichment. If the prefix doesn't match a known case,
-  // fall back to the generic typeLabel so older rows still render.
-  function refinedRefundLabel(tx: Transaction): string | null {
-    const desc = (tx.description ?? '').toLowerCase()
-    if (tx.type === 'wallet_refund') {
-      if (desc.includes('no card on file')) return 'Refund · no card on file'
-      if (desc.includes('card charge failed')) return 'Refund · card charge failed'
-      if (desc.includes('card portion failed') || desc.includes('rider wallet restored')) return 'Refund · card payment failed'
-    }
-    if (tx.type === 'fare_reversal') {
-      if (desc.includes('test-mode')) return 'Reversed · test-mode cleanup'
-      if (desc.includes('rider payment failed')) return 'Reversed · rider payment failed'
-    }
-    if (tx.type === 'withdrawal_failed_refund') {
-      return 'Refund · withdrawal failed at bank'
-    }
-    return null
-  }
-
-  // Pretty primary line for a transaction: "Ride earnings · Tarun Gautam"
-  // when we know the other party, otherwise fall back to the type label.
-  // We deliberately ignore tx.description for ride-linked rows — it stored a
-  // raw uuid before the rider-name enrichment was added.
-  //
-  // For refund/reversal rows we prefer the description-parsed label
-  // (Slice 8) so the rider can tell *which* refund cause this was. The
-  // counterparty name is appended when known.
-  function transactionTitle(tx: Transaction): string {
-    const refined = refinedRefundLabel(tx)
-    const base = refined ?? typeLabel(tx.type)
-    if (tx.counterparty_name && tx.ride_id) {
-      return `${base} · ${tx.counterparty_name}`
-    }
-    return refined ?? tx.description ?? base
-  }
-
-  function typeIcon(type: string): string {
-    switch (type) {
-      case 'topup': return '+'
-      case 'fare_credit': return '+'
-      case 'ride_earning': return '+'
-      case 'wallet_refund': return '+'
-      case 'tip_credit': return '+'
-      case 'withdrawal_failed_refund': return '+'
-      case 'fare_debit': return '−'
-      case 'fare_reversal': return '−'
-      case 'tip_debit': return '−'
-      case 'withdrawal': return '−'
-      case 'refund': return '+'
-      default: return ''
-    }
-  }
-
-  function isCredit(type: string): boolean {
-    return type === 'topup' || type === 'fare_credit' || type === 'ride_earning'
-      || type === 'wallet_refund' || type === 'refund' || type === 'tip_credit'
-      || type === 'withdrawal_failed_refund'
-  }
-
-  // ETA helpers — Stripe doesn't expose a platform-level event for
-  // "money landed in the connected account's bank" anymore (the old
-  // `transfer.paid` event was retired and `payout.paid` only fires on
-  // the connected account). We approximate by adding 2 business days
-  // to the withdrawal's created_at: until that date the row reads "in
-  // transit", after it reads "landed in your bank". Cosmetic but
-  // accurate within ~1 day for ~99% of transfers and matches the copy
-  // in WithdrawSheet's success state.
-  function withdrawalEtaDate(createdAt: string): Date {
-    const d = new Date(createdAt)
-    let added = 0
-    while (added < 2) {
-      d.setDate(d.getDate() + 1)
-      const dow = d.getDay()
-      if (dow !== 0 && dow !== 6) added++
-    }
-    return d
-  }
-  function withdrawalEta(createdAt: string): string {
-    return withdrawalEtaDate(createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-  }
-
-  function isDriverEarning(type: string): boolean {
-    return type === 'ride_earning' || type === 'fare_credit'
-  }
 
   return (
     <div className="min-h-screen bg-surface pb-24 safe-top" data-testid="wallet-page">
@@ -384,11 +272,29 @@ export default function WalletPage() {
         </div>
       )}
 
-      {/* Transactions */}
-      <div className="px-6">
-        <h2 className="mb-3 text-lg font-semibold text-text-primary">
-          Transaction History
-        </h2>
+      {/* ── Recent activity preview ────────────────────────────────────
+          iOS WalletHubPage.swift:376 — eyebrow + cap-at-5 preview +
+          "View all" → /wallet/history. The full paginated list +
+          day-grouped sections lives on TransactionHistoryPage. */}
+      <div className="px-6 pt-4">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-[11px] font-extrabold tracking-[0.16em] text-text-secondary uppercase">
+            Recent activity
+          </h2>
+          {transactions.length > 0 && (
+            <button
+              type="button"
+              data-testid="wallet-view-all-history"
+              onClick={() => navigate('/wallet/history')}
+              className="text-xs font-bold text-primary active:opacity-70 flex items-center gap-1"
+            >
+              View all
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-3 w-3" aria-hidden="true">
+                <path d="M9 18l6-6-6-6" />
+              </svg>
+            </button>
+          )}
+        </div>
 
         {loading && (
           <div className="space-y-2" data-testid="loading-spinner">
@@ -487,7 +393,7 @@ export default function WalletPage() {
                       {transactionTitle(tx)}
                     </p>
                     <p className="text-xs text-text-secondary">
-                      {formatDate(tx.created_at)}
+                      {formatTxDate(tx.created_at)}
                       {isDriver && !hasBank && isDriverEarning(tx.type) && (
                         <span data-testid="tx-pending-payout-tag" className="ml-2 text-primary">
                           · Link bank to withdraw
