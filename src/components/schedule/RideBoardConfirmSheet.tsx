@@ -110,6 +110,13 @@ export default function RideBoardConfirmSheet({
   const [driverDestResolving, setDriverDestResolving] = useState(false)
   const driverDestDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Slice 3 — rider-dropoff mode for the driver-offer flow. Mirrors
+  // iOS RiderDropoffChoice (.atRiderDestination | .atTransitStation).
+  // Default false → drop at rider's posted dest. Setting it true
+  // surfaces the transit station picker; user must commit a station
+  // before the Send button enables.
+  const [driverOfferTransitMode, setDriverOfferTransitMode] = useState(false)
+
   // Transit suggestions (rider-on-driver-post flow only)
   interface TransitSuggestion {
     station_name: string
@@ -809,69 +816,119 @@ export default function RideBoardConfirmSheet({
                 )}
               </div>
 
-              {/* v1.3 — driver-offer transit-station dropoff. Mirrors
-                  iOS RiderDropoffChoice.atTransitStation. Default:
-                  drop the rider at their posted dest. Toggle ON →
-                  show transit stops on the route + let the driver pick
-                  one. The server forwards the 4 proposed_transit_*
-                  fields so the rider's BoardOfferAcceptPage shows the
-                  full journey card. */}
-              {(loadingDriverOfferTransit || driverOfferStations.length > 0) && (
+              {/* Slice 3 — Dropoff matrix. Mirrors iOS
+                  RideBoardOfferDropoffSection. Renders once the driver
+                  has picked a destination so transit suggestions can
+                  be meaningfully gated against the radio. Before that
+                  the rider's posted dest is the only sensible choice
+                  anyway, so the matrix stays hidden. */}
+              {selectedDriverDest && (
                 <div className="mb-5">
                   <p className="text-sm font-semibold text-text-primary mb-2">
-                    Drop them at &hellip;
+                    Where will the rider be dropped off?
                   </p>
                   <div className="space-y-1.5">
+                    {/* Radio A — Drop at rider's posted destination */}
                     <button
                       type="button"
                       data-testid="driver-offer-drop-at-dest"
-                      onClick={() => setDriverOfferStation(null)}
-                      className={`w-full text-left rounded-xl px-3 py-2.5 border transition-colors ${
-                        driverOfferStation === null
+                      onClick={() => {
+                        setDriverOfferTransitMode(false)
+                        setDriverOfferStation(null)
+                      }}
+                      className={`w-full text-left rounded-xl px-3 py-2.5 border transition-colors flex items-start gap-3 ${
+                        !driverOfferTransitMode
                           ? 'bg-primary/10 border-primary/40'
                           : 'bg-white border-border active:bg-surface'
                       }`}
                     >
-                      <p className="text-xs font-semibold text-text-primary">
-                        Rider&rsquo;s posted destination
-                      </p>
-                      <p className="text-[11px] text-text-secondary truncate">
-                        {ride.dest_address}
-                      </p>
+                      <span
+                        aria-hidden="true"
+                        className={`mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 ${
+                          !driverOfferTransitMode ? 'border-primary' : 'border-text-secondary/40'
+                        }`}
+                      >
+                        {!driverOfferTransitMode && <span className="h-2 w-2 rounded-full bg-primary" />}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <p className="text-xs font-semibold text-text-primary">
+                          Drop at their destination
+                        </p>
+                        <p className="text-[11px] text-text-secondary truncate">
+                          {ride.dest_address}
+                        </p>
+                      </span>
                     </button>
 
-                    {loadingDriverOfferTransit && driverOfferStations.length === 0 && (
-                      <div className="flex items-center gap-2 px-3 py-2 text-xs text-text-secondary">
-                        <span className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" aria-hidden="true" />
-                        Finding transit stops on this route&hellip;
+                    {/* Radio B — Hand off via transit */}
+                    <button
+                      type="button"
+                      data-testid="driver-offer-handoff-transit"
+                      onClick={() => setDriverOfferTransitMode(true)}
+                      className={`w-full text-left rounded-xl px-3 py-2.5 border transition-colors flex items-start gap-3 ${
+                        driverOfferTransitMode
+                          ? 'bg-primary/10 border-primary/40'
+                          : 'bg-white border-border active:bg-surface'
+                      }`}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 ${
+                          driverOfferTransitMode ? 'border-primary' : 'border-text-secondary/40'
+                        }`}
+                      >
+                        {driverOfferTransitMode && <span className="h-2 w-2 rounded-full bg-primary" />}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <p className="text-xs font-semibold text-text-primary">
+                          Hand off via transit
+                        </p>
+                        <p className="text-[11px] text-text-secondary truncate">
+                          {driverOfferStation
+                            ? `Drop at ${driverOfferStation.station_name} · rider takes transit`
+                            : 'Pick a station below'}
+                        </p>
+                      </span>
+                    </button>
+
+                    {/* Transit station picker — only visible inside the
+                        transit branch. Matches iOS DropoffSection
+                        gating: radio B opens the list; radio A hides it. */}
+                    {driverOfferTransitMode && (
+                      <div data-testid="driver-offer-transit-picker" className="pl-7 space-y-1.5 pt-1">
+                        {loadingDriverOfferTransit && driverOfferStations.length === 0 && (
+                          <div className="flex items-center gap-2 px-3 py-2 text-xs text-text-secondary">
+                            <span className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" aria-hidden="true" />
+                            Looking for transit hand-off options&hellip;
+                          </div>
+                        )}
+                        {driverOfferStations.map((s) => {
+                          const key = `${s.station_lat}-${s.station_lng}`
+                          const isSelected = driverOfferStation
+                            && `${driverOfferStation.station_lat}-${driverOfferStation.station_lng}` === key
+                          return (
+                            <button
+                              key={key}
+                              type="button"
+                              data-testid="driver-offer-drop-at-station"
+                              onClick={() => setDriverOfferStation(s)}
+                              className={`w-full text-left rounded-xl px-3 py-2.5 border transition-colors ${
+                                isSelected
+                                  ? 'bg-primary/10 border-primary/40'
+                                  : 'bg-white border-border active:bg-surface'
+                              }`}
+                            >
+                              <p className="text-xs font-semibold text-text-primary">
+                                {s.station_name}
+                              </p>
+                              <p className="text-[11px] text-text-secondary">
+                                {s.walk_to_station_minutes} min walk &middot; {s.transit_to_dest_minutes} min on transit &middot; ~{s.total_rider_minutes} min total
+                              </p>
+                            </button>
+                          )
+                        })}
                       </div>
                     )}
-
-                    {driverOfferStations.map((s) => {
-                      const key = `${s.station_lat}-${s.station_lng}`
-                      const isSelected = driverOfferStation
-                        && `${driverOfferStation.station_lat}-${driverOfferStation.station_lng}` === key
-                      return (
-                        <button
-                          key={key}
-                          type="button"
-                          data-testid="driver-offer-drop-at-station"
-                          onClick={() => setDriverOfferStation(s)}
-                          className={`w-full text-left rounded-xl px-3 py-2.5 border transition-colors ${
-                            isSelected
-                              ? 'bg-primary/10 border-primary/40'
-                              : 'bg-white border-border active:bg-surface'
-                          }`}
-                        >
-                          <p className="text-xs font-semibold text-text-primary">
-                            {s.station_name}
-                          </p>
-                          <p className="text-[11px] text-text-secondary">
-                            {s.walk_to_station_minutes} min walk &middot; {s.transit_to_dest_minutes} min on transit &middot; ~{s.total_rider_minutes} min total
-                          </p>
-                        </button>
-                      )
-                    })}
                   </div>
                 </div>
               )}
@@ -893,14 +950,24 @@ export default function RideBoardConfirmSheet({
                 </div>
               </div>
 
-              <button
-                data-testid="confirm-send-button"
-                disabled={isRequesting}
-                onClick={handleDriverSubmit}
-                className="mb-3 w-full rounded-2xl py-3.5 text-sm font-semibold text-white active:opacity-90 disabled:opacity-50 bg-primary"
-              >
-                {isRequesting ? 'Sending…' : 'Send Offer'}
-              </button>
+              {/* Submit gate (Slices 1-3):
+                  - driver dest required (Slice 1's iOS-parity required input)
+                  - if transit mode is on, a station must be committed
+                  Disabled state mirrors iOS canSubmitDriverOffer. */}
+              {(() => {
+                const canSubmit = !!selectedDriverDest
+                  && (!driverOfferTransitMode || driverOfferStation != null)
+                return (
+                  <button
+                    data-testid="confirm-send-button"
+                    disabled={isRequesting || !canSubmit}
+                    onClick={handleDriverSubmit}
+                    className="mb-3 w-full rounded-2xl py-3.5 text-sm font-semibold text-white active:opacity-90 disabled:opacity-50 bg-primary"
+                  >
+                    {isRequesting ? 'Sending…' : 'Send Offer'}
+                  </button>
+                )
+              })()}
               <button
                 data-testid="confirm-cancel-button"
                 onClick={onCancel}

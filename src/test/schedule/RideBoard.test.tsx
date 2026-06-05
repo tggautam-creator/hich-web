@@ -456,6 +456,15 @@ describe('RideBoard', () => {
       return Promise.resolve({ ok: false, json: () => Promise.resolve({}) })
     })
 
+    // Slice 1+3 — the offer composer now requires "Where are you
+    // heading?" before Send Offer enables. Drive the input → pick the
+    // mocked suggestion → Send.
+    await user.type(screen.getByTestId('driver-dest-search'), 'San Francisco')
+    await waitFor(() => {
+      expect(screen.getByTestId('driver-dest-suggestion')).toBeInTheDocument()
+    })
+    await user.click(screen.getByTestId('driver-dest-suggestion'))
+
     await user.click(screen.getByTestId('confirm-send-button'))
 
     await waitFor(() => {
@@ -512,6 +521,14 @@ describe('RideBoard', () => {
     // the WIRE shape — `proposed_pickup_*` ARE forwarded when set, even
     // if they're nil on the no-picker-input fallback. Validates by
     // checking the body has the key when filled, or omits when blank.
+    //
+    // Slice 1+3 — fill "Where are you heading?" so Send Offer enables.
+    await user.type(screen.getByTestId('driver-dest-search'), 'San Francisco')
+    await waitFor(() => {
+      expect(screen.getByTestId('driver-dest-suggestion')).toBeInTheDocument()
+    })
+    await user.click(screen.getByTestId('driver-dest-suggestion'))
+
     await user.click(screen.getByTestId('confirm-send-button'))
 
     await waitFor(() => {
