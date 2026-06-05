@@ -116,6 +116,12 @@ export default function RideBoardConfirmSheet({
   // surfaces the transit station picker; user must commit a station
   // before the Send button enables.
   const [driverOfferTransitMode, setDriverOfferTransitMode] = useState(false)
+  // Driver-offer peeked-station key (mirror of rider-side
+  // peekedStationKey). Null in overview mode; set when the driver
+  // taps a station row → mini-map zooms to that station + the rider's
+  // posted dest, "Use this stop" CTA reveals on the matching row.
+  // Cleared on commit + when the fetch returns fresh suggestions.
+  const [driverOfferPeekedKey, setDriverOfferPeekedKey] = useState<string | null>(null)
 
   // Slice 4 — auto-same-dest detection. iOS uses 300m as the proximity
   // threshold (matches the handoff engine's "same place" rule). When
@@ -315,6 +321,11 @@ export default function RideBoardConfirmSheet({
         if (!cancelled && res.ok) {
           const data = (await res.json()) as { suggestions: TransitSuggestion[] }
           setDriverOfferStations(data.suggestions ?? [])
+          // Stale peek invalidation: if the driver edited their dest
+          // and the new fetch dropped the previously-peeked station,
+          // the mini-map would render zero pins. Reset on every fresh
+          // resolve to match the rider-side pattern.
+          setDriverOfferPeekedKey(null)
         }
       } catch {
         // Silent — transit suggestions are optional; the default
@@ -972,31 +983,157 @@ export default function RideBoardConfirmSheet({
                             </p>
                           </div>
                         )}
-                        {driverOfferStations.map((s) => {
-                          const key = `${s.station_lat}-${s.station_lng}`
-                          const isSelected = driverOfferStation
-                            && `${driverOfferStation.station_lat}-${driverOfferStation.station_lng}` === key
+                        {/* Slice 6 (this turn) — mini-map + numbered
+                            station rows + peek/commit pattern. Same
+                            UX the rider-side has had since Sprint 10
+                            Slice 4. iOS RideBoardOfferDropoffSection
+                            uses the same RideBoardTransitMiniMap +
+                            transitRow primitives for the driver-
+                            offer flow. Driver sees their own pickup
+                            (P pin), their own destination (D pin),
+                            plus the rider's posted destination
+                            (orange R pin) so the spatial relationship
+                            is unambiguous. */}
+                        {driverOfferStations.length > 0 && (() => {
+                          const peeked = driverOfferPeekedKey != null
+                            ? driverOfferStations.find(
+                                (s) => `${s.station_lat}-${s.station_lng}` === driverOfferPeekedKey,
+                              ) ?? null
+                            : null
+                          const isPeekMode = peeked != null
+                          const driverDestPos = selectedDriverDest?.lat != null && selectedDriverDest?.lng != null
+                            ? { lat: selectedDriverDest.lat, lng: selectedDriverDest.lng }
+                            : null
+                          const driverPickupPos = (selectedPickup?.lat != null && selectedPickup?.lng != null)
+                            ? { lat: selectedPickup.lat, lng: selectedPickup.lng }
+                            : (ride.origin_lat != null && ride.origin_lng != null)
+                              ? { lat: ride.origin_lat, lng: ride.origin_lng }
+                              : null
+                          const riderDestPos = (ride.dest_lat != null && ride.dest_lng != null)
+                            ? { lat: ride.dest_lat, lng: ride.dest_lng }
+                            : null
+                          const boundsPoints: Array<{ lat: number; lng: number }> = isPeekMode
+                            ? [
+                                { lat: peeked.station_lat, lng: peeked.station_lng },
+                                ...(riderDestPos ? [riderDestPos] : []),
+                              ]
+                            : [
+                                ...driverOfferStations.map((s) => ({ lat: s.station_lat, lng: s.station_lng })),
+                                ...(riderDestPos ? [riderDestPos] : []),
+                                ...(driverPickupPos ? [driverPickupPos] : []),
+                                ...(driverDestPos ? [driverDestPos] : []),
+                              ]
                           return (
-                            <button
-                              key={key}
-                              type="button"
-                              data-testid="driver-offer-drop-at-station"
-                              onClick={() => setDriverOfferStation(s)}
-                              className={`w-full text-left rounded-xl px-3 py-2.5 border transition-colors ${
-                                isSelected
-                                  ? 'bg-primary/10 border-primary/40'
-                                  : 'bg-white border-border active:bg-surface'
-                              }`}
-                            >
-                              <p className="text-xs font-semibold text-text-primary">
-                                {s.station_name}
-                              </p>
-                              <p className="text-[11px] text-text-secondary">
-                                {s.walk_to_station_minutes} min walk &middot; {s.transit_to_dest_minutes} min on transit &middot; ~{s.total_rider_minutes} min total
-                              </p>
-                            </button>
+                            <>
+                              <RideMapPrimitive
+                                data-testid="driver-offer-transit-mini-map"
+                                className="rounded-2xl overflow-hidden border border-border mb-2"
+                                height="180px"
+                                defaultZoom={12}
+                                defaultCenter={
+                                  driverOfferStations[0]
+                                    ? { lat: driverOfferStations[0].station_lat, lng: driverOfferStations[0].station_lng }
+                                    : undefined
+                                }
+                                boundsPoints={boundsPoints}
+                              >
+                                {/* Numbered station pins. Peek mode collapses
+                                    to just the peeked station + rider dest
+                                    so the camera tightens. */}
+                                {(isPeekMode ? [peeked] : driverOfferStations).map((s, displayIdx) => {
+                                  const realIdx = isPeekMode
+                                    ? driverOfferStations.findIndex(
+                                        (t) => t.station_lat === s.station_lat && t.station_lng === s.station_lng,
+                                      )
+                                    : displayIdx
+                                  const isThisPeeked = peeked != null
+                                    && peeked.station_lat === s.station_lat
+                                    && peeked.station_lng === s.station_lng
+                                  return (
+                                    <AdvancedMarker
+                                      key={`${s.station_lat}-${s.station_lng}`}
+                                      position={{ lat: s.station_lat, lng: s.station_lng }}
+                                      zIndex={isThisPeeked ? 10 : 1}
+                                    >
+                                      <div
+                                        data-testid={`driver-offer-mini-map-station-${realIdx}`}
+                                        className={[
+                                          'flex h-7 w-7 items-center justify-center rounded-full border-2 border-white shadow-md text-xs font-bold text-white transition-transform',
+                                          isThisPeeked ? 'bg-primary scale-125' : 'bg-primary',
+                                        ].join(' ')}
+                                      >
+                                        {realIdx + 1}
+                                      </div>
+                                    </AdvancedMarker>
+                                  )
+                                })}
+
+                                {/* Rider destination — always present. */}
+                                {riderDestPos && (
+                                  <AdvancedMarker
+                                    position={riderDestPos}
+                                    zIndex={5}
+                                  >
+                                    <div
+                                      data-testid="driver-offer-mini-map-rider-dest"
+                                      className="flex h-5 w-5 items-center justify-center rounded-full bg-warning border-2 border-white shadow text-[8px] font-bold text-white"
+                                    >
+                                      R
+                                    </div>
+                                  </AdvancedMarker>
+                                )}
+
+                                {/* Driver context pins — overview only.
+                                    P = driver pickup, D = driver dest. */}
+                                {!isPeekMode && driverPickupPos && (
+                                  <AdvancedMarker position={driverPickupPos} zIndex={3}>
+                                    <div
+                                      data-testid="driver-offer-mini-map-driver-origin"
+                                      className="flex h-5 w-5 items-center justify-center rounded-full bg-success border-2 border-white shadow text-[8px] font-bold text-white"
+                                    >
+                                      P
+                                    </div>
+                                  </AdvancedMarker>
+                                )}
+                                {!isPeekMode && driverDestPos && (
+                                  <AdvancedMarker position={driverDestPos} zIndex={0}>
+                                    <div
+                                      data-testid="driver-offer-mini-map-driver-dest"
+                                      className="flex h-5 w-5 items-center justify-center rounded-full bg-text-primary border-2 border-white shadow text-[8px] font-bold text-white"
+                                    >
+                                      D
+                                    </div>
+                                  </AdvancedMarker>
+                                )}
+                              </RideMapPrimitive>
+
+                              <div className="space-y-1.5">
+                                {driverOfferStations.map((s, idx) => {
+                                  const key = `${s.station_lat}-${s.station_lng}`
+                                  const isThisPeeked = driverOfferPeekedKey === key
+                                  return (
+                                    <RideBoardTransitStationRow
+                                      key={key}
+                                      index={idx}
+                                      stationName={s.station_name}
+                                      walkToStationMinutes={s.walk_to_station_minutes}
+                                      transitToDestMinutes={s.transit_to_dest_minutes}
+                                      totalRiderMinutes={s.total_rider_minutes}
+                                      isPeeked={isThisPeeked}
+                                      onTapPeek={() => {
+                                        setDriverOfferPeekedKey((prev) => (prev === key ? null : key))
+                                      }}
+                                      onCommit={() => {
+                                        setDriverOfferStation(s)
+                                        setDriverOfferPeekedKey(null)
+                                      }}
+                                    />
+                                  )
+                                })}
+                              </div>
+                            </>
                           )
-                        })}
+                        })()}
                       </div>
                     )}
                   </div>
