@@ -39,6 +39,17 @@ export interface RequestEnrichment {
    *  recompute the canonical caregiver-fee tier. Mirrors iOS field
    *  `distance_km` on the ScheduleRequestEndpoint payload. */
   distance_km?: number
+  /** v1.3 — driver-offer transit-station dropoff (mirrors iOS
+   *  RiderDropoffChoice.atTransitStation). When set, the offer
+   *  proposes dropping the rider at this station + threads the 4
+   *  transit-leg fields through so the rider's BoardOfferAcceptPage
+   *  renders the full journey card. The destination_* fields above
+   *  carry the station coords + name; these add the line-name + leg
+   *  breakdown. */
+  proposed_transit_line_name?: string
+  proposed_transit_walk_minutes?: number
+  proposed_transit_to_dest_minutes?: number
+  proposed_transit_total_minutes?: number
 }
 
 /**
@@ -96,9 +107,19 @@ export default function RideBoardConfirmSheet({
     walk_to_station_minutes: number
     transit_to_dest_minutes: number
     total_rider_minutes: number
+    transit_line_name?: string | null
   }
   const [transitSuggestions, setTransitSuggestions] = useState<TransitSuggestion[]>([])
   const [loadingTransit, setLoadingTransit] = useState(false)
+
+  // v1.3 — driver-offer transit dropoff state. Mirrors iOS
+  // RideBoardConfirmViewModel.RiderDropoffChoice — null means "drop
+  // at rider's posted dest" (default); set means "drop at this
+  // transit station". Lives separately from the rider-side
+  // selectedPlace because the two flows use different defaults.
+  const [driverOfferStation, setDriverOfferStation] = useState<TransitSuggestion | null>(null)
+  const [driverOfferStations, setDriverOfferStations] = useState<TransitSuggestion[]>([])
+  const [loadingDriverOfferTransit, setLoadingDriverOfferTransit] = useState(false)
   // v1.3 Sprint 10 Slice 4 — peeked station id (one of the
   // suggestion's `station_lat-station_lng` composite keys). null in
   // overview mode; set when the rider taps a station row. Cleared when
@@ -196,6 +217,52 @@ export default function RideBoardConfirmSheet({
       setNote(initialEnrichment.note)
     }
   }, [ride?.id, ride?.dest_address, initialEnrichment])
+
+  // v1.3 — driver-offer transit fetch. Fires when the driver opens
+  // the offer composer (only on `!isDriverPost`) AND the rider's
+  // posted board entry has resolvable pickup + dropoff coords.
+  // Treats the rider's posted route as the driver's route (since the
+  // driver is offering to drive exactly that pair) and asks the
+  // server for transit stops on the route. Driver can then propose
+  // a station instead of dropping the rider at their posted dest.
+  // Mirrors iOS RideBoardConfirmViewModel transit fetch path.
+  useEffect(() => {
+    if (!ride) return
+    if (ride.mode !== 'rider') return // driver-offering-on-rider-post path only
+    if (ride.origin_lat == null || ride.origin_lng == null) return
+    if (ride.dest_lat == null || ride.dest_lng == null) return
+
+    let cancelled = false
+    setLoadingDriverOfferTransit(true)
+    void (async () => {
+      try {
+        const token = (await supabase.auth.getSession()).data.session?.access_token
+        const res = await fetch('/api/transit/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token ?? ''}` },
+          body: JSON.stringify({
+            driver_origin_lat: ride.origin_lat,
+            driver_origin_lng: ride.origin_lng,
+            driver_dest_lat: ride.dest_lat,
+            driver_dest_lng: ride.dest_lng,
+            rider_dest_lat: ride.dest_lat,
+            rider_dest_lng: ride.dest_lng,
+          }),
+        })
+        if (!cancelled && res.ok) {
+          const data = (await res.json()) as { suggestions: TransitSuggestion[] }
+          setDriverOfferStations(data.suggestions ?? [])
+        }
+      } catch {
+        // Silent — transit suggestions are optional; the default
+        // "drop at rider's posted dest" path keeps working.
+      } finally {
+        if (!cancelled) setLoadingDriverOfferTransit(false)
+      }
+    })()
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ride?.id, ride?.mode, ride?.origin_lat, ride?.origin_lng, ride?.dest_lat, ride?.dest_lng])
 
   // Fetch transit suggestions when rider selects a destination
   useEffect(() => {
@@ -396,6 +463,24 @@ export default function RideBoardConfirmSheet({
       enrichment.pickup_lat = selectedPickup.lat
       enrichment.pickup_lng = selectedPickup.lng
       enrichment.pickup_name = selectedPickup.fullAddress
+    }
+    // v1.3 — driver-offer transit-station dropoff (mirrors iOS
+    // RiderDropoffChoice.atTransitStation branch at
+    // RideBoardConfirmViewModel.swift:788-807). When the driver picked
+    // a station, override the dropoff coords + thread the 4 transit
+    // breakdown fields through so the rider's accept page renders the
+    // full journey card. When no station is picked, the default path
+    // (server falls back to the schedule's posted dest) keeps working.
+    if (driverOfferStation) {
+      enrichment.destination_lat = driverOfferStation.station_lat
+      enrichment.destination_lng = driverOfferStation.station_lng
+      enrichment.destination_name = driverOfferStation.station_name
+      enrichment.proposed_transit_walk_minutes = driverOfferStation.walk_to_station_minutes
+      enrichment.proposed_transit_to_dest_minutes = driverOfferStation.transit_to_dest_minutes
+      enrichment.proposed_transit_total_minutes = driverOfferStation.total_rider_minutes
+      if (driverOfferStation.transit_line_name) {
+        enrichment.proposed_transit_line_name = driverOfferStation.transit_line_name
+      }
     }
     if (note.trim()) enrichment.note = note.trim().slice(0, 200)
     onConfirm(enrichment)
@@ -601,6 +686,73 @@ export default function RideBoardConfirmSheet({
               {pickupPickerSection(
                 'Where will you pick them up?',
                 'Search for a pickup location…',
+              )}
+
+              {/* v1.3 — driver-offer transit-station dropoff. Mirrors
+                  iOS RiderDropoffChoice.atTransitStation. Default:
+                  drop the rider at their posted dest. Toggle ON →
+                  show transit stops on the route + let the driver pick
+                  one. The server forwards the 4 proposed_transit_*
+                  fields so the rider's BoardOfferAcceptPage shows the
+                  full journey card. */}
+              {(loadingDriverOfferTransit || driverOfferStations.length > 0) && (
+                <div className="mb-5">
+                  <p className="text-sm font-semibold text-text-primary mb-2">
+                    Drop them at &hellip;
+                  </p>
+                  <div className="space-y-1.5">
+                    <button
+                      type="button"
+                      data-testid="driver-offer-drop-at-dest"
+                      onClick={() => setDriverOfferStation(null)}
+                      className={`w-full text-left rounded-xl px-3 py-2.5 border transition-colors ${
+                        driverOfferStation === null
+                          ? 'bg-primary/10 border-primary/40'
+                          : 'bg-white border-border active:bg-surface'
+                      }`}
+                    >
+                      <p className="text-xs font-semibold text-text-primary">
+                        Rider&rsquo;s posted destination
+                      </p>
+                      <p className="text-[11px] text-text-secondary truncate">
+                        {ride.dest_address}
+                      </p>
+                    </button>
+
+                    {loadingDriverOfferTransit && driverOfferStations.length === 0 && (
+                      <div className="flex items-center gap-2 px-3 py-2 text-xs text-text-secondary">
+                        <span className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" aria-hidden="true" />
+                        Finding transit stops on this route&hellip;
+                      </div>
+                    )}
+
+                    {driverOfferStations.map((s) => {
+                      const key = `${s.station_lat}-${s.station_lng}`
+                      const isSelected = driverOfferStation
+                        && `${driverOfferStation.station_lat}-${driverOfferStation.station_lng}` === key
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          data-testid="driver-offer-drop-at-station"
+                          onClick={() => setDriverOfferStation(s)}
+                          className={`w-full text-left rounded-xl px-3 py-2.5 border transition-colors ${
+                            isSelected
+                              ? 'bg-primary/10 border-primary/40'
+                              : 'bg-white border-border active:bg-surface'
+                          }`}
+                        >
+                          <p className="text-xs font-semibold text-text-primary">
+                            {s.station_name}
+                          </p>
+                          <p className="text-[11px] text-text-secondary">
+                            {s.walk_to_station_minutes} min walk &middot; {s.transit_to_dest_minutes} min on transit &middot; ~{s.total_rider_minutes} min total
+                          </p>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
               )}
 
               <div className="mb-5">

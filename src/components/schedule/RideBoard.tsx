@@ -308,6 +308,23 @@ export default function RideBoard({ 'data-testid': testId }: RideBoardProps) {
               ...(enrichment?.destination_name
                 ? { proposed_dropoff_name: enrichment.destination_name }
                 : {}),
+              // v1.3 — transit breakdown when the driver picked a
+              // transit station as dropoff (mirrors iOS
+              // CreateBoardOfferEndpoint proposed_transit_* fields).
+              // Rider's BoardOfferAcceptPage uses these to render the
+              // full journey card.
+              ...(enrichment?.proposed_transit_line_name
+                ? { proposed_transit_line_name: enrichment.proposed_transit_line_name }
+                : {}),
+              ...(enrichment?.proposed_transit_walk_minutes != null
+                ? { proposed_transit_walk_minutes: enrichment.proposed_transit_walk_minutes }
+                : {}),
+              ...(enrichment?.proposed_transit_to_dest_minutes != null
+                ? { proposed_transit_to_dest_minutes: enrichment.proposed_transit_to_dest_minutes }
+                : {}),
+              ...(enrichment?.proposed_transit_total_minutes != null
+                ? { proposed_transit_total_minutes: enrichment.proposed_transit_total_minutes }
+                : {}),
             }),
           })
 
