@@ -1915,60 +1915,71 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
         </div>
       )}
 
-      {/* ── Pending pickup banner — compact: label + buttons only ───
-          W-T1-M2 — gated on negotiationPhase so a stale pickup
-          suggestion can't ambush during the dropoff phase. */}
+      {/* ── Sticky proposal banner (iOS parity, 2026-06-04) ─────────────────
+          Floating material card mirroring iOS StickyProposalBanner
+          (MessagingSubviews.swift:314-381). Inset from edges with
+          tinted shadow + hairline border + rounded corners — the
+          chrome reads as "floating card" instead of the old
+          edge-to-edge header bar. Counter Offer dropped because it's
+          already present on the inline proposal card below; the
+          sticky banner is the "act on it without scrolling" affordance,
+          a single Accept pill matches iOS exactly. */}
       {!pickupConfirmed && pickupProposedByOther && latestPickupProposal && negotiationPhase === 'pickup' && (
-        <div data-testid="pickup-proposal-banner" className="px-4 py-2.5 bg-success/10 border-b border-success/20 shrink-0">
-          <p className="text-xs font-semibold text-success mb-2">
-            {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a pickup point
-          </p>
-          <div className="flex gap-2">
+        <div data-testid="pickup-proposal-banner" className="px-3 pt-2 shrink-0">
+          <div className="flex items-center gap-2.5 rounded-2xl bg-white/95 backdrop-blur-md border border-success/40 shadow-[0_4px_10px_rgba(34,197,94,0.18)] px-3 py-2.5">
+            <div className="h-8 w-8 rounded-full bg-success/20 flex items-center justify-center shrink-0">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4 text-success" aria-hidden="true">
+                <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" />
+                <circle cx="12" cy="10" r="3" />
+              </svg>
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-extrabold tracking-wider text-success uppercase">
+                Pickup suggestion
+              </p>
+              <p className="text-xs font-semibold text-text-primary truncate">
+                {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} pinned a location
+              </p>
+            </div>
             <button
               data-testid="banner-accept-pickup"
               onClick={() => { void handleAcceptLocation('pickup') }}
               disabled={acceptingLocation === 'pickup'}
-              className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-white bg-success active:bg-success/90 disabled:opacity-50 transition-colors"
+              className="shrink-0 rounded-full px-4 py-2 text-xs font-bold text-white bg-success active:bg-success/90 disabled:opacity-50 transition-colors"
             >
-              {acceptingLocation === 'pickup' ? 'Accepting...' : 'Accept Pickup'}
-            </button>
-            <button
-              data-testid="banner-counter-pickup"
-              onClick={() => openPinDropper('pickup')}
-              className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-success bg-success/10 border border-success/30 active:bg-success/20 transition-colors"
-            >
-              Counter Offer
+              {acceptingLocation === 'pickup' ? '…' : 'Accept'}
             </button>
           </div>
         </div>
       )}
 
-      {/* ── Pending dropoff banner — compact: label + buttons only ───
-          W-T1-M2 — only renders during the dropoff phase. */}
       {!dropoffConfirmed && dropoffProposedByOther && latestDropoffProposal && negotiationPhase === 'dropoff' && (() => {
         const meta = latestDropoffProposal.meta as { name?: string } | null
         const dropoffName = meta?.name ? String(meta.name) : null
         return (
-          <div data-testid="dropoff-proposal-banner" className="px-4 py-2.5 bg-primary/10 border-b border-primary/20 shrink-0">
-            <p className="text-xs font-semibold text-primary mb-1">
-              {otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} suggested a dropoff
-              {dropoffName && <span className="text-text-primary font-medium"> — {dropoffName}</span>}
-            </p>
-            <div className="flex gap-2">
+          <div data-testid="dropoff-proposal-banner" className="px-3 pt-2 shrink-0">
+            <div className="flex items-center gap-2.5 rounded-2xl bg-white/95 backdrop-blur-md border border-primary/40 shadow-[0_4px_10px_rgba(0,168,243,0.18)] px-3 py-2.5">
+              <div className="h-8 w-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4 text-primary" aria-hidden="true">
+                  <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z" />
+                  <circle cx="12" cy="10" r="3" />
+                </svg>
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] font-extrabold tracking-wider text-primary uppercase">
+                  Dropoff suggestion
+                </p>
+                <p className="text-xs font-semibold text-text-primary truncate">
+                  {dropoffName ?? `${otherUser?.full_name ?? (isRider ? 'Driver' : 'Rider')} pinned a location`}
+                </p>
+              </div>
               <button
                 data-testid="banner-accept-dropoff"
                 onClick={() => { void handleAcceptLocation('dropoff') }}
                 disabled={acceptingLocation === 'dropoff'}
-                className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-white bg-primary active:bg-primary/90 disabled:opacity-50 transition-colors"
+                className="shrink-0 rounded-full px-4 py-2 text-xs font-bold text-white bg-primary active:bg-primary/90 disabled:opacity-50 transition-colors"
               >
-                {acceptingLocation === 'dropoff' ? 'Accepting...' : 'Accept Dropoff'}
-              </button>
-              <button
-                data-testid="banner-counter-dropoff"
-                onClick={() => openPinDropper('dropoff')}
-                className="flex-1 rounded-2xl py-2.5 text-sm font-semibold text-primary bg-primary/10 border border-primary/30 active:bg-primary/20 transition-colors"
-              >
-                Counter Offer
+                {acceptingLocation === 'dropoff' ? '…' : 'Accept'}
               </button>
             </div>
           </div>
