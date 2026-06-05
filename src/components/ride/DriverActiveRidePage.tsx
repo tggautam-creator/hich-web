@@ -17,6 +17,7 @@ import CarMarker from '@/components/map/CarMarker'
 import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
 import JourneyDrawer from '@/components/ride/JourneyDrawer'
+import UserProfilePreviewSheet from '@/components/profile/UserProfilePreviewSheet'
 import CaregiverContextRow from '@/components/profile/CaregiverContextRow'
 import { loadCaregiverForRide, type CaregiverEnrichment } from '@/lib/caregiverForRide'
 import type { Ride, User, GeoPoint } from '@/types/database'
@@ -36,6 +37,10 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
 
   const [ride, setRide] = useState<Ride | null>(null)
   const [rider, setRider] = useState<Pick<User, 'id' | 'full_name' | 'avatar_url' | 'rating_avg' | 'rating_count'> | null>(null)
+  // iOS DriverActiveRideDrawer opens UserProfilePreviewSheet when the
+  // driver taps the rider avatar (iOS DriverActiveRideDrawer.swift
+  // sheet on showRiderProfile state).
+  const [showRiderProfile, setShowRiderProfile] = useState(false)
   // v1.2 F18.3 — caregiver context persists from pickup → active.
   // Same /api/rides/active enrichment as DriverPickupPage.
   const [caregiver, setCaregiver] = useState<CaregiverEnrichment | null>(null)
@@ -816,7 +821,18 @@ export default function DriverActiveRidePage({ 'data-testid': testId }: DriverAc
         progress={isActive ? progress : null}
         remainingLabel={routeEta ? `${routeEta} remaining` : undefined}
         showCallButton
+        onShowOtherProfile={rider?.id ? () => setShowRiderProfile(true) : undefined}
       />
+
+      {rider?.id && (
+        <UserProfilePreviewSheet
+          isOpen={showRiderProfile}
+          onClose={() => setShowRiderProfile(false)}
+          userId={rider.id}
+          fallbackName={rider.full_name}
+          fallbackAvatarUrl={rider.avatar_url}
+        />
+      )}
 
       {/* Sprint 11 Slice 1 — portal-mounted safety pill + EmergencySheet.
           Replaces the previous bare <EmergencySheet> mount so the

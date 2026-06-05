@@ -13,6 +13,7 @@ import { RoutePolyline, MapBoundsFitter, RecenterButton } from '@/components/map
 import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
 import JourneyDrawer from '@/components/ride/JourneyDrawer'
+import UserProfilePreviewSheet from '@/components/profile/UserProfilePreviewSheet'
 import PickupEta from '@/components/ride/PickupEta'
 import DriverCancelledOverlay from '@/components/ride/DriverCancelledOverlay'
 import type { Ride, User, Vehicle, GeoPoint } from '@/types/database'
@@ -37,6 +38,10 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
 
   const [ride, setRide] = useState<Ride | null>(null)
   const [driver, setDriver] = useState<Pick<User, 'id' | 'full_name' | 'avatar_url' | 'rating_avg' | 'rating_count'> | null>(null)
+  // iOS RiderPickupPage drawer wires the driver avatar tap to
+  // UserProfilePreviewSheet (same one-host-per-view pattern as
+  // RiderActiveRidePage).
+  const [showDriverProfile, setShowDriverProfile] = useState(false)
   const [vehicle, setVehicle] = useState<Pick<Vehicle, 'color' | 'plate' | 'make' | 'model'> | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -746,6 +751,17 @@ export default function RiderPickupPage({ 'data-testid': testId }: RiderPickupPa
           signalled={signalled}
           signalling={signalling}
           pickupNote={pickupNote}
+          onShowOtherProfile={driver?.id ? () => setShowDriverProfile(true) : undefined}
+        />
+      )}
+
+      {driver?.id && (
+        <UserProfilePreviewSheet
+          isOpen={showDriverProfile}
+          onClose={() => setShowDriverProfile(false)}
+          userId={driver.id}
+          fallbackName={driver.full_name}
+          fallbackAvatarUrl={driver.avatar_url}
         />
       )}
 

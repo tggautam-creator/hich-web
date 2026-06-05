@@ -70,6 +70,12 @@ interface JourneyDrawerProps {
   // Pages that don't mirror an iOS mount (e.g. RiderPickupPage) leave
   // this false so the surface stays at parity with iOS.
   showCallButton?: boolean
+  // iOS active-ride drawer + pickup drawer wires the counterparty
+  // avatar tap to UserProfilePreviewSheet. Pages that want the same
+  // affordance pass a handler; pages that don't (or that already host
+  // the preview elsewhere) leave it undefined and the row stays a
+  // plain non-tappable card.
+  onShowOtherProfile?: () => void
   'data-testid'?: string
 }
 
@@ -96,6 +102,7 @@ export default function JourneyDrawer({
   transitInfo,
   pickupNote,
   showCallButton,
+  onShowOtherProfile,
   'data-testid': testId = 'journey-drawer',
 }: JourneyDrawerProps) {
   // Fixed-pixel collapsed height: only buttons visible, nothing else.
@@ -498,13 +505,14 @@ export default function JourneyDrawer({
               )
             })()}
 
-            {/* Other person info */}
-            {otherPerson && (
-              <div>
-                <h3 className="text-xs font-bold text-text-secondary uppercase tracking-wide mb-2">
-                  {isRider ? 'Your Driver' : 'Your Rider'}
-                </h3>
-                <div className="flex items-center gap-3 bg-surface rounded-2xl p-3">
+            {/* Other person info. Tap → opens UserProfilePreviewSheet
+                when onShowOtherProfile is wired (iOS drawer parity —
+                ios/Tago/Features/RiderHome/RiderActiveRidePage.swift
+                line 191 and the equivalent driver-side wiring). */}
+            {otherPerson && (() => {
+              const headerLabel = isRider ? 'Your Driver' : 'Your Rider'
+              const rowBody = (
+                <>
                   {otherPerson.avatar_url ? (
                     <img src={otherPerson.avatar_url} alt="" className="h-11 w-11 rounded-full object-cover shrink-0" />
                   ) : (
@@ -512,7 +520,7 @@ export default function JourneyDrawer({
                       <span className="text-lg font-bold text-primary">{otherPerson.full_name?.[0]?.toUpperCase() ?? '?'}</span>
                     </div>
                   )}
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1 text-left">
                     <p className="text-sm font-semibold text-text-primary truncate">{otherPerson.full_name}</p>
                     <div className="flex items-center gap-2 text-xs text-text-secondary">
                       {otherPerson.rating_avg != null && (
@@ -526,9 +534,34 @@ export default function JourneyDrawer({
                       )}
                     </div>
                   </div>
+                  {onShowOtherProfile && (
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4 text-text-secondary/60 shrink-0" aria-hidden="true">
+                      <path d="M9 18l6-6-6-6" />
+                    </svg>
+                  )}
+                </>
+              )
+              return (
+                <div>
+                  <h3 className="text-xs font-bold text-text-secondary uppercase tracking-wide mb-2">{headerLabel}</h3>
+                  {onShowOtherProfile ? (
+                    <button
+                      type="button"
+                      data-testid="journey-drawer-other-row"
+                      onClick={onShowOtherProfile}
+                      aria-label={`See ${headerLabel.toLowerCase()}'s profile`}
+                      className="w-full flex items-center gap-3 bg-surface rounded-2xl p-3 active:bg-surface/70 transition-colors"
+                    >
+                      {rowBody}
+                    </button>
+                  ) : (
+                    <div data-testid="journey-drawer-other-row" className="flex items-center gap-3 bg-surface rounded-2xl p-3">
+                      {rowBody}
+                    </div>
+                  )}
                 </div>
-              </div>
-            )}
+              )
+            })()}
 
             {/* Vehicle info (rider view only) */}
             {isRider && vehicle && (

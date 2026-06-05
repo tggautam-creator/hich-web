@@ -19,6 +19,7 @@ import { MAP_ID } from '@/lib/mapConstants'
 import { getNavigationUrl } from '@/lib/pwa'
 import JourneyDrawer from '@/components/ride/JourneyDrawer'
 import type { TransitInfoData } from '@/components/ride/JourneyDrawer'
+import UserProfilePreviewSheet from '@/components/profile/UserProfilePreviewSheet'
 import MultiRiderSubtitle from '@/components/ride/MultiRiderSubtitle'
 import { useShareDetails } from '@/lib/shareDetails'
 import type { Ride, User, GeoPoint } from '@/types/database'
@@ -64,6 +65,9 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
   const [riderPos, setRiderPos] = useState<{ lat: number; lng: number } | null>(null)
   const [unreadChat, setUnreadChat] = useState(0)
   const [fitToken, setFitToken] = useState(0)
+  // iOS RiderActiveRidePage opens UserProfilePreviewSheet when the
+  // rider taps the driver avatar in the drawer (ProfilePage.swift:191).
+  const [showDriverProfile, setShowDriverProfile] = useState(false)
 
   // Transit remaining journey
   const [transitInfo, setTransitInfo] = useState<TransitInfoData | null>(null)
@@ -814,7 +818,18 @@ export default function RiderActiveRidePage({ 'data-testid': testId }: RiderActi
         progress={isActive ? progress : null}
         remainingLabel={routeEta ? `${routeEta} remaining` : undefined}
         showCallButton
+        onShowOtherProfile={driver?.id ? () => setShowDriverProfile(true) : undefined}
       />
+
+      {driver?.id && (
+        <UserProfilePreviewSheet
+          isOpen={showDriverProfile}
+          onClose={() => setShowDriverProfile(false)}
+          userId={driver.id}
+          fallbackName={driver.full_name}
+          fallbackAvatarUrl={driver.avatar_url}
+        />
+      )}
 
       {/* Sprint 11 Slice 1 — portal-mounted safety pill + EmergencySheet.
           Replaces the previous bare <EmergencySheet> mount so the

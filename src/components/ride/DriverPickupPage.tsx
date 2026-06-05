@@ -14,6 +14,7 @@ import DriverQrSheet from '@/components/ride/DriverQrSheet'
 import SafetyPill from '@/components/ui/SafetyPill'
 import AppIcon from '@/components/ui/AppIcon'
 import JourneyDrawer from '@/components/ride/JourneyDrawer'
+import UserProfilePreviewSheet from '@/components/profile/UserProfilePreviewSheet'
 import CaregiverContextRow from '@/components/profile/CaregiverContextRow'
 import { loadCaregiverForRide, type CaregiverEnrichment } from '@/lib/caregiverForRide'
 import type { Ride, User, GeoPoint } from '@/types/database'
@@ -45,6 +46,10 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
 
   const [ride, setRide] = useState<Ride | null>(null)
   const [rider, setRider] = useState<Pick<User, 'id' | 'full_name' | 'avatar_url' | 'rating_avg' | 'rating_count'> | null>(null)
+  // iOS DriverPickupPage opens UserProfilePreviewSheet when the driver
+  // taps the rider avatar in the drawer (iOS drawer sheet on
+  // showRiderProfile state).
+  const [showRiderProfile, setShowRiderProfile] = useState(false)
   // v1.2 F18.3 — caregiver context for the matched driver. Pulled
   // via the server-enriched /api/rides/active endpoint since the
   // caregivers table RLS scopes reads to the owning rider (mig 089).
@@ -715,7 +720,18 @@ export default function DriverPickupPage({ 'data-testid': testId }: DriverPickup
           startRideLabel="Show QR to Start Ride"
           pickupNote={ride.pickup_note}
           showCallButton
+          onShowOtherProfile={rider?.id ? () => setShowRiderProfile(true) : undefined}
         />
+
+        {rider?.id && (
+          <UserProfilePreviewSheet
+            isOpen={showRiderProfile}
+            onClose={() => setShowRiderProfile(false)}
+            userId={rider.id}
+            fallbackName={rider.full_name}
+            fallbackAvatarUrl={rider.avatar_url}
+          />
+        )}
 
         {safetyElement}
       </div>
