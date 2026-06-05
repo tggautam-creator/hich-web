@@ -2616,6 +2616,28 @@ export default function MessagingWindow({ 'data-testid': testId }: MessagingWind
                   My Rides
                 </button>
               </div>
+              {/* iOS preWindowGateBar surfaces Change pickup / Change
+                  dropoff via embeddedActionChips (Messaging+PreWindowGate.swift)
+                  so the user can re-pin a location days before the ride
+                  without leaving the chat. Web had these buttons only in
+                  the immediate "ride approaching" branch below; mirror
+                  them here so the pre-window state matches iOS. */}
+              <div className="flex justify-center gap-3 mt-2">
+                <button
+                  data-testid="change-pickup-pre-window"
+                  onClick={() => openPinDropper('pickup')}
+                  className="text-[10px] text-text-secondary underline active:opacity-60"
+                >
+                  Change pickup
+                </button>
+                <button
+                  data-testid="change-dropoff-pre-window"
+                  onClick={() => openPinDropper('dropoff')}
+                  className="text-[10px] text-text-secondary underline active:opacity-60"
+                >
+                  Change dropoff
+                </button>
+              </div>
             </>
           ) : (
             <>
