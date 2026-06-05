@@ -12,7 +12,7 @@ import { scanForPost } from '../lib/suggestionEngine.ts'
 import { computeTransitDropoffSuggestions, computeTransitPickupSuggestions, fetchDrivingRoute, type TransitOption } from '../lib/transitSuggestions.ts'
 import { checkUpcomingRides, expireMissedRides, expirePendingBoardOffers, expireStaleRequests, syncAllRoutines } from '../lib/scheduledReminders.ts'
 import { resolveAndPersistDefaultPm } from './payment.ts'
-import { estimateFareCentsBetween } from './rides.ts'
+import { estimateFareCentsBetween, caregiverFareCentsFor, companionFareCentsFor } from './rides.ts'
 
 export const scheduleRouter = Router()
 
@@ -2991,6 +2991,16 @@ interface ScheduleRequestBody {
   // balance ≥ this estimate we let the request through even without a
   // saved card — Phase 3a wallet-first parity with /api/rides/request.
   estimated_fare_cents?: number
+  // v1.2 F7.1 — caregiver attached at request time (rider-on-driver-post
+  // only). Server re-validates ownership + prices the tier.
+  caregiver_id?: string | null
+  // V4 F1 — companions attached at request time (up to 2; rider-on-driver-
+  // post only). Server re-validates ownership + prices per-companion × count.
+  companion_a_id?: string | null
+  companion_b_id?: string | null
+  // Client-supplied trip distance (km) so the server can price the
+  // caregiver/companion fee tiers without re-fetching directions.
+  distance_km?: number
 }
 
 scheduleRouter.post(
@@ -3281,6 +3291,87 @@ scheduleRouter.post(
       ? { pickup_point: originGeo, pickup_confirmed: true }
       : {}
 
+    // V4 F1 / v1.2 F7.1 — caregiver + companion attachment on the board-
+    // request path. Only the rider-on-driver-post direction can attach
+    // them (the iOS sheet shows the pickers only when `isDriverPost`); a
+    // driver offering on a rider-post never brings a caregiver/companion,
+    // so we skip entirely on that branch. Ownership is validated against
+    // `riderId` (the requester here) BEFORE the ride row is created — 404
+    // (not 403) to hide existence, mirroring /api/rides/request. Fees are
+    // the request-time estimate; A.4 recomputes from real distance at
+    // end-of-ride. Persisting the ids is also what lets the driver SEE the
+    // caregiver/companion post-accept (A.5).
+    let caregiverIdValidated: string | null = null
+    let caregiverFareCents: number | null = null
+    let companionAId: string | null = null
+    let companionBId: string | null = null
+    let companionFareCents: number | null = null
+    if (schedule.mode === 'driver') {
+      const distanceKm = typeof body.distance_km === 'number' && body.distance_km > 0
+        ? body.distance_km
+        : 0
+      // Caregiver (single). Validate ownership against the rider.
+      if (typeof body.caregiver_id === 'string' && body.caregiver_id.length > 0) {
+        const { data: caregiverRow } = await supabaseAdmin
+          .from('caregivers')
+          .select('id, user_id')
+          .eq('id', body.caregiver_id)
+          .single()
+        const ownedByRider = caregiverRow != null
+          && (caregiverRow as { user_id: string }).user_id === riderId
+        if (!ownedByRider) {
+          res.status(404).json({
+            error: {
+              code: 'CAREGIVER_NOT_FOUND',
+              message: "We couldn't find that caregiver on your profile.",
+            },
+          })
+          return
+        }
+        caregiverIdValidated = (caregiverRow as { id: string }).id
+        caregiverFareCents = caregiverFareCentsFor(distanceKm)
+      }
+      // Companions (up to 2). Every requested companion must belong to the
+      // rider; dedupe + cap at 2 before the ownership check.
+      const companionIds = [...new Set(
+        [body.companion_a_id, body.companion_b_id]
+          .filter((v): v is string => typeof v === 'string' && v.length > 0),
+      )].slice(0, 2)
+      if (companionIds.length > 0) {
+        const { data: companionRows } = await supabaseAdmin
+          .from('companions')
+          .select('id, user_id')
+          .in('id', companionIds)
+        const rows = (companionRows ?? []) as Array<{ id: string; user_id: string }>
+        const ownedAll = rows.length === companionIds.length
+          && companionIds.every((cid) => rows.some((r) => r.id === cid && r.user_id === riderId))
+        if (!ownedAll) {
+          res.status(404).json({
+            error: {
+              code: 'COMPANION_NOT_FOUND',
+              message: "We couldn't find that companion on your profile.",
+            },
+          })
+          return
+        }
+        companionAId = companionIds[0] ?? null
+        companionBId = companionIds[1] ?? null
+        companionFareCents = companionFareCentsFor(distanceKm) * companionIds.length
+      }
+    }
+
+    // Spread as a loosely-typed Record (matching the dropoff/pickup
+    // preconfirm fields) so the new columns don't fight the generated
+    // Supabase row types — same approach /api/rides/request uses via
+    // `as never`.
+    const caregiverCompanionFields: Record<string, unknown> = {
+      caregiver_id: caregiverIdValidated,
+      caregiver_fare_cents: caregiverFareCents,
+      companion_a_id: companionAId,
+      companion_b_id: companionBId,
+      companion_fare_cents: companionFareCents,
+    }
+
     // Create ride with status='requested' — poster must accept before coordination
     const { data: ride, error: rideErr } = await supabaseAdmin
       .from('rides')
@@ -3311,6 +3402,7 @@ scheduleRouter.post(
         destination_flexible: body.destination_flexible ?? false,
         ...dropoffPreconfirmFields,
         ...pickupPreconfirmFields,
+        ...caregiverCompanionFields,
       })
       .select('id')
       .single()
