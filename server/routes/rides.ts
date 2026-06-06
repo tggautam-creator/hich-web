@@ -6490,13 +6490,14 @@ ridesRouter.post(
       driver_route_polyline: string | null
       pickup_point: unknown
       caregiver_fare_cents: number | null
+      companion_fare_cents: number | null
     }
     const { data: rideRaw, error: fetchErr } = await supabaseAdmin
       .from('rides')
       .select(
         ('id, driver_id, rider_id, status, origin, destination, destination_name, '
           + 'driver_destination, driver_destination_name, driver_route_polyline, '
-          + 'pickup_point, caregiver_fare_cents') as never,
+          + 'pickup_point, caregiver_fare_cents, companion_fare_cents') as never,
       )
       .eq('id', rideId)
       .single()
@@ -6563,6 +6564,9 @@ ridesRouter.post(
     const transitCaregiverFareCents = ride.caregiver_fare_cents
     const driverWaiveInfoTransit = await lookupDriverWaiveInfo(ride.driver_id)
     const driverWaivesTransit = driverWaiveInfoTransit.waives
+    // V4 F1 — fold the companion seat fee into the transit dropoff proposal.
+    const transitCompanionFareCents = (ride as unknown as { companion_fare_cents: number | null }).companion_fare_cents
+    const metaTransitCompanionFare = driverWaiveInfoTransit.waivesCompanion ? 0 : (transitCompanionFareCents ?? 0)
     if (pickupForFare?.coordinates) {
       try {
         const baseFare = await estimateFareCentsBetween(
@@ -6572,7 +6576,7 @@ ridesRouter.post(
         const { fareCents: foldedFare } = foldCaregiverFare(
           baseFare, 0, transitCaregiverFareCents, driverWaivesTransit,
         )
-        fareCentsForProposal = foldedFare
+        fareCentsForProposal = foldedFare + metaTransitCompanionFare
       } catch (err) {
         console.error('[rides/suggest-transit-dropoff] fare estimate failed:', err)
       }
@@ -6616,6 +6620,7 @@ ridesRouter.post(
           caregiver_fare_cents: metaTransitCaregiverFare,
           caregiver_waived: driverWaivesTransit && (transitCaregiverFareCents ?? 0) > 0,
           waiver_driver_name: driverWaivesTransit ? (driverWaiveInfoTransit.firstName ?? '') : '',
+          companion_fare_cents: metaTransitCompanionFare,
         },
       })
       .select('id, ride_id, sender_id, content, type, meta, created_at')
