@@ -29,6 +29,7 @@ import { accountRouter } from './routes/account.ts'
 import { usersRouter } from './routes/users.ts'
 import { caregiversRouter } from './routes/caregivers.ts'
 import { companionsRouter } from './routes/companions.ts'
+import { destinationsRouter } from './routes/destinations.ts'
 import { liveActivityRouter } from './routes/liveActivity.ts'
 import { publicCampaignsRouter } from './routes/publicCampaigns.ts'
 import { suggestionsRouter } from './routes/suggestions.ts'
@@ -161,6 +162,8 @@ app.use('/api/users', usersRouter)
 app.use('/api/caregivers', caregiversRouter)
 // V4 F1 — companions CRUD (travel-with friends/family, max 2 per ride).
 app.use('/api/companions', companionsRouter)
+// V4 F6 — Explore destinations read endpoints (list + detail).
+app.use('/api/destinations', destinationsRouter)
 app.use('/api/live-activity', liveActivityRouter)
 // Public read of admin-broadcast campaigns by slug. Anonymous —
 // powers the /c/:slug marketing surface that admin pushes deep-link
