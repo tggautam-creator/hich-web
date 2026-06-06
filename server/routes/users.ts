@@ -257,6 +257,7 @@ interface ProfileUpsertBody {
   has_accessibility_needs?: unknown
   accessibility_profile?: unknown
   waive_caregiver_fee?: unknown
+  waive_companion_fee?: unknown
 }
 
 const ALLOWED_GENDERS = ['male', 'female', 'nonbinary', 'other', 'prefer_not_to_say'] as const
@@ -335,6 +336,9 @@ usersRouter.post(
     }
     if (typeof body.waive_caregiver_fee === 'boolean') {
       updates['waive_caregiver_fee'] = body.waive_caregiver_fee
+    }
+    if (typeof body.waive_companion_fee === 'boolean') {
+      updates['waive_companion_fee'] = body.waive_companion_fee
     }
 
     if (Object.keys(updates).length === 0) {
@@ -531,7 +535,7 @@ usersRouter.get(
           'id, full_name, avatar_url, is_driver, rating_avg, rating_count, '
           + 'bio, gender, school, major, graduation_year, '
           + 'has_accessibility_needs, accessibility_profile, '
-          + 'created_at, waive_caregiver_fee' as never,
+          + 'created_at, waive_caregiver_fee, waive_companion_fee' as never,
         )
         .eq('id', subjectId)
         .single()
@@ -555,6 +559,7 @@ usersRouter.get(
         accessibility_profile: { needs_wheelchair?: boolean } | null
         created_at: string
         waive_caregiver_fee?: boolean | null
+        waive_companion_fee?: boolean | null
       }
       const user = rawUser as unknown as UserRow
 
@@ -626,6 +631,7 @@ usersRouter.get(
         has_accessibility_needs: user.has_accessibility_needs === true,
         needs_wheelchair: needsWheelchair,
         waive_caregiver_fee: user.waive_caregiver_fee === true,
+        waive_companion_fee: user.waive_companion_fee === true,
         member_since: user.created_at,
         vehicle: vehiclePayload,
       })
