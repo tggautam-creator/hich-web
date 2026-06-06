@@ -181,7 +181,7 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
   // the "N going" badge; the rows power avatars on the detail.
   const { data: waitRows } = await supabaseAdmin
     .from('destination_waitlist')
-    .select('id, rider_id, desired_date, wants_return, travel_mode, group_size')
+    .select('id, rider_id, desired_date, wants_return, travel_mode, group_size, date_flexibility')
     .eq('destination_id', id)
     .eq('status', 'waiting')
     .order('created_at', { ascending: true })
@@ -246,9 +246,11 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
 
 const WAITLIST_ENTRY_COLUMNS =
   'id, destination_id, desired_date, desired_time, wants_return, return_date, '
-  + 'return_time, travel_mode, group_size, companion_a_id, companion_b_id, note, status'
+  + 'return_time, travel_mode, group_size, companion_a_id, companion_b_id, note, status, '
+  + 'date_flexibility'
 
 const TRAVEL_MODES = ['together', 'own_thing', 'one_way'] as const
+const DATE_FLEXIBILITIES = ['exact', 'weekends', 'any'] as const
 
 interface WaitlistBody {
   desired_date?: unknown
@@ -261,6 +263,7 @@ interface WaitlistBody {
   companion_a_id?: unknown
   companion_b_id?: unknown
   note?: unknown
+  date_flexibility?: unknown
 }
 
 /** Narrow an optional string field; returns undefined for missing/blank. */
@@ -299,6 +302,13 @@ destinationsRouter.post('/:id/waitlist', validateJwt, async (req: Request, res: 
     res.status(400).json({ error: { code: 'INVALID_TRAVEL_MODE', message: 'Invalid travel mode' } })
     return
   }
+  // Date flexibility — 'weekends'/'any' leave desired_date NULL.
+  const dateFlexibility = typeof body.date_flexibility === 'string' ? body.date_flexibility : 'exact'
+  if (!(DATE_FLEXIBILITIES as readonly string[]).includes(dateFlexibility)) {
+    res.status(400).json({ error: { code: 'INVALID_FLEXIBILITY', message: 'Invalid date flexibility' } })
+    return
+  }
+  const isExactDate = dateFlexibility === 'exact'
   const wantsReturn = body.wants_return === true
 
   // Companions — owned by the rider (mirror the rides.ts check). Group size
@@ -339,12 +349,13 @@ destinationsRouter.post('/:id/waitlist', validateJwt, async (req: Request, res: 
   const row = {
     destination_id: destinationId,
     rider_id: riderId,
-    desired_date: optString(body.desired_date) ?? null,
-    desired_time: optString(body.desired_time) ?? null,
+    desired_date: isExactDate ? (optString(body.desired_date) ?? null) : null,
+    desired_time: isExactDate ? (optString(body.desired_time) ?? null) : null,
     wants_return: wantsReturn,
-    return_date: wantsReturn ? (optString(body.return_date) ?? null) : null,
-    return_time: wantsReturn ? (optString(body.return_time) ?? null) : null,
+    return_date: isExactDate && wantsReturn ? (optString(body.return_date) ?? null) : null,
+    return_time: isExactDate && wantsReturn ? (optString(body.return_time) ?? null) : null,
     travel_mode: travelMode,
+    date_flexibility: dateFlexibility,
     group_size: groupSize,
     companion_a_id: companionIds[0] ?? null,
     companion_b_id: companionIds[1] ?? null,
