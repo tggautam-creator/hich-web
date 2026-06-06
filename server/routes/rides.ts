@@ -3098,7 +3098,7 @@ ridesRouter.patch(
     const { data: rideRaw, error: fetchErr } = await supabaseAdmin
       .from('rides')
       .select(
-        'id, driver_id, rider_id, status, destination, caregiver_fare_cents' as never,
+        'id, driver_id, rider_id, status, destination, caregiver_fare_cents, companion_fare_cents' as never,
       )
       .eq('id', rideId)
       .single()
@@ -3166,6 +3166,11 @@ ridesRouter.patch(
     const pickupCaregiverFareCents = (ride as unknown as { caregiver_fare_cents: number | null }).caregiver_fare_cents
     const driverWaiveInfoPickup = await lookupDriverWaiveInfo(ride.driver_id)
     const driverWaivesPickup = driverWaiveInfoPickup.waives
+    // V4 F1 — fold the companion seat fee into the proposal fare too, so
+    // the pickup card's total + "Includes $X companion seat fee" line match
+    // end-of-ride. Honors the driver's companion-waive independently.
+    const pickupCompanionFareCents = (ride as unknown as { companion_fare_cents: number | null }).companion_fare_cents
+    const metaPickupCompanionFare = driverWaiveInfoPickup.waivesCompanion ? 0 : (pickupCompanionFareCents ?? 0)
     if (destForFare?.coordinates) {
       try {
         const baseFare = await estimateFareCentsBetween(
@@ -3175,7 +3180,7 @@ ridesRouter.patch(
         const { fareCents: foldedFare } = foldCaregiverFare(
           baseFare, 0, pickupCaregiverFareCents, driverWaivesPickup,
         )
-        fareCentsForProposal = foldedFare
+        fareCentsForProposal = foldedFare + metaPickupCompanionFare
       } catch (err) {
         console.error('[rides/pickup-point] fare estimate failed:', err)
       }
@@ -3199,6 +3204,7 @@ ridesRouter.patch(
           caregiver_fare_cents: metaPickupCaregiverFare,
           caregiver_waived: driverWaivesPickup && (pickupCaregiverFareCents ?? 0) > 0,
           waiver_driver_name: driverWaivesPickup ? (driverWaiveInfoPickup.firstName ?? '') : '',
+          companion_fare_cents: metaPickupCompanionFare,
         },
       })
       .select('id, ride_id, sender_id, content, type, meta, created_at')
@@ -3272,7 +3278,7 @@ ridesRouter.patch(
     const { data: rideRaw, error: fetchErr } = await supabaseAdmin
       .from('rides')
       .select(
-        'id, driver_id, rider_id, status, pickup_point, origin, caregiver_fare_cents' as never,
+        'id, driver_id, rider_id, status, pickup_point, origin, caregiver_fare_cents, companion_fare_cents' as never,
       )
       .eq('id', rideId)
       .single()
@@ -3331,6 +3337,9 @@ ridesRouter.patch(
     const dropoffCaregiverFareCents = (ride as unknown as { caregiver_fare_cents: number | null }).caregiver_fare_cents
     const driverWaiveInfoDropoff = await lookupDriverWaiveInfo(ride.driver_id)
     const driverWaivesDropoff = driverWaiveInfoDropoff.waives
+    // V4 F1 — fold the companion seat fee into the dropoff proposal fare.
+    const dropoffCompanionFareCents = (ride as unknown as { companion_fare_cents: number | null }).companion_fare_cents
+    const metaDropoffCompanionFare = driverWaiveInfoDropoff.waivesCompanion ? 0 : (dropoffCompanionFareCents ?? 0)
     if (pickupForFare?.coordinates) {
       try {
         const baseFare = await estimateFareCentsBetween(
@@ -3340,7 +3349,7 @@ ridesRouter.patch(
         const { fareCents: foldedFare } = foldCaregiverFare(
           baseFare, 0, dropoffCaregiverFareCents, driverWaivesDropoff,
         )
-        fareCentsForProposal = foldedFare
+        fareCentsForProposal = foldedFare + metaDropoffCompanionFare
       } catch (err) {
         console.error('[rides/dropoff-point] fare estimate failed:', err)
       }
@@ -3364,6 +3373,7 @@ ridesRouter.patch(
           caregiver_fare_cents: metaDropoffCaregiverFare,
           caregiver_waived: driverWaivesDropoff && (dropoffCaregiverFareCents ?? 0) > 0,
           waiver_driver_name: driverWaivesDropoff ? (driverWaiveInfoDropoff.firstName ?? '') : '',
+          companion_fare_cents: metaDropoffCompanionFare,
         },
       })
       .select('id, ride_id, sender_id, content, type, meta, created_at')
@@ -3531,13 +3541,14 @@ ridesRouter.post(
       origin: unknown
       origin_name: string | null
       caregiver_fare_cents: number | null
+      companion_fare_cents: number | null
     }
     const { data: rideRaw, error: fetchErr } = await supabaseAdmin
       .from('rides')
       .select(
         ('id, rider_id, driver_id, status, pickup_confirmed, dropoff_confirmed, '
           + 'schedule_id, pickup_point, dropoff_point, destination, destination_name, '
-          + 'origin, origin_name, caregiver_fare_cents') as never,
+          + 'origin, origin_name, caregiver_fare_cents, companion_fare_cents') as never,
       )
       .eq('id', rideId)
       .single()
@@ -3722,12 +3733,18 @@ ridesRouter.post(
       // misses the caregiver tier fee. Folded total + caregiver
       // delta both land in meta; iOS PickupProposalCard renders
       // the breakdown + waiver line when the driver opts in.
-      type AcceptRideExtras = { dropoff_point: unknown; caregiver_fare_cents: number | null }
+      type AcceptRideExtras = {
+        dropoff_point: unknown
+        caregiver_fare_cents: number | null
+        companion_fare_cents: number | null
+      }
       const rideExtras = ride as unknown as AcceptRideExtras
       const dropoffCoordsForFare = (rideExtras.dropoff_point ?? ride.destination) as unknown as GeoPoint | null
       let pickupSuggestionFareCents: number | null = null
       const driverWaiveInfoAccept = await lookupDriverWaiveInfo(ride.driver_id)
       const driverWaivesAccept = driverWaiveInfoAccept.waives
+      // V4 F1 — fold the companion seat fee into the frozen accept fare.
+      const metaAcceptCompanionFare = driverWaiveInfoAccept.waivesCompanion ? 0 : (rideExtras.companion_fare_cents ?? 0)
       if (dropoffCoordsForFare?.coordinates) {
         try {
           const baseFare = await estimateFareCentsBetween(
@@ -3737,7 +3754,7 @@ ridesRouter.post(
           const { fareCents: foldedFare } = foldCaregiverFare(
             baseFare, 0, rideExtras.caregiver_fare_cents, driverWaivesAccept,
           )
-          pickupSuggestionFareCents = foldedFare
+          pickupSuggestionFareCents = foldedFare + metaAcceptCompanionFare
         } catch (err) {
           console.error('[rides/accept-location] pickup fare estimate failed:', err)
         }
@@ -3760,6 +3777,7 @@ ridesRouter.post(
             caregiver_fare_cents: metaAcceptCaregiverFare,
             caregiver_waived: driverWaivesAccept && (rideExtras.caregiver_fare_cents ?? 0) > 0,
             waiver_driver_name: driverWaivesAccept ? (driverWaiveInfoAccept.firstName ?? '') : '',
+            companion_fare_cents: metaAcceptCompanionFare,
           },
         })
         .select('id, ride_id, sender_id, content, type, meta, created_at')
