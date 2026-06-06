@@ -7,7 +7,7 @@ import ReportFlowSheet from '@/components/reports/ReportFlowSheet'
 /// Server-side keys (snake_case to match the API). The local-state
 /// React names map onto these in `handleToggle`. Tracking the same
 /// strings as the iOS client so a flip on either platform converges.
-type PrefServerKey = 'push_rides' | 'push_promos' | 'email_marketing' | 'sms_alerts'
+type PrefServerKey = 'push_rides' | 'push_promos' | 'email_marketing' | 'sms_alerts' | 'push_suggestions'
 
 interface SettingsPageProps {
   'data-testid'?: string
@@ -26,6 +26,11 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
   const [pushRides, setPushRides] = useState(() => localStorage.getItem('pref_push_rides') !== 'false')
   const [pushPromos, setPushPromos] = useState(() => localStorage.getItem('pref_push_promos') !== 'false')
   const [emailNotifs, setEmailNotifs] = useState(() => localStorage.getItem('pref_email') !== 'false')
+  // iOS SettingsPage exposes a "Suggested matches" toggle that maps to
+  // the push_suggestions DB column (migration 101). fcm.ts
+  // filterByPreferences already honours it server-side; the web toggle
+  // was missing.
+  const [pushSuggestions, setPushSuggestions] = useState(() => localStorage.getItem('pref_push_suggestions') !== 'false')
 
   useEffect(() => {
     let cancelled = false
@@ -43,16 +48,23 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
           push_promos: boolean
           email_marketing: boolean
           sms_alerts: boolean
+          push_suggestions?: boolean
         }
         if (cancelled) return
         setPushRides(body.push_rides)
         setPushPromos(body.push_promos)
         setEmailNotifs(body.email_marketing)
+        if (typeof body.push_suggestions === 'boolean') {
+          setPushSuggestions(body.push_suggestions)
+        }
         // Mirror to localStorage so a hard offline session keeps the
         // values across refreshes.
         localStorage.setItem('pref_push_rides', String(body.push_rides))
         localStorage.setItem('pref_push_promos', String(body.push_promos))
         localStorage.setItem('pref_email', String(body.email_marketing))
+        if (typeof body.push_suggestions === 'boolean') {
+          localStorage.setItem('pref_push_suggestions', String(body.push_suggestions))
+        }
       } catch {
         // Silent — local cache already painted the toggles.
       }
@@ -236,6 +248,17 @@ export default function SettingsPage({ 'data-testid': testId = 'settings-page' }
               description="Ride requests, pickups, and completions"
               checked={pushRides}
               onChange={(v) => handleToggle('pref_push_rides', 'push_rides', v, setPushRides)}
+            />
+            {/* iOS Settings parity (2026-05-25) — push_suggestions
+                column already exists server-side; web just never
+                exposed the toggle. fcm.ts filterByPreferences honours
+                it for the smart-match suggestion pushes. */}
+            <ToggleRow
+              testId="toggle-push-suggestions"
+              label="Suggested matches"
+              description="Smart-match pushes when a route lines up with yours"
+              checked={pushSuggestions}
+              onChange={(v) => handleToggle('pref_push_suggestions', 'push_suggestions', v, setPushSuggestions)}
             />
             <ToggleRow
               testId="toggle-push-promos"
