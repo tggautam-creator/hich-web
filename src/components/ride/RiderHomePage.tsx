@@ -302,17 +302,22 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
         </div>
       </div>
 
-      {/* ── Bottom: docked active-ride banner + nav ──────────────────────── */}
-      {activeRideCount > 0 && (
-        <div
-          className="fixed left-0 right-0 z-[30] px-4"
-          style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 4.5rem)' }}
-        >
+      {/* ── Bottom action row — active-ride banner + post FAB ─────────────
+          iOS RiderHomePage.bottomActionBar pattern: when no active
+          ride, just the FAB right-aligned; when there is one, banner
+          + FAB sit on the same row (banner flexes, FAB stays 56px).
+          Always visible — user can post a ride from any scroll
+          position without bouncing to another tab. */}
+      <div
+        className="fixed left-0 right-0 z-[30] px-4 flex items-center gap-3"
+        style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 4.5rem)' }}
+      >
+        {activeRideCount > 0 ? (
           <button
             type="button"
             data-testid="active-ride-banner"
             onClick={() => navigate('/rides')}
-            className="w-full rounded-2xl bg-primary px-4 py-3 shadow-lg flex items-center gap-3 active:opacity-90 transition-opacity"
+            className="flex-1 min-w-0 rounded-2xl bg-primary px-4 py-3 shadow-lg flex items-center gap-3 active:opacity-90 transition-opacity"
           >
             <div className="h-8 w-8 rounded-full bg-white/20 flex items-center justify-center shrink-0">
               <span className="text-white font-bold text-sm">{activeRideCount}</span>
@@ -327,8 +332,22 @@ export default function RiderHomePage({ 'data-testid': testId }: RiderHomePagePr
               <path d="M9 18l6-6-6-6" />
             </svg>
           </button>
-        </div>
-      )}
+        ) : (
+          <div className="flex-1" />
+        )}
+        <button
+          type="button"
+          data-testid="rider-home-post-trip-fab"
+          onClick={() => navigate('/schedule/rider')}
+          aria-label="Post a trip"
+          className="h-14 w-14 shrink-0 rounded-full bg-primary text-white shadow-[0_8px_20px_rgba(58,90,228,0.35)] flex items-center justify-center active:scale-95 transition-transform"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6" aria-hidden="true">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+        </button>
+      </div>
 
       <BottomNav activeTab="home" />
 

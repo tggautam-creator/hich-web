@@ -617,27 +617,49 @@ export default function DriverHomePage({ 'data-testid': testId }: DriverHomePage
         className="fixed left-0 right-0 z-[30] px-4 flex flex-col gap-2"
         style={{ bottom: 'calc(max(env(safe-area-inset-bottom), 0px) + 4.5rem)' }}
       >
-        {activeRideCount > 0 && (
+        {/* Active-ride banner + post FAB on same row.
+            iOS DriverHomePage.bottomActionBar pattern: when no active
+            ride, just the FAB right-aligned; when there is one, the
+            banner flexes + the FAB stays 56px to the right.
+            Always-visible FAB lets the driver post a trip from any
+            scroll position. */}
+        <div className="flex items-center gap-3">
+          {activeRideCount > 0 ? (
+            <button
+              type="button"
+              data-testid="active-ride-banner"
+              onClick={() => navigate('/rides')}
+              className="flex-1 min-w-0 rounded-2xl bg-success px-4 py-3 shadow-lg flex items-center gap-3 active:opacity-90 transition-opacity"
+            >
+              <div className="h-8 w-8 rounded-full bg-white/20 flex items-center justify-center shrink-0">
+                <span className="text-white font-bold text-sm">{activeRideCount}</span>
+              </div>
+              <div className="flex-1 min-w-0 text-left">
+                <p className="text-sm font-semibold text-white">
+                  {activeRideCount === 1 ? 'You have an active ride' : `You have ${activeRideCount} active rides`}
+                </p>
+                <p className="text-xs text-white/70">Tap to view</p>
+              </div>
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4 text-white/70 shrink-0" aria-hidden="true">
+                <path d="M9 18l6-6-6-6" />
+              </svg>
+            </button>
+          ) : (
+            <div className="flex-1" />
+          )}
           <button
             type="button"
-            data-testid="active-ride-banner"
-            onClick={() => navigate('/rides')}
-            className="w-full rounded-2xl bg-success px-4 py-3 shadow-lg flex items-center gap-3 active:opacity-90 transition-opacity"
+            data-testid="driver-home-post-trip-fab"
+            onClick={() => navigate('/schedule/driver')}
+            aria-label="Post a trip"
+            className="h-14 w-14 shrink-0 rounded-full bg-success text-white shadow-[0_8px_20px_rgba(34,197,94,0.35)] flex items-center justify-center active:scale-95 transition-transform"
           >
-            <div className="h-8 w-8 rounded-full bg-white/20 flex items-center justify-center shrink-0">
-              <span className="text-white font-bold text-sm">{activeRideCount}</span>
-            </div>
-            <div className="flex-1 min-w-0 text-left">
-              <p className="text-sm font-semibold text-white">
-                {activeRideCount === 1 ? 'You have an active ride' : `You have ${activeRideCount} active rides`}
-              </p>
-              <p className="text-xs text-white/70">Tap to view</p>
-            </div>
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4 text-white/70 shrink-0" aria-hidden="true">
-              <path d="M9 18l6-6-6-6" />
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6" aria-hidden="true">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
           </button>
-        )}
+        </div>
 
         {/* Bank slim banner — only at the $100 cap (urgent state) */}
         {!hasBank && atWalletCap && (
