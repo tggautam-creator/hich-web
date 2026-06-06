@@ -150,6 +150,17 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
     }
   }
 
+  // The viewer's own waitlist entry (if any) — drives the "You're on the
+  // waitlist" state + Leave button on the detail. Excludes cancelled rows.
+  const userId = res.locals['userId'] as string
+  const { data: myRow } = await supabaseAdmin
+    .from('destination_waitlist')
+    .select(WAITLIST_ENTRY_COLUMNS as never)
+    .eq('destination_id', id)
+    .eq('rider_id', userId)
+    .neq('status', 'cancelled')
+    .maybeSingle()
+
   res.status(200).json({
     destination,
     driver_plans: plans.map((p) => ({
@@ -163,5 +174,155 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
         rider: profiles.get(w['rider_id'] as string) ?? null,
       })),
     },
+    my_waitlist_entry: myRow ?? null,
   })
+})
+
+// ── Waitlist join / leave (A.5) ───────────────────────────────────────────────
+
+const WAITLIST_ENTRY_COLUMNS =
+  'id, destination_id, desired_date, desired_time, wants_return, return_date, '
+  + 'return_time, travel_mode, group_size, companion_a_id, companion_b_id, note, status'
+
+const TRAVEL_MODES = ['together', 'own_thing', 'one_way'] as const
+
+interface WaitlistBody {
+  desired_date?: unknown
+  desired_time?: unknown
+  wants_return?: unknown
+  return_date?: unknown
+  return_time?: unknown
+  travel_mode?: unknown
+  group_size?: unknown
+  companion_a_id?: unknown
+  companion_b_id?: unknown
+  note?: unknown
+}
+
+/** Narrow an optional string field; returns undefined for missing/blank. */
+function optString(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  if (typeof value === 'string') return value.length > 0 ? value : null
+  return undefined
+}
+
+// POST /api/destinations/:id/waitlist — join (upsert; one row per rider).
+destinationsRouter.post('/:id/waitlist', validateJwt, async (req: Request, res: Response) => {
+  const riderId = res.locals['userId'] as string
+  const destinationId = req.params['id'] as string
+  if (!destinationId) {
+    res.status(400).json({ error: { code: 'INVALID_PARAMS', message: 'Destination id is required' } })
+    return
+  }
+  const body = (req.body ?? {}) as WaitlistBody
+
+  // Destination must exist and not be archived.
+  const { data: dest } = await supabaseAdmin
+    .from('featured_destinations')
+    .select('id')
+    .eq('id', destinationId)
+    .neq('status', 'archived')
+    .maybeSingle()
+  if (!dest) {
+    res.status(404).json({ error: { code: 'DESTINATION_NOT_FOUND', message: 'Destination not found' } })
+    return
+  }
+
+  // travel_mode — default 'together'.
+  const travelMode = typeof body.travel_mode === 'string' ? body.travel_mode : 'together'
+  if (!(TRAVEL_MODES as readonly string[]).includes(travelMode)) {
+    res.status(400).json({ error: { code: 'INVALID_TRAVEL_MODE', message: 'Invalid travel mode' } })
+    return
+  }
+  const wantsReturn = body.wants_return === true
+
+  // Companions — owned by the rider (mirror the rides.ts check). Group size
+  // must cover the rider + every attached companion.
+  const companionIds = [...new Set(
+    [body.companion_a_id, body.companion_b_id]
+      .filter((v): v is string => typeof v === 'string' && v.length > 0),
+  )].slice(0, 2)
+  if (companionIds.length > 0) {
+    const { data: companionRows } = await supabaseAdmin
+      .from('companions')
+      .select('id, user_id')
+      .in('id', companionIds)
+    const rows = (companionRows ?? []) as Array<{ id: string; user_id: string }>
+    const ownedAll = rows.length === companionIds.length
+      && companionIds.every((cid) => rows.some((r) => r.id === cid && r.user_id === riderId))
+    if (!ownedAll) {
+      res.status(404).json({ error: { code: 'COMPANION_NOT_FOUND', message: "We couldn't find that companion on your profile." } })
+      return
+    }
+  }
+
+  // group_size — default = rider + companions; clamp 1..5; must seat the party.
+  const minSeats = 1 + companionIds.length
+  let groupSize = typeof body.group_size === 'number' ? Math.trunc(body.group_size) : minSeats
+  if (!Number.isFinite(groupSize) || groupSize < minSeats) groupSize = minSeats
+  if (groupSize < 1 || groupSize > 5) {
+    res.status(400).json({ error: { code: 'INVALID_GROUP_SIZE', message: 'Group size must be between 1 and 5' } })
+    return
+  }
+
+  const note = optString(body.note)
+  if (note != null && note.length > 500) {
+    res.status(400).json({ error: { code: 'INVALID_NOTE', message: 'Note is too long' } })
+    return
+  }
+
+  const row = {
+    destination_id: destinationId,
+    rider_id: riderId,
+    desired_date: optString(body.desired_date) ?? null,
+    desired_time: optString(body.desired_time) ?? null,
+    wants_return: wantsReturn,
+    return_date: wantsReturn ? (optString(body.return_date) ?? null) : null,
+    return_time: wantsReturn ? (optString(body.return_time) ?? null) : null,
+    travel_mode: travelMode,
+    group_size: groupSize,
+    companion_a_id: companionIds[0] ?? null,
+    companion_b_id: companionIds[1] ?? null,
+    note: note ?? null,
+    status: 'waiting',
+    updated_at: new Date().toISOString(),
+  }
+
+  // Upsert on the (destination_id, rider_id) unique key — re-joining after a
+  // cancel revives the same row as 'waiting'.
+  const { data: saved, error: saveErr } = await supabaseAdmin
+    .from('destination_waitlist')
+    .upsert(row as never, { onConflict: 'destination_id,rider_id' })
+    .select(WAITLIST_ENTRY_COLUMNS as never)
+    .single()
+  if (saveErr || !saved) {
+    res.status(400).json({ error: { code: 'WAITLIST_SAVE_FAILED', message: 'Could not join the waitlist' } })
+    return
+  }
+
+  // NOTE: notifying drivers-going is deferred to A.4/C.4 — no driver plans
+  // exist for any destination yet, so there is no one to notify.
+  res.status(200).json({ waitlist_entry: saved })
+})
+
+// DELETE /api/destinations/:id/waitlist — leave (mark cancelled, keep history).
+destinationsRouter.delete('/:id/waitlist', validateJwt, async (req: Request, res: Response) => {
+  const riderId = res.locals['userId'] as string
+  const destinationId = req.params['id'] as string
+  if (!destinationId) {
+    res.status(400).json({ error: { code: 'INVALID_PARAMS', message: 'Destination id is required' } })
+    return
+  }
+  const { error: delErr } = await supabaseAdmin
+    .from('destination_waitlist')
+    .update({ status: 'cancelled', updated_at: new Date().toISOString() } as never)
+    .eq('destination_id', destinationId)
+    .eq('rider_id', riderId)
+    .neq('status', 'matched')
+  if (delErr) {
+    res.status(400).json({ error: { code: 'WAITLIST_LEAVE_FAILED', message: 'Could not leave the waitlist' } })
+    return
+  }
+  res.status(200).json({ ok: true })
 })
