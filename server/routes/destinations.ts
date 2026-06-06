@@ -379,3 +379,141 @@ destinationsRouter.delete('/:id/waitlist', validateJwt, async (req: Request, res
   }
   res.status(200).json({ ok: true })
 })
+
+// ── Driver plan: "I'm driving" (A.4) ──────────────────────────────────────────
+
+const DRIVER_PLAN_COLUMNS =
+  'id, destination_id, driver_id, outbound_date, outbound_time, wants_return, '
+  + 'return_date, return_time, seats_total, seats_available, note, status, '
+  + 'board_schedule_id, origin_lat, origin_lng, origin_address, origin_place_id'
+
+interface DriverPlanBody {
+  outbound_date?: unknown
+  outbound_time?: unknown
+  wants_return?: unknown
+  return_date?: unknown
+  return_time?: unknown
+  seats_total?: unknown
+  note?: unknown
+  origin_lat?: unknown
+  origin_lng?: unknown
+  origin_address?: unknown
+  origin_place_id?: unknown
+}
+
+// POST /api/destinations/:id/driver-plan — a driver posts a trip + cross-posts
+// it to the ride board (best-effort).
+destinationsRouter.post('/:id/driver-plan', validateJwt, async (req: Request, res: Response) => {
+  const driverId = res.locals['userId'] as string
+  const destinationId = req.params['id'] as string
+  if (!destinationId) {
+    res.status(400).json({ error: { code: 'INVALID_PARAMS', message: 'Destination id is required' } })
+    return
+  }
+  const body = (req.body ?? {}) as DriverPlanBody
+
+  // Destination must exist + not be archived; pull name + coords for the post.
+  const { data: dest } = await supabaseAdmin
+    .from('featured_destinations')
+    .select('id, name, latitude, longitude')
+    .eq('id', destinationId)
+    .neq('status', 'archived')
+    .maybeSingle()
+  if (!dest) {
+    res.status(404).json({ error: { code: 'DESTINATION_NOT_FOUND', message: 'Destination not found' } })
+    return
+  }
+  const destination = dest as { id: string; name: string; latitude: number | null; longitude: number | null }
+
+  const outboundDate = optString(body.outbound_date)
+  if (outboundDate == null) {
+    res.status(400).json({ error: { code: 'INVALID_DATE', message: 'Outbound date is required' } })
+    return
+  }
+  const wantsReturn = body.wants_return === true
+  let seatsTotal = typeof body.seats_total === 'number' ? Math.trunc(body.seats_total) : 1
+  if (!Number.isFinite(seatsTotal) || seatsTotal < 1) seatsTotal = 1
+  if (seatsTotal > 8) seatsTotal = 8
+
+  const note = optString(body.note)
+  if (note != null && note.length > 500) {
+    res.status(400).json({ error: { code: 'INVALID_NOTE', message: 'Note is too long' } })
+    return
+  }
+
+  const originLat = typeof body.origin_lat === 'number' ? body.origin_lat : null
+  const originLng = typeof body.origin_lng === 'number' ? body.origin_lng : null
+  const originAddress = optString(body.origin_address) ?? null
+  const originPlaceID = optString(body.origin_place_id) ?? null
+  const outboundTime = optString(body.outbound_time) ?? null
+
+  // 1. Cross-post to the ride board (best-effort — the plan is the primary
+  //    artifact; if the board insert fails we still create the plan).
+  let boardScheduleID: string | null = null
+  {
+    const boardPost = {
+      user_id: driverId,
+      mode: 'driver',
+      route_name: destination.name,
+      origin_place_id: originPlaceID ?? `driver:${driverId}`,
+      dest_place_id: `destination:${destinationId}`,
+      origin_address: originAddress ?? 'Driver location',
+      dest_address: destination.name,
+      direction_type: 'one_way',
+      trip_date: outboundDate,
+      time_type: 'departure',
+      trip_time: outboundTime ?? '12:00:00',
+      time_flexible: false,
+      available_seats: seatsTotal,
+      note: note ?? null,
+      origin_lat: originLat,
+      origin_lng: originLng,
+      dest_lat: destination.latitude,
+      dest_lng: destination.longitude,
+      route_polyline: null,
+      polyline_source: null,
+    }
+    const { data: post, error: postErr } = await supabaseAdmin
+      .from('ride_schedules')
+      .insert(boardPost as never)
+      .select('id')
+      .single()
+    if (postErr) {
+      console.error('[destinations] board cross-post failed:', postErr.message)
+    } else {
+      boardScheduleID = (post as { id: string }).id
+    }
+  }
+
+  // 2. Create the driver plan.
+  const planRow = {
+    destination_id: destinationId,
+    driver_id: driverId,
+    outbound_date: outboundDate,
+    outbound_time: outboundTime,
+    wants_return: wantsReturn,
+    return_date: wantsReturn ? (optString(body.return_date) ?? null) : null,
+    return_time: wantsReturn ? (optString(body.return_time) ?? null) : null,
+    seats_total: seatsTotal,
+    seats_available: seatsTotal,
+    note: note ?? null,
+    status: 'active',
+    board_schedule_id: boardScheduleID,
+    origin_lat: originLat,
+    origin_lng: originLng,
+    origin_address: originAddress,
+    origin_place_id: originPlaceID,
+    updated_at: new Date().toISOString(),
+  }
+  const { data: plan, error: planErr } = await supabaseAdmin
+    .from('destination_driver_plans')
+    .insert(planRow as never)
+    .select(DRIVER_PLAN_COLUMNS as never)
+    .single()
+  if (planErr || !plan) {
+    res.status(400).json({ error: { code: 'PLAN_SAVE_FAILED', message: 'Could not post your trip' } })
+    return
+  }
+
+  res.status(200).json({ driver_plan: plan })
+})
