@@ -32,6 +32,33 @@ async function notifyUser(userId: string, payload: { title: string; body: string
   }
 }
 
+/** Persist an in-app notification row (the bell inbox). Best-effort. */
+async function persistNotification(
+  userId: string,
+  type: string,
+  title: string,
+  body: string,
+  data: Record<string, string>,
+): Promise<void> {
+  try {
+    await supabaseAdmin.from('notifications').insert({ user_id: userId, type, title, body, data } as never)
+  } catch (err) {
+    console.error('[destinations] notification insert failed:', (err as Error).message)
+  }
+}
+
+/** In-app bell + FCM push together, for actionable/time-sensitive events. */
+async function notifyUserDual(
+  userId: string,
+  type: string,
+  title: string,
+  body: string,
+  data: Record<string, string>,
+): Promise<void> {
+  await persistNotification(userId, type, title, body, data)
+  await notifyUser(userId, { title, body, data })
+}
+
 /** GeoJSON Point for a PostGIS geometry column — [lng, lat]. */
 function geoPoint(lat: number, lng: number): { type: 'Point'; coordinates: [number, number] } {
   return { type: 'Point', coordinates: [lng, lat] }
@@ -878,13 +905,15 @@ destinationsRouter.post('/:id/offer', validateJwt, async (req: Request, res: Res
     return
   }
 
-  // Notify the counterparty.
+  // Notify the counterparty — actionable (Accept/Decline), so bell + push.
   const target = initiatedBy === 'rider' ? driverId : riderId
-  await notifyUser(target, {
-    title: initiatedBy === 'rider' ? 'New ride request' : 'A driver offered you a seat',
-    body: initiatedBy === 'rider' ? 'Someone wants to join your trip.' : 'Open Explore to accept.',
-    data: { type: 'destination_offer', destination_id: destinationId, offer_id: (offer as { id: string }).id },
-  })
+  await notifyUserDual(
+    target,
+    'destination_offer',
+    initiatedBy === 'rider' ? 'New ride request' : 'A driver offered you a seat',
+    initiatedBy === 'rider' ? 'Someone wants to join your trip.' : 'Open Explore to accept.',
+    { type: 'destination_offer', destination_id: destinationId, offer_id: (offer as { id: string }).id },
+  )
 
   res.status(200).json({ offer })
 })
@@ -1057,13 +1086,15 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
     .update({ status: 'accepted', outbound_ride_id: outboundRideId, return_ride_id: returnRideId, updated_at: new Date().toISOString() } as never)
     .eq('id', offer.id)
 
-  // Notify the other party.
+  // Notify the other party — a match opens a ride/chat, so bell + push.
   const notifyTarget = userId === offer.driver_id ? offer.rider_id : offer.driver_id
-  await notifyUser(notifyTarget, {
-    title: "You're matched!",
-    body: `Your trip to ${destName} is set — open the ride to chat.`,
-    data: { type: 'destination_matched', ride_id: outboundRideId, destination_id: destinationId },
-  })
+  await notifyUserDual(
+    notifyTarget,
+    'destination_matched',
+    "You're matched!",
+    `Your trip to ${destName} is set — open the ride to chat.`,
+    { type: 'destination_matched', ride_id: outboundRideId, destination_id: destinationId, destination_name: destName },
+  )
 
   res.status(200).json({ outbound_ride_id: outboundRideId, return_ride_id: returnRideId })
 })
@@ -1090,5 +1121,15 @@ destinationsRouter.post('/:id/offer/:offerId/decline', validateJwt, async (req: 
     .from('destination_offers')
     .update({ status: 'declined', updated_at: new Date().toISOString() } as never)
     .eq('id', offerId)
+
+  // Tell the other party — informational only (bell, no push).
+  const other = userId === offer.driver_id ? offer.rider_id : offer.driver_id
+  await persistNotification(
+    other,
+    'destination_declined',
+    'Request declined',
+    'Your Explore ride request was declined.',
+    { type: 'destination_declined', destination_id: req.params['id'] as string },
+  )
   res.status(200).json({ ok: true })
 })
