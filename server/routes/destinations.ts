@@ -18,6 +18,30 @@ import { validateJwt } from '../middleware/auth.ts'
 import { estimateFareCentsBetween } from './rides.ts'
 import { getOrCreateTripForRide } from '../lib/trips.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
+import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
+
+/** Insert a chat message into a ride thread + broadcast it (best-effort). */
+async function seedChatMessage(
+  rideId: string,
+  senderId: string,
+  content: string,
+  type: string,
+  meta: Record<string, unknown> = {},
+): Promise<void> {
+  try {
+    const { data } = await supabaseAdmin
+      .from('messages')
+      .insert({ ride_id: rideId, sender_id: senderId, content, type, meta } as never)
+      .select('id, ride_id, sender_id, content, type, meta, created_at')
+      .single()
+    if (data) {
+      void realtimeBroadcast(`chat:${rideId}`, 'new_message', data as Record<string, unknown>)
+      void realtimeBroadcast(`chat-badge:${rideId}`, 'new_message', data as Record<string, unknown>)
+    }
+  } catch (err) {
+    console.error('[destinations] seedChatMessage failed:', (err as Error).message)
+  }
+}
 
 /** Fire-and-forget FCM push to one user (best-effort). */
 async function notifyUser(userId: string, payload: { title: string; body: string; data?: Record<string, string> }): Promise<void> {
@@ -1040,13 +1064,12 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
     }
     const rideId = (ride as { id: string }).id
     await getOrCreateTripForRide(rideId)
-    // Seed chat so the thread isn't empty (rich Trip Thread is a later slice).
-    await supabaseAdmin.from('messages').insert({
-      ride_id: rideId,
-      sender_id: offer.driver_id,
-      content: `You're set for ${dName}! Use this chat to sort out pickup and timing.`,
-      type: 'text',
-    } as never)
+    // Seed chat so the thread isn't empty.
+    await seedChatMessage(
+      rideId, offer.driver_id,
+      `You're set for ${dName}! Use this chat to sort out pickup and timing.`,
+      'text',
+    )
     return rideId
   }
 
@@ -1063,6 +1086,24 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
       destLat, destLng, destName, originLat, originLng, originName,
       plan.return_date ?? plan.outbound_date, plan.return_time,
     )
+    // Auto-seed the return-coordinator card into the outbound chat (TT.1),
+    // pre-filled from the driver's planned return. Driver can refine it,
+    // riders confirm — all in this thread.
+    if (returnRideId) {
+      await seedChatMessage(
+        outboundRideId, offer.driver_id,
+        `Return trip from ${destName}`,
+        'return_proposal',
+        {
+          return_ride_id: returnRideId,
+          return_date: plan.return_date ?? plan.outbound_date,
+          return_time: plan.return_time,
+          destination_name: destName,
+          meet_spot: null,
+          status: 'proposed',
+        },
+      )
+    }
   }
 
   // Decrement seats; mark full at zero.
@@ -1130,6 +1171,81 @@ destinationsRouter.post('/:id/offer/:offerId/decline', validateJwt, async (req: 
     'Request declined',
     'Your Explore ride request was declined.',
     { type: 'destination_declined', destination_id: req.params['id'] as string },
+  )
+  res.status(200).json({ ok: true })
+})
+
+// ── Return coordination (TT.1) — in the existing ride chat ────────────────────
+
+/** Find the destination offer whose outbound leg is this ride. */
+async function offerForOutboundRide(rideId: string): Promise<
+  { id: string; driver_id: string; rider_id: string; return_ride_id: string | null; destination_id: string } | null
+> {
+  const { data } = await supabaseAdmin
+    .from('destination_offers')
+    .select('id, driver_id, rider_id, return_ride_id, destination_id')
+    .eq('outbound_ride_id', rideId)
+    .eq('status', 'accepted')
+    .maybeSingle()
+  return (data as { id: string; driver_id: string; rider_id: string; return_ride_id: string | null; destination_id: string } | null) ?? null
+}
+
+// POST /api/destinations/return/:rideId/propose — driver refines the return plan.
+destinationsRouter.post('/return/:rideId/propose', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const rideId = req.params['rideId'] as string
+  const body = (req.body ?? {}) as { return_date?: unknown; return_time?: unknown; meet_spot?: unknown }
+  const offer = await offerForOutboundRide(rideId)
+  if (!offer) {
+    res.status(404).json({ error: { code: 'TRIP_NOT_FOUND', message: 'Trip not found' } })
+    return
+  }
+  if (offer.driver_id !== userId) {
+    res.status(403).json({ error: { code: 'NOT_DRIVER', message: 'Only the driver can plan the return.' } })
+    return
+  }
+  const { data: dest } = await supabaseAdmin
+    .from('featured_destinations').select('name').eq('id', offer.destination_id).maybeSingle()
+  const destName = (dest as { name: string } | null)?.name ?? 'the destination'
+  const meetSpot = optString(body.meet_spot) ?? null
+  await seedChatMessage(rideId, userId, `Return trip from ${destName}`, 'return_proposal', {
+    return_ride_id: offer.return_ride_id,
+    return_date: optString(body.return_date) ?? null,
+    return_time: optString(body.return_time) ?? null,
+    meet_spot: meetSpot,
+    destination_name: destName,
+    status: 'proposed',
+  })
+  await notifyUserDual(
+    offer.rider_id,
+    'destination_return',
+    'Return plan updated',
+    meetSpot != null ? `Heading back from ${destName} — meet at ${meetSpot}.` : `Your driver updated the return from ${destName}.`,
+    { type: 'destination_return', ride_id: rideId },
+  )
+  res.status(200).json({ ok: true })
+})
+
+// POST /api/destinations/return/:rideId/confirm — rider confirms the return plan.
+destinationsRouter.post('/return/:rideId/confirm', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const rideId = req.params['rideId'] as string
+  const offer = await offerForOutboundRide(rideId)
+  if (!offer) {
+    res.status(404).json({ error: { code: 'TRIP_NOT_FOUND', message: 'Trip not found' } })
+    return
+  }
+  if (offer.rider_id !== userId) {
+    res.status(403).json({ error: { code: 'NOT_RIDER', message: 'Only the rider can confirm.' } })
+    return
+  }
+  await seedChatMessage(rideId, userId, "I'm ready for the return trip", 'return_confirmed', {})
+  await persistNotification(
+    offer.driver_id,
+    'destination_return',
+    'Rider confirmed the return',
+    'Your rider is ready for the return trip.',
+    { type: 'destination_return', ride_id: rideId },
   )
   res.status(200).json({ ok: true })
 })
