@@ -2861,6 +2861,117 @@ ridesRouter.patch(
  * GET /api/rides/:id/offers — list pending driver offers for a ride.
  * Returns driver info + vehicle info for the multi-driver selection screen.
  */
+/**
+ * GET /api/rides/:id/party — V4 F1 A.5/B.7. Returns the ride's caregiver
+ * + companion PROFILES (name, relationship, avatar; phone only post-accept)
+ * to the ride's participants.
+ *
+ * Why this exists: `caregivers` + `companions` are owner-only RLS
+ * (`auth.uid() = user_id`), so the DRIVER cannot read the rider's party
+ * rows with a client-side query — the driver-drawer caregiver row was
+ * silently RLS-blocked before this. We read via `supabaseAdmin` and gate
+ * access to the ride's rider/driver. Phone is withheld until the ride is
+ * past `requested` (mirrors the pre-accept privacy rule on the
+ * suggestion card); the rider — who owns the rows — always sees it.
+ */
+ridesRouter.get(
+  '/:id/party',
+  validateJwt,
+  async (req: Request, res: Response) => {
+    const userId = res.locals['userId'] as string
+    const rideId = req.params['id'] as string
+
+    if (!rideId) {
+      res.status(400).json({
+        error: { code: 'INVALID_PARAMS', message: 'Ride ID is required' },
+      })
+      return
+    }
+
+    const { data: ride } = await supabaseAdmin
+      .from('rides')
+      .select('id, rider_id, driver_id, status, caregiver_id, companion_a_id, companion_b_id' as never)
+      .eq('id', rideId)
+      .single()
+
+    if (!ride) {
+      res.status(404).json({
+        error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' },
+      })
+      return
+    }
+
+    const r = ride as unknown as {
+      rider_id: string
+      driver_id: string | null
+      status: string
+      caregiver_id: string | null
+      companion_a_id: string | null
+      companion_b_id: string | null
+    }
+
+    if (userId !== r.rider_id && userId !== r.driver_id) {
+      res.status(403).json({
+        error: { code: 'FORBIDDEN', message: 'Not a participant on this ride' },
+      })
+      return
+    }
+
+    // Phone released only post-accept (status past 'requested') OR to the
+    // rider themselves (who owns the party rows).
+    const includePhone = userId === r.rider_id || r.status !== 'requested'
+
+    let caregiver: Record<string, unknown> | null = null
+    if (r.caregiver_id) {
+      const { data } = await supabaseAdmin
+        .from('caregivers')
+        .select('id, name, relationship, phone, avatar_url')
+        .eq('id', r.caregiver_id)
+        .single()
+      if (data) {
+        const c = data as {
+          id: string; name: string; relationship: string | null
+          phone: string | null; avatar_url: string | null
+        }
+        caregiver = {
+          id: c.id,
+          name: c.name,
+          relationship: c.relationship,
+          avatar_url: c.avatar_url,
+          phone: includePhone ? c.phone : null,
+        }
+      }
+    }
+
+    const companionIds = [r.companion_a_id, r.companion_b_id]
+      .filter((v): v is string => typeof v === 'string' && v.length > 0)
+    let companions: Array<Record<string, unknown>> = []
+    if (companionIds.length > 0) {
+      const { data } = await supabaseAdmin
+        .from('companions')
+        .select('id, name, relationship, phone, avatar_url')
+        .in('id', companionIds)
+      const rows = (data ?? []) as Array<{
+        id: string; name: string; relationship: string | null
+        phone: string | null; avatar_url: string | null
+      }>
+      // Preserve a/b slot order.
+      companions = companionIds
+        .map((cid) => rows.find((row) => row.id === cid))
+        .filter((row): row is NonNullable<typeof row> => row != null)
+        .map((row) => ({
+          id: row.id,
+          name: row.name,
+          relationship: row.relationship,
+          avatar_url: row.avatar_url,
+          phone: includePhone ? row.phone : null,
+        }))
+    }
+
+    res.json({ caregiver, companions })
+  },
+)
+
 ridesRouter.get(
   '/:id/offers',
   validateJwt,
