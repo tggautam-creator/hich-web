@@ -3306,6 +3306,10 @@ scheduleRouter.post(
     let companionAId: string | null = null
     let companionBId: string | null = null
     let companionFareCents: number | null = null
+    // V4 F1 B.6-board — collected for the poster's request notification
+    // (so the driver sees "bringing N companions" on the board request,
+    // mirroring the instant-ride FCM in A.3).
+    const companionNames: string[] = []
     if (schedule.mode === 'driver') {
       const distanceKm = typeof body.distance_km === 'number' && body.distance_km > 0
         ? body.distance_km
@@ -3340,9 +3344,9 @@ scheduleRouter.post(
       if (companionIds.length > 0) {
         const { data: companionRows } = await supabaseAdmin
           .from('companions')
-          .select('id, user_id')
+          .select('id, user_id, name')
           .in('id', companionIds)
-        const rows = (companionRows ?? []) as Array<{ id: string; user_id: string }>
+        const rows = (companionRows ?? []) as Array<{ id: string; user_id: string; name: string }>
         const ownedAll = rows.length === companionIds.length
           && companionIds.every((cid) => rows.some((r) => r.id === cid && r.user_id === riderId))
         if (!ownedAll) {
@@ -3357,6 +3361,11 @@ scheduleRouter.post(
         companionAId = companionIds[0] ?? null
         companionBId = companionIds[1] ?? null
         companionFareCents = companionFareCentsFor(distanceKm) * companionIds.length
+        // Collect names in a/b order for the poster's request notification.
+        for (const cid of companionIds) {
+          const row = rows.find((rw) => rw.id === cid)
+          if (row) companionNames.push(row.name)
+        }
       }
     }
 
@@ -3530,8 +3539,14 @@ scheduleRouter.post(
 
     const requesterName = requester?.full_name ?? 'Someone'
     const requesterAvatarURL = (requester?.avatar_url as string | null) ?? ''
+    // V4 F1 B.6-board — show "bringing N" in the request banner title so
+    // the driver sees companions at a glance. Only ever non-empty on a
+    // driver-post (companions are validated only on that branch).
+    const companionSuffix = companionNames.length > 0
+      ? ` (bringing ${companionNames.length === 1 ? '1 companion' : `${companionNames.length} companions`})`
+      : ''
     const actionLabel = schedule.mode === 'driver'
-      ? `${requesterName} wants to join your ride`
+      ? `${requesterName} wants to join your ride${companionSuffix}`
       : `${requesterName} offered to drive you`
 
     // Broadcast via Realtime to poster (non-blocking)
@@ -3577,6 +3592,11 @@ scheduleRouter.post(
         requester_destination_name: body.destination_name ?? null,
         destination_flexible: body.destination_flexible ?? false,
         requester_note: requesterNote,
+        // V4 F1 B.6-board — companion context so the driver sees who the
+        // rider is bringing on the request (no phones; mirrors A.3 instant).
+        has_companions: companionAId != null ? 'true' : 'false',
+        companion_count: String(companionNames.length),
+        companion_names: companionNames.join(', '),
       },
     }).then(({ error: notifErr }) => {
       if (notifErr) console.error('Failed to persist notification:', notifErr.message)
@@ -3600,6 +3620,10 @@ scheduleRouter.post(
           schedule_id: schedule.id,
           requester_name: requesterName,
           requester_avatar_url: requesterAvatarURL,
+          // V4 F1 B.6-board — companion context (no phones; mirrors A.3).
+          has_companions: companionAId != null ? 'true' : 'false',
+          companion_count: String(companionNames.length),
+          companion_names: companionNames.join(', '),
         },
         // iOS: surface Accept / Decline buttons on the lock-screen
         // banner. Category id matches `PushManager.boardRequestCategory`.
