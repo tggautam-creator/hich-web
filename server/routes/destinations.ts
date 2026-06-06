@@ -31,11 +31,22 @@ interface DestinationRow {
   event_end_date: string | null
   status: string
   sort_priority: number
+  latitude: number | null
+  longitude: number | null
 }
 
 const DESTINATION_COLUMNS =
   'id, kind, name, slug, description, image_url, city, region, '
   + 'event_date, event_end_date, status, sort_priority'
+
+// Card distance/fare needs lat/lng (generated columns from migration 121).
+// Selected only by the list endpoint, with a graceful fallback so the
+// endpoint keeps working before 121 is applied (coords just absent → the
+// client hides distance).
+const DESTINATION_COLUMNS_WITH_COORDS = `${DESTINATION_COLUMNS}, latitude, longitude`
+
+/** Max faces shown in a card's "who's going" avatar stack. */
+const GOING_SAMPLE = 5
 
 // ── GET /api/destinations?kind= ──────────────────────────────────────────────
 destinationsRouter.get('/', validateJwt, async (req: Request, res: Response) => {
@@ -45,17 +56,25 @@ destinationsRouter.get('/', validateJwt, async (req: Request, res: Response) => 
     return
   }
 
-  let query = supabaseAdmin
-    .from('featured_destinations')
-    .select(DESTINATION_COLUMNS as never)
-    .neq('status', 'archived')
-    .order('sort_priority', { ascending: false })
-    .order('event_date', { ascending: true, nullsFirst: false })
-  if (kind != null) {
-    query = query.eq('kind', kind)
+  const buildQuery = (columns: string) => {
+    let query = supabaseAdmin
+      .from('featured_destinations')
+      .select(columns as never)
+      .neq('status', 'archived')
+      .order('sort_priority', { ascending: false })
+      .order('event_date', { ascending: true, nullsFirst: false })
+    if (kind != null) {
+      query = query.eq('kind', kind)
+    }
+    return query
   }
 
-  const { data, error } = await query
+  // Try with coords; if the generated columns aren't there yet
+  // (pre-migration-121), fall back to the base columns.
+  let { data, error } = await buildQuery(DESTINATION_COLUMNS_WITH_COORDS)
+  if (error) {
+    ({ data, error } = await buildQuery(DESTINATION_COLUMNS))
+  }
   if (error) {
     res.status(500).json({ error: { code: 'DB_ERROR', message: 'Failed to load destinations' } })
     return
@@ -63,26 +82,56 @@ destinationsRouter.get('/', validateJwt, async (req: Request, res: Response) => 
   const rows = (data ?? []) as unknown as DestinationRow[]
   const ids = rows.map((r) => r.id)
 
-  // Per-card counts — waiting riders + active driver plans. Fetched in
-  // two cheap reads + counted in JS (the catalogue is small).
+  // Per-card counts + a "who's going" sample. Waiting riders + active
+  // driver plans, two cheap reads; counts in JS (the catalogue is small).
+  // `goingUserIds` keeps insertion order (riders first, then drivers),
+  // deduped, so the avatar stack is stable + has no repeats.
   const waitlistCounts = new Map<string, number>()
   const planCounts = new Map<string, number>()
+  const goingUserIds = new Map<string, string[]>()
+  const pushGoing = (destId: string, userId: string) => {
+    const list = goingUserIds.get(destId) ?? []
+    if (!list.includes(userId)) {
+      list.push(userId)
+      goingUserIds.set(destId, list)
+    }
+  }
   if (ids.length > 0) {
     const { data: wl } = await supabaseAdmin
       .from('destination_waitlist')
-      .select('destination_id')
+      .select('destination_id, rider_id')
       .in('destination_id', ids)
       .eq('status', 'waiting')
-    for (const row of (wl ?? []) as Array<{ destination_id: string }>) {
+      .order('created_at', { ascending: true })
+    for (const row of (wl ?? []) as Array<{ destination_id: string; rider_id: string }>) {
       waitlistCounts.set(row.destination_id, (waitlistCounts.get(row.destination_id) ?? 0) + 1)
+      pushGoing(row.destination_id, row.rider_id)
     }
     const { data: plans } = await supabaseAdmin
       .from('destination_driver_plans')
-      .select('destination_id')
+      .select('destination_id, driver_id')
       .in('destination_id', ids)
       .eq('status', 'active')
-    for (const row of (plans ?? []) as Array<{ destination_id: string }>) {
+      .order('created_at', { ascending: true })
+    for (const row of (plans ?? []) as Array<{ destination_id: string; driver_id: string }>) {
       planCounts.set(row.destination_id, (planCounts.get(row.destination_id) ?? 0) + 1)
+      pushGoing(row.destination_id, row.driver_id)
+    }
+  }
+
+  // Resolve avatar/name for the capped sample of going-users in one read.
+  const sampleIds = new Set<string>()
+  for (const [, uids] of goingUserIds) {
+    for (const uid of uids.slice(0, GOING_SAMPLE)) sampleIds.add(uid)
+  }
+  const profiles = new Map<string, { full_name: string | null; avatar_url: string | null }>()
+  if (sampleIds.size > 0) {
+    const { data: users } = await supabaseAdmin
+      .from('users')
+      .select('id, full_name, avatar_url')
+      .in('id', [...sampleIds])
+    for (const u of (users ?? []) as Array<{ id: string; full_name: string | null; avatar_url: string | null }>) {
+      profiles.set(u.id, { full_name: u.full_name, avatar_url: u.avatar_url })
     }
   }
 
@@ -90,6 +139,10 @@ destinationsRouter.get('/', validateJwt, async (req: Request, res: Response) => 
     ...r,
     waitlist_count: waitlistCounts.get(r.id) ?? 0,
     driver_plan_count: planCounts.get(r.id) ?? 0,
+    going: (goingUserIds.get(r.id) ?? [])
+      .slice(0, GOING_SAMPLE)
+      .map((uid) => profiles.get(uid))
+      .filter((p): p is { full_name: string | null; avatar_url: string | null } => p != null),
   }))
   res.status(200).json({ destinations })
 })
