@@ -655,6 +655,34 @@ Server-first per system. ⚠️ Admin slices (A.3, B.3) are the parallel-admin-s
 
 **What it is:** A discovery + group-travel-matching section. Students find travel partners to go together (and come back together). Destinations are admin-curated, seeded from user requests. Riders join a waitlist; drivers say "I'm going"; they connect both directions; a driver registering also posts to the ride board.
 
+#### ✅ HOW IT WORKS — canonical functional spec (confirmed with Tarun 2026-06-06)
+
+> This subsection is the single source of truth for F6 behaviour. The schema + slice tables below remain valid; where older prose disagrees, this wins.
+
+**Two kinds of destination**
+- **Event** — has a real-world `event_date` (required). The date is a strong default but **outbound is NOT locked** — a rider/driver may go early or leave before.
+- **Place** — evergreen, no date. Every trip's dates are chosen by whoever creates it.
+
+**5 building blocks:** (1) **Destination** = the card; (2) **Driver Trip** = a driver's concrete "I'm driving" with out/back dates + open seats — **the joinable unit**; (3) **Interest/waitlist** = a rider's "I want to go" demand signal (not a booking); (4) **Offer** = the handshake connecting a rider to a driver trip (either side initiates); (5) **Trip Thread** = a persistent group chat per driver trip spanning BOTH legs.
+
+**Rider journey:** open destination → see driver trips (+ who's going) → either **"Join this trip"** (party = self + ≤2 companions = seats needed) when one fits, OR **"I want to go"** (waitlist demand signal) when none fits → driver accepts → outbound (+return) ride created, seats held, **Trip Thread opens** → ride out (pickup→QR→drive→QR→pay) → coordinate return in the Trip Thread → ride back.
+
+**Driver journey:** open destination → **"I'm driving"** → set out/back dates+times + seats (default to event_date for events) → trip posts under the destination **AND cross-posts to the ride board** → see interest → **accept join-requests** and/or **offer seats** to waitlisted riders → each accept creates the rides + adds rider to the Trip Thread → drive out → **launch the return from the Trip Thread** when the group's ready.
+
+**The connection (two-way):** rider "Join this trip" OR driver "Offer a seat" → `destination_offer` (pending) → other side accepts → **outbound ride (+ return ride), SAME driver**, seats held, interest→matched, Trip Thread opens → per-leg normal ride flow.
+
+**Trip Thread (the "coming back" hub):** one group chat per driver trip (driver + joined riders; companions on roster). Opens on first join → lives across both legs → archives after the return completes. Tools: pinned trip card + roster/seats, **return coordinator** (driver proposes return time + meet spot, riders confirm), per-person ready status (going/arrived/ready-to-return), temporary live location near departure. **Return launch:** driver taps "Start return" → the pre-created return ride goes active → leg-2 flow. Handles stay-longer / leave-early / overnight.
+
+**Money:** standard distance fare **per leg** (existing engine) + companion fees per leg (F1); round trip = two rides each settled at its own QR-end; platform fee 0%.
+
+**Cancellation / no-show (confirmed):**
+- **Driver cancels a trip with matched riders** → cancel both legs + refund holds + push all riders ("your driver cancelled") + **auto re-open them to the destination's interest list** so another driver can pick them up (mirrors the instant-ride "finding a new driver" feel).
+- **Rider backs out after matching (pre-outbound)** → free their seat(s) back to the driver's open count, **notify the driver**, rider leaves the Trip Thread.
+
+**Chat reuse:** before building the Trip Thread, audit `DriverGroupChatPage`/`DriverGroupChatViewModel` (F17 multi-rider) end-to-end; extend if it fits, else build fresh — report the call before coding.
+
+**Build order:** A.4+C.4 (driver posts trip + board cross-post) → A.6+C.5 (join/offer → accept → 2 rides + open Trip Thread) → Trip Thread chat → return-leg execution → A.3+C.6 (request new destination + auto-promote at 5).
+
 **Placement (decided):** **A dedicated bottom tab "Explore"**, freed by **folding Payment/Wallet into Profile → renamed "Account"**. New tab bar (both platforms): **Home · Drive · Rides · Explore · Account**. Wallet/Payment becomes a row under Account **with a credits badge** so the V4 wallet rewards (F2) stay discoverable. Secondary surfaces: a chip on the **Ride Board**, plus **Announcement (F5)** + **push** deep-links straight into a destination.
 > ⚠️ **Cross-feature interaction:** this moves the Wallet under "Account", so Feature 2's Rewards section + Feature 3's referral entry now live under Account, and the credits badge surfaces new rewards. The F2/F3 wallet-UI slices must target the Account location. Both tab bars change: iOS `SignedInTabs` (Tab enum currently home/drive/rides/payment/profile) + web `src/components/ui/BottomNav.tsx` (5-tab).
 
