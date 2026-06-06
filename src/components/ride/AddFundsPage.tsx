@@ -22,7 +22,11 @@ const stripePromise = env.STRIPE_PUBLISHABLE_KEY
   ? loadStripe(env.STRIPE_PUBLISHABLE_KEY)
   : null
 
-const AMOUNT_PILLS = [1000, 2000, 5000] // $10, $20, $50
+// iOS AddFundsSheet preset chips: $10 / $25 / $50 / $100 (the typical
+// ride-fare bands; matches the server's $5-$200 amount range). Web was
+// only offering three pills which clipped the most-common power-rider
+// $100 top-up.
+const AMOUNT_PILLS = [1000, 2500, 5000, 10000]
 const MIN_CENTS = 500
 const MAX_CENTS = 20000
 

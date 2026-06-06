@@ -3,7 +3,7 @@
  *
  * Verifies:
  *  1. Page renders with title
- *  2. Amount pills ($10, $20, $50) are shown
+ *  2. Amount pills ($10, $25, $50, $100) are shown (iOS-parity bump 2026-06-05)
  *  3. Clicking a pill selects it (adds primary styling)
  *  4. Custom amount input exists
  *  5. Pay button is disabled until amount is selected
@@ -101,16 +101,17 @@ describe('AddFundsPage', () => {
     expect(screen.getByTestId('add-funds-page')).toBeInTheDocument()
   })
 
-  it('shows three amount pills ($10, $20, $50)', () => {
+  it('shows four amount pills ($10, $25, $50, $100) — iOS parity', () => {
     renderAddFunds()
     expect(screen.getByTestId('pill-1000')).toHaveTextContent('$10.00')
-    expect(screen.getByTestId('pill-2000')).toHaveTextContent('$20.00')
+    expect(screen.getByTestId('pill-2500')).toHaveTextContent('$25.00')
     expect(screen.getByTestId('pill-5000')).toHaveTextContent('$50.00')
+    expect(screen.getByTestId('pill-10000')).toHaveTextContent('$100.00')
   })
 
   it('clicking a pill selects it with primary styling', () => {
     renderAddFunds()
-    const pill = screen.getByTestId('pill-2000')
+    const pill = screen.getByTestId('pill-2500')
     fireEvent.click(pill)
     expect(pill.className).toContain('bg-primary')
     expect(pill.className).toContain('text-white')
@@ -129,8 +130,8 @@ describe('AddFundsPage', () => {
 
   it('pay button shows formatted amount after pill selection', () => {
     renderAddFunds()
-    fireEvent.click(screen.getByTestId('pill-2000'))
-    expect(screen.getByTestId('pay-button')).toHaveTextContent('Add $20.00')
+    fireEvent.click(screen.getByTestId('pill-2500'))
+    expect(screen.getByTestId('pay-button')).toHaveTextContent('Add $25.00')
     expect(screen.getByTestId('pay-button')).not.toBeDisabled()
   })
 
@@ -242,7 +243,7 @@ describe('AddFundsPage', () => {
     renderAddFunds()
     await waitFor(() => screen.getByTestId('saved-card-option'))
     // Pick an amount + saved card is already the default.
-    fireEvent.click(screen.getByTestId('pill-2000'))
+    fireEvent.click(screen.getByTestId('pill-2500'))
     fireEvent.click(screen.getByTestId('pay-button'))
 
     await waitFor(() => {
