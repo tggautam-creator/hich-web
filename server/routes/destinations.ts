@@ -15,6 +15,27 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { validateJwt } from '../middleware/auth.ts'
+import { estimateFareCentsBetween } from './rides.ts'
+import { getOrCreateTripForRide } from '../lib/trips.ts'
+import { sendFcmPush } from '../lib/fcm.ts'
+
+/** Fire-and-forget FCM push to one user (best-effort). */
+async function notifyUser(userId: string, payload: { title: string; body: string; data?: Record<string, string> }): Promise<void> {
+  try {
+    const { data } = await supabaseAdmin.from('push_tokens').select('token').eq('user_id', userId)
+    const tokens = ((data ?? []) as Array<{ token: string }>).map((r) => r.token)
+    if (tokens.length > 0) {
+      await sendFcmPush(tokens, { title: payload.title, body: payload.body, data: payload.data ?? {} })
+    }
+  } catch (err) {
+    console.error('[destinations] notify failed:', (err as Error).message)
+  }
+}
+
+/** GeoJSON Point for a PostGIS geometry column — [lng, lat]. */
+function geoPoint(lat: number, lng: number): { type: 'Point'; coordinates: [number, number] } {
+  return { type: 'Point', coordinates: [lng, lat] }
+}
 
 export const destinationsRouter = Router()
 
@@ -224,6 +245,35 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
     .eq('status', 'active')
     .maybeSingle()
 
+  // Offers involving the viewer (pending requests/offers + accepted matches),
+  // each tagged with the viewer's role + the counterpart's profile.
+  const { data: offerRows } = await supabaseAdmin
+    .from('destination_offers')
+    .select(OFFER_COLUMNS as never)
+    .eq('destination_id', id)
+    .in('status', ['pending', 'accepted'])
+    .or(`rider_id.eq.${userId},driver_id.eq.${userId}`)
+  const offers = (offerRows ?? []) as Array<Record<string, unknown>>
+  const offerUserIds = [...new Set(offers.map((o) => (o['driver_id'] === userId ? o['rider_id'] : o['driver_id']) as string))]
+  const offerProfiles = new Map<string, { full_name: string | null; avatar_url: string | null; rating_avg: number | null }>()
+  if (offerUserIds.length > 0) {
+    const { data: ou } = await supabaseAdmin
+      .from('users')
+      .select('id, full_name, avatar_url, rating_avg')
+      .in('id', offerUserIds)
+    for (const u of (ou ?? []) as Array<{ id: string; full_name: string | null; avatar_url: string | null; rating_avg: number | null }>) {
+      offerProfiles.set(u.id, { full_name: u.full_name, avatar_url: u.avatar_url, rating_avg: u.rating_avg })
+    }
+  }
+  const myOffers = offers.map((o) => {
+    const counterpartId = (o['driver_id'] === userId ? o['rider_id'] : o['driver_id']) as string
+    return {
+      ...o,
+      viewer_role: o['driver_id'] === userId ? 'driver' : 'rider',
+      counterpart: offerProfiles.get(counterpartId) ?? null,
+    }
+  })
+
   res.status(200).json({
     destination,
     driver_plans: plans.map((p) => ({
@@ -239,6 +289,7 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
     },
     my_waitlist_entry: myRow ?? null,
     my_driver_plan: myPlan ?? null,
+    my_offers: myOffers,
   })
 })
 
@@ -672,5 +723,372 @@ destinationsRouter.delete('/:id/driver-plan/:planId', validateJwt, async (req: R
     await supabaseAdmin.from('ride_schedules').delete().eq('id', plan.board_schedule_id)
   }
   // NOTE: re-opening matched riders to interest lands with A.6 (no matches exist yet).
+  res.status(200).json({ ok: true })
+})
+
+// ── Offers: connect rider ↔ driver, accept → rides (A.6) ──────────────────────
+
+const OFFER_COLUMNS =
+  'id, destination_id, driver_plan_id, waitlist_id, driver_id, rider_id, '
+  + 'initiated_by, note, status, outbound_ride_id, return_ride_id'
+
+interface OfferBody {
+  driver_plan_id?: unknown
+  waitlist_id?: unknown
+  note?: unknown
+  companion_a_id?: unknown
+  companion_b_id?: unknown
+  desired_date?: unknown
+}
+
+// POST /api/destinations/:id/offer — create an offer (both directions):
+//   • rider-initiated "Join this trip": body has driver_plan_id (+ optional
+//     companions); we upsert the rider's waitlist entry to hold their party.
+//   • driver-initiated "Offer a seat": body has waitlist_id; the driver must
+//     have an active plan here.
+destinationsRouter.post('/:id/offer', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const destinationId = req.params['id'] as string
+  const body = (req.body ?? {}) as OfferBody
+  const note = optString(body.note) ?? null
+  const driverPlanId = optString(body.driver_plan_id)
+  const waitlistId = optString(body.waitlist_id)
+
+  if (driverPlanId == null && waitlistId == null) {
+    res.status(400).json({ error: { code: 'INVALID_BODY', message: 'driver_plan_id or waitlist_id required' } })
+    return
+  }
+
+  let initiatedBy: 'rider' | 'driver'
+  let driverId: string
+  let riderId: string
+  let planId: string
+  let linkedWaitlistId: string | null = null
+
+  if (driverPlanId != null) {
+    // Rider-initiated join request against a specific plan.
+    const { data: planRow } = await supabaseAdmin
+      .from('destination_driver_plans')
+      .select('id, driver_id, status, seats_available')
+      .eq('id', driverPlanId)
+      .maybeSingle()
+    const plan = planRow as { id: string; driver_id: string; status: string; seats_available: number } | null
+    if (!plan || plan.status !== 'active') {
+      res.status(404).json({ error: { code: 'PLAN_NOT_FOUND', message: 'Trip not found' } })
+      return
+    }
+    if (plan.driver_id === userId) {
+      res.status(400).json({ error: { code: 'OWN_PLAN', message: "You can't join your own trip." } })
+      return
+    }
+    if (plan.seats_available < 1) {
+      res.status(409).json({ error: { code: 'PLAN_FULL', message: 'This trip is full.' } })
+      return
+    }
+    initiatedBy = 'rider'
+    driverId = plan.driver_id
+    riderId = userId
+    planId = plan.id
+
+    // Hold the rider's party on a waitlist entry (companions live there).
+    const companionIds = [...new Set(
+      [body.companion_a_id, body.companion_b_id].filter((v): v is string => typeof v === 'string' && v.length > 0),
+    )].slice(0, 2)
+    const { data: wl } = await supabaseAdmin
+      .from('destination_waitlist')
+      .upsert({
+        destination_id: destinationId,
+        rider_id: userId,
+        desired_date: optString(body.desired_date) ?? null,
+        date_flexibility: 'exact',
+        travel_mode: 'together',
+        group_size: 1 + companionIds.length,
+        companion_a_id: companionIds[0] ?? null,
+        companion_b_id: companionIds[1] ?? null,
+        status: 'waiting',
+        updated_at: new Date().toISOString(),
+      } as never, { onConflict: 'destination_id,rider_id' })
+      .select('id')
+      .single()
+    linkedWaitlistId = (wl as { id: string } | null)?.id ?? null
+  } else {
+    // Driver-initiated offer to a waitlisted rider.
+    const { data: wlRow } = await supabaseAdmin
+      .from('destination_waitlist')
+      .select('id, rider_id, status')
+      .eq('id', waitlistId as string)
+      .maybeSingle()
+    const wl = wlRow as { id: string; rider_id: string; status: string } | null
+    if (!wl || wl.status === 'cancelled') {
+      res.status(404).json({ error: { code: 'WAITLIST_NOT_FOUND', message: 'That rider is no longer waiting.' } })
+      return
+    }
+    const { data: planRow } = await supabaseAdmin
+      .from('destination_driver_plans')
+      .select('id, seats_available')
+      .eq('destination_id', destinationId)
+      .eq('driver_id', userId)
+      .eq('status', 'active')
+      .maybeSingle()
+    const plan = planRow as { id: string; seats_available: number } | null
+    if (!plan) {
+      res.status(400).json({ error: { code: 'NO_PLAN', message: 'Post a trip before offering seats.' } })
+      return
+    }
+    if (plan.seats_available < 1) {
+      res.status(409).json({ error: { code: 'PLAN_FULL', message: 'Your trip is full.' } })
+      return
+    }
+    initiatedBy = 'driver'
+    driverId = userId
+    riderId = wl.rider_id
+    planId = plan.id
+    linkedWaitlistId = wl.id
+  }
+
+  // No duplicate pending offer for the same (plan, rider).
+  const { data: existing } = await supabaseAdmin
+    .from('destination_offers')
+    .select('id')
+    .eq('driver_plan_id', planId)
+    .eq('rider_id', riderId)
+    .eq('status', 'pending')
+    .maybeSingle()
+  if (existing) {
+    res.status(409).json({ error: { code: 'OFFER_EXISTS', message: 'There is already a pending request here.' } })
+    return
+  }
+
+  const { data: offer, error: offerErr } = await supabaseAdmin
+    .from('destination_offers')
+    .insert({
+      destination_id: destinationId,
+      driver_plan_id: planId,
+      waitlist_id: linkedWaitlistId,
+      driver_id: driverId,
+      rider_id: riderId,
+      initiated_by: initiatedBy,
+      note,
+      status: 'pending',
+    } as never)
+    .select(OFFER_COLUMNS as never)
+    .single()
+  if (offerErr || !offer) {
+    res.status(400).json({ error: { code: 'OFFER_FAILED', message: 'Could not send your request.' } })
+    return
+  }
+
+  // Notify the counterparty.
+  const target = initiatedBy === 'rider' ? driverId : riderId
+  await notifyUser(target, {
+    title: initiatedBy === 'rider' ? 'New ride request' : 'A driver offered you a seat',
+    body: initiatedBy === 'rider' ? 'Someone wants to join your trip.' : 'Open Explore to accept.',
+    data: { type: 'destination_offer', destination_id: destinationId, offer_id: (offer as { id: string }).id },
+  })
+
+  res.status(200).json({ offer })
+})
+
+// POST /api/destinations/:id/offer/:offerId/accept — counterparty accepts →
+// create outbound (+ return) rides, seed chat, decrement seats, mark matched.
+destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const destinationId = req.params['id'] as string
+  const offerId = req.params['offerId'] as string
+
+  const { data: offerRow } = await supabaseAdmin
+    .from('destination_offers')
+    .select(OFFER_COLUMNS as never)
+    .eq('id', offerId)
+    .maybeSingle()
+  const offer = offerRow as {
+    id: string; driver_plan_id: string | null; waitlist_id: string | null
+    driver_id: string; rider_id: string; initiated_by: string; status: string
+  } | null
+  if (!offer || offer.status !== 'pending') {
+    res.status(404).json({ error: { code: 'OFFER_NOT_FOUND', message: 'Request not found.' } })
+    return
+  }
+  // The accepter is the COUNTERPARTY (rider-initiated → driver accepts; vice versa).
+  const accepterShouldBe = offer.initiated_by === 'rider' ? offer.driver_id : offer.rider_id
+  if (userId !== accepterShouldBe) {
+    res.status(403).json({ error: { code: 'NOT_YOURS', message: 'You can\'t accept this request.' } })
+    return
+  }
+
+  // Load the plan (origin + dates + seats) and the destination (dropoff).
+  const { data: planRow } = await supabaseAdmin
+    .from('destination_driver_plans')
+    .select('id, driver_id, outbound_date, outbound_time, wants_return, return_date, return_time, seats_available, status, origin_lat, origin_lng, origin_address')
+    .eq('id', offer.driver_plan_id as string)
+    .maybeSingle()
+  const plan = planRow as {
+    id: string; driver_id: string; outbound_date: string; outbound_time: string | null
+    wants_return: boolean; return_date: string | null; return_time: string | null
+    seats_available: number; status: string
+    origin_lat: number | null; origin_lng: number | null; origin_address: string | null
+  } | null
+  if (!plan || plan.status !== 'active') {
+    res.status(409).json({ error: { code: 'PLAN_GONE', message: 'This trip is no longer available.' } })
+    return
+  }
+
+  const { data: destRow } = await supabaseAdmin
+    .from('featured_destinations')
+    .select('id, name, latitude, longitude')
+    .eq('id', destinationId)
+    .maybeSingle()
+  const dest = destRow as { id: string; name: string; latitude: number | null; longitude: number | null } | null
+  if (!dest) {
+    res.status(404).json({ error: { code: 'DESTINATION_NOT_FOUND', message: 'Destination not found' } })
+    return
+  }
+
+  // Rider's party (companions) from the linked waitlist entry.
+  let companionAId: string | null = null
+  let companionBId: string | null = null
+  let seatsNeeded = 1
+  if (offer.waitlist_id) {
+    const { data: wlRow } = await supabaseAdmin
+      .from('destination_waitlist')
+      .select('companion_a_id, companion_b_id, group_size')
+      .eq('id', offer.waitlist_id)
+      .maybeSingle()
+    const wl = wlRow as { companion_a_id: string | null; companion_b_id: string | null; group_size: number } | null
+    if (wl) {
+      companionAId = wl.companion_a_id
+      companionBId = wl.companion_b_id
+      seatsNeeded = Math.max(1, wl.group_size)
+    }
+  }
+  if (plan.seats_available < seatsNeeded) {
+    res.status(409).json({ error: { code: 'NOT_ENOUGH_SEATS', message: 'Not enough seats left for this party.' } })
+    return
+  }
+
+  const originLat = plan.origin_lat
+  const originLng = plan.origin_lng
+  const destLat = dest.latitude
+  const destLng = dest.longitude
+  if (originLat == null || originLng == null || destLat == null || destLng == null) {
+    res.status(400).json({ error: { code: 'MISSING_COORDS', message: 'Trip is missing location data.' } })
+    return
+  }
+
+  // Create a ride leg (mirrors the board-offer → ride conversion).
+  const makeRide = async (
+    oLat: number, oLng: number, oName: string,
+    dLat: number, dLng: number, dName: string,
+    tripDate: string, tripTime: string | null,
+  ): Promise<string | null> => {
+    const fareCents = await estimateFareCentsBetween(oLat, oLng, dLat, dLng)
+    const { data: ride, error: rideErr } = await supabaseAdmin
+      .from('rides')
+      .insert({
+        rider_id: offer.rider_id,
+        driver_id: offer.driver_id,
+        origin: geoPoint(oLat, oLng),
+        origin_name: oName,
+        destination: geoPoint(dLat, dLng),
+        destination_name: dName,
+        status: 'accepted',
+        trip_date: tripDate,
+        trip_time: tripTime,
+        fare_cents: fareCents,
+        payment_status: 'pending',
+        pickup_point: geoPoint(oLat, oLng),
+        pickup_confirmed: false,
+        dropoff_point: geoPoint(dLat, dLng),
+        dropoff_confirmed: true,
+        companion_a_id: companionAId,
+        companion_b_id: companionBId,
+      } as never)
+      .select('id')
+      .single()
+    if (rideErr || !ride) {
+      console.error('[destinations/offer:accept] ride insert failed:', rideErr?.message)
+      return null
+    }
+    const rideId = (ride as { id: string }).id
+    await getOrCreateTripForRide(rideId)
+    // Seed chat so the thread isn't empty (rich Trip Thread is a later slice).
+    await supabaseAdmin.from('messages').insert({
+      ride_id: rideId,
+      sender_id: offer.driver_id,
+      content: `You're set for ${dName}! Use this chat to sort out pickup and timing.`,
+      type: 'text',
+    } as never)
+    return rideId
+  }
+
+  const destName = dest.name
+  const originName = plan.origin_address ?? 'Driver location'
+  const outboundRideId = await makeRide(originLat, originLng, originName, destLat, destLng, destName, plan.outbound_date, plan.outbound_time)
+  if (!outboundRideId) {
+    res.status(400).json({ error: { code: 'RIDE_FAILED', message: 'Could not create the ride.' } })
+    return
+  }
+  let returnRideId: string | null = null
+  if (plan.wants_return) {
+    returnRideId = await makeRide(
+      destLat, destLng, destName, originLat, originLng, originName,
+      plan.return_date ?? plan.outbound_date, plan.return_time,
+    )
+  }
+
+  // Decrement seats; mark full at zero.
+  const newSeats = Math.max(0, plan.seats_available - seatsNeeded)
+  await supabaseAdmin
+    .from('destination_driver_plans')
+    .update({ seats_available: newSeats, status: newSeats === 0 ? 'full' : 'active', updated_at: new Date().toISOString() } as never)
+    .eq('id', plan.id)
+
+  // Mark the rider's waitlist entry matched.
+  if (offer.waitlist_id) {
+    await supabaseAdmin
+      .from('destination_waitlist')
+      .update({ status: 'matched', updated_at: new Date().toISOString() } as never)
+      .eq('id', offer.waitlist_id)
+  }
+
+  // Flip the offer.
+  await supabaseAdmin
+    .from('destination_offers')
+    .update({ status: 'accepted', outbound_ride_id: outboundRideId, return_ride_id: returnRideId, updated_at: new Date().toISOString() } as never)
+    .eq('id', offer.id)
+
+  // Notify the other party.
+  const notifyTarget = userId === offer.driver_id ? offer.rider_id : offer.driver_id
+  await notifyUser(notifyTarget, {
+    title: "You're matched!",
+    body: `Your trip to ${destName} is set — open the ride to chat.`,
+    data: { type: 'destination_matched', ride_id: outboundRideId, destination_id: destinationId },
+  })
+
+  res.status(200).json({ outbound_ride_id: outboundRideId, return_ride_id: returnRideId })
+})
+
+// POST /api/destinations/:id/offer/:offerId/decline — either party drops a pending offer.
+destinationsRouter.post('/:id/offer/:offerId/decline', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const offerId = req.params['offerId'] as string
+  const { data: offerRow } = await supabaseAdmin
+    .from('destination_offers')
+    .select('id, driver_id, rider_id, status')
+    .eq('id', offerId)
+    .maybeSingle()
+  const offer = offerRow as { id: string; driver_id: string; rider_id: string; status: string } | null
+  if (!offer || offer.status !== 'pending') {
+    res.status(404).json({ error: { code: 'OFFER_NOT_FOUND', message: 'Request not found.' } })
+    return
+  }
+  if (userId !== offer.driver_id && userId !== offer.rider_id) {
+    res.status(403).json({ error: { code: 'NOT_YOURS', message: 'Not your request.' } })
+    return
+  }
+  await supabaseAdmin
+    .from('destination_offers')
+    .update({ status: 'declined', updated_at: new Date().toISOString() } as never)
+    .eq('id', offerId)
   res.status(200).json({ ok: true })
 })
