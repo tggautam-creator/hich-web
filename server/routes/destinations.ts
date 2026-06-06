@@ -214,6 +214,16 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
     .neq('status', 'cancelled')
     .maybeSingle()
 
+  // The viewer's own active driver plan (if any) — drives the "Your trip"
+  // edit/cancel card + hides "I'm driving".
+  const { data: myPlan } = await supabaseAdmin
+    .from('destination_driver_plans')
+    .select(DRIVER_PLAN_COLUMNS as never)
+    .eq('destination_id', id)
+    .eq('driver_id', userId)
+    .eq('status', 'active')
+    .maybeSingle()
+
   res.status(200).json({
     destination,
     driver_plans: plans.map((p) => ({
@@ -228,6 +238,7 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
       })),
     },
     my_waitlist_entry: myRow ?? null,
+    my_driver_plan: myPlan ?? null,
   })
 })
 
@@ -425,6 +436,20 @@ destinationsRouter.post('/:id/driver-plan', validateJwt, async (req: Request, re
   }
   const destination = dest as { id: string; name: string; latitude: number | null; longitude: number | null }
 
+  // One active plan per driver per destination — block a duplicate post
+  // (the UI hides "I'm driving" when a plan exists, this is the backstop).
+  const { data: dupe } = await supabaseAdmin
+    .from('destination_driver_plans')
+    .select('id')
+    .eq('destination_id', destinationId)
+    .eq('driver_id', driverId)
+    .eq('status', 'active')
+    .maybeSingle()
+  if (dupe) {
+    res.status(409).json({ error: { code: 'PLAN_EXISTS', message: "You've already posted a trip here — edit it instead." } })
+    return
+  }
+
   const outboundDate = optString(body.outbound_date)
   if (outboundDate == null) {
     res.status(400).json({ error: { code: 'INVALID_DATE', message: 'Outbound date is required' } })
@@ -516,4 +541,125 @@ destinationsRouter.post('/:id/driver-plan', validateJwt, async (req: Request, re
   }
 
   res.status(200).json({ driver_plan: plan })
+})
+
+// PATCH /api/destinations/:id/driver-plan/:planId — edit own trip.
+destinationsRouter.patch('/:id/driver-plan/:planId', validateJwt, async (req: Request, res: Response) => {
+  const driverId = res.locals['userId'] as string
+  const planId = req.params['planId'] as string
+  const body = (req.body ?? {}) as DriverPlanBody
+
+  // Owner check — the plan must exist + belong to the caller.
+  const { data: existing } = await supabaseAdmin
+    .from('destination_driver_plans')
+    .select('id, driver_id, board_schedule_id, seats_total, seats_available')
+    .eq('id', planId)
+    .maybeSingle()
+  const plan = existing as
+    | { id: string; driver_id: string; board_schedule_id: string | null; seats_total: number; seats_available: number }
+    | null
+  if (!plan || plan.driver_id !== driverId) {
+    res.status(404).json({ error: { code: 'PLAN_NOT_FOUND', message: 'Trip not found' } })
+    return
+  }
+
+  const outboundDate = optString(body.outbound_date)
+  if (outboundDate == null) {
+    res.status(400).json({ error: { code: 'INVALID_DATE', message: 'Outbound date is required' } })
+    return
+  }
+  const wantsReturn = body.wants_return === true
+  let seatsTotal = typeof body.seats_total === 'number' ? Math.trunc(body.seats_total) : plan.seats_total
+  if (!Number.isFinite(seatsTotal) || seatsTotal < 1) seatsTotal = 1
+  if (seatsTotal > 8) seatsTotal = 8
+  // No matching exists yet (A.6), so available tracks total. When offers
+  // land this becomes seatsTotal - bookedSeats.
+  const seatsBooked = plan.seats_total - plan.seats_available
+  const seatsAvailable = Math.max(0, seatsTotal - seatsBooked)
+  const note = optString(body.note)
+  if (note != null && note.length > 500) {
+    res.status(400).json({ error: { code: 'INVALID_NOTE', message: 'Note is too long' } })
+    return
+  }
+  const originLat = typeof body.origin_lat === 'number' ? body.origin_lat : null
+  const originLng = typeof body.origin_lng === 'number' ? body.origin_lng : null
+  const originAddress = optString(body.origin_address) ?? null
+  const originPlaceID = optString(body.origin_place_id) ?? null
+  const outboundTime = optString(body.outbound_time) ?? null
+
+  const { data: updated, error: updErr } = await supabaseAdmin
+    .from('destination_driver_plans')
+    .update({
+      outbound_date: outboundDate,
+      outbound_time: outboundTime,
+      wants_return: wantsReturn,
+      return_date: wantsReturn ? (optString(body.return_date) ?? null) : null,
+      return_time: wantsReturn ? (optString(body.return_time) ?? null) : null,
+      seats_total: seatsTotal,
+      seats_available: seatsAvailable,
+      note: note ?? null,
+      origin_lat: originLat,
+      origin_lng: originLng,
+      origin_address: originAddress,
+      origin_place_id: originPlaceID,
+      updated_at: new Date().toISOString(),
+    } as never)
+    .eq('id', planId)
+    .select(DRIVER_PLAN_COLUMNS as never)
+    .single()
+  if (updErr || !updated) {
+    res.status(400).json({ error: { code: 'PLAN_UPDATE_FAILED', message: 'Could not update your trip' } })
+    return
+  }
+
+  // Keep the linked board post in sync (best-effort).
+  if (plan.board_schedule_id) {
+    await supabaseAdmin
+      .from('ride_schedules')
+      .update({
+        trip_date: outboundDate,
+        trip_time: outboundTime ?? '12:00:00',
+        available_seats: seatsTotal,
+        note: note ?? null,
+        origin_lat: originLat,
+        origin_lng: originLng,
+        origin_address: originAddress ?? 'Driver location',
+        origin_place_id: originPlaceID ?? `driver:${driverId}`,
+      } as never)
+      .eq('id', plan.board_schedule_id)
+  }
+
+  res.status(200).json({ driver_plan: updated })
+})
+
+// DELETE /api/destinations/:id/driver-plan/:planId — cancel own trip.
+destinationsRouter.delete('/:id/driver-plan/:planId', validateJwt, async (req: Request, res: Response) => {
+  const driverId = res.locals['userId'] as string
+  const planId = req.params['planId'] as string
+
+  const { data: existing } = await supabaseAdmin
+    .from('destination_driver_plans')
+    .select('id, driver_id, board_schedule_id')
+    .eq('id', planId)
+    .maybeSingle()
+  const plan = existing as { id: string; driver_id: string; board_schedule_id: string | null } | null
+  if (!plan || plan.driver_id !== driverId) {
+    res.status(404).json({ error: { code: 'PLAN_NOT_FOUND', message: 'Trip not found' } })
+    return
+  }
+
+  const { error: cancelErr } = await supabaseAdmin
+    .from('destination_driver_plans')
+    .update({ status: 'cancelled', seats_available: 0, updated_at: new Date().toISOString() } as never)
+    .eq('id', planId)
+  if (cancelErr) {
+    res.status(400).json({ error: { code: 'PLAN_CANCEL_FAILED', message: 'Could not cancel your trip' } })
+    return
+  }
+  // Remove the board cross-post too (best-effort).
+  if (plan.board_schedule_id) {
+    await supabaseAdmin.from('ride_schedules').delete().eq('id', plan.board_schedule_id)
+  }
+  // NOTE: re-opening matched riders to interest lands with A.6 (no matches exist yet).
+  res.status(200).json({ ok: true })
 })
