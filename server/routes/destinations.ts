@@ -1240,11 +1240,33 @@ destinationsRouter.post('/:id/offer/:offerId/decline', validateJwt, async (req: 
 
 // ── Request a place/event (A.3) ───────────────────────────────────────────────
 
-const AUTO_PROMOTE_THRESHOLD = 5
-
 /** "Lake Tahoe!" → "lake-tahoe" (slug) ; "  lake  tahoe " → "lake tahoe" (norm). */
 function slugify(input: string): string {
   return input.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 200)
+}
+
+/**
+ * Notify everyone who requested/voted for a destination that it's now live.
+ * Called by the admin promotion flow (admin makes the poster, then promotes).
+ * `normalizedName` matches the `destination_requests` voters.
+ */
+export async function notifyRequestersForPromotion(
+  destinationId: string,
+  destinationName: string,
+  normalizedName: string,
+): Promise<void> {
+  const { data } = await supabaseAdmin
+    .from('destination_requests').select('user_id').eq('normalized_name', normalizedName)
+  const voters = [...new Set(((data ?? []) as Array<{ user_id: string }>).map((r) => r.user_id))]
+  for (const userId of voters) {
+    await notifyUserDual(
+      userId,
+      'destination_promoted',
+      'A spot you wanted is live! 🎉',
+      `${destinationName} is now in Explore — find a ride.`,
+      { type: 'destination_promoted', destination_id: destinationId },
+    )
+  }
 }
 
 // POST /api/destinations/request — submit a place/event request; aggregate
@@ -1293,34 +1315,75 @@ destinationsRouter.post('/request', validateJwt, async (req: Request, res: Respo
     .from('featured_destinations').select('id').eq('slug', slug).maybeSingle()
 
   // Demand = distinct requesters (UNIQUE(user,normalized) → one row each).
+  // No auto-promote — the admin reviews demand + makes the poster, then
+  // promotes from the admin panel (which calls notifyRequestersForPromotion).
   const { count } = await supabaseAdmin
     .from('destination_requests')
     .select('id', { count: 'exact', head: true })
     .eq('normalized_name', normalized)
-  const demand = count ?? 0
 
-  let promoted = false
-  let destinationId: string | null = (existing as { id: string } | null)?.id ?? null
-  if (!existing && demand >= AUTO_PROMOTE_THRESHOLD) {
-    const { data: created } = await supabaseAdmin
-      .from('featured_destinations')
-      .insert({
-        kind,
-        name: requestedName,
-        slug,
-        status: 'active',
-        source: 'auto_promoted',
-        event_date: targetDate,
-      } as never)
-      .select('id')
-      .single()
-    if (created) {
-      promoted = true
-      destinationId = (created as { id: string }).id
+  res.status(200).json({ demand_count: count ?? 0, already_live: existing != null })
+})
+
+// GET /api/destinations/requests — the "Requested" section: pending
+// requested spots aggregated by name, with demand counts + whether the
+// viewer already voted. Excludes ones already in the live catalogue.
+destinationsRouter.get('/requests/list', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const kindFilter = typeof req.query['kind'] === 'string' ? (req.query['kind'] as string) : null
+
+  let query = supabaseAdmin
+    .from('destination_requests')
+    .select('user_id, kind, requested_name, normalized_name, target_date, created_at')
+    .order('created_at', { ascending: false })
+    .limit(500)
+  if (kindFilter === 'event' || kindFilter === 'place') {
+    query = query.eq('kind', kindFilter)
+  }
+  const { data } = await query
+  const rows = (data ?? []) as Array<{
+    user_id: string; kind: string; requested_name: string
+    normalized_name: string; target_date: string | null; created_at: string
+  }>
+
+  // Exclude anything already live (slug match).
+  const { data: live } = await supabaseAdmin.from('featured_destinations').select('slug')
+  const liveSlugs = new Set(((live ?? []) as Array<{ slug: string }>).map((d) => d.slug))
+
+  const agg = new Map<string, {
+    normalized_name: string; name: string; kind: string
+    count: number; voters: Set<string>; viewer_voted: boolean; target_date: string | null
+  }>()
+  for (const r of rows) {
+    if (liveSlugs.has(slugify(r.requested_name))) continue
+    const existing = agg.get(r.normalized_name)
+    if (existing) {
+      existing.voters.add(r.user_id)
+      if (r.user_id === userId) existing.viewer_voted = true
+    } else {
+      agg.set(r.normalized_name, {
+        normalized_name: r.normalized_name,
+        name: r.requested_name, // newest (rows ordered desc)
+        kind: r.kind,
+        count: 0,
+        voters: new Set([r.user_id]),
+        viewer_voted: r.user_id === userId,
+        target_date: r.target_date,
+      })
     }
   }
+  const requests = [...agg.values()]
+    .map((a) => ({
+      normalized_name: a.normalized_name,
+      name: a.name,
+      kind: a.kind,
+      count: a.voters.size,
+      viewer_voted: a.viewer_voted,
+      target_date: a.target_date,
+    }))
+    .sort((lhs, rhs) => rhs.count - lhs.count)
 
-  res.status(200).json({ demand_count: demand, promoted, destination_id: destinationId })
+  res.status(200).json({ requests })
 })
 
 // ── My trips (Rides-tab surface) ──────────────────────────────────────────────
