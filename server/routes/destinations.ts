@@ -1226,6 +1226,73 @@ destinationsRouter.post('/:id/offer/:offerId/decline', validateJwt, async (req: 
   res.status(200).json({ ok: true })
 })
 
+// ── Offer detail (Phase 1 — Event Request page) ───────────────────────────────
+
+// GET /api/destinations/offer/:offerId — everything the EventRequestPage
+// needs, reachable straight from a notification (no destination load).
+destinationsRouter.get('/offer/:offerId', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const offerId = req.params['offerId'] as string
+
+  const { data: offerRow } = await supabaseAdmin
+    .from('destination_offers')
+    .select(OFFER_COLUMNS as never)
+    .eq('id', offerId)
+    .maybeSingle()
+  const offer = offerRow as {
+    id: string; driver_plan_id: string | null; waitlist_id: string | null
+    destination_id: string; driver_id: string; rider_id: string
+    initiated_by: string; note: string | null; status: string
+    outbound_ride_id: string | null; return_ride_id: string | null
+  } | null
+  if (!offer || (offer.driver_id !== userId && offer.rider_id !== userId)) {
+    res.status(404).json({ error: { code: 'OFFER_NOT_FOUND', message: 'Request not found.' } })
+    return
+  }
+
+  const counterpartId = offer.driver_id === userId ? offer.rider_id : offer.driver_id
+  const { data: cpRow } = await supabaseAdmin
+    .from('users').select('full_name, avatar_url, rating_avg').eq('id', counterpartId).maybeSingle()
+
+  const { data: destRow } = await supabaseAdmin
+    .from('featured_destinations').select('name, image_url, city, region').eq('id', offer.destination_id).maybeSingle()
+
+  const { data: planRow } = await supabaseAdmin
+    .from('destination_driver_plans')
+    .select('outbound_date, outbound_time, wants_return, return_date, return_time, seats_available')
+    .eq('id', offer.driver_plan_id as string).maybeSingle()
+
+  let partySize = 1
+  if (offer.waitlist_id != null) {
+    const { data: wl } = await supabaseAdmin
+      .from('destination_waitlist').select('group_size').eq('id', offer.waitlist_id).maybeSingle()
+    partySize = Math.max(1, (wl as { group_size: number } | null)?.group_size ?? 1)
+  }
+
+  const viewerRole = offer.driver_id === userId ? 'driver' : 'rider'
+  // The accepter is the counterparty of whoever initiated.
+  const canAct = offer.status === 'pending'
+    && ((offer.initiated_by === 'rider' && viewerRole === 'driver')
+      || (offer.initiated_by === 'driver' && viewerRole === 'rider'))
+
+  res.status(200).json({
+    offer: {
+      id: offer.id,
+      destination_id: offer.destination_id,
+      initiated_by: offer.initiated_by,
+      status: offer.status,
+      note: offer.note,
+      outbound_ride_id: offer.outbound_ride_id,
+    },
+    viewer_role: viewerRole,
+    can_act: canAct,
+    counterpart: cpRow ?? null,
+    destination: destRow ?? null,
+    trip: planRow ?? null,
+    party_size: partySize,
+  })
+})
+
 // ── Trip Stepper context (Spine-A) ────────────────────────────────────────────
 
 // GET /api/destinations/trip-context/:rideID — the staged-journey state for a
