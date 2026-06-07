@@ -1226,6 +1226,84 @@ destinationsRouter.post('/:id/offer/:offerId/decline', validateJwt, async (req: 
   res.status(200).json({ ok: true })
 })
 
+// ── Trip Stepper context (Spine-A) ────────────────────────────────────────────
+
+// GET /api/destinations/trip-context/:rideID — the staged-journey state for a
+// destination ride's chat (the pinned stepper header). Returns is_destination
+// false for non-destination rides so the chat just hides the header.
+destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request, res: Response) => {
+  const rideID = req.params['rideID'] as string
+
+  const { data: offerRow } = await supabaseAdmin
+    .from('destination_offers')
+    .select('id, driver_plan_id, destination_id, outbound_ride_id, return_ride_id, status')
+    .or(`outbound_ride_id.eq.${rideID},return_ride_id.eq.${rideID}`)
+    .eq('status', 'accepted')
+    .maybeSingle()
+  const offer = offerRow as {
+    id: string; driver_plan_id: string | null; destination_id: string
+    outbound_ride_id: string | null; return_ride_id: string | null; status: string
+  } | null
+  if (!offer) {
+    res.status(200).json({ is_destination: false })
+    return
+  }
+
+  const { data: planRow } = await supabaseAdmin
+    .from('destination_driver_plans').select('wants_return').eq('id', offer.driver_plan_id as string).maybeSingle()
+  const roundTrip = (planRow as { wants_return: boolean } | null)?.wants_return ?? false
+
+  const { data: destRow } = await supabaseAdmin
+    .from('featured_destinations').select('name').eq('id', offer.destination_id).maybeSingle()
+  const destinationName = (destRow as { name: string } | null)?.name ?? 'the destination'
+
+  // Pull both legs' status + payment.
+  const legIds = [offer.outbound_ride_id, offer.return_ride_id].filter((v): v is string => typeof v === 'string')
+  const { data: rideRows } = await supabaseAdmin
+    .from('rides').select('id, status, payment_status').in('id', legIds)
+  const rides = new Map<string, { status: string; payment_status: string }>()
+  for (const r of (rideRows ?? []) as Array<{ id: string; status: string; payment_status: string }>) {
+    rides.set(r.id, { status: r.status, payment_status: r.payment_status })
+  }
+  const outbound = offer.outbound_ride_id ? rides.get(offer.outbound_ride_id) : undefined
+  const returnLeg = offer.return_ride_id ? rides.get(offer.return_ride_id) : undefined
+
+  // Stage machine.
+  let stage = 'pickup'
+  let canStartReturn = false
+  const outStatus = outbound?.status ?? 'accepted'
+  if (outStatus === 'cancelled') {
+    stage = 'cancelled'
+  } else if (outStatus === 'active') {
+    stage = 'to_destination'
+  } else if (outStatus === 'completed') {
+    if (outbound?.payment_status !== 'paid') {
+      stage = 'arrived_pay'
+    } else if (!roundTrip) {
+      stage = 'done'
+    } else if (returnLeg == null || returnLeg.status === 'accepted' || returnLeg.status === 'coordinating') {
+      stage = 'at_destination'
+      canStartReturn = true
+    } else if (returnLeg.status === 'active') {
+      stage = 'heading_home'
+    } else if (returnLeg.status === 'completed') {
+      stage = returnLeg.payment_status === 'paid' ? 'done' : 'home_pay'
+    }
+  } else {
+    stage = 'pickup'
+  }
+
+  res.status(200).json({
+    is_destination: true,
+    round_trip: roundTrip,
+    destination_name: destinationName,
+    stage,
+    can_start_return: canStartReturn,
+    outbound_ride_id: offer.outbound_ride_id,
+    return_ride_id: offer.return_ride_id,
+  })
+})
+
 // ── Return coordination (TT.1) — in the existing ride chat ────────────────────
 
 /** Find the destination offer whose outbound leg is this ride. */
