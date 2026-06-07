@@ -278,12 +278,15 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
   // The viewer's own waitlist entry (if any) — drives the "You're on the
   // waitlist" state + Leave button on the detail. Excludes cancelled rows.
   const userId = res.locals['userId'] as string
+  // Only a `waiting` entry means "on the waitlist". A `matched` row (the
+  // rider already got a ride) must NOT show the waitlist card — that's the
+  // stale "You're on the waitlist / can't leave" bug.
   const { data: myRow } = await supabaseAdmin
     .from('destination_waitlist')
     .select(WAITLIST_ENTRY_COLUMNS as never)
     .eq('destination_id', id)
     .eq('rider_id', userId)
-    .neq('status', 'cancelled')
+    .eq('status', 'waiting')
     .maybeSingle()
 
   // The viewer's own active driver plan (if any) — drives the "Your trip"
