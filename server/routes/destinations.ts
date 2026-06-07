@@ -1281,9 +1281,11 @@ destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request
       stage = 'arrived_pay'
     } else if (!roundTrip) {
       stage = 'done'
-    } else if (returnLeg == null || returnLeg.status === 'accepted' || returnLeg.status === 'coordinating') {
+    } else if (returnLeg == null) {
       stage = 'at_destination'
       canStartReturn = true
+    } else if (returnLeg.status === 'accepted' || returnLeg.status === 'coordinating') {
+      stage = 'return_ready' // return created, awaiting QR-start
     } else if (returnLeg.status === 'active') {
       stage = 'heading_home'
     } else if (returnLeg.status === 'completed') {
@@ -1377,4 +1379,111 @@ destinationsRouter.post('/return/:rideId/confirm', validateJwt, async (req: Requ
     { type: 'destination_return', ride_id: rideId },
   )
   res.status(200).json({ ok: true })
+})
+
+interface GeoJSONPoint { type: string; coordinates: [number, number] }
+
+// POST /api/destinations/return/:rideID/start — create the return leg
+// (event → home, pre-confirmed so nav works) once the outbound is done +
+// paid. Either party can start it. The return ride then runs through the
+// normal QR-start → drive → QR-end → pay flow.
+destinationsRouter.post('/return/:rideID/start', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const rideID = req.params['rideID'] as string
+  const body = (req.body ?? {}) as { dropoff_lat?: unknown; dropoff_lng?: unknown; dropoff_name?: unknown }
+
+  const offer = await offerForOutboundRide(rideID)
+  if (!offer) {
+    res.status(404).json({ error: { code: 'TRIP_NOT_FOUND', message: 'Trip not found' } })
+    return
+  }
+  if (offer.driver_id !== userId && offer.rider_id !== userId) {
+    res.status(403).json({ error: { code: 'NOT_YOURS', message: 'Not your trip.' } })
+    return
+  }
+  if (offer.return_ride_id != null) {
+    res.status(409).json({ error: { code: 'RETURN_EXISTS', message: 'The return trip has already started.' } })
+    return
+  }
+
+  // The outbound must be finished + paid.
+  const { data: outRow } = await supabaseAdmin
+    .from('rides')
+    .select('status, payment_status, origin, origin_name, destination, destination_name, companion_a_id, companion_b_id')
+    .eq('id', rideID)
+    .maybeSingle()
+  const out = outRow as {
+    status: string; payment_status: string
+    origin: GeoJSONPoint | null; origin_name: string | null
+    destination: GeoJSONPoint | null; destination_name: string | null
+    companion_a_id: string | null; companion_b_id: string | null
+  } | null
+  if (!out || out.status !== 'completed' || out.payment_status !== 'paid') {
+    res.status(409).json({ error: { code: 'NOT_READY', message: 'Finish and pay for the ride there first.' } })
+    return
+  }
+  const homeCoords = out.origin?.coordinates
+  const eventCoords = out.destination?.coordinates
+  if (!homeCoords || !eventCoords) {
+    res.status(400).json({ error: { code: 'MISSING_COORDS', message: 'Trip is missing location data.' } })
+    return
+  }
+  // Return = outbound reversed: pickup = event, dropoff = home (default).
+  // Optional override: a different drop-off.
+  const dropLat = typeof body.dropoff_lat === 'number' ? body.dropoff_lat : homeCoords[1]
+  const dropLng = typeof body.dropoff_lng === 'number' ? body.dropoff_lng : homeCoords[0]
+  const dropName = optString(body.dropoff_name) ?? out.origin_name ?? 'Home'
+  const eventLat = eventCoords[1]
+  const eventLng = eventCoords[0]
+  const eventName = out.destination_name ?? 'the destination'
+
+  const fareCents = await estimateFareCentsBetween(eventLat, eventLng, dropLat, dropLng)
+  const { data: ride, error: rideErr } = await supabaseAdmin
+    .from('rides')
+    .insert({
+      rider_id: offer.rider_id,
+      driver_id: offer.driver_id,
+      origin: geoPoint(eventLat, eventLng),
+      origin_name: eventName,
+      destination: geoPoint(dropLat, dropLng),
+      destination_name: dropName,
+      status: 'accepted',
+      fare_cents: fareCents,
+      payment_status: 'pending',
+      pickup_point: geoPoint(eventLat, eventLng),
+      pickup_confirmed: true,
+      dropoff_point: geoPoint(dropLat, dropLng),
+      dropoff_confirmed: true,
+      companion_a_id: out.companion_a_id,
+      companion_b_id: out.companion_b_id,
+    } as never)
+    .select('id')
+    .single()
+  if (rideErr || !ride) {
+    res.status(400).json({ error: { code: 'RETURN_FAILED', message: 'Could not start the return trip.' } })
+    return
+  }
+  const returnRideId = (ride as { id: string }).id
+  await getOrCreateTripForRide(returnRideId)
+  await supabaseAdmin
+    .from('destination_offers')
+    .update({ return_ride_id: returnRideId, updated_at: new Date().toISOString() } as never)
+    .eq('id', offer.id)
+
+  // Tell the outbound chat the return is ready; nudge to scan.
+  await seedChatMessage(
+    rideID, userId,
+    `Return trip is ready — scan the driver's QR to start the ride home from ${eventName}.`,
+    'text',
+  )
+  const other = userId === offer.driver_id ? offer.rider_id : offer.driver_id
+  await notifyUserDual(
+    other,
+    'destination_return',
+    'Return trip ready',
+    `Your ride home from ${eventName} is ready — scan to start.`,
+    { type: 'destination_return', ride_id: returnRideId },
+  )
+
+  res.status(200).json({ return_ride_id: returnRideId })
 })
