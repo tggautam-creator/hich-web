@@ -1275,6 +1275,7 @@ destinationsRouter.get('/my-trips/list', validateJwt, async (_req: Request, res:
   const rideMap = new Map((rides ?? []).map((r: { id: string; status: string; payment_status: string | null }) => [r.id, r]))
   const cpMap = new Map((cps ?? []).map((u: { id: string; full_name: string | null; avatar_url: string | null }) => [u.id, u]))
 
+  const ACTIVE_STATUSES = ['requested', 'accepted', 'coordinating', 'active']
   const trips = offers.map((o) => {
     const roundTrip = o.driver_plan_id ? (planMap.get(o.driver_plan_id) ?? false) : false
     const out = o.outbound_ride_id ? rideMap.get(o.outbound_ride_id) : undefined
@@ -1282,8 +1283,13 @@ destinationsRouter.get('/my-trips/list', validateJwt, async (_req: Request, res:
     const outDone = out?.status === 'completed' && out.payment_status === 'paid'
     const retDone = ret?.status === 'completed' && ret.payment_status === 'paid'
     const fullyDone = outDone && (!roundTrip || retDone)
-    return { o, roundTrip, fullyDone }
-  }).filter((t) => !t.fullyDone && t.o.outbound_ride_id != null).map((t) => {
+    // A leg currently in the active list already shows in the standard
+    // Rides "Active" section — only surface the trip here to fill the GAP
+    // (between legs / completed-unpaid) so we never duplicate a card.
+    const hasActiveLeg = (out != null && ACTIVE_STATUSES.includes(out.status))
+      || (ret != null && ACTIVE_STATUSES.includes(ret.status))
+    return { o, roundTrip, fullyDone, hasActiveLeg }
+  }).filter((t) => !t.fullyDone && !t.hasActiveLeg && t.o.outbound_ride_id != null).map((t) => {
     const cpId = t.o.driver_id === userId ? t.o.rider_id : t.o.driver_id
     const dest = destMap.get(t.o.destination_id)
     return {
