@@ -1216,6 +1216,133 @@ async function applyDriverDeclineSideEffects(
   }
 }
 
+interface DestinationCancelOffer {
+  id: string
+  destination_id: string
+  driver_id: string
+  rider_id: string
+  driver_plan_id: string | null
+  waitlist_id: string | null
+  outbound_ride_id: string | null
+  return_ride_id: string | null
+  status: string
+}
+
+/**
+ * Cancel a leg of an Explore destination trip. Unlike the instant-ride
+ * cancel paths, this NEVER re-broadcasts to nearby drivers — it cleans up
+ * the offer / seat / waitlist and notifies the other party on the trip
+ * chat. Outbound cancel = the whole trip is off (also cancels the return
+ * leg if it exists, releases the offer, frees the seat, reverts the
+ * waitlist). Return cancel = only the ride home (the completed outbound
+ * stays intact; the return link is cleared so the stepper drops back to
+ * "at destination").
+ */
+async function cancelDestinationLeg(
+  rideId: string,
+  legStatus: string,
+  userId: string,
+  offer: DestinationCancelOffer,
+  res: Response,
+): Promise<void> {
+  const cancellable = ['requested', 'accepted', 'coordinating']
+  if (!cancellable.includes(legStatus)) {
+    res.status(409).json({
+      error: { code: 'INVALID_STATUS', message: `Ride status is '${legStatus}', cannot cancel` },
+    })
+    return
+  }
+  const isReturnLeg = offer.return_ride_id === rideId
+  const cancellerRole = offer.driver_id === userId ? 'driver' : 'rider'
+  const otherUserId = offer.driver_id === userId ? offer.rider_id : offer.driver_id
+  const endReason = cancellerRole === 'driver' ? 'driver_cancelled' : 'rider_cancelled'
+  const now = new Date().toISOString()
+
+  await supabaseAdmin.from('rides')
+    .update({ status: 'cancelled', end_reason: endReason } as never).eq('id', rideId)
+
+  if (isReturnLeg) {
+    // Only the ride home is cancelled; clear the return link so the
+    // stepper recomputes to "at destination" (they can re-start it).
+    await supabaseAdmin.from('destination_offers')
+      .update({ return_ride_id: null, updated_at: now } as never).eq('id', offer.id)
+  } else {
+    // Whole trip off — cancel the return too (if any), release the offer,
+    // free the seat, revert the waitlist.
+    if (offer.return_ride_id != null) {
+      await supabaseAdmin.from('rides')
+        .update({ status: 'cancelled', end_reason: endReason } as never).eq('id', offer.return_ride_id)
+    }
+    await supabaseAdmin.from('destination_offers')
+      .update({ status: 'released', updated_at: now } as never).eq('id', offer.id)
+
+    let groupSize = 1
+    if (offer.waitlist_id != null) {
+      const { data: wl } = await supabaseAdmin.from('destination_waitlist')
+        .select('group_size').eq('id', offer.waitlist_id).maybeSingle()
+      groupSize = Math.max(1, (wl as { group_size: number } | null)?.group_size ?? 1)
+      // Driver backed out → the rider still wants to go (back to the demand
+      // pool, can be re-offered / rejoin). Rider backed out → mark cancelled.
+      await supabaseAdmin.from('destination_waitlist')
+        .update({ status: cancellerRole === 'driver' ? 'waiting' : 'cancelled', updated_at: now } as never)
+        .eq('id', offer.waitlist_id)
+    }
+    if (offer.driver_plan_id != null) {
+      const { data: pl } = await supabaseAdmin.from('destination_driver_plans')
+        .select('seats_total, seats_available').eq('id', offer.driver_plan_id).maybeSingle()
+      const plan = pl as { seats_total: number; seats_available: number } | null
+      if (plan) {
+        const restored = Math.min(plan.seats_total, plan.seats_available + groupSize)
+        await supabaseAdmin.from('destination_driver_plans')
+          .update({ seats_available: restored, status: 'active', updated_at: now } as never)
+          .eq('id', offer.driver_plan_id)
+      }
+    }
+  }
+
+  const { data: destRow } = await supabaseAdmin.from('featured_destinations')
+    .select('name').eq('id', offer.destination_id).maybeSingle()
+  const destName = (destRow as { name: string } | null)?.name ?? 'your trip'
+  // The trip chat thread is the outbound ride id.
+  const threadRideId = offer.outbound_ride_id ?? rideId
+
+  if (otherUserId) {
+    if (isReturnLeg) {
+      await realtimeBroadcast(`chat:${threadRideId}`, 'trip_updated', { type: 'trip_updated', ride_id: threadRideId })
+    } else {
+      await realtimeBroadcast(`chat:${threadRideId}`, 'ride_cancelled', {
+        type: 'ride_cancelled', ride_id: threadRideId, cancelled_by: cancellerRole,
+      })
+    }
+    await realtimeBroadcast(`myrides:${otherUserId}`, 'ride_status_changed', { ride_id: rideId, status: 'cancelled' })
+
+    const title = isReturnLeg ? 'Ride home cancelled' : 'Trip cancelled'
+    const body = isReturnLeg
+      ? `The ${cancellerRole} cancelled the ride home from ${destName}.`
+      : `The ${cancellerRole} cancelled the trip to ${destName}.`
+    const notifType = isReturnLeg ? 'destination_return' : 'destination_cancelled'
+    const notifData = { type: notifType, ride_id: threadRideId }
+    try {
+      await supabaseAdmin.from('notifications')
+        .insert({ user_id: otherUserId, type: notifType, title, body, data: notifData } as never)
+    } catch (err) {
+      console.error('[rides/cancel:dest] notification insert failed:', (err as Error).message)
+    }
+    const { data: tokens } = await supabaseAdmin.from('push_tokens').select('token').eq('user_id', otherUserId)
+    const list = ((tokens ?? []) as Array<{ token: string }>).map((t) => t.token)
+    if (list.length > 0) {
+      await sendFcmPush(list, { title, body, data: notifData })
+    }
+  }
+
+  // Tell Explore (detail page) to refresh seats / waitlist / state.
+  await realtimeBroadcast(`destination:${offer.destination_id}`, 'changed', { type: 'changed' })
+
+  res.status(200).json({
+    ride_id: rideId, status: 'cancelled', destination_cancelled: true, leg: isReturnLeg ? 'return' : 'outbound',
+  })
+}
+
 /**
  * PATCH /api/rides/:id/cancel — rider or driver cancels the ride.
  * Allowed in statuses: requested, accepted, coordinating.
@@ -1252,6 +1379,26 @@ ridesRouter.patch(
       res.status(404).json({
         error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' },
       })
+      return
+    }
+
+    // ── Explore destination-trip leg? Handle separately — these must NEVER
+    // hit the instant-ride re-match paths below (a destination ride has no
+    // schedule_id, so a driver cancel would otherwise revert it to
+    // 'requested' and re-broadcast it to nearby instant drivers). ──
+    const { data: destOfferRow } = await supabaseAdmin
+      .from('destination_offers')
+      .select('id, destination_id, driver_id, rider_id, driver_plan_id, '
+        + 'waitlist_id, outbound_ride_id, return_ride_id, status')
+      .or(`outbound_ride_id.eq.${rideId},return_ride_id.eq.${rideId}`)
+      .maybeSingle()
+    if (destOfferRow) {
+      const destOffer = destOfferRow as DestinationCancelOffer
+      if (destOffer.driver_id !== userId && destOffer.rider_id !== userId) {
+        res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Only a trip participant can cancel' } })
+        return
+      }
+      await cancelDestinationLeg(rideId, ride.status as string, userId, destOffer, res)
       return
     }
 
