@@ -147,6 +147,12 @@ function geoPoint(lat: number, lng: number): { type: 'Point'; coordinates: [numb
   return { type: 'Point', coordinates: [lng, lat] }
 }
 
+/** Live-refresh signal for anyone viewing a destination's detail page
+ *  (waitlist join/leave, offer create/accept/decline, driver plan). */
+function broadcastDestinationChanged(destinationId: string): void {
+  void realtimeBroadcast(`destination:${destinationId}`, 'changed', {})
+}
+
 export const destinationsRouter = Router()
 
 interface DestinationRow {
@@ -549,8 +555,7 @@ destinationsRouter.post('/:id/waitlist', validateJwt, async (req: Request, res: 
     return
   }
 
-  // NOTE: notifying drivers-going is deferred to A.4/C.4 — no driver plans
-  // exist for any destination yet, so there is no one to notify.
+  broadcastDestinationChanged(destinationId)
   res.status(200).json({ waitlist_entry: saved })
 })
 
@@ -572,6 +577,7 @@ destinationsRouter.delete('/:id/waitlist', validateJwt, async (req: Request, res
     res.status(400).json({ error: { code: 'WAITLIST_LEAVE_FAILED', message: 'Could not leave the waitlist' } })
     return
   }
+  broadcastDestinationChanged(destinationId)
   res.status(200).json({ ok: true })
 })
 
@@ -724,6 +730,7 @@ destinationsRouter.post('/:id/driver-plan', validateJwt, async (req: Request, re
     return
   }
 
+  broadcastDestinationChanged(destinationId)
   res.status(200).json({ driver_plan: plan })
 })
 
@@ -1010,6 +1017,7 @@ destinationsRouter.post('/:id/offer', validateJwt, async (req: Request, res: Res
     { type: 'destination_offer', destination_id: destinationId, offer_id: (offer as { id: string }).id },
   )
 
+  broadcastDestinationChanged(destinationId)
   res.status(200).json({ offer })
 })
 
@@ -1188,6 +1196,7 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
     { type: 'destination_matched', ride_id: outboundRideId, destination_id: destinationId, destination_name: destName },
   )
 
+  broadcastDestinationChanged(destinationId)
   res.status(200).json({ outbound_ride_id: outboundRideId, return_ride_id: null })
 })
 
@@ -1223,6 +1232,7 @@ destinationsRouter.post('/:id/offer/:offerId/decline', validateJwt, async (req: 
     'Your Explore ride request was declined.',
     { type: 'destination_declined', destination_id: req.params['id'] as string },
   )
+  broadcastDestinationChanged(req.params['id'] as string)
   res.status(200).json({ ok: true })
 })
 
