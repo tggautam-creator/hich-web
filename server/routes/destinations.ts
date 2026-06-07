@@ -1484,18 +1484,50 @@ destinationsRouter.get('/offer/:offerId', validateJwt, async (req: Request, res:
     .from('users').select('full_name, avatar_url, rating_avg').eq('id', counterpartId).maybeSingle()
 
   const { data: destRow } = await supabaseAdmin
-    .from('featured_destinations').select('name, image_url, city, region').eq('id', offer.destination_id).maybeSingle()
+    .from('featured_destinations')
+    .select('name, image_url, city, region, latitude, longitude')
+    .eq('id', offer.destination_id).maybeSingle()
+  const dest = destRow as {
+    name: string; image_url: string | null; city: string | null
+    region: string | null; latitude: number | null; longitude: number | null
+  } | null
 
   const { data: planRow } = await supabaseAdmin
     .from('destination_driver_plans')
-    .select('outbound_date, outbound_time, wants_return, return_date, return_time, seats_available')
+    .select('outbound_date, outbound_time, wants_return, return_date, return_time, '
+      + 'seats_available, origin_lat, origin_lng, origin_address')
     .eq('id', offer.driver_plan_id as string).maybeSingle()
+  const plan = planRow as {
+    origin_lat: number | null; origin_lng: number | null; origin_address: string | null
+  } | null
 
+  // Party + companions. Driver-initiated offers carry the rider's waitlist
+  // row, which holds the companion FKs; fetch those profiles for the card.
   let partySize = 1
+  let companions: Array<{ name: string; avatar_url: string | null }> = []
   if (offer.waitlist_id != null) {
     const { data: wl } = await supabaseAdmin
-      .from('destination_waitlist').select('group_size').eq('id', offer.waitlist_id).maybeSingle()
-    partySize = Math.max(1, (wl as { group_size: number } | null)?.group_size ?? 1)
+      .from('destination_waitlist')
+      .select('group_size, companion_a_id, companion_b_id')
+      .eq('id', offer.waitlist_id).maybeSingle()
+    const wlRow = wl as { group_size: number; companion_a_id: string | null; companion_b_id: string | null } | null
+    partySize = Math.max(1, wlRow?.group_size ?? 1)
+    const compIds = [wlRow?.companion_a_id, wlRow?.companion_b_id].filter((v): v is string => v != null)
+    if (compIds.length > 0) {
+      const { data: comps } = await supabaseAdmin
+        .from('companions').select('name, avatar_url').in('id', compIds)
+      companions = (comps as Array<{ name: string; avatar_url: string | null }> | null) ?? []
+    }
+  }
+
+  // Estimated fare for the trip (driver's origin → destination), shown so
+  // the accepter sees the cost up front like the instant-ride request card.
+  let fareCents: number | null = null
+  const originLat = plan?.origin_lat
+  const originLng = plan?.origin_lng
+  if (typeof originLat === 'number' && typeof originLng === 'number'
+    && typeof dest?.latitude === 'number' && typeof dest?.longitude === 'number') {
+    fareCents = await estimateFareCentsBetween(originLat, originLng, dest.latitude, dest.longitude)
   }
 
   const viewerRole = offer.driver_id === userId ? 'driver' : 'rider'
@@ -1516,9 +1548,14 @@ destinationsRouter.get('/offer/:offerId', validateJwt, async (req: Request, res:
     viewer_role: viewerRole,
     can_act: canAct,
     counterpart: cpRow ?? null,
-    destination: destRow ?? null,
+    destination: dest ?? null,
+    origin: plan?.origin_lat != null && plan?.origin_lng != null
+      ? { lat: plan.origin_lat, lng: plan.origin_lng, name: plan.origin_address }
+      : null,
     trip: planRow ?? null,
     party_size: partySize,
+    companions,
+    fare_cents: fareCents,
   })
 })
 
