@@ -1151,31 +1151,11 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
     res.status(400).json({ error: { code: 'RIDE_FAILED', message: 'Could not create the ride.' } })
     return
   }
-  let returnRideId: string | null = null
-  if (plan.wants_return) {
-    returnRideId = await makeRide(
-      destLat, destLng, destName, originLat, originLng, originName,
-      plan.return_date ?? plan.outbound_date, plan.return_time,
-    )
-    // Auto-seed the return-coordinator card into the outbound chat (TT.1),
-    // pre-filled from the driver's planned return. Driver can refine it,
-    // riders confirm — all in this thread.
-    if (returnRideId) {
-      await seedChatMessage(
-        outboundRideId, offer.driver_id,
-        `Return trip from ${destName}`,
-        'return_proposal',
-        {
-          return_ride_id: returnRideId,
-          return_date: plan.return_date ?? plan.outbound_date,
-          return_time: plan.return_time,
-          destination_name: destName,
-          meet_spot: null,
-          status: 'proposed',
-        },
-      )
-    }
-  }
+  // NOTE: the RETURN ride is intentionally NOT created here. A round trip
+  // creates only the outbound leg at match; the return leg + its
+  // coordinator card are created later (Trip Stepper Stage 4 — "plan
+  // return", after the outbound is completed + paid). Creating both up
+  // front produced two simultaneous "Coordinating" rides for one trip.
 
   // Decrement seats; mark full at zero.
   const newSeats = Math.max(0, plan.seats_available - seatsNeeded)
@@ -1192,10 +1172,10 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
       .eq('id', offer.waitlist_id)
   }
 
-  // Flip the offer.
+  // Flip the offer (return_ride_id stays null until Stage 4).
   await supabaseAdmin
     .from('destination_offers')
-    .update({ status: 'accepted', outbound_ride_id: outboundRideId, return_ride_id: returnRideId, updated_at: new Date().toISOString() } as never)
+    .update({ status: 'accepted', outbound_ride_id: outboundRideId, return_ride_id: null, updated_at: new Date().toISOString() } as never)
     .eq('id', offer.id)
 
   // Notify the other party — a match opens a ride/chat, so bell + push.
@@ -1208,7 +1188,7 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
     { type: 'destination_matched', ride_id: outboundRideId, destination_id: destinationId, destination_name: destName },
   )
 
-  res.status(200).json({ outbound_ride_id: outboundRideId, return_ride_id: returnRideId })
+  res.status(200).json({ outbound_ride_id: outboundRideId, return_ride_id: null })
 })
 
 // POST /api/destinations/:id/offer/:offerId/decline — either party drops a pending offer.
