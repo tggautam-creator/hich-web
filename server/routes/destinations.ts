@@ -1432,7 +1432,10 @@ destinationsRouter.get('/my-trips/list', validateJwt, async (_req: Request, res:
     const ret = o.return_ride_id ? rideMap.get(o.return_ride_id) : undefined
     const outDone = out?.status === 'completed' && out.payment_status === 'paid'
     const retDone = ret?.status === 'completed' && ret.payment_status === 'paid'
-    const fullyDone = outDone && (!roundTrip || retDone)
+    // A cancelled return resolves the round trip too (the ride home is off),
+    // so the trip is done and should drop off the home "ride home" banner.
+    const retResolved = retDone || ret?.status === 'cancelled'
+    const fullyDone = outDone && (!roundTrip || retResolved)
     // A leg currently in the active list already shows in the standard
     // Rides "Active" section — only surface the trip here to fill the GAP
     // (between legs / completed-unpaid) so we never duplicate a card.
@@ -1621,8 +1624,18 @@ destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request
       stage = 'return_ready' // return created, awaiting QR-start
     } else if (returnLeg.status === 'active') {
       stage = 'heading_home'
+    } else if (returnLeg.status === 'cancelled') {
+      // The ride home was cancelled — the carpool is over (the outbound
+      // already happened). Terminal: never fall through to 'pickup' (which
+      // showed a "Scan to start" + an un-cancellable Cancel on a done trip).
+      stage = 'done'
     } else if (returnLeg.status === 'completed') {
       stage = returnLeg.payment_status === 'paid' ? 'done' : 'home_pay'
+    } else {
+      // Unknown return status — safe terminal-ish fallback (re-offer the
+      // return), never 'pickup'.
+      stage = 'at_destination'
+      canStartReturn = true
     }
   } else {
     stage = 'pickup'

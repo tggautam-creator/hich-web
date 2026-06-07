@@ -1261,14 +1261,15 @@ async function cancelDestinationLeg(
   await supabaseAdmin.from('rides')
     .update({ status: 'cancelled', end_reason: endReason } as never).eq('id', rideId)
 
-  if (isReturnLeg) {
-    // Only the ride home is cancelled; clear the return link so the
-    // stepper recomputes to "at destination" (they can re-start it).
-    await supabaseAdmin.from('destination_offers')
-      .update({ return_ride_id: null, updated_at: now } as never).eq('id', offer.id)
-  } else {
-    // Whole trip off — cancel the return too (if any), release the offer,
-    // free the seat, revert the waitlist.
+  // Return-only cancel: the completed outbound + the offer stay intact. We
+  // deliberately leave the (now-cancelled) return link in place so
+  // trip-context resolves the trip to 'done' (clearing it would re-offer
+  // "start return"); my-trips treats a cancelled return as resolved + drops
+  // it. So nothing else to do for the return leg.
+  //
+  // Outbound (whole-trip) cancel: also cancel the return (if any), release
+  // the offer, free the seat, revert the waitlist.
+  if (!isReturnLeg) {
     if (offer.return_ride_id != null) {
       await supabaseAdmin.from('rides')
         .update({ status: 'cancelled', end_reason: endReason } as never).eq('id', offer.return_ride_id)
