@@ -1236,6 +1236,69 @@ destinationsRouter.post('/:id/offer/:offerId/decline', validateJwt, async (req: 
   res.status(200).json({ ok: true })
 })
 
+// ── My trips (Rides-tab surface) ──────────────────────────────────────────────
+
+// GET /api/destinations/my-trips — the viewer's matched destination trips
+// that aren't fully finished, so the Rides tab can show them (the outbound
+// ride leaves /api/rides/active once completed, but the trip continues).
+destinationsRouter.get('/my-trips/list', validateJwt, async (_req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+
+  const { data: offerRows } = await supabaseAdmin
+    .from('destination_offers')
+    .select('id, driver_plan_id, destination_id, driver_id, rider_id, outbound_ride_id, return_ride_id')
+    .eq('status', 'accepted')
+    .or(`rider_id.eq.${userId},driver_id.eq.${userId}`)
+  const offers = (offerRows ?? []) as Array<{
+    id: string; driver_plan_id: string | null; destination_id: string
+    driver_id: string; rider_id: string; outbound_ride_id: string | null; return_ride_id: string | null
+  }>
+  if (offers.length === 0) {
+    res.status(200).json({ trips: [] })
+    return
+  }
+
+  // Resolve plans (round-trip), destinations, ride statuses, counterparts.
+  const planIds = [...new Set(offers.map((o) => o.driver_plan_id).filter((v): v is string => v != null))]
+  const destIds = [...new Set(offers.map((o) => o.destination_id))]
+  const rideIds = offers.flatMap((o) => [o.outbound_ride_id, o.return_ride_id]).filter((v): v is string => v != null)
+  const cpIds = [...new Set(offers.map((o) => (o.driver_id === userId ? o.rider_id : o.driver_id)))]
+
+  const [{ data: plans }, { data: dests }, { data: rides }, { data: cps }] = await Promise.all([
+    supabaseAdmin.from('destination_driver_plans').select('id, wants_return').in('id', planIds.length ? planIds : ['x']),
+    supabaseAdmin.from('featured_destinations').select('id, name, image_url').in('id', destIds),
+    supabaseAdmin.from('rides').select('id, status, payment_status').in('id', rideIds.length ? rideIds : ['x']),
+    supabaseAdmin.from('users').select('id, full_name, avatar_url').in('id', cpIds),
+  ])
+  const planMap = new Map((plans ?? []).map((p: { id: string; wants_return: boolean }) => [p.id, p.wants_return]))
+  const destMap = new Map((dests ?? []).map((d: { id: string; name: string; image_url: string | null }) => [d.id, d]))
+  const rideMap = new Map((rides ?? []).map((r: { id: string; status: string; payment_status: string | null }) => [r.id, r]))
+  const cpMap = new Map((cps ?? []).map((u: { id: string; full_name: string | null; avatar_url: string | null }) => [u.id, u]))
+
+  const trips = offers.map((o) => {
+    const roundTrip = o.driver_plan_id ? (planMap.get(o.driver_plan_id) ?? false) : false
+    const out = o.outbound_ride_id ? rideMap.get(o.outbound_ride_id) : undefined
+    const ret = o.return_ride_id ? rideMap.get(o.return_ride_id) : undefined
+    const outDone = out?.status === 'completed' && out.payment_status === 'paid'
+    const retDone = ret?.status === 'completed' && ret.payment_status === 'paid'
+    const fullyDone = outDone && (!roundTrip || retDone)
+    return { o, roundTrip, fullyDone }
+  }).filter((t) => !t.fullyDone && t.o.outbound_ride_id != null).map((t) => {
+    const cpId = t.o.driver_id === userId ? t.o.rider_id : t.o.driver_id
+    const dest = destMap.get(t.o.destination_id)
+    return {
+      offer_id: t.o.id,
+      ride_id: t.o.outbound_ride_id,
+      role: t.o.driver_id === userId ? 'driver' : 'rider',
+      destination_name: dest?.name ?? 'Trip',
+      destination_image_url: dest?.image_url ?? null,
+      counterpart: cpMap.get(cpId) ?? null,
+    }
+  })
+
+  res.status(200).json({ trips })
+})
+
 // ── Offer detail (Phase 1 — Event Request page) ───────────────────────────────
 
 // GET /api/destinations/offer/:offerId — everything the EventRequestPage
