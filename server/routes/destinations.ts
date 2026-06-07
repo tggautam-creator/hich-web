@@ -820,6 +820,7 @@ destinationsRouter.patch('/:id/driver-plan/:planId', validateJwt, async (req: Re
       .eq('id', plan.board_schedule_id)
   }
 
+  broadcastDestinationChanged(req.params['id'] as string)
   res.status(200).json({ driver_plan: updated })
 })
 
@@ -852,6 +853,7 @@ destinationsRouter.delete('/:id/driver-plan/:planId', validateJwt, async (req: R
     await supabaseAdmin.from('ride_schedules').delete().eq('id', plan.board_schedule_id)
   }
   // NOTE: re-opening matched riders to interest lands with A.6 (no matches exist yet).
+  broadcastDestinationChanged(req.params['id'] as string)
   res.status(200).json({ ok: true })
 })
 
@@ -1234,6 +1236,91 @@ destinationsRouter.post('/:id/offer/:offerId/decline', validateJwt, async (req: 
   )
   broadcastDestinationChanged(req.params['id'] as string)
   res.status(200).json({ ok: true })
+})
+
+// ── Request a place/event (A.3) ───────────────────────────────────────────────
+
+const AUTO_PROMOTE_THRESHOLD = 5
+
+/** "Lake Tahoe!" → "lake-tahoe" (slug) ; "  lake  tahoe " → "lake tahoe" (norm). */
+function slugify(input: string): string {
+  return input.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 200)
+}
+
+// POST /api/destinations/request — submit a place/event request; aggregate
+// demand by normalized name; auto-promote to the live catalogue at ≥5
+// distinct requesters.
+destinationsRouter.post('/request', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const body = (req.body ?? {}) as { kind?: unknown; requested_name?: unknown; note?: unknown; target_date?: unknown }
+
+  const kind = body.kind === 'event' ? 'event' : body.kind === 'place' ? 'place' : null
+  const requestedName = optString(body.requested_name)
+  if (kind == null) {
+    res.status(400).json({ error: { code: 'INVALID_KIND', message: "kind must be 'event' or 'place'" } })
+    return
+  }
+  if (requestedName == null || requestedName.length > 160) {
+    res.status(400).json({ error: { code: 'INVALID_NAME', message: 'Enter a name (1–160 chars).' } })
+    return
+  }
+  const normalized = requestedName.toLowerCase().trim()
+  const note = optString(body.note)
+  if (note != null && note.length > 500) {
+    res.status(400).json({ error: { code: 'INVALID_NOTE', message: 'Note is too long' } })
+    return
+  }
+  const targetDate = kind === 'event' ? (optString(body.target_date) ?? null) : null
+
+  const { error: insErr } = await supabaseAdmin
+    .from('destination_requests')
+    .upsert({
+      user_id: userId,
+      kind,
+      requested_name: requestedName,
+      normalized_name: normalized,
+      note: note ?? null,
+      target_date: targetDate,
+    } as never, { onConflict: 'user_id,normalized_name' })
+  if (insErr) {
+    res.status(400).json({ error: { code: 'REQUEST_FAILED', message: 'Could not submit your request.' } })
+    return
+  }
+
+  // Already in the catalogue? (slug match) — then it's not a "request".
+  const slug = slugify(requestedName)
+  const { data: existing } = await supabaseAdmin
+    .from('featured_destinations').select('id').eq('slug', slug).maybeSingle()
+
+  // Demand = distinct requesters (UNIQUE(user,normalized) → one row each).
+  const { count } = await supabaseAdmin
+    .from('destination_requests')
+    .select('id', { count: 'exact', head: true })
+    .eq('normalized_name', normalized)
+  const demand = count ?? 0
+
+  let promoted = false
+  let destinationId: string | null = (existing as { id: string } | null)?.id ?? null
+  if (!existing && demand >= AUTO_PROMOTE_THRESHOLD) {
+    const { data: created } = await supabaseAdmin
+      .from('featured_destinations')
+      .insert({
+        kind,
+        name: requestedName,
+        slug,
+        status: 'active',
+        source: 'auto_promoted',
+        event_date: targetDate,
+      } as never)
+      .select('id')
+      .single()
+    if (created) {
+      promoted = true
+      destinationId = (created as { id: string }).id
+    }
+  }
+
+  res.status(200).json({ demand_count: demand, promoted, destination_id: destinationId })
 })
 
 // ── My trips (Rides-tab surface) ──────────────────────────────────────────────
