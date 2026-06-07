@@ -6128,17 +6128,55 @@ ridesRouter.get(
       )
     }
 
+    // V4 F6 — flag destination-trip legs so the home active banner can show
+    // trip-aware copy ("Start your ride home from {dest}") + route to the
+    // trip chat instead of the generic "Ride with {name}".
+    const allRideIds = rides.map((r: Record<string, unknown>) => r['id'] as string)
+    const rideDestMap = new Map<string, { name: string; leg: 'outbound' | 'return' }>()
+    if (allRideIds.length > 0) {
+      const [{ data: outOffers }, { data: retOffers }] = await Promise.all([
+        supabaseAdmin.from('destination_offers')
+          .select('outbound_ride_id, destination_id').in('outbound_ride_id', allRideIds),
+        supabaseAdmin.from('destination_offers')
+          .select('return_ride_id, destination_id').in('return_ride_id', allRideIds),
+      ])
+      const dOffers = [
+        ...((outOffers ?? []) as Array<{ outbound_ride_id: string | null; destination_id: string }>)
+          .map((o) => ({ ride: o.outbound_ride_id, destId: o.destination_id, leg: 'outbound' as const })),
+        ...((retOffers ?? []) as Array<{ return_ride_id: string | null; destination_id: string }>)
+          .map((o) => ({ ride: o.return_ride_id, destId: o.destination_id, leg: 'return' as const })),
+      ].filter((o) => o.ride != null)
+      const dDestIds = [...new Set(dOffers.map((o) => o.destId))]
+      const { data: dDests } = dDestIds.length > 0
+        ? await supabaseAdmin.from('featured_destinations').select('id, name').in('id', dDestIds)
+        : { data: [] }
+      const dNameMap = new Map(
+        ((dDests ?? []) as Array<{ id: string; name: string }>).map((d) => [d.id, d.name]),
+      )
+      for (const o of dOffers) {
+        if (o.ride != null) {
+          rideDestMap.set(o.ride, { name: dNameMap.get(o.destId) ?? 'Trip', leg: o.leg })
+        }
+      }
+    }
+
     const enriched = rides.map((r: Record<string, unknown>) => {
       const otherId = r['rider_id'] === userId ? r['driver_id'] as string : r['rider_id'] as string
       const role = r['rider_id'] === userId ? 'rider' : 'driver'
       const caregiverID = r['caregiver_id'] as string | null
       const caregiver = caregiverID != null ? caregiverMap.get(caregiverID) ?? null : null
+      const destInfo = rideDestMap.get(r['id'] as string)
       return {
         ...r,
         my_role: role,
         other_user: userMap.get(otherId) ?? null,
         schedule: r['schedule_id'] ? scheduleMap.get(r['schedule_id'] as string) ?? null : null,
         caregiver,
+        is_destination: destInfo != null,
+        // Distinct key from the ride's own `destination_name` (the leg
+        // drop-off) — this is the Explore trip/destination name.
+        trip_destination_name: destInfo?.name ?? null,
+        destination_leg: destInfo?.leg ?? null,
       }
     })
 
