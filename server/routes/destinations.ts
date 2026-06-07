@@ -1833,3 +1833,44 @@ destinationsRouter.post('/return/:rideID/start', validateJwt, async (req: Reques
 
   res.status(200).json({ return_ride_id: returnRideId })
 })
+
+// POST /api/destinations/return/:rideID/skip — at the destination, the rider
+// or driver decides NOT to take the ride home. The outbound already happened
+// and was paid, so there's nothing to cancel/refund — this just concludes the
+// trip (releases the offer) so it drops off the home banner / Rides / stepper.
+destinationsRouter.post('/return/:rideID/skip', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const rideID = req.params['rideID'] as string
+  const offer = await offerForOutboundRide(rideID)
+  if (!offer) {
+    res.status(404).json({ error: { code: 'TRIP_NOT_FOUND', message: 'Trip not found' } })
+    return
+  }
+  if (offer.driver_id !== userId && offer.rider_id !== userId) {
+    res.status(403).json({ error: { code: 'NOT_YOURS', message: 'Not your trip.' } })
+    return
+  }
+  if (offer.return_ride_id != null) {
+    res.status(409).json({ error: { code: 'RETURN_EXISTS', message: 'The ride home already started — cancel it instead.' } })
+    return
+  }
+  await supabaseAdmin
+    .from('destination_offers')
+    .update({ status: 'released', updated_at: new Date().toISOString() } as never)
+    .eq('id', offer.id)
+
+  const { data: dest } = await supabaseAdmin
+    .from('featured_destinations').select('name').eq('id', offer.destination_id).maybeSingle()
+  const destName = (dest as { name: string } | null)?.name ?? 'the destination'
+  const role = userId === offer.driver_id ? 'driver' : 'rider'
+  const other = userId === offer.driver_id ? offer.rider_id : offer.driver_id
+  await notifyUserDual(
+    other,
+    'destination_return',
+    'No ride home',
+    `The ${role} isn't taking the ride home from ${destName}.`,
+    { type: 'destination_return', ride_id: rideID },
+  )
+  broadcastDestinationChanged(offer.destination_id)
+  res.status(200).json({ ok: true })
+})
