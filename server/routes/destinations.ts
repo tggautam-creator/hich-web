@@ -83,6 +83,65 @@ async function notifyUserDual(
   await notifyUser(userId, { title, body, data })
 }
 
+/**
+ * Lazy cleanup: release accepted offers whose outbound ride was cancelled.
+ * The ride-cancel path doesn't revert destination state, so without this an
+ * offer stays `accepted`, the rider's waitlist row stays `matched`, and the
+ * seat is never freed — stranding the rider (can't rejoin, not in who's-going).
+ * Frees the seat + clears the match. Mutates each reconciled offer's `status`
+ * to `released` so the caller can exclude it.
+ */
+async function reconcileCancelledOffers(offers: Array<Record<string, unknown>>): Promise<void> {
+  const accepted = offers.filter((o) => o['status'] === 'accepted' && typeof o['outbound_ride_id'] === 'string')
+  if (accepted.length === 0) return
+  const rideIds = accepted.map((o) => o['outbound_ride_id'] as string)
+  const { data: rideRows } = await supabaseAdmin.from('rides').select('id, status').in('id', rideIds)
+  const cancelled = new Set(
+    ((rideRows ?? []) as Array<{ id: string; status: string }>)
+      .filter((r) => r.status === 'cancelled')
+      .map((r) => r.id),
+  )
+  for (const offer of accepted) {
+    if (!cancelled.has(offer['outbound_ride_id'] as string)) continue
+    const offerId = offer['id'] as string
+    const planId = offer['driver_plan_id'] as string | null
+    const wlId = offer['waitlist_id'] as string | null
+    await supabaseAdmin
+      .from('destination_offers')
+      .update({ status: 'released', updated_at: new Date().toISOString() } as never)
+      .eq('id', offerId)
+
+    let groupSize = 1
+    if (wlId != null) {
+      const { data: wl } = await supabaseAdmin
+        .from('destination_waitlist').select('group_size, status').eq('id', wlId).maybeSingle()
+      const row = wl as { group_size: number; status: string } | null
+      if (row) {
+        groupSize = Math.max(1, row.group_size)
+        if (row.status === 'matched') {
+          await supabaseAdmin
+            .from('destination_waitlist')
+            .update({ status: 'cancelled', updated_at: new Date().toISOString() } as never)
+            .eq('id', wlId)
+        }
+      }
+    }
+    if (planId != null) {
+      const { data: pl } = await supabaseAdmin
+        .from('destination_driver_plans').select('seats_total, seats_available').eq('id', planId).maybeSingle()
+      const plan = pl as { seats_total: number; seats_available: number } | null
+      if (plan) {
+        const restored = Math.min(plan.seats_total, plan.seats_available + groupSize)
+        await supabaseAdmin
+          .from('destination_driver_plans')
+          .update({ seats_available: restored, status: 'active', updated_at: new Date().toISOString() } as never)
+          .eq('id', planId)
+      }
+    }
+    offer['status'] = 'released'
+  }
+}
+
 /** GeoJSON Point for a PostGIS geometry column — [lng, lat]. */
 function geoPoint(lat: number, lng: number): { type: 'Point'; coordinates: [number, number] } {
   return { type: 'Point', coordinates: [lng, lat] }
@@ -308,7 +367,16 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
     .in('status', ['pending', 'accepted'])
     .or(`rider_id.eq.${userId},driver_id.eq.${userId}`)
   const offers = (offerRows ?? []) as Array<Record<string, unknown>>
-  const offerUserIds = [...new Set(offers.map((o) => (o['driver_id'] === userId ? o['rider_id'] : o['driver_id']) as string))]
+
+  // Reconcile stale matches (lazy cleanup): if an accepted offer's outbound
+  // ride was cancelled, the ride-cancel path doesn't touch destination
+  // state — so the offer is stuck `accepted`, the rider's waitlist row stuck
+  // `matched`, and the seat never freed. Release it here so the rider can
+  // rejoin and the seat reopens.
+  await reconcileCancelledOffers(offers)
+  const activeOffers = offers.filter((o) => o['status'] === 'pending' || o['status'] === 'accepted')
+
+  const offerUserIds = [...new Set(activeOffers.map((o) => (o['driver_id'] === userId ? o['rider_id'] : o['driver_id']) as string))]
   const offerProfiles = new Map<string, { full_name: string | null; avatar_url: string | null; rating_avg: number | null }>()
   if (offerUserIds.length > 0) {
     const { data: ou } = await supabaseAdmin
@@ -319,7 +387,7 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
       offerProfiles.set(u.id, { full_name: u.full_name, avatar_url: u.avatar_url, rating_avg: u.rating_avg })
     }
   }
-  const myOffers = offers.map((o) => {
+  const myOffers = activeOffers.map((o) => {
     const counterpartId = (o['driver_id'] === userId ? o['rider_id'] : o['driver_id']) as string
     return {
       ...o,
