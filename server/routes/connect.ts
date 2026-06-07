@@ -54,6 +54,70 @@ function isAllowedConnectURL(value: unknown): value is string {
   return false
 }
 
+// ── Platform pre-fill for Connect account creation ───────────────────
+//
+// Stripe asks the connected account to fill in "Business information"
+// (industry, website, product description) + "Public details"
+// (statement descriptor) by default. For Tago drivers those are
+// PLATFORM-level facts — not the driver's own — so we pre-populate at
+// account-create time. The driver only sees PERSONAL details
+// (name / DOB / SSN last 4 / address) which are legally required for
+// KYC and can't be skipped.
+//
+// MCC 4121 = "Taxicabs and Limousines" — Stripe's canonical category
+// for ride-sharing platforms. Stripe's docs explicitly call this out
+// as the right MCC for "ride-sharing apps where drivers are paid out
+// via Connect."
+//
+// Statement descriptor caps at 22 characters per Stripe's payouts
+// schema. "TAGO RIDES" leaves comfortable headroom.
+
+function buildTagoBusinessProfile(): Stripe.AccountCreateParams.BusinessProfile {
+  return {
+    url: 'https://www.tagorides.com',
+    mcc: '4121',
+    product_description:
+      'Tago is a peer-to-peer carpooling marketplace connecting university students who need rides with verified student drivers headed the same way. The driver provides the ride; Tago handles match-making, in-app messaging, QR scan check-in / check-out, and per-ride payment via Stripe Connect.',
+    support_email: 'support@tagorides.com',
+    support_url: 'https://www.tagorides.com/support',
+  }
+}
+
+function buildIndividualPrefill(user: {
+  email?: string | null
+  phone?: string | null
+  full_name?: string | null
+}): Stripe.AccountCreateParams.Individual {
+  const individual: Stripe.AccountCreateParams.Individual = {
+    email: user.email ?? undefined,
+  }
+  if (user.phone) {
+    individual.phone = user.phone
+  }
+  // Split a "First Last" full_name into first/last. Single-word names
+  // fall through with no last_name — Stripe accepts that.
+  if (user.full_name) {
+    const trimmed = user.full_name.trim()
+    const spaceIdx = trimmed.indexOf(' ')
+    if (spaceIdx > 0) {
+      individual.first_name = trimmed.slice(0, spaceIdx)
+      individual.last_name = trimmed.slice(spaceIdx + 1).trim()
+    } else if (trimmed.length > 0) {
+      individual.first_name = trimmed
+    }
+  }
+  return individual
+}
+
+const tagoStatementDescriptorSettings: Stripe.AccountCreateParams.Settings = {
+  payouts: {
+    statement_descriptor: 'TAGO RIDES',
+  },
+  payments: {
+    statement_descriptor: 'TAGO RIDES',
+  },
+}
+
 // ── POST /api/connect/onboard — create Express account + return onboarding URL
 connectRouter.post('/onboard', validateJwt, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -80,7 +144,7 @@ connectRouter.post('/onboard', validateJwt, async (req: Request, res: Response, 
 
     const { data: user, error: userErr } = await supabaseAdmin
       .from('users')
-      .select('email, stripe_account_id, stripe_onboarding_complete')
+      .select('email, phone, full_name, stripe_account_id, stripe_onboarding_complete')
       .eq('id', userId)
       .single()
 
@@ -98,14 +162,25 @@ connectRouter.post('/onboard', validateJwt, async (req: Request, res: Response, 
       return
     }
 
-    // Create Express account if none exists
+    // Create Express account if none exists. Pre-populate all the
+    // PLATFORM-level fields (business type / MCC / URL / product
+    // description / support channels / statement descriptor) so the
+    // driver onboarding form only asks for their PERSONAL KYC details
+    // — name, DOB, SSN last 4, address — which we can't legally
+    // pre-fill. Without this, Stripe asks the driver "what's your
+    // business?", "what's your industry?", "what's your business
+    // website?" — confusing for someone who just wants to drive a
+    // few rides a week.
     if (!accountId) {
       const account = await stripe.accounts.create({
         type: 'express',
+        country: 'US',
         email: user.email as string,
-        capabilities: {
-          transfers: { requested: true },
-        },
+        capabilities: { transfers: { requested: true } },
+        business_type: 'individual',
+        business_profile: buildTagoBusinessProfile(),
+        individual: buildIndividualPrefill(user),
+        settings: tagoStatementDescriptorSettings,
         metadata: { user_id: userId },
       })
       accountId = account.id
@@ -322,7 +397,7 @@ connectRouter.post('/account-session', validateJwt, async (_req: Request, res: R
 
     const { data: user, error: userErr } = await supabaseAdmin
       .from('users')
-      .select('stripe_account_id, email, full_name')
+      .select('stripe_account_id, email, full_name, phone')
       .eq('id', userId)
       .single()
 
@@ -366,7 +441,9 @@ connectRouter.post('/account-session', validateJwt, async (_req: Request, res: R
 
     if (!accountId) {
       // Lazy account creation — same shape as the hosted-onboarding
-      // path. Express, US, transfers + card_payments capabilities.
+      // path above. Same business-profile + statement-descriptor +
+      // individual pre-fill so embedded onboarding (iOS) sees the
+      // same simplified form as the hosted (web) path.
       const account = await stripe.accounts.create({
         type: 'express',
         country: 'US',
@@ -375,6 +452,10 @@ connectRouter.post('/account-session', validateJwt, async (_req: Request, res: R
           card_payments: { requested: true },
           transfers: { requested: true },
         },
+        business_type: 'individual',
+        business_profile: buildTagoBusinessProfile(),
+        individual: buildIndividualPrefill(user),
+        settings: tagoStatementDescriptorSettings,
         metadata: { user_id: userId },
       })
       accountId = account.id
