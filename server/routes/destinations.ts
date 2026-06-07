@@ -94,7 +94,11 @@ async function notifyUserDual(
 async function reconcileCancelledOffers(offers: Array<Record<string, unknown>>): Promise<void> {
   const accepted = offers.filter((o) => o['status'] === 'accepted' && typeof o['outbound_ride_id'] === 'string')
   if (accepted.length === 0) return
-  const rideIds = accepted.map((o) => o['outbound_ride_id'] as string)
+  // Fetch BOTH legs' statuses — a cancelled outbound (trip never happened) and
+  // a cancelled return (trip's over) both conclude the offer.
+  const rideIds = accepted
+    .flatMap((o) => [o['outbound_ride_id'], o['return_ride_id']])
+    .filter((v): v is string => typeof v === 'string')
   const { data: rideRows } = await supabaseAdmin.from('rides').select('id, status').in('id', rideIds)
   const cancelled = new Set(
     ((rideRows ?? []) as Array<{ id: string; status: string }>)
@@ -102,7 +106,10 @@ async function reconcileCancelledOffers(offers: Array<Record<string, unknown>>):
       .map((r) => r.id),
   )
   for (const offer of accepted) {
-    if (!cancelled.has(offer['outbound_ride_id'] as string)) continue
+    const outboundCancelled = cancelled.has(offer['outbound_ride_id'] as string)
+    const retId = offer['return_ride_id']
+    const returnCancelled = typeof retId === 'string' && cancelled.has(retId)
+    if (!outboundCancelled && !returnCancelled) continue
     const offerId = offer['id'] as string
     const planId = offer['driver_plan_id'] as string | null
     const wlId = offer['waitlist_id'] as string | null
@@ -110,6 +117,12 @@ async function reconcileCancelledOffers(offers: Array<Record<string, unknown>>):
       .from('destination_offers')
       .update({ status: 'released', updated_at: new Date().toISOString() } as never)
       .eq('id', offerId)
+    offer['status'] = 'released'
+
+    // Only an OUTBOUND cancel frees the seat + reverts the waitlist (the trip
+    // never happened). A return-only cancel leaves the seat consumed — the
+    // outbound already used it — so just releasing the offer is enough.
+    if (!outboundCancelled) continue
 
     let groupSize = 1
     if (wlId != null) {
@@ -138,7 +151,6 @@ async function reconcileCancelledOffers(offers: Array<Record<string, unknown>>):
           .eq('id', planId)
       }
     }
-    offer['status'] = 'released'
   }
 }
 
