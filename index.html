@@ -86,7 +86,41 @@
           var isIOS = /iPhone|iPod/.test(ua) && !window.MSStream
           var url = new URL(window.location.href)
           var optedOutOfRedirect = url.searchParams.get('web') === '1'
-          if (isIOS && !optedOutOfRedirect) {
+
+          // 2026-06-05 — public-share paths must NOT auto-redirect to
+          // the App Store. The recipient of a `/track/<token>` link is
+          // by definition someone outside the Tago user base (a trusted
+          // contact, oncall safety friend, parent). Bouncing them to the
+          // App Store hides the live-tracking feature they were invited
+          // to see and silently breaks the safety promise — the rider
+          // thinks their contact is watching the ride; the contact got
+          // dumped on a store listing for an app they have no reason to
+          // install.
+          //
+          // Same logic applies to a few other paths that are commonly
+          // opened from emails / SMS / signed-out shares:
+          //   • /track/*  — emergency / "watch my ride" link
+          //   • /terms    — marketing footer link, opened by anyone
+          //   • /privacy  — same
+          //   • /auth/callback* — Supabase magic link (must render the
+          //     callback in-browser, not deep-link to the app on a fresh
+          //     device that hasn't installed yet)
+          //   • /connect/onboard/return* — Stripe redirects the driver
+          //     back here mid-flow; deep-link would lose the session
+          //
+          // Other entry points (home, /rides, /wallet, etc.) keep the
+          // App Store redirect — those are app-shaped surfaces and the
+          // visitor on iOS is almost certainly a user who should be on
+          // the native app.
+          var path = url.pathname || '/'
+          var isPublicSharePath =
+            /^\/track(\/|$)/.test(path)
+            || /^\/auth\/callback(\/|$)/.test(path)
+            || /^\/connect\/onboard\/return(\/|$)/.test(path)
+            || path === '/terms'
+            || path === '/privacy'
+
+          if (isIOS && !optedOutOfRedirect && !isPublicSharePath) {
             window.location.replace('https://apps.apple.com/us/app/tago-rides/id' + APP_STORE_NUMERIC_ID)
           }
         } catch (_) {
