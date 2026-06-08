@@ -1159,21 +1159,33 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
     return
   }
 
-  // Rider's party (companions) from the linked waitlist entry.
+  // Rider's party (companions) + chosen travel_mode from the linked waitlist
+  // entry. travel_mode decides how many legs this carpool has:
+  //   together → outbound (home→event) now, return composed later (Stage 4)
+  //   one_way  → outbound (home→event) only, no return ever
+  //   own_thing→ return (event→home) only — the rider gets to the event their
+  //              own way, so the SINGLE leg we create here heads HOME.
   let companionAId: string | null = null
   let companionBId: string | null = null
   let seatsNeeded = 1
+  let travelMode: 'together' | 'own_thing' | 'one_way' = 'together'
   if (offer.waitlist_id) {
     const { data: wlRow } = await supabaseAdmin
       .from('destination_waitlist')
-      .select('companion_a_id, companion_b_id, group_size')
+      .select('companion_a_id, companion_b_id, group_size, travel_mode')
       .eq('id', offer.waitlist_id)
       .maybeSingle()
-    const wl = wlRow as { companion_a_id: string | null; companion_b_id: string | null; group_size: number } | null
+    const wl = wlRow as {
+      companion_a_id: string | null; companion_b_id: string | null
+      group_size: number; travel_mode: string | null
+    } | null
     if (wl) {
       companionAId = wl.companion_a_id
       companionBId = wl.companion_b_id
       seatsNeeded = Math.max(1, wl.group_size)
+      if (wl.travel_mode === 'own_thing' || wl.travel_mode === 'one_way') {
+        travelMode = wl.travel_mode
+      }
     }
   }
   if (plan.seats_available < seatsNeeded) {
@@ -1195,6 +1207,10 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
     oLat: number, oLng: number, oName: string,
     dLat: number, dLng: number, dName: string,
     tripDate: string, tripTime: string | null,
+    // The carpool's CONTEXT (the event name) for the seed chat line. For an
+    // own_thing leg dName is "Home", which would read wrong — pass the event
+    // name explicitly. Defaults to the drop-off name for outbound legs.
+    contextName: string = dName,
   ): Promise<string | null> => {
     const fareCents = await estimateFareCentsBetween(oLat, oLng, dLat, dLng)
     const { data: ride, error: rideErr } = await supabaseAdmin
@@ -1229,7 +1245,7 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
     // Seed chat so the thread isn't empty.
     await seedChatMessage(
       rideId, offer.driver_id,
-      `You're set for ${dName}! Use this chat to sort out pickup and timing.`,
+      `You're set for ${contextName}! Use this chat to sort out pickup and timing.`,
       'text',
     )
     return rideId
@@ -1237,16 +1253,42 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
 
   const destName = dest.name
   const originName = plan.origin_address ?? 'Driver location'
-  const outboundRideId = await makeRide(originLat, originLng, originName, destLat, destLng, destName, plan.outbound_date, plan.outbound_time)
+  // ONE leg primitive, composed by travel_mode. The single leg always lives in
+  // offer.outbound_ride_id (the "primary ride" ~10 downstream sites read to
+  // open chat / notify), regardless of which direction it points.
+  let outboundRideId: string | null
+  if (travelMode === 'own_thing') {
+    // Return-only carpool: the rider gets to the event their own way and rides
+    // HOME with the driver. The single leg is event → origin(home), on the
+    // return date/time. Geography mirrors the return-leg builder at
+    // POST /return/:rideID/start.
+    outboundRideId = await makeRide(
+      destLat, destLng, destName,
+      originLat, originLng, originName,
+      plan.return_date ?? plan.outbound_date, plan.return_time,
+      destName, // contextName = the event, not "Home"
+    )
+  } else {
+    // together / one_way: the single leg is home → event on the outbound
+    // date/time. For `together` the return leg is composed later (Stage 4);
+    // for `one_way` there is never a return.
+    outboundRideId = await makeRide(
+      originLat, originLng, originName,
+      destLat, destLng, destName,
+      plan.outbound_date, plan.outbound_time,
+    )
+  }
   if (!outboundRideId) {
     res.status(400).json({ error: { code: 'RIDE_FAILED', message: 'Could not create the ride.' } })
     return
   }
-  // NOTE: the RETURN ride is intentionally NOT created here. A round trip
-  // creates only the outbound leg at match; the return leg + its
-  // coordinator card are created later (Trip Stepper Stage 4 — "plan
-  // return", after the outbound is completed + paid). Creating both up
-  // front produced two simultaneous "Coordinating" rides for one trip.
+  // NOTE: the RETURN ride is intentionally NOT created here. A `together` round
+  // trip creates only the outbound leg at match; the return leg + its
+  // coordinator card are created later (Trip Stepper Stage 4 — "plan return",
+  // after the outbound is completed + paid). Creating both up front produced
+  // two simultaneous "Coordinating" rides for one trip. own_thing / one_way
+  // are single-leg and never compose a second ride (return_ride_id stays null
+  // forever).
 
   // Decrement seats; mark full at zero.
   const newSeats = Math.max(0, plan.seats_available - seatsNeeded)
@@ -1653,12 +1695,12 @@ destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request
 
   const { data: offerRow } = await supabaseAdmin
     .from('destination_offers')
-    .select('id, driver_plan_id, destination_id, outbound_ride_id, return_ride_id, status')
+    .select('id, driver_plan_id, waitlist_id, destination_id, outbound_ride_id, return_ride_id, status')
     .or(`outbound_ride_id.eq.${rideID},return_ride_id.eq.${rideID}`)
     .eq('status', 'accepted')
     .maybeSingle()
   const offer = offerRow as {
-    id: string; driver_plan_id: string | null; destination_id: string
+    id: string; driver_plan_id: string | null; waitlist_id: string | null; destination_id: string
     outbound_ride_id: string | null; return_ride_id: string | null; status: string
   } | null
   if (!offer) {
@@ -1666,9 +1708,19 @@ destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request
     return
   }
 
-  const { data: planRow } = await supabaseAdmin
-    .from('destination_driver_plans').select('wants_return').eq('id', offer.driver_plan_id as string).maybeSingle()
-  const roundTrip = (planRow as { wants_return: boolean } | null)?.wants_return ?? false
+  // Whether this carpool has a return leg is decided by the RIDER's chosen
+  // travel_mode, NOT the driver plan's wants_return. Only `together` is a true
+  // round trip (outbound now + return composed at Stage 4). `own_thing` and
+  // `one_way` are single-leg and never offer a return. Default 'together' for
+  // legacy offers whose waitlist row predates travel_mode.
+  let travelMode: 'together' | 'own_thing' | 'one_way' = 'together'
+  if (offer.waitlist_id) {
+    const { data: wlRow } = await supabaseAdmin
+      .from('destination_waitlist').select('travel_mode').eq('id', offer.waitlist_id).maybeSingle()
+    const mode = (wlRow as { travel_mode: string | null } | null)?.travel_mode
+    if (mode === 'own_thing' || mode === 'one_way') travelMode = mode
+  }
+  const roundTrip = travelMode === 'together'
 
   const { data: destRow } = await supabaseAdmin
     .from('featured_destinations').select('name').eq('id', offer.destination_id).maybeSingle()
@@ -1725,6 +1777,9 @@ destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request
   res.status(200).json({
     is_destination: true,
     round_trip: roundTrip,
+    // The iOS chat slice relabels the stepper from this: for own_thing the
+    // single leg heads HOME (not to the event), so the chrome must say so.
+    travel_mode: travelMode,
     destination_name: destinationName,
     stage,
     can_start_return: canStartReturn,
