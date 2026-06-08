@@ -360,7 +360,7 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
   // Active driver plans + the driver's public profile (no phone).
   const { data: planRows } = await supabaseAdmin
     .from('destination_driver_plans')
-    .select('id, driver_id, outbound_date, outbound_time, wants_return, return_date, return_time, seats_available, note')
+    .select('id, driver_id, outbound_date, outbound_time, wants_return, return_date, return_time, seats_available, note, origin_lat, origin_lng, origin_address')
     .eq('destination_id', id)
     .eq('status', 'active')
     .gte('seats_available', 1)
@@ -371,7 +371,7 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
   // the "N going" badge; the rows power avatars on the detail.
   const { data: waitRows } = await supabaseAdmin
     .from('destination_waitlist')
-    .select('id, rider_id, desired_date, desired_time, wants_return, return_date, return_time, travel_mode, group_size, date_flexibility, note')
+    .select('id, rider_id, desired_date, desired_time, wants_return, return_date, return_time, travel_mode, group_size, date_flexibility, note, companion_a_id, companion_b_id')
     .eq('destination_id', id)
     .eq('status', 'waiting')
     .order('created_at', { ascending: true })
@@ -382,14 +382,45 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
     ...plans.map((p) => p['driver_id'] as string),
     ...waitlist.map((w) => w['rider_id'] as string),
   ])]
-  const profiles = new Map<string, { full_name: string | null; avatar_url: string | null; rating_avg: number | null }>()
+  // Public profile snippet (no phone) + the accessibility signal a driver
+  // needs: a top-level "has needs" flag (drives the badge) and whether they
+  // use a wheelchair (vehicle-capability relevance). The free-text
+  // accessibility notes are intentionally NOT exposed on the public detail.
+  type PartyProfile = {
+    full_name: string | null; avatar_url: string | null; rating_avg: number | null
+    has_accessibility_needs: boolean; needs_wheelchair: boolean
+  }
+  const profiles = new Map<string, PartyProfile>()
   if (userIds.length > 0) {
     const { data: users } = await supabaseAdmin
       .from('users')
-      .select('id, full_name, avatar_url, rating_avg')
+      .select('id, full_name, avatar_url, rating_avg, has_accessibility_needs, accessibility_profile')
       .in('id', userIds)
-    for (const u of (users ?? []) as Array<{ id: string; full_name: string | null; avatar_url: string | null; rating_avg: number | null }>) {
-      profiles.set(u.id, { full_name: u.full_name, avatar_url: u.avatar_url, rating_avg: u.rating_avg })
+    for (const u of (users ?? []) as Array<{
+      id: string; full_name: string | null; avatar_url: string | null; rating_avg: number | null
+      has_accessibility_needs: boolean | null; accessibility_profile: { needs_wheelchair?: boolean } | null
+    }>) {
+      profiles.set(u.id, {
+        full_name: u.full_name, avatar_url: u.avatar_url, rating_avg: u.rating_avg,
+        has_accessibility_needs: u.has_accessibility_needs === true,
+        needs_wheelchair: u.accessibility_profile?.needs_wheelchair === true,
+      })
+    }
+  }
+
+  // Each waiting rider's companions (name + relationship + avatar, NO phone)
+  // so the trip-details sheet can show who's coming. Batched across all rows.
+  const companionIds = [...new Set(waitlist.flatMap((w) =>
+    [w['companion_a_id'], w['companion_b_id']].filter((v): v is string => typeof v === 'string')))]
+  type CompanionSnippet = { id: string; name: string | null; relationship: string | null; avatar_url: string | null }
+  const companionProfiles = new Map<string, CompanionSnippet>()
+  if (companionIds.length > 0) {
+    const { data: comps } = await supabaseAdmin
+      .from('companions')
+      .select('id, name, relationship, avatar_url')
+      .in('id', companionIds)
+    for (const c of (comps ?? []) as CompanionSnippet[]) {
+      companionProfiles.set(c.id, c)
     }
   }
 
@@ -466,6 +497,10 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
       riders: waitlist.map((w) => ({
         ...w,
         rider: profiles.get(w['rider_id'] as string) ?? null,
+        companions: [w['companion_a_id'], w['companion_b_id']]
+          .filter((v): v is string => typeof v === 'string')
+          .map((cid) => companionProfiles.get(cid))
+          .filter((c): c is CompanionSnippet => c != null),
       })),
     },
     my_waitlist_entry: myRow ?? null,
