@@ -549,8 +549,25 @@ interface WaitlistBody {
   companion_a_id?: unknown
   companion_b_id?: unknown
   caregiver_id?: unknown
+  pickup_lat?: unknown
+  pickup_lng?: unknown
+  pickup_address?: unknown
   note?: unknown
   date_flexibility?: unknown
+}
+
+/** A rider's chosen pickup (home→event) / drop-off (own_thing) point. */
+function readPickup(body: { pickup_lat?: unknown; pickup_lng?: unknown; pickup_address?: unknown }): {
+  pickup_lat: number | null; pickup_lng: number | null; pickup_address: string | null
+} {
+  const lat = typeof body.pickup_lat === 'number' ? body.pickup_lat : null
+  const lng = typeof body.pickup_lng === 'number' ? body.pickup_lng : null
+  // Only keep the address when we have real coords to anchor it.
+  return {
+    pickup_lat: lat,
+    pickup_lng: lng,
+    pickup_address: (lat != null && lng != null) ? (optString(body.pickup_address) ?? null) : null,
+  }
 }
 
 /** Narrow an optional string field; returns undefined for missing/blank. */
@@ -696,6 +713,7 @@ destinationsRouter.post('/:id/waitlist', validateJwt, async (req: Request, res: 
     companion_a_id: companionIds[0] ?? null,
     companion_b_id: companionIds[1] ?? null,
     caregiver_id: caregiverId,
+    ...readPickup(body),
     note: note ?? null,
     status: 'waiting',
     updated_at: new Date().toISOString(),
@@ -1048,6 +1066,9 @@ interface OfferBody {
   companion_a_id?: unknown
   companion_b_id?: unknown
   caregiver_id?: unknown
+  pickup_lat?: unknown
+  pickup_lng?: unknown
+  pickup_address?: unknown
   desired_date?: unknown
 }
 
@@ -1122,6 +1143,7 @@ destinationsRouter.post('/:id/offer', validateJwt, async (req: Request, res: Res
         companion_a_id: companionIds[0] ?? null,
         companion_b_id: companionIds[1] ?? null,
         caregiver_id: caregiverId,
+        ...readPickup(body),
         status: 'waiting',
         updated_at: new Date().toISOString(),
       } as never, { onConflict: 'destination_id,rider_id' })
@@ -1301,22 +1323,29 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
   let companionAId: string | null = null
   let companionBId: string | null = null
   let caregiverId: string | null = null
+  let pickupLat: number | null = null
+  let pickupLng: number | null = null
+  let pickupName: string | null = null
   let seatsNeeded = 1
   let travelMode: 'together' | 'own_thing' | 'one_way' = 'together'
   if (offer.waitlist_id) {
     const { data: wlRow } = await supabaseAdmin
       .from('destination_waitlist')
-      .select('companion_a_id, companion_b_id, caregiver_id, group_size, travel_mode')
+      .select('companion_a_id, companion_b_id, caregiver_id, group_size, travel_mode, pickup_lat, pickup_lng, pickup_address')
       .eq('id', offer.waitlist_id)
       .maybeSingle()
     const wl = wlRow as {
       companion_a_id: string | null; companion_b_id: string | null
       caregiver_id: string | null; group_size: number; travel_mode: string | null
+      pickup_lat: number | null; pickup_lng: number | null; pickup_address: string | null
     } | null
     if (wl) {
       companionAId = wl.companion_a_id
       companionBId = wl.companion_b_id
       caregiverId = wl.caregiver_id
+      pickupLat = wl.pickup_lat
+      pickupLng = wl.pickup_lng
+      pickupName = wl.pickup_address
       seatsNeeded = Math.max(1, wl.group_size)
       if (wl.travel_mode === 'own_thing' || wl.travel_mode === 'one_way') {
         travelMode = wl.travel_mode
@@ -1346,6 +1375,10 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
     // own_thing leg dName is "Home", which would read wrong — pass the event
     // name explicitly. Defaults to the drop-off name for outbound legs.
     contextName: string = dName,
+    // True once the pickup is a real, rider-chosen point (home→event with a
+    // provided pickup) so nav has a confirmed target. own_thing keeps it
+    // false — the pickup is the event, where the meetup spot is sorted in chat.
+    pickupConfirmed: boolean = false,
   ): Promise<string | null> => {
     const fareCents = await estimateFareCentsBetween(oLat, oLng, dLat, dLng)
     const { data: ride, error: rideErr } = await supabaseAdmin
@@ -1363,7 +1396,7 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
         fare_cents: fareCents,
         payment_status: 'pending',
         pickup_point: geoPoint(oLat, oLng),
-        pickup_confirmed: false,
+        pickup_confirmed: pickupConfirmed,
         dropoff_point: geoPoint(dLat, dLng),
         dropoff_confirmed: true,
         companion_a_id: companionAId,
@@ -1392,29 +1425,38 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
 
   const destName = dest.name
   const originName = plan.origin_address ?? 'Driver location'
+  // The rider's chosen end-point (pickup for home→event, drop-off for
+  // own_thing). Falls back to the driver's origin for legacy rows / riders
+  // who skipped it — the old behaviour, coordinated in chat.
+  const hasRiderPoint = pickupLat != null && pickupLng != null
+  const riderLat = hasRiderPoint ? pickupLat as number : originLat
+  const riderLng = hasRiderPoint ? pickupLng as number : originLng
+  const riderName = pickupName ?? originName
   // ONE leg primitive, composed by travel_mode. The single leg always lives in
   // offer.outbound_ride_id (the "primary ride" ~10 downstream sites read to
   // open chat / notify), regardless of which direction it points.
   let outboundRideId: string | null
   if (travelMode === 'own_thing') {
     // Return-only carpool: the rider gets to the event their own way and rides
-    // HOME with the driver. The single leg is event → origin(home), on the
-    // return date/time. Geography mirrors the return-leg builder at
-    // POST /return/:rideID/start.
+    // HOME with the driver. The single leg is event → the rider's drop-off
+    // (their home), on the return date/time. Pickup = event (sorted in chat).
     outboundRideId = await makeRide(
       destLat, destLng, destName,
-      originLat, originLng, originName,
+      riderLat, riderLng, riderName,
       plan.return_date ?? plan.outbound_date, plan.return_time,
       destName, // contextName = the event, not "Home"
     )
   } else {
-    // together / one_way: the single leg is home → event on the outbound
-    // date/time. For `together` the return leg is composed later (Stage 4);
-    // for `one_way` there is never a return.
+    // together / one_way: the single leg is the rider's pickup → event on the
+    // outbound date/time. For `together` the return leg is composed later
+    // (Stage 4); for `one_way` there is never a return. Pickup is confirmed
+    // when the rider actually provided one (so driver nav has a real target).
     outboundRideId = await makeRide(
-      originLat, originLng, originName,
+      riderLat, riderLng, riderName,
       destLat, destLng, destName,
       plan.outbound_date, plan.outbound_time,
+      destName,
+      hasRiderPoint,
     )
   }
   if (!outboundRideId) {
@@ -1787,16 +1829,21 @@ destinationsRouter.get('/offer/:offerId', validateJwt, async (req: Request, res:
   let companionCount = 0
   let companions: Array<{ name: string; avatar_url: string | null }> = []
   let caregiver: { name: string | null; avatar_url: string | null } | null = null
+  let pickup: { lat: number; lng: number; name: string | null } | null = null
   if (offer.waitlist_id != null) {
     const { data: wl } = await supabaseAdmin
       .from('destination_waitlist')
-      .select('group_size, companion_a_id, companion_b_id, caregiver_id')
+      .select('group_size, companion_a_id, companion_b_id, caregiver_id, pickup_lat, pickup_lng, pickup_address')
       .eq('id', offer.waitlist_id).maybeSingle()
     const wlRow = wl as {
       group_size: number; companion_a_id: string | null
       companion_b_id: string | null; caregiver_id: string | null
+      pickup_lat: number | null; pickup_lng: number | null; pickup_address: string | null
     } | null
     partySize = Math.max(1, wlRow?.group_size ?? 1)
+    if (typeof wlRow?.pickup_lat === 'number' && typeof wlRow?.pickup_lng === 'number') {
+      pickup = { lat: wlRow.pickup_lat, lng: wlRow.pickup_lng, name: wlRow.pickup_address }
+    }
     const compIds = [wlRow?.companion_a_id, wlRow?.companion_b_id].filter((v): v is string => v != null)
     companionCount = compIds.length
     if (compIds.length > 0) {
@@ -1811,16 +1858,18 @@ destinationsRouter.get('/offer/:offerId', validateJwt, async (req: Request, res:
     }
   }
 
-  // Estimated fare (driver's origin → destination) + the party add-ons, so
-  // the accepter sees the full cost up front like the instant-ride card.
+  // Estimated fare + party add-ons, so the accepter sees the full cost up
+  // front like the instant-ride card. The base leg runs from the rider's
+  // actual pickup (if they set one) to the event; otherwise it falls back to
+  // the driver's origin (the old behaviour).
   let fareCents: number | null = null
   let fareBreakdown: FareBreakdown | null = null
-  const originLat = plan?.origin_lat
-  const originLng = plan?.origin_lng
-  if (typeof originLat === 'number' && typeof originLng === 'number'
+  const fromLat = pickup?.lat ?? plan?.origin_lat
+  const fromLng = pickup?.lng ?? plan?.origin_lng
+  if (typeof fromLat === 'number' && typeof fromLng === 'number'
     && typeof dest?.latitude === 'number' && typeof dest?.longitude === 'number') {
     fareBreakdown = await estimatePartyFare(
-      originLat, originLng, dest.latitude, dest.longitude, companionCount, caregiver != null,
+      fromLat, fromLng, dest.latitude, dest.longitude, companionCount, caregiver != null,
     )
     fareCents = fareBreakdown.base_cents
   }
@@ -1851,6 +1900,7 @@ destinationsRouter.get('/offer/:offerId', validateJwt, async (req: Request, res:
     party_size: partySize,
     companions,
     caregiver,
+    pickup,
     fare_cents: fareCents,
     fare_breakdown: fareBreakdown,
   })
