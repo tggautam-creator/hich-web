@@ -371,7 +371,7 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
   // the "N going" badge; the rows power avatars on the detail.
   const { data: waitRows } = await supabaseAdmin
     .from('destination_waitlist')
-    .select('id, rider_id, desired_date, wants_return, travel_mode, group_size, date_flexibility')
+    .select('id, rider_id, desired_date, desired_time, wants_return, return_date, return_time, travel_mode, group_size, date_flexibility, note')
     .eq('destination_id', id)
     .eq('status', 'waiting')
     .order('created_at', { ascending: true })
