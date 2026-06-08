@@ -1023,13 +1023,21 @@ destinationsRouter.post('/:id/offer', validateJwt, async (req: Request, res: Res
 
   // Notify the counterparty — actionable (Accept/Decline), so bell + push.
   const target = initiatedBy === 'rider' ? driverId : riderId
+  const newOfferId = (offer as { id: string }).id
   await notifyUserDual(
     target,
     'destination_offer',
     initiatedBy === 'rider' ? 'New ride request' : 'A driver offered you a seat',
     initiatedBy === 'rider' ? 'Someone wants to join your trip.' : 'Open Explore to accept.',
-    { type: 'destination_offer', destination_id: destinationId, offer_id: (offer as { id: string }).id },
+    { type: 'destination_offer', destination_id: destinationId, offer_id: newOfferId },
   )
+  // Phase 3b — live in-app banner: broadcast on the recipient's Explore
+  // channel so the app surfaces the incoming offer immediately (Accept /
+  // Decline) instead of only via the bell / push.
+  void realtimeBroadcast(`explore:${target}`, 'destination_offer', {
+    offer_id: newOfferId,
+    destination_id: destinationId,
+  })
 
   broadcastDestinationChanged(destinationId)
   res.status(200).json({ offer })
