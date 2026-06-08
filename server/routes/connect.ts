@@ -85,14 +85,18 @@ function buildTagoBusinessProfile(): Stripe.AccountCreateParams.BusinessProfile 
 
 function buildIndividualPrefill(user: {
   email?: string | null
-  phone?: string | null
   full_name?: string | null
 }): Stripe.AccountCreateParams.Individual {
+  // NOTE: do NOT pre-fill `phone`. Stripe validates the phone against
+  // its carrier database, not just E.164 syntax, and rejects obvious
+  // placeholders / test numbers (e.g. "+11234567890"). When we passed
+  // `users.phone` straight through, accounts.create failed with
+  // `StripeInvalidRequestError param: individual[phone]` and the iOS
+  // Embedded SDK surfaced it as "There was an error during
+  // authentication." Stripe collects the phone during KYC anyway, so
+  // we save no time by pre-filling and we incur the validation risk.
   const individual: Stripe.AccountCreateParams.Individual = {
     email: user.email ?? undefined,
-  }
-  if (user.phone) {
-    individual.phone = user.phone
   }
   // Split a "First Last" full_name into first/last. Single-word names
   // fall through with no last_name — Stripe accepts that.
@@ -144,7 +148,7 @@ connectRouter.post('/onboard', validateJwt, async (req: Request, res: Response, 
 
     const { data: user, error: userErr } = await supabaseAdmin
       .from('users')
-      .select('email, phone, full_name, stripe_account_id, stripe_onboarding_complete')
+      .select('email, full_name, stripe_account_id, stripe_onboarding_complete')
       .eq('id', userId)
       .single()
 
@@ -397,7 +401,7 @@ connectRouter.post('/account-session', validateJwt, async (_req: Request, res: R
 
     const { data: user, error: userErr } = await supabaseAdmin
       .from('users')
-      .select('stripe_account_id, email, full_name, phone')
+      .select('stripe_account_id, email, full_name')
       .eq('id', userId)
       .single()
 
