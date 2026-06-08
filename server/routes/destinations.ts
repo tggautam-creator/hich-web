@@ -15,7 +15,7 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { validateJwt } from '../middleware/auth.ts'
-import { estimateFareCentsBetween } from './rides.ts'
+import { estimateFareCentsBetween, companionFareCentsFor, caregiverFareCentsFor } from './rides.ts'
 import { getOrCreateTripForRide } from '../lib/trips.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
 import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
@@ -559,6 +559,37 @@ function optString(value: unknown): string | null | undefined {
   if (value === null) return null
   if (typeof value === 'string') return value.length > 0 ? value : null
   return undefined
+}
+
+/** Straight-line km between two points (for the coarse fare tier). */
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const toRad = (d: number): number => (d * Math.PI) / 180
+  const R = 6371
+  const dLat = toRad(lat2 - lat1)
+  const dLng = toRad(lng2 - lng1)
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)))
+}
+
+interface FareBreakdown { base_cents: number; companion_cents: number; caregiver_cents: number; total_cents: number }
+
+/**
+ * Estimated fare for a destination trip + its party add-ons, so every
+ * surface (request review, join sheet) can show the same total. Base is the
+ * road-distance fare; the seat-fee tiers use a 1.3× road-corrected
+ * straight-line distance (mirrors the iOS preview). The real fees re-settle
+ * from GPS distance at ride end.
+ */
+async function estimatePartyFare(
+  oLat: number, oLng: number, dLat: number, dLng: number,
+  companionCount: number, hasCaregiver: boolean,
+): Promise<FareBreakdown> {
+  const base = await estimateFareCentsBetween(oLat, oLng, dLat, dLng)
+  const km = haversineKm(oLat, oLng, dLat, dLng) * 1.3
+  const companion = Math.max(0, companionCount) * companionFareCentsFor(km)
+  const caregiver = hasCaregiver ? caregiverFareCentsFor(km) : 0
+  return { base_cents: base, companion_cents: companion, caregiver_cents: caregiver, total_cents: base + companion + caregiver }
 }
 
 /** Verify a caregiver id belongs to the rider (mirror the companion check). */
@@ -1164,6 +1195,26 @@ destinationsRouter.post('/:id/offer', validateJwt, async (req: Request, res: Res
     return
   }
 
+  // Accessibility-aware copy for an incoming RIDE REQUEST (rider → driver):
+  // let the driver know up front if the rider uses a wheelchair / brings a
+  // caregiver, so they can gauge vehicle fit before opening.
+  let accessibilitySuffix = ''
+  if (initiatedBy === 'rider') {
+    const { data: riderRow } = await supabaseAdmin
+      .from('users').select('accessibility_profile').eq('id', riderId).maybeSingle()
+    const profile = (riderRow as { accessibility_profile: { needs_wheelchair?: boolean } | null } | null)?.accessibility_profile
+    let hasCaregiver = false
+    if (linkedWaitlistId != null) {
+      const { data: wlc } = await supabaseAdmin
+        .from('destination_waitlist').select('caregiver_id').eq('id', linkedWaitlistId).maybeSingle()
+      hasCaregiver = (wlc as { caregiver_id: string | null } | null)?.caregiver_id != null
+    }
+    const bits: string[] = []
+    if (profile?.needs_wheelchair === true) bits.push('uses a wheelchair')
+    if (hasCaregiver) bits.push('bringing a caregiver')
+    if (bits.length > 0) accessibilitySuffix = ` — ${bits.join(', ')}`
+  }
+
   // Notify the counterparty — actionable (Accept/Decline), so bell + push.
   const target = initiatedBy === 'rider' ? driverId : riderId
   const newOfferId = (offer as { id: string }).id
@@ -1171,7 +1222,7 @@ destinationsRouter.post('/:id/offer', validateJwt, async (req: Request, res: Res
     target,
     'destination_offer',
     initiatedBy === 'rider' ? 'New ride request' : 'A driver offered you a seat',
-    initiatedBy === 'rider' ? 'Someone wants to join your trip.' : 'Open Explore to accept.',
+    initiatedBy === 'rider' ? `Someone wants to join your trip.${accessibilitySuffix}` : 'Open Explore to accept.',
     { type: 'destination_offer', destination_id: destinationId, offer_id: newOfferId },
   )
   // Phase 3b — live in-app banner: broadcast on the recipient's Explore
@@ -1694,8 +1745,23 @@ destinationsRouter.get('/offer/:offerId', validateJwt, async (req: Request, res:
   }
 
   const counterpartId = offer.driver_id === userId ? offer.rider_id : offer.driver_id
-  const { data: cpRow } = await supabaseAdmin
-    .from('users').select('full_name, avatar_url, rating_avg').eq('id', counterpartId).maybeSingle()
+  const { data: cpRaw } = await supabaseAdmin
+    .from('users')
+    .select('full_name, avatar_url, rating_avg, has_accessibility_needs, accessibility_profile')
+    .eq('id', counterpartId).maybeSingle()
+  const cpUser = cpRaw as {
+    full_name: string | null; avatar_url: string | null; rating_avg: number | null
+    has_accessibility_needs: boolean | null; accessibility_profile: { needs_wheelchair?: boolean } | null
+  } | null
+  // Public profile snippet for the request page — accessibility flag (badge)
+  // but never the free-text notes.
+  const cpRow = cpUser == null ? null : {
+    full_name: cpUser.full_name,
+    avatar_url: cpUser.avatar_url,
+    rating_avg: cpUser.rating_avg,
+    has_accessibility_needs: cpUser.has_accessibility_needs === true,
+    needs_wheelchair: cpUser.accessibility_profile?.needs_wheelchair === true,
+  }
 
   const { data: destRow } = await supabaseAdmin
     .from('featured_destinations')
@@ -1715,33 +1781,48 @@ destinationsRouter.get('/offer/:offerId', validateJwt, async (req: Request, res:
     origin_lat: number | null; origin_lng: number | null; origin_address: string | null
   } | null
 
-  // Party + companions. Driver-initiated offers carry the rider's waitlist
-  // row, which holds the companion FKs; fetch those profiles for the card.
+  // Party + companions + caregiver. Driver-initiated offers carry the
+  // rider's waitlist row, which holds the companion + caregiver FKs.
   let partySize = 1
+  let companionCount = 0
   let companions: Array<{ name: string; avatar_url: string | null }> = []
+  let caregiver: { name: string | null; avatar_url: string | null } | null = null
   if (offer.waitlist_id != null) {
     const { data: wl } = await supabaseAdmin
       .from('destination_waitlist')
-      .select('group_size, companion_a_id, companion_b_id')
+      .select('group_size, companion_a_id, companion_b_id, caregiver_id')
       .eq('id', offer.waitlist_id).maybeSingle()
-    const wlRow = wl as { group_size: number; companion_a_id: string | null; companion_b_id: string | null } | null
+    const wlRow = wl as {
+      group_size: number; companion_a_id: string | null
+      companion_b_id: string | null; caregiver_id: string | null
+    } | null
     partySize = Math.max(1, wlRow?.group_size ?? 1)
     const compIds = [wlRow?.companion_a_id, wlRow?.companion_b_id].filter((v): v is string => v != null)
+    companionCount = compIds.length
     if (compIds.length > 0) {
       const { data: comps } = await supabaseAdmin
         .from('companions').select('name, avatar_url').in('id', compIds)
       companions = (comps as Array<{ name: string; avatar_url: string | null }> | null) ?? []
     }
+    if (wlRow?.caregiver_id != null) {
+      const { data: cg } = await supabaseAdmin
+        .from('caregivers').select('name, avatar_url').eq('id', wlRow.caregiver_id).maybeSingle()
+      caregiver = (cg as { name: string | null; avatar_url: string | null } | null) ?? null
+    }
   }
 
-  // Estimated fare for the trip (driver's origin → destination), shown so
-  // the accepter sees the cost up front like the instant-ride request card.
+  // Estimated fare (driver's origin → destination) + the party add-ons, so
+  // the accepter sees the full cost up front like the instant-ride card.
   let fareCents: number | null = null
+  let fareBreakdown: FareBreakdown | null = null
   const originLat = plan?.origin_lat
   const originLng = plan?.origin_lng
   if (typeof originLat === 'number' && typeof originLng === 'number'
     && typeof dest?.latitude === 'number' && typeof dest?.longitude === 'number') {
-    fareCents = await estimateFareCentsBetween(originLat, originLng, dest.latitude, dest.longitude)
+    fareBreakdown = await estimatePartyFare(
+      originLat, originLng, dest.latitude, dest.longitude, companionCount, caregiver != null,
+    )
+    fareCents = fareBreakdown.base_cents
   }
 
   const viewerRole = offer.driver_id === userId ? 'driver' : 'rider'
@@ -1769,7 +1850,9 @@ destinationsRouter.get('/offer/:offerId', validateJwt, async (req: Request, res:
     trip: planRow ?? null,
     party_size: partySize,
     companions,
+    caregiver,
     fare_cents: fareCents,
+    fare_breakdown: fareBreakdown,
   })
 })
 
