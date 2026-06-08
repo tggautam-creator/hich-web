@@ -154,6 +154,43 @@ async function reconcileCancelledOffers(offers: Array<Record<string, unknown>>):
   }
 }
 
+/** "2026-06-29" → "Jun 29" (tz-safe — parses the wall-clock date parts). */
+function shortDateLabel(iso: string): string {
+  const parts = iso.split('-').map((s) => Number(s))
+  const month = parts[1] ?? 1
+  const day = parts[2] ?? 1
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  return `${months[month - 1] ?? ''} ${day}`.trim()
+}
+
+/**
+ * Build the ride-board destination + note for a driver's event trip. The
+ * board card's destination is the real PLACE (city, region) — not the event
+ * name — so riders see where the trip actually goes; the event name + an
+ * auto-summary lead the note so the post reads clearly even with no driver
+ * note. Shared by the create + edit handlers.
+ */
+function buildBoardPostMeta(
+  dest: { name: string; city: string | null; region: string | null },
+  seatsTotal: number,
+  wantsReturn: boolean,
+  returnDate: string | null,
+  driverNote: string | null,
+): { destAddress: string; note: string } {
+  const placeLabel = [dest.city, dest.region].filter((v) => v != null && v !== '').join(', ')
+  const destAddress = placeLabel !== '' ? placeLabel : dest.name
+  const parts: string[] = [`Driving to ${dest.name}${placeLabel !== '' ? ` (${placeLabel})` : ''}.`]
+  parts.push(`${seatsTotal} seat${seatsTotal === 1 ? '' : 's'} available.`)
+  if (wantsReturn) {
+    parts.push(returnDate != null
+      ? `Round trip — heading back ${shortDateLabel(returnDate)}.`
+      : 'Round trip — riding back together.')
+  }
+  let note = parts.join(' ')
+  if (driverNote != null && driverNote !== '') note = `${driverNote}\n\n${note}`
+  return { destAddress, note: note.slice(0, 500) }
+}
+
 /** GeoJSON Point for a PostGIS geometry column — [lng, lat]. */
 function geoPoint(lat: number, lng: number): { type: 'Point'; coordinates: [number, number] } {
   return { type: 'Point', coordinates: [lng, lat] }
@@ -625,10 +662,10 @@ destinationsRouter.post('/:id/driver-plan', validateJwt, async (req: Request, re
   }
   const body = (req.body ?? {}) as DriverPlanBody
 
-  // Destination must exist + not be archived; pull name + coords for the post.
+  // Destination must exist + not be archived; pull name + place + coords.
   const { data: dest } = await supabaseAdmin
     .from('featured_destinations')
-    .select('id, name, latitude, longitude')
+    .select('id, name, city, region, latitude, longitude')
     .eq('id', destinationId)
     .neq('status', 'archived')
     .maybeSingle()
@@ -636,7 +673,10 @@ destinationsRouter.post('/:id/driver-plan', validateJwt, async (req: Request, re
     res.status(404).json({ error: { code: 'DESTINATION_NOT_FOUND', message: 'Destination not found' } })
     return
   }
-  const destination = dest as { id: string; name: string; latitude: number | null; longitude: number | null }
+  const destination = dest as {
+    id: string; name: string; city: string | null; region: string | null
+    latitude: number | null; longitude: number | null
+  }
 
   // One active plan per driver per destination — block a duplicate post
   // (the UI hides "I'm driving" when a plan exists, this is the backstop).
@@ -676,6 +716,11 @@ destinationsRouter.post('/:id/driver-plan', validateJwt, async (req: Request, re
 
   // 1. Cross-post to the ride board (best-effort — the plan is the primary
   //    artifact; if the board insert fails we still create the plan).
+  //
+  const { destAddress, note: boardNote } = buildBoardPostMeta(
+    destination, seatsTotal, wantsReturn, optString(body.return_date) ?? null, note ?? null,
+  )
+
   let boardScheduleID: string | null = null
   {
     const boardPost = {
@@ -685,14 +730,14 @@ destinationsRouter.post('/:id/driver-plan', validateJwt, async (req: Request, re
       origin_place_id: originPlaceID ?? `driver:${driverId}`,
       dest_place_id: `destination:${destinationId}`,
       origin_address: originAddress ?? 'Driver location',
-      dest_address: destination.name,
+      dest_address: destAddress,
       direction_type: 'one_way',
       trip_date: outboundDate,
       time_type: 'departure',
       trip_time: outboundTime ?? '12:00:00',
       time_flexible: false,
       available_seats: seatsTotal,
-      note: note ?? null,
+      note: boardNote,
       origin_lat: originLat,
       origin_lng: originLng,
       dest_lat: destination.latitude,
@@ -815,15 +860,27 @@ destinationsRouter.patch('/:id/driver-plan/:planId', validateJwt, async (req: Re
     return
   }
 
-  // Keep the linked board post in sync (best-effort).
+  // Keep the linked board post in sync (best-effort) — including the real
+  // place as the destination + the regenerated auto-note (so an edit doesn't
+  // wipe it back to a bare driver note).
   if (plan.board_schedule_id) {
+    const { data: destRow } = await supabaseAdmin
+      .from('featured_destinations')
+      .select('name, city, region')
+      .eq('id', req.params['id'] as string)
+      .maybeSingle()
+    const dest = destRow as { name: string; city: string | null; region: string | null } | null
+    const meta = dest != null
+      ? buildBoardPostMeta(dest, seatsTotal, wantsReturn, wantsReturn ? (optString(body.return_date) ?? null) : null, note ?? null)
+      : null
     await supabaseAdmin
       .from('ride_schedules')
       .update({
         trip_date: outboundDate,
         trip_time: outboundTime ?? '12:00:00',
         available_seats: seatsTotal,
-        note: note ?? null,
+        note: meta?.note ?? note ?? null,
+        ...(meta != null ? { dest_address: meta.destAddress } : {}),
         origin_lat: originLat,
         origin_lng: originLng,
         origin_address: originAddress ?? 'Driver location',
