@@ -215,6 +215,9 @@ interface DestinationRow {
   region: string | null
   event_date: string | null
   event_end_date: string | null
+  event_time: string | null
+  event_end_time: string | null
+  event_url: string | null
   status: string
   sort_priority: number
   latitude: number | null
@@ -225,11 +228,12 @@ const DESTINATION_COLUMNS =
   'id, kind, name, slug, description, image_url, city, region, '
   + 'event_date, event_end_date, status, sort_priority'
 
-// Card distance/fare needs lat/lng (generated columns from migration 121).
-// Selected only by the list endpoint, with a graceful fallback so the
-// endpoint keeps working before 121 is applied (coords just absent → the
-// client hides distance).
-const DESTINATION_COLUMNS_WITH_COORDS = `${DESTINATION_COLUMNS}, latitude, longitude`
+// The list endpoint also wants lat/lng (migration 121) + event times
+// (migration 124). Kept out of the base columns + selected with a graceful
+// fallback so the endpoint keeps working before those migrations are applied
+// (coords/times just absent → the client hides them).
+const DESTINATION_COLUMNS_WITH_COORDS =
+  `${DESTINATION_COLUMNS}, latitude, longitude, event_time, event_end_time, event_url`
 
 /** Max faces shown in a card's "who's going" avatar stack. */
 const GOING_SAMPLE = 5
