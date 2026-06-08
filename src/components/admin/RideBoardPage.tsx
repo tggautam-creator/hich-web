@@ -1182,6 +1182,13 @@ function NotifyModal({
           <div className="text-xs text-text-secondary">
             Creates an in-app `admin_broadcast` notification. The user sees it on next inbox open. No push (admin push uses the Send Push action on the user detail page).
           </div>
+          <div className="mt-2 text-xs text-text-secondary">
+            Personalize with{' '}
+            <code className="font-mono rounded bg-surface px-1 py-0.5 text-primary">{`{{first_name}}`}</code>
+            {' '}or{' '}
+            <code className="font-mono rounded bg-surface px-1 py-0.5 text-primary">{`{{name}}`}</code>
+            {' '}— server substitutes per recipient at send time.
+          </div>
         </div>
         <label className="block text-sm">
           <span className="text-text-primary">Title</span>
@@ -1191,7 +1198,7 @@ function NotifyModal({
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             maxLength={120}
-            placeholder="e.g. BunHieng offered to drive you"
+            placeholder="e.g. Hi {{first_name}}, BunHieng offered to drive you"
             className="mt-1 w-full rounded-xl border border-border bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none"
           />
         </label>

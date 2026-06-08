@@ -231,10 +231,29 @@ adminActionsRouter.post(
 
       if (!(await assertTargetExists(id, res))) return
 
+      // 2026-06-04 — resolve {{first_name}} / {{name}} per recipient
+      // before writing the campaign + notification rows. The same
+      // substitute() helper /actions/push uses; substitution is a
+      // no-op when the template contains no `{{...}}` tokens, so
+      // the existing non-personalized callers are unaffected.
+      const { data: userRow } = await supabaseAdmin
+        .from('users')
+        .select('full_name, email')
+        .eq('id', id)
+        .maybeSingle()
+      const recipient = {
+        email: (userRow?.email ?? null) as string | null,
+        full_name: (userRow?.full_name ?? null) as string | null,
+      }
+      const renderedTitle = substitute(title, recipient)
+      const renderedBody = substitute(body, recipient)
+
       // Step 1 — mint a campaign row so the iOS tap-to-open flow can
       // resolve the slug. `audience` is JSONB; we stamp it with a
       // sentinel so future queries can distinguish targeted notifies
-      // from broadcast campaigns.
+      // from broadcast campaigns. The campaign row stores the
+      // rendered text so admin dashboards reading from `campaigns`
+      // (e.g. analytics) see what the user actually received.
       const adminUid = adminId(res)
       let slug = generateNotifySlug()
       let campaignId: string | null = null
@@ -247,8 +266,8 @@ adminActionsRouter.post(
               string,
               unknown
             >,
-            title,
-            body,
+            title: renderedTitle,
+            body: renderedBody,
             poster_url: null,
             poster_link_url: null,
             recipient_count: 1,
@@ -284,8 +303,8 @@ adminActionsRouter.post(
       const { error: notifErr } = await supabaseAdmin.from('notifications').insert({
         user_id: id,
         type: 'admin_broadcast',
-        title,
-        body,
+        title: renderedTitle,
+        body: renderedBody,
         data: { slug },
         is_read: false,
       })
@@ -301,6 +320,7 @@ adminActionsRouter.post(
           title,
           body,
           reason: reason || null,
+          personalized: title !== renderedTitle || body !== renderedBody,
         },
       })
 
