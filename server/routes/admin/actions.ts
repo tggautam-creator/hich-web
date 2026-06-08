@@ -29,6 +29,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
 import { writeAuditLog } from '../../lib/adminAudit.ts'
 import { sendFcmPush } from '../../lib/fcm.ts'
+import { substitute } from '../../lib/personalize.ts'
 import { getAvailableStripeBalanceCents } from './stripe.ts'
 import { invalidateUserStatusCache } from '../../middleware/auth.ts'
 
@@ -120,25 +121,37 @@ adminActionsRouter.post(
 
       if (!(await assertTargetExists(id, res))) return
 
-      // Fetch the user's push tokens directly — admin push bypasses
-      // the same-ride gate that the normal /api/notifications/send
-      // applies, so we don't reuse that route.
-      const { data: tokenRows, error: tokenErr } = await supabaseAdmin
-        .from('push_tokens')
-        .select('token')
-        .eq('user_id', id)
-      if (tokenErr) throw tokenErr
-      const tokens = (tokenRows ?? []).map((r) => r.token)
+      // Fetch the user's push tokens + name/email in parallel. Name + email
+      // feed {{first_name}} / {{name}} substitution so admins can compose
+      // personalized pushes (e.g. "Hi {{first_name}}, …"). When the title
+      // and body contain no `{{...}}` tokens, substitute is a no-op so the
+      // happy path stays identical to the un-personalized behaviour.
+      const [tokensResult, userResult] = await Promise.all([
+        supabaseAdmin.from('push_tokens').select('token').eq('user_id', id),
+        supabaseAdmin
+          .from('users')
+          .select('full_name, email')
+          .eq('id', id)
+          .maybeSingle(),
+      ])
+      if (tokensResult.error) throw tokensResult.error
+      const tokens = (tokensResult.data ?? []).map((r) => r.token)
       if (tokens.length === 0) {
         res.status(404).json({
           error: { code: 'NO_TOKENS', message: 'user has no registered push tokens' },
         })
         return
       }
+      const recipient = {
+        email: (userResult.data?.email ?? null) as string | null,
+        full_name: (userResult.data?.full_name ?? null) as string | null,
+      }
+      const personalizedTitle = substitute(title, recipient)
+      const personalizedBody = substitute(body, recipient)
 
       const sent = await sendFcmPush(tokens, {
-        title,
-        body,
+        title: personalizedTitle,
+        body: personalizedBody,
         data: { source: 'admin_panel' },
       })
 

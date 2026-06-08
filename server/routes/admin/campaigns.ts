@@ -34,6 +34,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { supabaseAdmin } from '../../lib/supabaseAdmin.ts'
 import { writeAuditLog } from '../../lib/adminAudit.ts'
 import { sendFcmPush } from '../../lib/fcm.ts'
+import { substitute, RECIPIENT_TOKENS } from '../../lib/personalize.ts'
 import {
   sendPersonalizedEmailToMany,
   isAllowedFromAddress,
@@ -347,29 +348,34 @@ adminCampaignsRouter.post(
       //    end-to-end (banner + inbox + /c/<slug>) before going broad.
       //    Audience is still recorded on the campaign row for
       //    traceability — recipient_count just reads 1.
+      //
+      //    We keep the full {id, email, full_name} records (not just
+      //    ids) all the way through so `{{first_name}}` / `{{name}}`
+      //    substitution can run per recipient at send time — matching
+      //    the personalization the email channel already supports.
       const callerId = res.locals['userId'] as string
-      const users = testToSelf
-        ? [{ id: callerId, email: '', full_name: null }]
+      let recipients = testToSelf
+        ? [{ id: callerId, email: '', full_name: null as string | null }]
         : await resolveAudience(audience)
-      let recipientIds = users.map((u) => u.id)
 
       // 1.5 Honor user opt-outs (notification_preferences.push_promos).
       //     Skipped for test_to_self — the admin is opting into their own
       //     preview deliberately. Users without a notification_preferences
       //     row default to opt-IN (push_promos defaults true) so they
       //     stay in the recipient set.
-      if (!testToSelf && recipientIds.length > 0) {
+      if (!testToSelf && recipients.length > 0) {
         const { data: optOuts, error: optErr } = await supabaseAdmin
           .from('notification_preferences')
           .select('user_id, push_promos')
-          .in('user_id', recipientIds)
+          .in('user_id', recipients.map((r) => r.id))
           .eq('push_promos', false)
         if (optErr) throw optErr
         const optOutIds = new Set(
           ((optOuts ?? []) as Array<{ user_id: string; push_promos: boolean }>).map((p) => p.user_id),
         )
-        recipientIds = recipientIds.filter((id) => !optOutIds.has(id))
+        recipients = recipients.filter((r) => !optOutIds.has(r.id))
       }
+      const recipientIds = recipients.map((r) => r.id)
 
       // 2. Optional safety: if the admin passed `confirm_count` (the
       // value the preview returned), require it to match the current
@@ -453,13 +459,21 @@ adminCampaignsRouter.post(
         return
       }
 
-      // 3. Fetch tokens for the recipients.
+      // 3. Fetch tokens for the recipients, grouped by user_id so we
+      //    can fan personalized payloads per recipient when the title
+      //    / body templates contain `{{first_name}}` etc.
       const { data: tokenRows, error: tokenErr } = await supabaseAdmin
         .from('push_tokens')
         .select('user_id, token')
         .in('user_id', recipientIds)
       if (tokenErr) throw tokenErr
-      const tokens = (tokenRows ?? []).map((t) => t.token)
+      const tokensByUser = new Map<string, string[]>()
+      for (const row of (tokenRows ?? []) as Array<{ user_id: string; token: string }>) {
+        const arr = tokensByUser.get(row.user_id) ?? []
+        arr.push(row.token)
+        tokensByUser.set(row.user_id, arr)
+      }
+      const allTokens = (tokenRows ?? []).map((t) => t.token)
 
       // 4. Fire the push (best-effort; failures per token are
       // swallowed by sendFcmPush which returns a count of successes).
@@ -470,6 +484,11 @@ adminCampaignsRouter.post(
       //   - image (when posterUrl set) so the SW can render it in
       //     the notification banner (Android + web; iOS needs an
       //     NSE which lands in Slice 1.4c)
+      //
+      // Fast path: when the title + body contain no `{{...}}` tokens,
+      // we batch every device into one FCM call (the legacy behaviour).
+      // Slow path: per-recipient fan-out so substitute() can render the
+      // user's `{{first_name}}` etc. before sending.
       const pushData: Record<string, string> = {
         source: 'admin_panel',
         type: 'admin_broadcast',
@@ -477,21 +496,44 @@ adminCampaignsRouter.post(
         slug,
       }
       if (posterUrl) pushData['image'] = posterUrl
-      const pushSent = tokens.length > 0
-        ? await sendFcmPush(tokens, {
-            title,
-            body,
+      const hasTokens = RECIPIENT_TOKENS.some(
+        (t) => title.includes(t) || body.includes(t),
+      )
+      let pushSent = 0
+      if (allTokens.length === 0) {
+        pushSent = 0
+      } else if (!hasTokens) {
+        pushSent = await sendFcmPush(allTokens, {
+          title,
+          body,
+          data: pushData,
+        })
+      } else {
+        // Per-recipient loop. ~5k recipients × 1-3 tokens each = ~5k
+        // FCM calls — slower than the batched path but unavoidable when
+        // the payload varies per user.
+        for (const r of recipients) {
+          const userTokens = tokensByUser.get(r.id)
+          if (!userTokens || userTokens.length === 0) continue
+          const renderedTitle = substitute(title, r)
+          const renderedBody = substitute(body, r)
+          pushSent += await sendFcmPush(userTokens, {
+            title: renderedTitle,
+            body: renderedBody,
             data: pushData,
           })
-        : 0
+        }
+      }
 
       // 5. Write ONE notifications row per recipient so they have an
-      // in-app inbox entry regardless of push delivery success.
-      const notifInserts = recipientIds.map((uid) => ({
-        user_id: uid,
+      // in-app inbox entry regardless of push delivery success. Rows
+      // are personalized when tokens are present so the inbox matches
+      // what the user saw in the push banner.
+      const notifInserts = recipients.map((r) => ({
+        user_id: r.id,
         type: 'admin_broadcast',
-        title,
-        body,
+        title: hasTokens ? substitute(title, r) : title,
+        body: hasTokens ? substitute(body, r) : body,
         data: { ...pushData, poster_url: posterUrl },
       }))
       const { error: notifErr } = await supabaseAdmin
@@ -525,7 +567,8 @@ adminCampaignsRouter.post(
           poster_link_url: pushPosterLinkUrl,
           recipient_count: recipientIds.length,
           push_sent: pushSent,
-          tokens_attempted: tokens.length,
+          tokens_attempted: allTokens.length,
+          personalized: hasTokens,
         },
       })
 
@@ -535,7 +578,7 @@ adminCampaignsRouter.post(
         slug,
         recipient_count: recipientIds.length,
         push_sent: pushSent,
-        tokens_attempted: tokens.length,
+        tokens_attempted: allTokens.length,
         notifications_written: notifErr ? 0 : recipientIds.length,
         audience,
       })

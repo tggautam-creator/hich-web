@@ -72,6 +72,8 @@ interface SetupOpts {
   resetTargetEmail?: string | null
   /** Reset-password endpoint: set true to make generateLink fail. */
   generateLinkFails?: boolean
+  /** /actions/push endpoint: the target's (full_name, email) lookup result. */
+  targetProfile?: { full_name: string | null; email: string | null } | null
 }
 
 function setup(opts: SetupOpts = {}): void {
@@ -163,6 +165,25 @@ function setup(opts: SetupOpts = {}): void {
                         : opts.resetTargetEmail !== undefined
                           ? { email: opts.resetTargetEmail }
                           : null,
+                    error: null,
+                  }),
+              }),
+            }
+          }
+          if (cols === 'full_name, email') {
+            // Admin /actions/push fetches the recipient's name + email
+            // to resolve {{first_name}} / {{name}} substitutions before
+            // sending. Returning a fixed test profile here keeps the
+            // happy-path tests deterministic; opts.targetProfile lets
+            // a specific test override.
+            return {
+              eq: () => ({
+                maybeSingle: () =>
+                  Promise.resolve({
+                    data: opts.targetProfile ?? {
+                      full_name: 'Test User',
+                      email: 'test@university.edu',
+                    },
                     error: null,
                   }),
               }),
@@ -294,6 +315,40 @@ describe('POST /api/admin/users/:id/actions/push', () => {
       tokens_attempted: 2,
       tokens_succeeded: 2,
     })
+  })
+
+  it('substitutes {{first_name}} / {{name}} from the recipient profile', async () => {
+    setup({
+      pushTokens: ['tokA'],
+      fcmSentCount: 1,
+      targetProfile: { full_name: 'Aanya Singh', email: 'aanya@ucdavis.edu' },
+    })
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/push`)
+      .set('Authorization', VALID_JWT)
+      .send({ title: 'Hi {{first_name}}', body: 'Welcome aboard, {{name}}!' })
+    expect(res.status).toBe(200)
+    expect(mockSendFcm).toHaveBeenCalledOnce()
+    const fcmCall = mockSendFcm.mock.calls[0]
+    expect(fcmCall?.[1]).toMatchObject({
+      title: 'Hi Aanya',
+      body: 'Welcome aboard, Aanya Singh!',
+    })
+  })
+
+  it('falls back to email username when full_name is missing', async () => {
+    setup({
+      pushTokens: ['tokA'],
+      fcmSentCount: 1,
+      targetProfile: { full_name: null, email: 'rohan@stanford.edu' },
+    })
+    const res = await request(app)
+      .post(`/api/admin/users/${TARGET}/actions/push`)
+      .set('Authorization', VALID_JWT)
+      .send({ title: 'Hey {{first_name}}', body: 'ok' })
+    expect(res.status).toBe(200)
+    const fcmCall = mockSendFcm.mock.calls[0]
+    expect(fcmCall?.[1]).toMatchObject({ title: 'Hey rohan' })
   })
 })
 

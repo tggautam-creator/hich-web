@@ -660,20 +660,20 @@ function SendPushCard({ userId }: { userId: string }) {
     <ActionCard
       testid="action-send-push"
       title="Send push notification"
-      info="Delivers a one-off push to every device this user has registered with us (push_tokens). Bypasses the per-user notification preferences — use sparingly. Reason is optional but recorded in the audit log."
+      info="Delivers a one-off push to every device this user has registered with us (push_tokens). Bypasses the per-user notification preferences — use sparingly. Reason is optional but recorded in the audit log. Personalize with {{first_name}} or {{name}} — falls back to the email username, then 'there', when no full_name is on the user row."
     >
       <Field
         label="Title"
         value={title}
         onChange={setTitle}
-        placeholder="Heads up"
+        placeholder="Hi {{first_name}}, heads up"
         maxLength={120}
       />
       <Field
         label="Body"
         value={body}
         onChange={setBody}
-        placeholder="Quick note about your ride…"
+        placeholder="Quick note about your ride, {{first_name}}…"
         maxLength={500}
         multiline
       />
