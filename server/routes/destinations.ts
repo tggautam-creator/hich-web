@@ -371,7 +371,7 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
   // the "N going" badge; the rows power avatars on the detail.
   const { data: waitRows } = await supabaseAdmin
     .from('destination_waitlist')
-    .select('id, rider_id, desired_date, desired_time, wants_return, return_date, return_time, travel_mode, group_size, date_flexibility, note, companion_a_id, companion_b_id, caregiver_id')
+    .select('id, rider_id, desired_date, desired_time, wants_return, return_date, return_time, travel_mode, group_size, date_flexibility, note, companion_a_id, companion_b_id, caregiver_id, pickup_address')
     .eq('destination_id', id)
     .eq('status', 'waiting')
     .order('created_at', { ascending: true })
@@ -502,6 +502,9 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
     }
   })
 
+  // The rider's pickup address is only exposed to a DRIVER of this event (so
+  // they can judge whether a request is on their route) — not to every viewer.
+  const viewerIsDriver = myPlan != null
   res.status(200).json({
     destination,
     driver_plans: plans.map((p) => ({
@@ -520,6 +523,8 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
         caregiver: typeof w['caregiver_id'] === 'string'
           ? (caregiverProfiles.get(w['caregiver_id']) ?? null)
           : null,
+        // Gated: drivers only (overrides the `...w` spread for non-drivers).
+        pickup_address: viewerIsDriver ? (w['pickup_address'] ?? null) : null,
       })),
     },
     my_waitlist_entry: myRow ?? null,
