@@ -205,16 +205,23 @@ export default function CampaignsPage() {
 
           {channel === 'push' && (
             <>
+              {/* 2026-06-04 — push channel gets the same personalization
+                   affordances email already had: chip row + token hints
+                   on the field labels + an example token in the
+                   placeholder. The server substitutes per recipient via
+                   src/lib/personalize.ts (same helper as email). */}
+              <PersonalizationChips />
+
               <label className="block">
                 <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
-                  Title <span className="text-text-secondary">(≤ 120 chars)</span>
+                  Title <span className="text-text-secondary">(≤ 120 chars · tokens like {`{{name}}`} resolve per recipient)</span>
                 </div>
                 <input
                   data-testid="campaign-title"
                   type="text"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  placeholder="Heads up"
+                  placeholder="e.g. Hi {{first_name}}, your ride is here"
                   maxLength={120}
                   className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
                 />
@@ -222,14 +229,14 @@ export default function CampaignsPage() {
 
               <label className="block">
                 <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
-                  Body <span className="text-text-secondary">(≤ 500 chars)</span>
+                  Body <span className="text-text-secondary">(≤ 500 chars · tokens like {`{{name}}`} resolve per recipient)</span>
                 </div>
                 <textarea
                   data-testid="campaign-body"
                   rows={4}
                   value={body}
                   onChange={(e) => setBody(e.target.value)}
-                  placeholder="What you want to say…"
+                  placeholder="e.g. Hey {{first_name}}, your weekly Tago digest is ready."
                   maxLength={500}
                   className="w-full rounded-md border border-border bg-white px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
                 />
