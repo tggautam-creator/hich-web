@@ -371,7 +371,7 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
   // the "N going" badge; the rows power avatars on the detail.
   const { data: waitRows } = await supabaseAdmin
     .from('destination_waitlist')
-    .select('id, rider_id, desired_date, desired_time, wants_return, return_date, return_time, travel_mode, group_size, date_flexibility, note, companion_a_id, companion_b_id')
+    .select('id, rider_id, desired_date, desired_time, wants_return, return_date, return_time, travel_mode, group_size, date_flexibility, note, companion_a_id, companion_b_id, caregiver_id')
     .eq('destination_id', id)
     .eq('status', 'waiting')
     .order('created_at', { ascending: true })
@@ -421,6 +421,22 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
       .in('id', companionIds)
     for (const c of (comps ?? []) as CompanionSnippet[]) {
       companionProfiles.set(c.id, c)
+    }
+  }
+
+  // Each waiting rider's caregiver (name + relationship + avatar, NO phone)
+  // so the trip-details sheet can show them alongside companions.
+  const caregiverIds = [...new Set(waitlist
+    .map((w) => w['caregiver_id'])
+    .filter((v): v is string => typeof v === 'string'))]
+  const caregiverProfiles = new Map<string, CompanionSnippet>()
+  if (caregiverIds.length > 0) {
+    const { data: cgs } = await supabaseAdmin
+      .from('caregivers')
+      .select('id, name, relationship, avatar_url')
+      .in('id', caregiverIds)
+    for (const c of (cgs ?? []) as CompanionSnippet[]) {
+      caregiverProfiles.set(c.id, c)
     }
   }
 
@@ -501,6 +517,9 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
           .filter((v): v is string => typeof v === 'string')
           .map((cid) => companionProfiles.get(cid))
           .filter((c): c is CompanionSnippet => c != null),
+        caregiver: typeof w['caregiver_id'] === 'string'
+          ? (caregiverProfiles.get(w['caregiver_id']) ?? null)
+          : null,
       })),
     },
     my_waitlist_entry: myRow ?? null,
@@ -529,6 +548,7 @@ interface WaitlistBody {
   group_size?: unknown
   companion_a_id?: unknown
   companion_b_id?: unknown
+  caregiver_id?: unknown
   note?: unknown
   date_flexibility?: unknown
 }
@@ -539,6 +559,17 @@ function optString(value: unknown): string | null | undefined {
   if (value === null) return null
   if (typeof value === 'string') return value.length > 0 ? value : null
   return undefined
+}
+
+/** Verify a caregiver id belongs to the rider (mirror the companion check). */
+async function caregiverOwnedBy(caregiverId: string, riderId: string): Promise<boolean> {
+  const { data } = await supabaseAdmin
+    .from('caregivers')
+    .select('id, user_id')
+    .eq('id', caregiverId)
+    .maybeSingle()
+  const row = data as { id: string; user_id: string } | null
+  return row != null && row.user_id === riderId
 }
 
 // POST /api/destinations/:id/waitlist — join (upsert; one row per rider).
@@ -607,6 +638,13 @@ destinationsRouter.post('/:id/waitlist', validateJwt, async (req: Request, res: 
     return
   }
 
+  // Caregiver — optional, owned by the rider (mirror the companion check).
+  const caregiverId = optString(body.caregiver_id) ?? null
+  if (caregiverId != null && !(await caregiverOwnedBy(caregiverId, riderId))) {
+    res.status(404).json({ error: { code: 'CAREGIVER_NOT_FOUND', message: "We couldn't find that caregiver on your profile." } })
+    return
+  }
+
   const note = optString(body.note)
   if (note != null && note.length > 500) {
     res.status(400).json({ error: { code: 'INVALID_NOTE', message: 'Note is too long' } })
@@ -626,6 +664,7 @@ destinationsRouter.post('/:id/waitlist', validateJwt, async (req: Request, res: 
     group_size: groupSize,
     companion_a_id: companionIds[0] ?? null,
     companion_b_id: companionIds[1] ?? null,
+    caregiver_id: caregiverId,
     note: note ?? null,
     status: 'waiting',
     updated_at: new Date().toISOString(),
@@ -977,6 +1016,7 @@ interface OfferBody {
   note?: unknown
   companion_a_id?: unknown
   companion_b_id?: unknown
+  caregiver_id?: unknown
   desired_date?: unknown
 }
 
@@ -1029,10 +1069,16 @@ destinationsRouter.post('/:id/offer', validateJwt, async (req: Request, res: Res
     riderId = userId
     planId = plan.id
 
-    // Hold the rider's party on a waitlist entry (companions live there).
+    // Hold the rider's party on a waitlist entry (companions + caregiver
+    // live there so they travel into the matched ride at accept).
     const companionIds = [...new Set(
       [body.companion_a_id, body.companion_b_id].filter((v): v is string => typeof v === 'string' && v.length > 0),
     )].slice(0, 2)
+    const caregiverId = optString(body.caregiver_id) ?? null
+    if (caregiverId != null && !(await caregiverOwnedBy(caregiverId, userId))) {
+      res.status(404).json({ error: { code: 'CAREGIVER_NOT_FOUND', message: "We couldn't find that caregiver on your profile." } })
+      return
+    }
     const { data: wl } = await supabaseAdmin
       .from('destination_waitlist')
       .upsert({
@@ -1044,6 +1090,7 @@ destinationsRouter.post('/:id/offer', validateJwt, async (req: Request, res: Res
         group_size: 1 + companionIds.length,
         companion_a_id: companionIds[0] ?? null,
         companion_b_id: companionIds[1] ?? null,
+        caregiver_id: caregiverId,
         status: 'waiting',
         updated_at: new Date().toISOString(),
       } as never, { onConflict: 'destination_id,rider_id' })
@@ -1202,21 +1249,23 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
   //              own way, so the SINGLE leg we create here heads HOME.
   let companionAId: string | null = null
   let companionBId: string | null = null
+  let caregiverId: string | null = null
   let seatsNeeded = 1
   let travelMode: 'together' | 'own_thing' | 'one_way' = 'together'
   if (offer.waitlist_id) {
     const { data: wlRow } = await supabaseAdmin
       .from('destination_waitlist')
-      .select('companion_a_id, companion_b_id, group_size, travel_mode')
+      .select('companion_a_id, companion_b_id, caregiver_id, group_size, travel_mode')
       .eq('id', offer.waitlist_id)
       .maybeSingle()
     const wl = wlRow as {
       companion_a_id: string | null; companion_b_id: string | null
-      group_size: number; travel_mode: string | null
+      caregiver_id: string | null; group_size: number; travel_mode: string | null
     } | null
     if (wl) {
       companionAId = wl.companion_a_id
       companionBId = wl.companion_b_id
+      caregiverId = wl.caregiver_id
       seatsNeeded = Math.max(1, wl.group_size)
       if (wl.travel_mode === 'own_thing' || wl.travel_mode === 'one_way') {
         travelMode = wl.travel_mode
@@ -1268,6 +1317,10 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
         dropoff_confirmed: true,
         companion_a_id: companionAId,
         companion_b_id: companionBId,
+        // Carry the rider's caregiver onto the ride so the end-of-ride
+        // handler charges the caregiver seat fee (was silently dropped —
+        // an accessibility rider matched via Explore lost their caregiver).
+        caregiver_id: caregiverId,
       } as never)
       .select('id')
       .single()
@@ -1926,7 +1979,7 @@ destinationsRouter.post('/return/:rideID/start', validateJwt, async (req: Reques
   // The outbound must be finished + paid.
   const { data: outRow } = await supabaseAdmin
     .from('rides')
-    .select('status, payment_status, origin, origin_name, destination, destination_name, companion_a_id, companion_b_id')
+    .select('status, payment_status, origin, origin_name, destination, destination_name, companion_a_id, companion_b_id, caregiver_id')
     .eq('id', rideID)
     .maybeSingle()
   const out = outRow as {
@@ -1934,6 +1987,7 @@ destinationsRouter.post('/return/:rideID/start', validateJwt, async (req: Reques
     origin: GeoJSONPoint | null; origin_name: string | null
     destination: GeoJSONPoint | null; destination_name: string | null
     companion_a_id: string | null; companion_b_id: string | null
+    caregiver_id: string | null
   } | null
   if (!out || out.status !== 'completed' || out.payment_status !== 'paid') {
     res.status(409).json({ error: { code: 'NOT_READY', message: 'Finish and pay for the ride there first.' } })
@@ -1973,6 +2027,7 @@ destinationsRouter.post('/return/:rideID/start', validateJwt, async (req: Reques
       dropoff_confirmed: true,
       companion_a_id: out.companion_a_id,
       companion_b_id: out.companion_b_id,
+      caregiver_id: out.caregiver_id,
     } as never)
     .select('id')
     .single()
