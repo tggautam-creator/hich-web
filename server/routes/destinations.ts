@@ -371,7 +371,7 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
   // the "N going" badge; the rows power avatars on the detail.
   const { data: waitRows } = await supabaseAdmin
     .from('destination_waitlist')
-    .select('id, rider_id, desired_date, desired_time, wants_return, return_date, return_time, travel_mode, group_size, date_flexibility, note, companion_a_id, companion_b_id, caregiver_id, pickup_address')
+    .select('id, rider_id, desired_date, desired_time, wants_return, return_date, return_time, travel_mode, group_size, date_flexibility, note, companion_a_id, companion_b_id, caregiver_id, pickup_address, pickup_lat, pickup_lng')
     .eq('destination_id', id)
     .eq('status', 'waiting')
     .order('created_at', { ascending: true })
@@ -530,7 +530,10 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
           ? (caregiverProfiles.get(w['caregiver_id']) ?? null)
           : null,
         // Gated: drivers only (overrides the `...w` spread for non-drivers).
+        // Coords power the near-me / city filters on the show-all list.
         pickup_address: viewerIsDriver ? (w['pickup_address'] ?? null) : null,
+        pickup_lat: viewerIsDriver ? (w['pickup_lat'] ?? null) : null,
+        pickup_lng: viewerIsDriver ? (w['pickup_lng'] ?? null) : null,
       })),
     },
     my_waitlist_entry: myRow ?? null,
