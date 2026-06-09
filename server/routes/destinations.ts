@@ -16,7 +16,7 @@ import type { Request, Response } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { estimateFareCentsBetween, companionFareCentsFor, caregiverFareCentsFor } from './rides.ts'
-import { getOrCreateTripForRide } from '../lib/trips.ts'
+import { getOrCreateTripForRide, getOrCreatePlanLegTrip } from '../lib/trips.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
 import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
 
@@ -1393,6 +1393,10 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
     // provided pickup) so nav has a confirmed target. own_thing keeps it
     // false — the pickup is the event, where the meetup spot is sorted in chat.
     pickupConfirmed: boolean = false,
+    // V4 F6 — the SHARED leg trip every rider on this drive links to, so the
+    // segment cost-split fires (multi-rider event carpool). Eager-linked at
+    // insert; null only if grouping failed (we fall back to a per-ride trip).
+    sharedTripId: string | null = null,
   ): Promise<string | null> => {
     const fareCents = await estimateFareCentsBetween(oLat, oLng, dLat, dLng)
     const { data: ride, error: rideErr } = await supabaseAdmin
@@ -1419,6 +1423,10 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
         // handler charges the caregiver seat fee (was silently dropped —
         // an accessibility rider matched via Explore lost their caregiver).
         caregiver_id: caregiverId,
+        // Eager-link to the shared leg trip so multiple riders on this drive
+        // converge on ONE trips row (segment split). getOrCreateTripForRide
+        // below is now only the fallback for a failed grouping.
+        trip_id: sharedTripId,
       } as never)
       .select('id')
       .single()
@@ -1427,6 +1435,9 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
       return null
     }
     const rideId = (ride as { id: string }).id
+    // Fallback only: if grouping failed (sharedTripId null) ensure the ride
+    // still has a parent trip. When sharedTripId is set this is a no-op
+    // (getOrCreateTripForRide returns the existing trip_id).
     await getOrCreateTripForRide(rideId)
     // Seed chat so the thread isn't empty.
     await seedChatMessage(
@@ -1449,6 +1460,18 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
   // ONE leg primitive, composed by travel_mode. The single leg always lives in
   // offer.outbound_ride_id (the "primary ride" ~10 downstream sites read to
   // open chat / notify), regardless of which direction it points.
+  // V4 F6 — resolve the SHARED trip this rider's leg joins so multiple riders
+  // on one drive split the fare. own_thing rides home (return drive); together
+  // / one_way ride out (outbound drive). First accept mints the trip; later
+  // accepts reuse it. A grouping failure is non-fatal — makeRide falls back to
+  // a per-ride trip (single-rider fare), matching the old behaviour.
+  const legForTrip: 'outbound' | 'return' = travelMode === 'own_thing' ? 'return' : 'outbound'
+  const legTrip = await getOrCreatePlanLegTrip(plan.id, legForTrip, offer.driver_id)
+  if (legTrip.error) {
+    console.error('[destinations/offer:accept] leg trip grouping failed:', legTrip.error)
+  }
+  const sharedTripId = legTrip.tripId || null
+
   let outboundRideId: string | null
   if (travelMode === 'own_thing') {
     // Return-only carpool: the rider gets to the event their own way and rides
@@ -1459,6 +1482,8 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
       riderLat, riderLng, riderName,
       plan.return_date ?? plan.outbound_date, plan.return_time,
       destName, // contextName = the event, not "Home"
+      false,
+      sharedTripId,
     )
   } else {
     // together / one_way: the single leg is the rider's pickup → event on the
@@ -1471,6 +1496,7 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
       plan.outbound_date, plan.outbound_time,
       destName,
       hasRiderPoint,
+      sharedTripId,
     )
   }
   if (!outboundRideId) {
@@ -2027,15 +2053,15 @@ destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request
 
 /** Find the destination offer whose outbound leg is this ride. */
 async function offerForOutboundRide(rideId: string): Promise<
-  { id: string; driver_id: string; rider_id: string; return_ride_id: string | null; destination_id: string } | null
+  { id: string; driver_id: string; rider_id: string; return_ride_id: string | null; destination_id: string; driver_plan_id: string | null } | null
 > {
   const { data } = await supabaseAdmin
     .from('destination_offers')
-    .select('id, driver_id, rider_id, return_ride_id, destination_id')
+    .select('id, driver_id, rider_id, return_ride_id, destination_id, driver_plan_id')
     .eq('outbound_ride_id', rideId)
     .eq('status', 'accepted')
     .maybeSingle()
-  return (data as { id: string; driver_id: string; rider_id: string; return_ride_id: string | null; destination_id: string } | null) ?? null
+  return (data as { id: string; driver_id: string; rider_id: string; return_ride_id: string | null; destination_id: string; driver_plan_id: string | null } | null) ?? null
 }
 
 // POST /api/destinations/return/:rideId/propose — driver refines the return plan.
@@ -2155,6 +2181,17 @@ destinationsRouter.post('/return/:rideID/start', validateJwt, async (req: Reques
   const eventLng = eventCoords[0]
   const eventName = out.destination_name ?? 'the destination'
 
+  // V4 F6 — the return drive is shared: every rider riding home from this plan
+  // links to the plan's return trip so the fare splits. Falls back to a
+  // per-ride trip if the plan id is missing (legacy offers).
+  const returnLegTrip = offer.driver_plan_id
+    ? await getOrCreatePlanLegTrip(offer.driver_plan_id, 'return', offer.driver_id)
+    : { tripId: '', error: undefined as string | undefined }
+  if (returnLegTrip.error) {
+    console.error('[destinations/return:start] leg trip grouping failed:', returnLegTrip.error)
+  }
+  const sharedReturnTripId = returnLegTrip.tripId || null
+
   const fareCents = await estimateFareCentsBetween(eventLat, eventLng, dropLat, dropLng)
   const { data: ride, error: rideErr } = await supabaseAdmin
     .from('rides')
@@ -2175,6 +2212,7 @@ destinationsRouter.post('/return/:rideID/start', validateJwt, async (req: Reques
       companion_a_id: out.companion_a_id,
       companion_b_id: out.companion_b_id,
       caregiver_id: out.caregiver_id,
+      trip_id: sharedReturnTripId,
     } as never)
     .select('id')
     .single()

@@ -128,6 +128,76 @@ export async function getOrCreateTripForRide(
 }
 
 /**
+ * V4 F6 — shared multi-rider event trip grouping.
+ *
+ * Returns the trips row that this driver plan's `leg` drive belongs to,
+ * creating it on first call. Unlike getOrCreateTripForRide (one trip PER
+ * ride), this returns the SAME trip for every rider accepted onto the same
+ * plan + leg — so their rides share a trip_id and the segment cost-split in
+ * rides.ts /end fires. The id is remembered on
+ * destination_driver_plans.{outbound,return}_trip_id.
+ *
+ * Race-safe: two riders accepting the same plan+leg concurrently both insert
+ * a trip, but only one wins the conditional claim (UPDATE ... WHERE col IS
+ * NULL). The loser re-reads the winner's id and deletes its own orphan trip
+ * (harmless — no ride ever linked to it; the claim happens before any ride
+ * is created).
+ */
+export async function getOrCreatePlanLegTrip(
+  planId: string,
+  leg: 'outbound' | 'return',
+  driverId: string,
+  client: SupabaseClient = supabaseAdmin,
+): Promise<{ tripId: string; created: boolean; error?: string }> {
+  const column = leg === 'return' ? 'return_trip_id' : 'outbound_trip_id'
+
+  // 1. Already grouped?
+  const { data: planRow, error: readErr } = await client
+    .from('destination_driver_plans')
+    .select(column)
+    .eq('id', planId)
+    .maybeSingle()
+  if (readErr) return { tripId: '', created: false, error: readErr.message }
+  const existing = (planRow as Record<string, unknown> | null)?.[column] as string | null
+  if (existing) return { tripId: existing, created: false }
+
+  // 2. Mint a trip for this leg.
+  const { data: newTrip, error: insertErr } = await client
+    .from('trips')
+    .insert({ driver_id: driverId, schedule_id: null, kind: 'instant', status: 'pending' } as never)
+    .select('id')
+    .single()
+  if (insertErr ?? !newTrip) {
+    return { tripId: '', created: false, error: insertErr?.message ?? 'failed to create trip' }
+  }
+  const tripId = (newTrip as { id: string }).id
+
+  // 3. Claim the column iff still null (row-locked UPDATE — race-safe).
+  const { data: claimed, error: claimErr } = await client
+    .from('destination_driver_plans')
+    .update({ [column]: tripId } as never)
+    .eq('id', planId)
+    .is(column, null)
+    .select(column)
+  if (claimErr) return { tripId: '', created: false, error: claimErr.message }
+  if (claimed && (claimed as unknown[]).length > 0) {
+    return { tripId, created: true }
+  }
+
+  // 4. Lost the race — a concurrent accept already set it. Re-read the
+  //    winner's id and drop our orphan trip.
+  const { data: winnerRow } = await client
+    .from('destination_driver_plans')
+    .select(column)
+    .eq('id', planId)
+    .maybeSingle()
+  const winnerTripId = (winnerRow as Record<string, unknown> | null)?.[column] as string | null
+  await client.from('trips').delete().eq('id', tripId)
+  if (winnerTripId) return { tripId: winnerTripId, created: false }
+  return { tripId: '', created: false, error: 'failed to claim plan leg trip' }
+}
+
+/**
  * Fetch the trip row by id. Returns null if not found.
  */
 export async function getTrip(
