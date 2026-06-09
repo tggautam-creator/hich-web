@@ -91,6 +91,12 @@ async function getRoadDistanceMetres(
     return haversineMetres(lat1, lng1, lat2, lng2) * 1.3
   }
 
+  // Cap the external call: if Google Routes is slow/cold, abort after 2.5s
+  // and fall back to the corrected haversine below. Without this the whole
+  // request (e.g. GET /offer/:offerId on the event request page) could hang
+  // past the client's timeout and fail on the first hit.
+  const controller = new AbortController()
+  const abortTimer = setTimeout(() => controller.abort(), 2500)
   try {
     const body = {
       origin: { location: { latLng: { latitude: lat1, longitude: lng1 } } },
@@ -107,6 +113,7 @@ async function getRoadDistanceMetres(
         'X-Goog-FieldMask': 'routes.distanceMeters',
       },
       body: JSON.stringify(body),
+      signal: controller.signal,
     })
 
     if (resp.ok) {
@@ -118,7 +125,9 @@ async function getRoadDistanceMetres(
       }
     }
   } catch (err) {
-    console.error('[fare] Google Routes API failed, falling back to corrected haversine:', err)
+    console.error('[fare] Google Routes API failed/slow, falling back to corrected haversine:', err)
+  } finally {
+    clearTimeout(abortTimer)
   }
 
   // Fallback: haversine with 1.3x road correction factor
