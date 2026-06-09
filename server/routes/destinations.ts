@@ -17,6 +17,7 @@ import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { estimateFareCentsBetween, companionFareCentsFor, caregiverFareCentsFor } from './rides.ts'
 import { getOrCreateTripForRide, getOrCreatePlanLegTrip } from '../lib/trips.ts'
+import { computeProjectedSplit, type FareSplit } from '../lib/fareSplit.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
 import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
 
@@ -621,6 +622,30 @@ async function estimatePartyFare(
   const companion = Math.max(0, companionCount) * companionFareCentsFor(km)
   const caregiver = hasCaregiver ? caregiverFareCentsFor(km) : 0
   return { base_cents: base, companion_cents: companion, caregiver_cents: caregiver, total_cents: base + companion + caregiver }
+}
+
+/**
+ * V4 F6 — riders currently committed to a plan leg's SHARED drive (the trip
+ * grouped by getOrCreatePlanLegTrip). Drives both the split denominator and
+ * the fare-change notifications. Returns the leg trip id + distinct rider ids
+ * (empty if the leg has no trip yet — i.e. nobody has accepted that leg).
+ */
+async function ridersOnPlanLeg(
+  planId: string, leg: 'outbound' | 'return',
+): Promise<{ tripId: string | null; riderIds: string[] }> {
+  const column = leg === 'return' ? 'return_trip_id' : 'outbound_trip_id'
+  const { data: planRow } = await supabaseAdmin
+    .from('destination_driver_plans').select(column).eq('id', planId).maybeSingle()
+  const tripId = (planRow as Record<string, unknown> | null)?.[column] as string | null
+  if (!tripId) return { tripId: null, riderIds: [] }
+  const { data: rideRows } = await supabaseAdmin
+    .from('rides').select('rider_id')
+    .eq('trip_id', tripId)
+    .in('status', ['accepted', 'coordinating', 'active', 'completed'])
+  const riderIds = [...new Set(
+    ((rideRows ?? []) as Array<{ rider_id: string }>).map((r) => r.rider_id),
+  )]
+  return { tripId, riderIds }
 }
 
 /** Verify a caregiver id belongs to the rider (mirror the companion check). */
@@ -1542,6 +1567,42 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
     { type: 'destination_matched', ride_id: outboundRideId, destination_id: destinationId, destination_name: destName },
   )
 
+  // V4 F6 — fare-change education. A new rider joining the shared drive lowers
+  // every existing rider's split share and grows the driver's cost coverage.
+  // Tell them, so the moving price feels understood instead of suspicious.
+  // Only fires once 2+ riders share the leg (the first accept has nobody to
+  // tell). Non-fatal — a notify failure must not fail the accept.
+  try {
+    const { riderIds: onLeg } = await ridersOnPlanLeg(plan.id, legForTrip)
+    if (onLeg.length >= 2) {
+      const { data: nrRow } = await supabaseAdmin
+        .from('users').select('full_name').eq('id', offer.rider_id).maybeSingle()
+      const newRiderName = (nrRow as { full_name: string | null } | null)?.full_name ?? 'Someone'
+      // Existing co-riders (exclude the one who just joined — they got matched).
+      for (const coRiderId of onLeg.filter((id) => id !== offer.rider_id)) {
+        await notifyUserDual(
+          coRiderId,
+          'destination_fare_changed',
+          'Your share just went down',
+          `${newRiderName} joined your ride to ${destName} — ${onLeg.length} of you are sharing now, `
+            + 'so your estimated share dropped. The final fare comes from the real distance driven.',
+          { type: 'destination_fare_changed', destination_id: destinationId, destination_name: destName },
+        )
+      }
+      // The driver: more riders = more of their gas + time covered (they keep 100%).
+      await notifyUserDual(
+        offer.driver_id,
+        'destination_fare_changed',
+        `Now covering ${onLeg.length} riders`,
+        `${newRiderName} joined your trip to ${destName} — you're covering ${onLeg.length} riders now. `
+          + 'You keep 100%; this covers your gas + time.',
+        { type: 'destination_fare_changed', destination_id: destinationId, destination_name: destName },
+      )
+    }
+  } catch (err) {
+    console.error('[destinations/offer:accept] fare-change notify failed:', (err as Error).message)
+  }
+
   broadcastDestinationChanged(destinationId)
   res.status(200).json({ outbound_ride_id: outboundRideId, return_ride_id: null })
 })
@@ -1870,16 +1931,19 @@ destinationsRouter.get('/offer/:offerId', validateJwt, async (req: Request, res:
   let companions: Array<{ name: string; avatar_url: string | null }> = []
   let caregiver: { name: string | null; avatar_url: string | null } | null = null
   let pickup: { lat: number; lng: number; name: string | null } | null = null
+  let waitlistTravelMode: string | null = null
   if (offer.waitlist_id != null) {
     const { data: wl } = await supabaseAdmin
       .from('destination_waitlist')
-      .select('group_size, companion_a_id, companion_b_id, caregiver_id, pickup_lat, pickup_lng, pickup_address')
+      .select('group_size, companion_a_id, companion_b_id, caregiver_id, pickup_lat, pickup_lng, pickup_address, travel_mode')
       .eq('id', offer.waitlist_id).maybeSingle()
     const wlRow = wl as {
       group_size: number; companion_a_id: string | null
       companion_b_id: string | null; caregiver_id: string | null
       pickup_lat: number | null; pickup_lng: number | null; pickup_address: string | null
+      travel_mode: string | null
     } | null
+    waitlistTravelMode = wlRow?.travel_mode ?? null
     partySize = Math.max(1, wlRow?.group_size ?? 1)
     if (typeof wlRow?.pickup_lat === 'number' && typeof wlRow?.pickup_lng === 'number') {
       pickup = { lat: wlRow.pickup_lat, lng: wlRow.pickup_lng, name: wlRow.pickup_address }
@@ -1904,6 +1968,7 @@ destinationsRouter.get('/offer/:offerId', validateJwt, async (req: Request, res:
   // the driver's origin (the old behaviour).
   let fareCents: number | null = null
   let fareBreakdown: FareBreakdown | null = null
+  let fareSplit: FareSplit | null = null
   const fromLat = pickup?.lat ?? plan?.origin_lat
   const fromLng = pickup?.lng ?? plan?.origin_lng
   if (typeof fromLat === 'number' && typeof fromLng === 'number'
@@ -1912,6 +1977,19 @@ destinationsRouter.get('/offer/:offerId', validateJwt, async (req: Request, res:
       fromLat, fromLng, dest.latitude, dest.longitude, companionCount, caregiver != null,
     )
     fareCents = fareBreakdown.base_cents
+
+    // V4 F6 — projected split: divide the base across everyone expected to
+    // share this leg's drive. A pending offer adds THIS rider to the count
+    // (they're not on the leg yet); an accepted one already includes them.
+    if (offer.driver_plan_id != null) {
+      const leg: 'outbound' | 'return' = waitlistTravelMode === 'own_thing' ? 'return' : 'outbound'
+      const { riderIds } = await ridersOnPlanLeg(offer.driver_plan_id, leg)
+      const alreadyOnLeg = riderIds.includes(offer.rider_id)
+      const projectedCount = riderIds.length + (alreadyOnLeg ? 0 : 1)
+      fareSplit = computeProjectedSplit(
+        fareBreakdown.base_cents, fareBreakdown.companion_cents, fareBreakdown.caregiver_cents, projectedCount,
+      )
+    }
   }
 
   const viewerRole = offer.driver_id === userId ? 'driver' : 'rider'
@@ -1943,6 +2021,7 @@ destinationsRouter.get('/offer/:offerId', validateJwt, async (req: Request, res:
     pickup,
     fare_cents: fareCents,
     fare_breakdown: fareBreakdown,
+    fare_split: fareSplit,
   })
 })
 
