@@ -464,6 +464,13 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
     .eq('status', 'active')
     .maybeSingle()
 
+  // Is the viewer a registered driver? Rider pickups are exposed to any
+  // driver (so they can judge a request / decide whether to drive this
+  // event), not only one who's already posted a plan here.
+  const { data: viewerRow } = await supabaseAdmin
+    .from('users').select('is_driver').eq('id', userId).maybeSingle()
+  const viewerIsDriver = (viewerRow as { is_driver: boolean | null } | null)?.is_driver === true
+
   // Offers involving the viewer (pending requests/offers + accepted matches),
   // each tagged with the viewer's role + the counterpart's profile.
   const { data: offerRows } = await supabaseAdmin
@@ -502,9 +509,8 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
     }
   })
 
-  // The rider's pickup address is only exposed to a DRIVER of this event (so
-  // they can judge whether a request is on their route) — not to every viewer.
-  const viewerIsDriver = myPlan != null
+  // The rider's pickup address is exposed only to drivers (see viewerIsDriver
+  // above) — so they can judge the route — not to every viewer.
   res.status(200).json({
     destination,
     driver_plans: plans.map((p) => ({
