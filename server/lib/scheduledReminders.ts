@@ -1,35 +1,19 @@
 import { supabaseAdmin } from './supabaseAdmin.ts'
 import { sendFcmPush } from './fcm.ts'
-
 // All trip_date/trip_time values across the app are tz-naive wall-clock
 // strings in the user's local timezone — Davis, CA. Parsing them with the
 // server's local TZ (which is UTC in production) shifts every comparison
 // by 7-8 hours, firing "ride in 30 min" reminders at 1 AM and auto-
 // cancelling rides overnight. Anchor cron logic to Pacific explicitly so
 // behavior is correct regardless of where the host runs.
-const RIDE_TIMEZONE = 'America/Los_Angeles'
+//
+// 2026-06-09 — the date/time helpers that used to live here moved to
+// `localDate.ts` so the suggestion engine, board search, and marketing
+// calendar can share them (they had each re-invented UTC-based versions
+// with the exact bug this file's header warns about).
+import { TAGO_TZ, getLocalDateString, getLocalTimeString } from './localDate.ts'
 
-/** Returns YYYY-MM-DD for the given instant as seen in RIDE_TIMEZONE. */
-function getLocalDateString(date: Date): string {
-  // en-CA formats as YYYY-MM-DD natively.
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: RIDE_TIMEZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(date)
-}
-
-/** Returns HH:MM:SS (24h) for the given instant as seen in RIDE_TIMEZONE. */
-function getLocalTimeString(date: Date): string {
-  return new Intl.DateTimeFormat('en-GB', {
-    timeZone: RIDE_TIMEZONE,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).format(date)
-}
+const RIDE_TIMEZONE = TAGO_TZ
 
 /** Returns the GMT offset string (e.g. "-07:00" / "-08:00") for the given
  *  YYYY-MM-DD as seen in RIDE_TIMEZONE. Handles DST transitions. */

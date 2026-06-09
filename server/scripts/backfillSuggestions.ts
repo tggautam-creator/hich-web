@@ -24,16 +24,8 @@
  */
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { scanForPost, scanForRoutine } from '../lib/suggestionEngine.ts'
-
-function todayISO(): string {
-  return new Date().toISOString().split('T')[0]!
-}
-
-function dateNDaysFromNow(n: number): string {
-  const d = new Date()
-  d.setUTCDate(d.getUTCDate() + n)
-  return d.toISOString().split('T')[0]!
-}
+// Pacific, not UTC (2026-06-09 TZ fix) — trip_date is a PT calendar date.
+import { localTodayISO as todayISO, localDateNDaysFromNow as dateNDaysFromNow } from '../lib/localDate.ts'
 
 async function main(): Promise<void> {
   const today = todayISO()

@@ -15,7 +15,9 @@
  * unit-testable without setting up server env vars — importing
  * supabaseAdmin runs getServerEnv() which throws when SUPABASE_*
  * aren't set, which would tank corridor.test.ts at collection time.
+ * (localDate.ts is pure Intl — no env dependency, safe to import.)
  */
+import { getLocalDateString, localTodayISO, localDateNDaysFromNow } from '../localDate.ts'
 
 /**
  * Eligible-ride window: how far ahead we'll surface rides in the
@@ -115,13 +117,16 @@ export function regionForAddress(address: string | null | undefined): string {
  * weekday-month-day for everything else.
  */
 export function dateLabel(tripDate: string, today: Date = new Date()): string {
-  // Anchor both at midnight UTC so the diff is an integer days count
-  // regardless of what time-of-day `today` carries. Anchoring trip at
-  // noon (the suggestionEngine convention used elsewhere) breaks the
-  // Today/Tomorrow comparison via a half-day offset that rounds wrong.
+  // 2026-06-09 TZ fix — interpret `today` as a PACIFIC calendar date
+  // before diffing. The old `today.getUTC*` anchoring meant that from
+  // 4-5 PM PT onward, "Today" labeled tomorrow's trips (UTC had
+  // already rolled over). trip_date is the poster's PT wall-clock
+  // date, so the comparison must happen in the same calendar.
+  // Both anchors then go through midnight-UTC so the diff is an
+  // integer day count.
   const trip = new Date(tripDate + 'T00:00:00Z')
-  const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()))
-  const diffDays = Math.round((trip.getTime() - todayUTC.getTime()) / (24 * 60 * 60 * 1000))
+  const todayPT = new Date(getLocalDateString(today) + 'T00:00:00Z')
+  const diffDays = Math.round((trip.getTime() - todayPT.getTime()) / (24 * 60 * 60 * 1000))
   if (diffDays === 0) return 'Today'
   if (diffDays === 1) return 'Tomorrow'
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -129,14 +134,15 @@ export function dateLabel(tripDate: string, today: Date = new Date()): string {
   return `${days[trip.getUTCDay()]} ${months[trip.getUTCMonth()]} ${trip.getUTCDate()}`
 }
 
+// Pacific, not UTC (2026-06-09 TZ fix) — these gate the trip_date
+// window for story generation; UTC versions skipped same-day rides
+// every PT evening.
 function todayISO(): string {
-  return new Date().toISOString().split('T')[0]!
+  return localTodayISO()
 }
 
 function dateNDaysFromNow(n: number): string {
-  const d = new Date()
-  d.setUTCDate(d.getUTCDate() + n)
-  return d.toISOString().split('T')[0]!
+  return localDateNDaysFromNow(n)
 }
 
 /**

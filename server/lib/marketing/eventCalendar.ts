@@ -12,6 +12,7 @@
 import { supabaseAdmin } from '../supabaseAdmin.ts'
 import { geminiGenerateWithFallback, humanizeGeminiError, MODEL_SMART, GROUNDED_CHAIN, isGeminiConfigured } from './gemini.ts'
 import { BRAND_SYSTEM_PROMPT } from './brandContext.ts'
+import { localTodayISO, localDateNDaysFromNow } from '../localDate.ts'
 
 export type EventCategory = 'holiday' | 'academic' | 'campus' | 'travel-trigger' | 'custom'
 export type EventSource = 'seeded' | 'ai_suggested' | 'manual'
@@ -243,9 +244,9 @@ export async function listUpcomingEvents(args?: {
   const daysAhead = args?.daysAhead ?? 90
   const daysBack = args?.includeRecentlyPast ?? 7
   const limit = Math.min(200, args?.limit ?? 100)
-  const today = new Date()
-  const from = new Date(today.getTime() - daysBack * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-  const to = new Date(today.getTime() + daysAhead * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  // Pacific (2026-06-09 TZ fix) — event_date is a PT calendar date.
+  const from = localDateNDaysFromNow(-daysBack)
+  const to = localDateNDaysFromNow(daysAhead)
 
   const { data, error } = await supabaseAdmin
     .from('marketing_events')
@@ -266,8 +267,8 @@ export async function getEventsNeedingReminder(): Promise<MarketingEvent[]> {
   // Active reminders: event_date within target_lead_time_days from
   // today AND not dismissed. Done in two passes since we need to
   // compare per-row lead time to per-row date.
-  const today = new Date().toISOString().slice(0, 10)
-  const horizon = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const today = localTodayISO()
+  const horizon = localDateNDaysFromNow(30)
   const { data, error } = await supabaseAdmin
     .from('marketing_events')
     .select('*')
@@ -434,8 +435,8 @@ export async function refreshAiEventSuggestions(): Promise<{
     `${e.event_date} — ${e.title} (${e.category})`,
   ).join('\n')
 
-  const today = new Date().toISOString().slice(0, 10)
-  const sixMonthsAhead = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const today = localTodayISO()
+  const sixMonthsAhead = localDateNDaysFromNow(180)
 
   // Note: the schema is described as TypeScript-style instead of a
   // literal JSON example. A literal example invites the grounded

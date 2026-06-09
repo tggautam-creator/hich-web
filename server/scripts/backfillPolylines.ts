@@ -31,6 +31,7 @@
  */
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { runSuggestionBackstopScan } from '../lib/suggestionEngine.ts'
+import { localTodayISO } from '../lib/localDate.ts'
 
 const BATCH_SIZE = 10               // parallel calls per second
 const BATCH_INTERVAL_MS = 1_000     // pause between batches
@@ -96,7 +97,7 @@ async function fetchGoogleRoutePolyline(args: {
 const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms))
 
 async function backfillSchedules(): Promise<{ found: number; updated: number; failed: number }> {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localTodayISO()
   const { data, error } = await supabaseAdmin
     .from('ride_schedules')
     .select('id, origin_lat, origin_lng, dest_lat, dest_lng')
@@ -142,7 +143,7 @@ async function backfillSchedules(): Promise<{ found: number; updated: number; fa
 }
 
 async function backfillRoutines(): Promise<{ found: number; updated: number; failed: number }> {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localTodayISO()
   const { data, error } = await supabaseAdmin
     .from('driver_routines')
     .select('id, origin, destination')

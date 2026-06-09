@@ -9,6 +9,7 @@ import { adminAuth } from '../middleware/adminAuth.ts'
 import { realtimeBroadcast } from '../lib/realtimeBroadcast.ts'
 import { haversineMetres, decodePolyline, projectPointOntoPolyline, type LatLng } from '../lib/polyline.ts'
 import { scanForPost } from '../lib/suggestionEngine.ts'
+import { localTodayISO } from '../lib/localDate.ts'
 import { computeTransitDropoffSuggestions, computeTransitPickupSuggestions, fetchDrivingRoute, type TransitOption } from '../lib/transitSuggestions.ts'
 import { checkUpcomingRides, expireMissedRides, expirePendingBoardOffers, expireStaleRequests, syncAllRoutines } from '../lib/scheduledReminders.ts'
 import { resolveAndPersistDefaultPm } from './payment.ts'
@@ -261,10 +262,13 @@ scheduleRouter.get(
     // server UTC for older clients that don't send these params.
     const clientDateParam = req.query['client_date'] as string | undefined
     const clientNowParam = req.query['client_now'] as string | undefined
+    // Fallback is Pacific, not UTC (2026-06-09 TZ fix): UTC rolls to
+    // tomorrow at 4-5 PM PT, which dropped every same-day post from
+    // the board for older clients all evening.
     const today =
       clientDateParam && /^\d{4}-\d{2}-\d{2}$/.test(clientDateParam)
         ? clientDateParam
-        : (new Date().toISOString().split('T')[0] as string)
+        : localTodayISO()
 
     // Optional relevance params
     const userLat = parseFloat(req.query['lat'] as string)
@@ -827,7 +831,9 @@ scheduleRouter.get(
   validateJwt,
   async (_req: Request, res: Response, next: NextFunction) => {
     const userId = res.locals['userId'] as string
-    const today = new Date().toISOString().slice(0, 10)
+    // Pacific, not UTC (2026-06-09 TZ fix) — a UTC "today" hid the
+    // user's own same-day posts from My Posts every PT evening.
+    const today = localTodayISO()
 
     try {
       // `ride_schedules` has no status column — the "post is still
@@ -1132,7 +1138,8 @@ scheduleRouter.post(
         : 50
       const includePast = body.include_past === true
 
-      const today = new Date().toISOString().slice(0, 10)
+      // Pacific (2026-06-09 TZ fix) — trip_date is a PT calendar date.
+      const today = localTodayISO()
 
       // Select schedules missing a polyline. Order by trip_date DESC
       // so we backfill the most-recent (highest-impact) rows first
@@ -2838,7 +2845,9 @@ scheduleRouter.post(
     // covers open-ended routines + still-current ones; expired routines
     // are quietly skipped so a "summer carpool" doesn't keep generating
     // FCM noise in the fall.
-    const todayDateString = new Date().toISOString().split('T')[0] ?? ''
+    // Pacific (2026-06-09 TZ fix) — end_date is the user's PT calendar
+    // date; a UTC "today" expired routines a whole evening early.
+    const todayDateString = localTodayISO()
     const { data: routines, error: routineErr } = await supabaseAdmin
       .from('driver_routines')
       .select('user_id, destination_bearing, departure_time, arrival_time, end_date, users!inner(is_driver)')
@@ -4464,9 +4473,10 @@ scheduleRouter.post(
     //
     // `end_date` filter (audit B3, 2026-05-13): drop routines whose
     // user-set last date has already passed. NULL end_date = open-ended.
+    // Fallback is Pacific, not UTC (2026-06-09 TZ fix).
     const todayForFilter = (
       body.client_date && /^\d{4}-\d{2}-\d{2}$/.test(body.client_date)
-    ) ? body.client_date : (new Date().toISOString().split('T')[0] ?? '')
+    ) ? body.client_date : localTodayISO()
     const { data: routines, error: routineErr } = await supabaseAdmin
       .from('driver_routines')
       .select('id, user_id, route_name, origin, destination, destination_bearing, direction_type, day_of_week, departure_time, arrival_time, origin_address, dest_address, skip_dates, end_date')

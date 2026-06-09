@@ -6,6 +6,7 @@ import { sendFcmPush, sendSilentFcmPush } from '../lib/fcm.ts'
 import { validateJwt } from '../middleware/auth.ts'
 import { idempotency } from '../middleware/idempotency.ts'
 import { generateQrToken, validateQrToken } from '../lib/qrToken.ts'
+import { localTodayISO } from '../lib/localDate.ts'
 import { computeTransitDropoffSuggestions, fetchDrivingRoute, type TransitDropoffSuggestion } from '../lib/transitSuggestions.ts'
 import { realtimeBroadcast, realtimeBroadcastMany } from '../lib/realtimeBroadcast.ts'
 import { pushLiveActivityUpdateForRide, endLiveActivitiesForRide } from '../lib/apns.ts'
@@ -606,10 +607,13 @@ ridesRouter.post(
     // unambiguous: block on-demand rides + rides without a date + scheduled
     // rides for today or earlier; allow scheduled rides whose trip_date is
     // strictly after the rider's local "today".
+    // Fallback is Pacific, not UTC (2026-06-09 TZ fix) — UTC's early
+    // rollover blocked riders from requesting an instant ride all
+    // evening when they also had a scheduled ride for "tomorrow".
     const today =
       body.client_date && /^\d{4}-\d{2}-\d{2}$/.test(body.client_date)
         ? body.client_date
-        : (new Date().toISOString().split('T')[0] as string)
+        : localTodayISO()
 
     const { data: candidateRides } = await supabaseAdmin
       .from('rides')

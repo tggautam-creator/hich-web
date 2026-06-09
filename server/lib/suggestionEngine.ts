@@ -46,6 +46,7 @@ import {
   type LatLng,
 } from './polyline.ts'
 import { sendFcmPush } from './fcm.ts'
+import { localTodayISO, localDateNDaysFromNow, endOfLocalDayISO } from './localDate.ts'
 
 // ─────────────────────────────────────────────────────────────────────
 // Tunables
@@ -196,27 +197,34 @@ function timeDifferenceMinutes(t1: string, t2: string): number {
   return Math.abs(parse(t1) - parse(t2))
 }
 
+// 2026-06-09 TZ fix — these used to be UTC-based
+// (`new Date().toISOString()`), which rolls to the next day at
+// 4 PM PST / 5 PM PDT. Concrete failures every California evening:
+//   - scanForPost's window guard saw `trip_date < todayISO()` for
+//     same-day posts and rejected them as "in the past"
+//   - expiresAtFor computed UTC midnight = 4-5 PM PT, so same-day
+//     suggestions were purged before the evening trip happened
+//   - the "A ride match for today" push fired on tomorrow's trips
+// trip_date is the poster's Pacific wall-clock date; compare in PT.
 function todayISO(): string {
-  return new Date().toISOString().split('T')[0]!
+  return localTodayISO()
 }
 
 function dateNDaysFromNow(n: number): string {
-  const d = new Date()
-  d.setUTCDate(d.getUTCDate() + n)
-  return d.toISOString().split('T')[0]!
+  return localDateNDaysFromNow(n)
 }
 
 function dayOfWeekFor(date: string): number {
-  // Use noon UTC to dodge timezone-boundary edge cases.
+  // Pure date-string math (no "now" involved) — noon UTC dodges
+  // day-boundary edge cases regardless of timezone.
   return new Date(date + 'T12:00:00Z').getUTCDay()
 }
 
 function expiresAtFor(tripDate: string): string {
-  // One-day grace after the trip date so a same-day match can still
-  // be acted on the next morning before the purge runs.
-  const d = new Date(tripDate + 'T00:00:00Z')
-  d.setUTCDate(d.getUTCDate() + 1)
-  return d.toISOString()
+  // Lives until the end of the trip's Pacific calendar day (plus a
+  // few early-morning hours) so a same-day match can still be acted
+  // on the next morning before the purge runs.
+  return endOfLocalDayISO(tripDate)
 }
 
 // ─────────────────────────────────────────────────────────────────────
