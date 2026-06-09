@@ -481,13 +481,30 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
 
   // The viewer's own active driver plan (if any) — drives the "Your trip"
   // edit/cancel card + hides "I'm driving".
-  const { data: myPlan } = await supabaseAdmin
+  const { data: myPlanRow } = await supabaseAdmin
     .from('destination_driver_plans')
     .select(DRIVER_PLAN_COLUMNS as never)
     .eq('destination_id', id)
     .eq('driver_id', userId)
     .eq('status', 'active')
     .maybeSingle()
+  // V4 F6 — committed-rider counts on the driver's OWN plan power the
+  // "Manage riders (N)" entry to the multi-rider trip screen. Computed
+  // directly (a full plan drops out of the public list above, so its trips
+  // may be missing from ridersByTrip).
+  let myPlan: Record<string, unknown> | null = myPlanRow as Record<string, unknown> | null
+  if (myPlan) {
+    const planId = myPlan['id'] as string
+    const [outLeg, retLeg] = await Promise.all([
+      ridersOnPlanLeg(planId, 'outbound'),
+      ridersOnPlanLeg(planId, 'return'),
+    ])
+    myPlan = {
+      ...myPlan,
+      riders_sharing: outLeg.riderIds.length,
+      riders_sharing_return: retLeg.riderIds.length,
+    }
+  }
 
   // Is the viewer a registered driver? Rider pickups are exposed to any
   // driver (so they can judge a request / decide whether to drive this
@@ -830,10 +847,15 @@ destinationsRouter.delete('/:id/waitlist', validateJwt, async (req: Request, res
 
 // ── Driver plan: "I'm driving" (A.4) ──────────────────────────────────────────
 
+// V4 F6 — outbound/return trip ids are exposed here ONLY because every
+// DRIVER_PLAN_COLUMNS read returns the driver their OWN plan (my_driver_plan
+// + plan create/edit). The public plans list strips them (see the detail
+// endpoint). The iOS driver uses them to open the multi-rider trip screen.
 const DRIVER_PLAN_COLUMNS =
   'id, destination_id, driver_id, outbound_date, outbound_time, wants_return, '
   + 'return_date, return_time, seats_total, seats_available, note, status, '
-  + 'board_schedule_id, origin_lat, origin_lng, origin_address, origin_place_id'
+  + 'board_schedule_id, origin_lat, origin_lng, origin_address, origin_place_id, '
+  + 'outbound_trip_id, return_trip_id'
 
 interface DriverPlanBody {
   outbound_date?: unknown
@@ -1628,14 +1650,21 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
           },
         )
       }
-      // The driver: more riders = more of their gas + time covered (they keep 100%).
+      // The driver: more riders = more of their gas + time covered (they
+      // keep 100%). trip_id lands the bell/push tap on the multi-rider
+      // trip screen.
       await notifyUserDual(
         offer.driver_id,
         'destination_fare_changed',
         `Now covering ${onLeg.length} riders`,
         `${newRiderName} joined your trip to ${destName} — you're covering ${onLeg.length} riders now. `
           + 'You keep 100%; this covers your gas + time.',
-        { type: 'destination_fare_changed', destination_id: destinationId, destination_name: destName },
+        {
+          type: 'destination_fare_changed',
+          destination_id: destinationId,
+          destination_name: destName,
+          ...(sharedTripId ? { trip_id: sharedTripId } : {}),
+        },
       )
     }
   } catch (err) {
