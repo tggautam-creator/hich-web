@@ -361,12 +361,36 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
   // Active driver plans + the driver's public profile (no phone).
   const { data: planRows } = await supabaseAdmin
     .from('destination_driver_plans')
-    .select('id, driver_id, outbound_date, outbound_time, wants_return, return_date, return_time, seats_available, note, origin_lat, origin_lng, origin_address')
+    .select('id, driver_id, outbound_date, outbound_time, wants_return, return_date, return_time, seats_available, note, origin_lat, origin_lng, origin_address, outbound_trip_id, return_trip_id')
     .eq('destination_id', id)
     .eq('status', 'active')
     .gte('seats_available', 1)
     .order('outbound_date', { ascending: true })
   const plans = (planRows ?? []) as Array<Record<string, unknown>>
+
+  // V4 F6 — riders already committed to each plan's shared drive, so the
+  // join sheet can show the projected split ("you'd split with N"). One
+  // batched query across every plan's leg trips; trip ids stay server-side.
+  const legTripIds = [...new Set(plans
+    .flatMap((p) => [p['outbound_trip_id'], p['return_trip_id']])
+    .filter((v): v is string => typeof v === 'string'))]
+  const ridersByTrip = new Map<string, Set<string>>()
+  if (legTripIds.length > 0) {
+    const { data: legRides } = await supabaseAdmin
+      .from('rides').select('trip_id, rider_id')
+      .in('trip_id', legTripIds)
+      .in('status', ['accepted', 'coordinating', 'active', 'completed'])
+    for (const r of (legRides ?? []) as Array<{ trip_id: string; rider_id: string }>) {
+      const set = ridersByTrip.get(r.trip_id) ?? new Set<string>()
+      set.add(r.rider_id)
+      ridersByTrip.set(r.trip_id, set)
+    }
+  }
+  const ridersSharing = (p: Record<string, unknown>, column: string): number => {
+    const tripId = p[column]
+    if (typeof tripId !== 'string') return 0
+    return ridersByTrip.get(tripId)?.size ?? 0
+  }
 
   // Waiting riders + their public profile (no phone). The count drives
   // the "N going" badge; the rows power avatars on the detail.
@@ -517,6 +541,12 @@ destinationsRouter.get('/:id', validateJwt, async (req: Request, res: Response) 
     driver_plans: plans.map((p) => ({
       ...p,
       driver: profiles.get(p['driver_id'] as string) ?? null,
+      // Committed riders on each shared drive (split denominators). The
+      // raw trip ids are internal — strip them from the public payload.
+      riders_sharing: ridersSharing(p, 'outbound_trip_id'),
+      riders_sharing_return: ridersSharing(p, 'return_trip_id'),
+      outbound_trip_id: undefined,
+      return_trip_id: undefined,
     })),
     waitlist: {
       count: waitlist.length,
@@ -632,20 +662,22 @@ async function estimatePartyFare(
  */
 async function ridersOnPlanLeg(
   planId: string, leg: 'outbound' | 'return',
-): Promise<{ tripId: string | null; riderIds: string[] }> {
+): Promise<{ tripId: string | null; riderIds: string[]; rideIdByRider: Map<string, string> }> {
   const column = leg === 'return' ? 'return_trip_id' : 'outbound_trip_id'
   const { data: planRow } = await supabaseAdmin
     .from('destination_driver_plans').select(column).eq('id', planId).maybeSingle()
   const tripId = (planRow as Record<string, unknown> | null)?.[column] as string | null
-  if (!tripId) return { tripId: null, riderIds: [] }
+  if (!tripId) return { tripId: null, riderIds: [], rideIdByRider: new Map() }
   const { data: rideRows } = await supabaseAdmin
-    .from('rides').select('rider_id')
+    .from('rides').select('id, rider_id')
     .eq('trip_id', tripId)
     .in('status', ['accepted', 'coordinating', 'active', 'completed'])
-  const riderIds = [...new Set(
-    ((rideRows ?? []) as Array<{ rider_id: string }>).map((r) => r.rider_id),
-  )]
-  return { tripId, riderIds }
+  // rider → their ride on this leg, so notifications can deep-link the chat.
+  const rideIdByRider = new Map<string, string>()
+  for (const r of (rideRows ?? []) as Array<{ id: string; rider_id: string }>) {
+    if (!rideIdByRider.has(r.rider_id)) rideIdByRider.set(r.rider_id, r.id)
+  }
+  return { tripId, riderIds: [...rideIdByRider.keys()], rideIdByRider }
 }
 
 /** Verify a caregiver id belongs to the rider (mirror the companion check). */
@@ -1573,20 +1605,27 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
   // Only fires once 2+ riders share the leg (the first accept has nobody to
   // tell). Non-fatal — a notify failure must not fail the accept.
   try {
-    const { riderIds: onLeg } = await ridersOnPlanLeg(plan.id, legForTrip)
+    const { riderIds: onLeg, rideIdByRider } = await ridersOnPlanLeg(plan.id, legForTrip)
     if (onLeg.length >= 2) {
       const { data: nrRow } = await supabaseAdmin
         .from('users').select('full_name').eq('id', offer.rider_id).maybeSingle()
       const newRiderName = (nrRow as { full_name: string | null } | null)?.full_name ?? 'Someone'
       // Existing co-riders (exclude the one who just joined — they got matched).
       for (const coRiderId of onLeg.filter((id) => id !== offer.rider_id)) {
+        // ride_id deep-links the bell row to this co-rider's own ride chat.
+        const coRide = rideIdByRider.get(coRiderId)
         await notifyUserDual(
           coRiderId,
           'destination_fare_changed',
           'Your share just went down',
           `${newRiderName} joined your ride to ${destName} — ${onLeg.length} of you are sharing now, `
             + 'so your estimated share dropped. The final fare comes from the real distance driven.',
-          { type: 'destination_fare_changed', destination_id: destinationId, destination_name: destName },
+          {
+            type: 'destination_fare_changed',
+            destination_id: destinationId,
+            destination_name: destName,
+            ...(coRide ? { ride_id: coRide } : {}),
+          },
         )
       }
       // The driver: more riders = more of their gas + time covered (they keep 100%).
