@@ -2330,6 +2330,61 @@ destinationsRouter.post('/run/:tripID/start', validateJwt, async (req: Request, 
 
 // GET /api/destinations/run/:tripID/roster — per-ride travel modes for the
 // driver's trip screen ("won't ride back" tags). Driver-gated.
+// POST /api/destinations/run/:tripID/undo-start — "never mind" (5C, Tarun).
+// Retracts a just-started run within the driver's grace window: flips the
+// trip back to pending + tells every rider it was a false alarm. Blocked
+// once any rider has actually scanned in (their ride is 'active') — at that
+// point the run is genuinely underway.
+destinationsRouter.post('/run/:tripID/undo-start', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const tripID = req.params['tripID'] as string
+
+  const { data: tripRow } = await supabaseAdmin
+    .from('trips').select('id, driver_id, status').eq('id', tripID).maybeSingle()
+  const trip = tripRow as { id: string; driver_id: string; status: string } | null
+  if (!trip) {
+    res.status(404).json({ error: { code: 'TRIP_NOT_FOUND', message: 'Trip not found' } })
+    return
+  }
+  if (trip.driver_id !== userId) {
+    res.status(403).json({ error: { code: 'NOT_DRIVER', message: 'Only the driver can undo the run.' } })
+    return
+  }
+
+  const { data: rideRows } = await supabaseAdmin
+    .from('rides').select('id, rider_id, status').eq('trip_id', tripID)
+  const rides = (rideRows ?? []) as Array<{ id: string; rider_id: string; status: string }>
+  if (rides.some((r) => r.status === 'active')) {
+    res.status(409).json({ error: { code: 'RUN_UNDERWAY', message: 'A rider has already been picked up — the run is underway.' } })
+    return
+  }
+
+  // CAS active → pending so a double-tap can't double-notify.
+  const { data: flipped } = await supabaseAdmin
+    .from('trips')
+    .update({ status: 'pending', started_at: null, updated_at: new Date().toISOString() } as never)
+    .eq('id', tripID)
+    .eq('status', 'active')
+    .select('id')
+    .maybeSingle()
+  if (!flipped) {
+    res.status(200).json({ ok: true, already_reverted: true })
+    return
+  }
+
+  const waiting = rides.filter((r) => r.status === 'accepted' || r.status === 'coordinating')
+  for (const ride of waiting) {
+    await notifyUserDual(
+      ride.rider_id,
+      'destination_run_canceled',
+      'False alarm',
+      "Your driver isn't heading out just yet — we'll let you know when they're on the way.",
+      { type: 'destination_run_canceled', ride_id: ride.id },
+    )
+  }
+  res.status(200).json({ ok: true, riders_notified: waiting.length })
+})
+
 destinationsRouter.get('/run/:tripID/roster', validateJwt, async (req: Request, res: Response) => {
   const userId = res.locals['userId'] as string
   const tripID = req.params['tripID'] as string
