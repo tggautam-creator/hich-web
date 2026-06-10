@@ -15,7 +15,7 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { validateJwt } from '../middleware/auth.ts'
-import { estimateFareCentsBetween, companionFareCentsFor, caregiverFareCentsFor } from './rides.ts'
+import { estimateFareCentsBetween, companionFareCentsFor, caregiverFareCentsFor, tripDayLabel } from './rides.ts'
 import { getOrCreateTripForRide, getOrCreatePlanLegTrip } from '../lib/trips.ts'
 import { computeProjectedSplit, type FareSplit } from '../lib/fareSplit.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
@@ -1518,12 +1518,17 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
     // still has a parent trip. When sharedTripId is set this is a no-op
     // (getOrCreateTripForRide returns the existing trip_id).
     await getOrCreateTripForRide(rideId)
-    // Seed chat so the thread isn't empty.
-    await seedChatMessage(
-      rideId, offer.driver_id,
-      `You're set for ${contextName}! Use this chat to sort out pickup and timing.`,
-      'text',
-    )
+    // Seed chat so the thread isn't empty. V4 F6 5A — context-aware: when
+    // the rider already set a pickup, "sort out pickup" contradicted the
+    // confirmed state two lines above it. Anchor the message in the trip
+    // DATE instead, since matched event trips can sit for weeks.
+    const dayLabel = tripDayLabel(tripDate)
+    const seedText = pickupConfirmed
+      ? `You're set for ${contextName} on ${dayLabel}! Pickup's locked in — `
+        + 'use this chat for anything before the trip. The QR works on trip day.'
+      : `You're set for ${contextName} on ${dayLabel}! Use this chat to sort out `
+        + 'the exact meetup spot and timing.'
+    await seedChatMessage(rideId, offer.driver_id, seedText, 'text')
     return rideId
   }
 
@@ -2134,13 +2139,16 @@ destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request
     .from('featured_destinations').select('name').eq('id', offer.destination_id).maybeSingle()
   const destinationName = (destRow as { name: string } | null)?.name ?? 'the destination'
 
-  // Pull both legs' status + payment.
+  // Pull both legs' status + payment (+ the focused ride's schedule, which
+  // anchors the phase below).
   const legIds = [offer.outbound_ride_id, offer.return_ride_id].filter((v): v is string => typeof v === 'string')
   const { data: rideRows } = await supabaseAdmin
-    .from('rides').select('id, status, payment_status').in('id', legIds)
-  const rides = new Map<string, { status: string; payment_status: string }>()
-  for (const r of (rideRows ?? []) as Array<{ id: string; status: string; payment_status: string }>) {
-    rides.set(r.id, { status: r.status, payment_status: r.payment_status })
+    .from('rides').select('id, status, payment_status, trip_date, trip_time').in('id', legIds)
+  const rides = new Map<string, { status: string; payment_status: string; trip_date: string | null; trip_time: string | null }>()
+  for (const r of (rideRows ?? []) as Array<{
+    id: string; status: string; payment_status: string; trip_date: string | null; trip_time: string | null
+  }>) {
+    rides.set(r.id, { status: r.status, payment_status: r.payment_status, trip_date: r.trip_date, trip_time: r.trip_time })
   }
   const outbound = offer.outbound_ride_id ? rides.get(offer.outbound_ride_id) : undefined
   const returnLeg = offer.return_ride_id ? rides.get(offer.return_ride_id) : undefined
@@ -2182,6 +2190,16 @@ destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request
     stage = 'pickup'
   }
 
+  // V4 F6 5A — time anchor. A matched event trip can sit for WEEKS before
+  // trip day, but the stage machine alone reads like an instant ride
+  // ("show QR now"). `phase` tells the client whether the focused leg is
+  // still in the future so it can swap the day-of chrome for a calm
+  // "you're set for {date}" plan. Calendar-date compare in Pacific Time.
+  const focused = rides.get(rideID) ?? outbound
+  const focusedDate = focused?.trip_date ?? null
+  const todayPT = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' })
+  const phase = focusedDate != null && focusedDate > todayPT ? 'scheduled' : 'day_of'
+
   res.status(200).json({
     is_destination: true,
     round_trip: roundTrip,
@@ -2190,6 +2208,9 @@ destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request
     travel_mode: travelMode,
     destination_name: destinationName,
     stage,
+    phase,
+    trip_date: focusedDate,
+    trip_time: focused?.trip_time ?? null,
     can_start_return: canStartReturn,
     outbound_ride_id: offer.outbound_ride_id,
     return_ride_id: offer.return_ride_id,

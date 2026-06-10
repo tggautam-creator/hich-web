@@ -69,6 +69,28 @@ function assertFareInvariant(fareCents: number, platformFeeCents: number, driver
   }
 }
 
+/**
+ * V4 F6 5A — scheduled rides (trip_date set: board + Explore) can't be
+ * QR-started before trip day. A matched event ride used to be startable
+ * weeks early — the chat showed "Show QR to start" the moment the match
+ * landed. Calendar-date compare in Pacific Time (Tago's market).
+ * Instant rides have no trip_date → always startable.
+ */
+export function rideStartableToday(tripDate: string | null | undefined): boolean {
+  if (!tripDate) return true
+  const todayPT = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' })
+  return tripDate <= todayPT
+}
+
+/** "2026-06-27" → "Sat, Jun 27" for the not-today error copy. */
+export function tripDayLabel(tripDate: string): string {
+  const parsed = new Date(`${tripDate}T12:00:00`)
+  if (Number.isNaN(parsed.getTime())) return tripDate
+  return parsed.toLocaleDateString('en-US', {
+    weekday: 'short', month: 'short', day: 'numeric', timeZone: 'America/Los_Angeles',
+  })
+}
+
 function haversineMetres(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const φ1 = lat1 * DEG_TO_RAD
   const φ2 = lat2 * DEG_TO_RAD
@@ -4199,7 +4221,7 @@ ridesRouter.post(
 
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, driver_id, status')
+      .select('id, rider_id, driver_id, status, trip_date')
       .eq('id', rideId)
       .single()
 
@@ -4223,6 +4245,18 @@ ridesRouter.post(
     if (ride.status !== 'coordinating') {
       res.status(409).json({
         error: { code: 'INVALID_STATUS', message: `Ride status is '${ride.status}', cannot start` },
+      })
+      return
+    }
+
+    // V4 F6 5A — scheduled trips can't start before trip day.
+    const tripDate = (ride as { trip_date?: string | null }).trip_date
+    if (!rideStartableToday(tripDate)) {
+      res.status(409).json({
+        error: {
+          code: 'TRIP_NOT_TODAY',
+          message: `This trip is scheduled for ${tripDayLabel(tripDate as string)} — the QR works on trip day.`,
+        },
       })
       return
     }
@@ -4844,6 +4878,17 @@ ridesRouter.post(
 
     // ── Coordinating → start ride ──────────────────────────────────────────
     if (ride.status === 'coordinating') {
+      // V4 F6 5A — scheduled trips can't start before trip day.
+      const scanTripDate = (ride as { trip_date?: string | null }).trip_date
+      if (!rideStartableToday(scanTripDate)) {
+        res.status(409).json({
+          error: {
+            code: 'TRIP_NOT_TODAY',
+            message: `This trip is scheduled for ${tripDayLabel(scanTripDate as string)} — the QR works on trip day.`,
+          },
+        })
+        return
+      }
       // Save rider's actual GPS as pickup_point (where ride truly starts)
       const scanStartedAtIso = new Date().toISOString()
       const scanStartUpdate: Record<string, unknown> = {
