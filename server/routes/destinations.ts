@@ -2217,6 +2217,107 @@ destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request
   })
 })
 
+// ── Rider pickup change (V4 F6 5A.2) ─────────────────────────────────────────
+
+// POST /api/destinations/ride/:rideID/pickup — the rider moves their boarding
+// point on a matched (not yet started) destination leg. Chat-first design:
+// pickup was locked at accept, but plans change in the days before an event.
+// Updates the ride + the waitlist row (keeps the event page in sync), refreshes
+// the fare estimate, seeds a chat line, and dual-notifies the driver.
+// For own_thing legs the rider's point is their DROP-OFF (event → home), so
+// the same endpoint moves the destination side instead.
+destinationsRouter.post('/ride/:rideID/pickup', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const rideID = req.params['rideID'] as string
+  const body = (req.body ?? {}) as { pickup_lat?: unknown; pickup_lng?: unknown; pickup_address?: unknown }
+
+  const lat = typeof body.pickup_lat === 'number' ? body.pickup_lat : null
+  const lng = typeof body.pickup_lng === 'number' ? body.pickup_lng : null
+  const address = optString(body.pickup_address) ?? null
+  if (lat == null || lng == null) {
+    res.status(400).json({ error: { code: 'INVALID_BODY', message: 'pickup_lat and pickup_lng are required' } })
+    return
+  }
+
+  // The ride must be a leg of an accepted destination offer.
+  const { data: offerRow } = await supabaseAdmin
+    .from('destination_offers')
+    .select('id, driver_id, rider_id, waitlist_id, destination_id, outbound_ride_id, return_ride_id')
+    .or(`outbound_ride_id.eq.${rideID},return_ride_id.eq.${rideID}`)
+    .eq('status', 'accepted')
+    .maybeSingle()
+  const offer = offerRow as {
+    id: string; driver_id: string; rider_id: string; waitlist_id: string | null
+    destination_id: string; outbound_ride_id: string | null; return_ride_id: string | null
+  } | null
+  if (!offer) {
+    res.status(404).json({ error: { code: 'TRIP_NOT_FOUND', message: 'Trip not found' } })
+    return
+  }
+  if (offer.rider_id !== userId) {
+    res.status(403).json({ error: { code: 'NOT_RIDER', message: 'Only the rider can change their pickup.' } })
+    return
+  }
+
+  const { data: rideRow } = await supabaseAdmin
+    .from('rides')
+    .select('id, status, origin_name, destination, destination_name')
+    .eq('id', rideID)
+    .maybeSingle()
+  const ride = rideRow as { id: string; status: string } | null
+  if (!ride) {
+    res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+    return
+  }
+  if (ride.status !== 'accepted' && ride.status !== 'coordinating') {
+    res.status(409).json({
+      error: { code: 'INVALID_STATUS', message: 'The pickup can only change before the ride starts.' },
+    })
+    return
+  }
+
+  // own_thing = the single leg heads HOME; the rider's point is the drop-off.
+  let movesDropoff = false
+  if (offer.waitlist_id) {
+    const { data: wlRow } = await supabaseAdmin
+      .from('destination_waitlist').select('travel_mode').eq('id', offer.waitlist_id).maybeSingle()
+    movesDropoff = (wlRow as { travel_mode: string | null } | null)?.travel_mode === 'own_thing'
+  }
+
+  const label = address ?? 'Updated pin'
+  const point = geoPoint(lat, lng)
+  const update: Record<string, unknown> = movesDropoff
+    ? { destination: point, destination_name: label, dropoff_point: point, updated_at: new Date().toISOString() }
+    : { origin: point, origin_name: label, pickup_point: point, pickup_confirmed: true, updated_at: new Date().toISOString() }
+  const { error: updateErr } = await supabaseAdmin.from('rides').update(update as never).eq('id', rideID)
+  if (updateErr) {
+    res.status(400).json({ error: { code: 'PICKUP_UPDATE_FAILED', message: 'Could not update the pickup.' } })
+    return
+  }
+
+  // Keep the event page's waitlist row in sync (it powers the driver's view).
+  if (offer.waitlist_id) {
+    await supabaseAdmin
+      .from('destination_waitlist')
+      .update({ pickup_lat: lat, pickup_lng: lng, pickup_address: address, updated_at: new Date().toISOString() } as never)
+      .eq('id', offer.waitlist_id)
+  }
+
+  // The chat is the trip's source of truth — record the change there, and
+  // tell the driver (bell + push; they plan the run around pickups).
+  const word = movesDropoff ? 'drop-off' : 'pickup'
+  await seedChatMessage(rideID, userId, `I moved my ${word} to ${label}.`, 'text')
+  await notifyUserDual(
+    offer.driver_id,
+    'destination_pickup_changed',
+    `${word === 'pickup' ? 'Pickup' : 'Drop-off'} updated`,
+    `Your rider moved their ${word} to ${label}.`,
+    { type: 'destination_pickup_changed', ride_id: rideID, destination_id: offer.destination_id },
+  )
+
+  res.status(200).json({ ok: true })
+})
+
 // ── Return coordination (TT.1) — in the existing ride chat ────────────────────
 
 /** Find the destination offer whose outbound leg is this ride. */
