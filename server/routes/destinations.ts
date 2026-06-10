@@ -1528,7 +1528,9 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
         + 'use this chat for anything before the trip. The QR works on trip day.'
       : `You're set for ${contextName} on ${dayLabel}! Use this chat to sort out `
         + 'the exact meetup spot and timing.'
-    await seedChatMessage(rideId, offer.driver_id, seedText, 'text')
+    // 5B.1 (Tarun) — a SYSTEM watermark, not a message "sent by the driver".
+    // Unknown types render as centered system lines on both clients.
+    await seedChatMessage(rideId, offer.driver_id, seedText, 'trip_note')
     return rideId
   }
 
@@ -2365,6 +2367,46 @@ destinationsRouter.get('/run/:tripID/roster', validateJwt, async (req: Request, 
     run_started: trip.started_at != null || trip.status === 'active',
     riders: rideIds.map((id) => ({ ride_id: id, travel_mode: modeByRide.get(id) ?? 'together' })),
   })
+})
+
+// PATCH /api/destinations/run/:tripID/order — driver persists the pickup
+// sequence (greedy-shortest default computed client-side; drag overrides).
+// Body: { ordered_ride_ids: [...] } — must exactly cover the trip's rides.
+destinationsRouter.patch('/run/:tripID/order', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const tripID = req.params['tripID'] as string
+  const body = (req.body ?? {}) as { ordered_ride_ids?: unknown }
+  const ordered = Array.isArray(body.ordered_ride_ids)
+    ? body.ordered_ride_ids.filter((v): v is string => typeof v === 'string')
+    : []
+  if (ordered.length === 0) {
+    res.status(400).json({ error: { code: 'INVALID_BODY', message: 'ordered_ride_ids is required' } })
+    return
+  }
+
+  const { data: tripRow } = await supabaseAdmin
+    .from('trips').select('id, driver_id').eq('id', tripID).maybeSingle()
+  const trip = tripRow as { id: string; driver_id: string } | null
+  if (!trip || trip.driver_id !== userId) {
+    res.status(404).json({ error: { code: 'TRIP_NOT_FOUND', message: 'Trip not found' } })
+    return
+  }
+
+  const { data: rideRows } = await supabaseAdmin
+    .from('rides').select('id').eq('trip_id', tripID)
+  const tripRideIds = new Set(((rideRows ?? []) as Array<{ id: string }>).map((r) => r.id))
+  if (ordered.length !== tripRideIds.size || !ordered.every((id) => tripRideIds.has(id))) {
+    res.status(400).json({ error: { code: 'ORDER_MISMATCH', message: 'Order must cover exactly this trip\'s rides.' } })
+    return
+  }
+
+  for (let i = 0; i < ordered.length; i++) {
+    await supabaseAdmin
+      .from('rides')
+      .update({ stop_order: i + 1 } as never)
+      .eq('id', ordered[i])
+  }
+  res.status(200).json({ ok: true })
 })
 
 // ── Return coordination (TT.1) — in the existing ride chat ────────────────────
