@@ -6549,7 +6549,7 @@ ridesRouter.get(
     // trip-aware copy ("Start your ride home from {dest}") + route to the
     // trip chat instead of the generic "Ride with {name}".
     const allRideIds = rides.map((r: Record<string, unknown>) => r['id'] as string)
-    const rideDestMap = new Map<string, { name: string; leg: 'outbound' | 'return' }>()
+    const rideDestMap = new Map<string, { name: string; leg: 'outbound' | 'return'; imageURL: string | null }>()
     if (allRideIds.length > 0) {
       const [{ data: outOffers }, { data: retOffers }] = await Promise.all([
         supabaseAdmin.from('destination_offers')
@@ -6565,14 +6565,16 @@ ridesRouter.get(
       ].filter((o) => o.ride != null)
       const dDestIds = [...new Set(dOffers.map((o) => o.destId))]
       const { data: dDests } = dDestIds.length > 0
-        ? await supabaseAdmin.from('featured_destinations').select('id, name').in('id', dDestIds)
+        ? await supabaseAdmin.from('featured_destinations').select('id, name, image_url').in('id', dDestIds)
         : { data: [] }
-      const dNameMap = new Map(
-        ((dDests ?? []) as Array<{ id: string; name: string }>).map((d) => [d.id, d.name]),
+      const dInfoMap = new Map(
+        ((dDests ?? []) as Array<{ id: string; name: string; image_url: string | null }>)
+          .map((d) => [d.id, { name: d.name, imageURL: d.image_url }]),
       )
       for (const o of dOffers) {
         if (o.ride != null) {
-          rideDestMap.set(o.ride, { name: dNameMap.get(o.destId) ?? 'Trip', leg: o.leg })
+          const info = dInfoMap.get(o.destId)
+          rideDestMap.set(o.ride, { name: info?.name ?? 'Trip', leg: o.leg, imageURL: info?.imageURL ?? null })
         }
       }
     }
@@ -6593,6 +6595,7 @@ ridesRouter.get(
         // Distinct key from the ride's own `destination_name` (the leg
         // drop-off) — this is the Explore trip/destination name.
         trip_destination_name: destInfo?.name ?? null,
+        trip_destination_image: destInfo?.imageURL ?? null,
         destination_leg: destInfo?.leg ?? null,
       }
     })

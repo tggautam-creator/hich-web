@@ -1487,7 +1487,15 @@ destinationsRouter.post('/:id/offer/:offerId/accept', validateJwt, async (req: R
         origin_name: oName,
         destination: geoPoint(dLat, dLng),
         destination_name: dName,
-        status: 'accepted',
+        // V4 F6 5C — 'coordinating', NOT 'accepted'. Event rides set
+        // pickup_confirmed + dropoff_confirmed = true right here (they're
+        // pre-agreed at match), so they ARE in the "both locations
+        // confirmed, ready to scan" state that 'coordinating' means. The
+        // board flow reaches it via accept-location; event rides skip that
+        // negotiation, so left at 'accepted' the QR-start endpoints (which
+        // require 'coordinating') returned NO_RIDE — the rider could never
+        // start the ride (Tarun, 2026-06-10).
+        status: 'coordinating',
         trip_date: tripDate,
         trip_time: tripTime,
         fare_cents: fareCents,
@@ -2568,7 +2576,9 @@ destinationsRouter.post('/return/:rideID/start', validateJwt, async (req: Reques
       origin_name: eventName,
       destination: geoPoint(dropLat, dropLng),
       destination_name: dropName,
-      status: 'accepted',
+      // Pre-confirmed (event→home, both points set) → ready to scan. See
+      // the makeRide note above: 'coordinating', not 'accepted'.
+      status: 'coordinating',
       fare_cents: fareCents,
       payment_status: 'pending',
       pickup_point: geoPoint(eventLat, eventLng),
