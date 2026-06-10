@@ -2392,8 +2392,14 @@ destinationsRouter.patch('/run/:tripID/order', validateJwt, async (req: Request,
     return
   }
 
+  // Cancelled rides stay linked to the trip for history but are NOT stops —
+  // the client never sends them (Tarun hit ORDER_MISMATCH after a rider
+  // cancel + re-match left a cancelled row on the trip, 2026-06-10).
   const { data: rideRows } = await supabaseAdmin
-    .from('rides').select('id').eq('trip_id', tripID)
+    .from('rides')
+    .select('id')
+    .eq('trip_id', tripID)
+    .in('status', ['requested', 'accepted', 'coordinating', 'active', 'completed'])
   const tripRideIds = new Set(((rideRows ?? []) as Array<{ id: string }>).map((r) => r.id))
   if (ordered.length !== tripRideIds.size || !ordered.every((id) => tripRideIds.has(id))) {
     res.status(400).json({ error: { code: 'ORDER_MISMATCH', message: 'Order must cover exactly this trip\'s rides.' } })
