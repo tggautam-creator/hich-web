@@ -251,10 +251,24 @@ async function computeRideFare(
 /// to corrected haversine + an average-speed duration estimate so
 /// the message ALWAYS gets a fare. Returns a positive integer cents
 /// value clamped at the min fare.
-export async function estimateFareCentsBetween(
+///
+/// 2026-06-10 — split into a breakdown-returning core so the driver's
+/// incoming-ride card can render the REAL Gas/Time/duration components
+/// instead of re-deriving them locally with a 35 mph guess (which made
+/// the line items disagree with the headline — see the fare-preview-
+/// inconsistency fix).
+export interface FareEstimateBreakdown {
+  fareCents: number
+  gasCostCents: number
+  timeCostCents: number
+  durationMin: number
+  distanceKm: number
+}
+
+export async function estimateFareBreakdownBetween(
   pickupLat: number, pickupLng: number,
   dropoffLat: number, dropoffLng: number,
-): Promise<number> {
+): Promise<FareEstimateBreakdown> {
   const apiKey = process.env['GOOGLE_MAPS_KEY']
   const distanceM = await getRoadDistanceMetres(pickupLat, pickupLng, dropoffLat, dropoffLng)
   const distanceMiles = (distanceM / 1000) * KM_TO_MILES
@@ -270,7 +284,21 @@ export async function estimateFareCentsBetween(
   const gasCostCents = Math.round(gallonsUsed * gasPricePerGallon * 100)
   const timeCostCents = Math.round(durationMin * PER_MIN_CENTS)
   const raw = gasCostCents + timeCostCents
-  return Math.max(MIN_FARE_CENTS, raw)
+  return {
+    fareCents: Math.max(MIN_FARE_CENTS, raw),
+    gasCostCents,
+    timeCostCents,
+    durationMin,
+    distanceKm: distanceM / 1000,
+  }
+}
+
+export async function estimateFareCentsBetween(
+  pickupLat: number, pickupLng: number,
+  dropoffLat: number, dropoffLng: number,
+): Promise<number> {
+  const breakdown = await estimateFareBreakdownBetween(pickupLat, pickupLng, dropoffLat, dropoffLng)
+  return breakdown.fareCents
 }
 
 interface RideRequestBody {
@@ -740,6 +768,33 @@ ridesRouter.post(
       ? { type: 'Point' as const, coordinates: [body.destination_lng, body.destination_lat] as [number, number] }
       : null
 
+    // 2026-06-10 — server-canonical fare estimate. Computed HERE (not
+    // trusted from the client) so every surface — rider waiting room,
+    // driver incoming card, active-ride drawer — reads the same number
+    // from rides.estimated_fare_cents. The client's value was the LOW
+    // end of its ±15% preview range, so drivers were quoted a floor
+    // that never matched the rider's own screen. One Routes call per
+    // request (estimateFareBreakdownBetween falls back to haversine +
+    // 30 mph when Google is unreachable, so this never throws).
+    // The persisted total folds caregiver + companion tiers (waivers
+    // apply per-driver later, at settle time).
+    let fareBreakdown: FareEstimateBreakdown | null = null
+    if (typeof body.destination_lat === 'number' && typeof body.destination_lng === 'number') {
+      try {
+        fareBreakdown = await estimateFareBreakdownBetween(
+          body.origin.coordinates[1], body.origin.coordinates[0],
+          body.destination_lat, body.destination_lng,
+        )
+      } catch (err) {
+        console.error('[rides/request] fare estimate failed, falling back to client value:', err)
+      }
+    }
+    const serverEstimatedFareCents = fareBreakdown
+      ? fareBreakdown.fareCents + (caregiverFareCents ?? 0) + (companionFareCents ?? 0)
+      : (typeof body.estimated_fare_cents === 'number' && body.estimated_fare_cents > 0
+        ? body.estimated_fare_cents
+        : null)
+
     const { data: ride, error: rideError } = await supabaseAdmin
       .from('rides')
       .insert({
@@ -750,6 +805,10 @@ ridesRouter.post(
           : null,
         destination: destinationGeo,
         destination_name: body.destination_name ?? null,
+        // 2026-06-10 — canonical current estimate. Updated whenever an
+        // accepted pickup/dropoff change re-prices the trip (see
+        // accept-location / confirm-direct-dropoff / confirm-dropoff).
+        estimated_fare_cents: serverEstimatedFareCents,
         // Preserve the rider's ORIGINAL endpoint so it survives a
         // driver's later /suggest-transit-dropoff (which overwrites
         // `destination` + `destination_name` with the transit station).
@@ -922,7 +981,11 @@ ridesRouter.post(
     // because lat/lng were nil. Sending the full payload here lets
     // the foreground FCM handler match what the realtime broadcast
     // delivers (modulo the data-only-vs-envelope unwrap on iOS).
-    const fareCents = typeof body.estimated_fare_cents === 'number' ? body.estimated_fare_cents : 0
+    // 2026-06-10 — driver preview = the SAME server-canonical estimate
+    // persisted on the ride row (base + caregiver + companion tiers).
+    // Was the raw client-sent value, which never matched what the rider
+    // saw on their own screen.
+    const fareCents = serverEstimatedFareCents ?? 0
     const platformFee = Math.round(fareCents * PLATFORM_FEE_RATE)
     const driverEarns = fareCents - platformFee
 
@@ -946,8 +1009,17 @@ ridesRouter.post(
         ? body.origin_name.trim()
         : 'Pickup location',
       destination: body.destination_name ?? 'Nearby destination',
-      distance_km: String(body.distance_km ?? '–'),
+      distance_km: String(fareBreakdown?.distanceKm.toFixed(2) ?? body.distance_km ?? '–'),
       estimated_earnings_cents: String(driverEarns),
+      // 2026-06-10 — real fare components so the driver card renders
+      // line items that actually sum to the headline (it used to
+      // re-derive Gas/Time locally with a 35 mph guess). Empty strings
+      // when the Routes estimate fell back to the client value; the
+      // iOS card falls back to its legacy local estimate then.
+      base_fare_cents: fareBreakdown ? String(fareBreakdown.fareCents) : '',
+      gas_cost_cents: fareBreakdown ? String(fareBreakdown.gasCostCents) : '',
+      time_cost_cents: fareBreakdown ? String(fareBreakdown.timeCostCents) : '',
+      duration_min: fareBreakdown ? String(fareBreakdown.durationMin) : '',
       origin_lat: String(body.origin.coordinates[1]),
       origin_lng: String(body.origin.coordinates[0]),
       destination_lat: typeof body.destination_lat === 'number' ? String(body.destination_lat) : '',
@@ -1062,6 +1134,9 @@ ridesRouter.post(
       drivers_eligible: driverIds.length,
       drivers_notified: notifiedCount,
       realtime_broadcast_count: realtimeSentCount,
+      // 2026-06-10 — canonical estimate so the rider's waiting room
+      // can display the same number the driver sees, immediately.
+      estimated_fare_cents: serverEstimatedFareCents,
     })
 
     // 2026-05-01 — reliability layer (re-fire). 30 s after the initial
@@ -1871,7 +1946,12 @@ ridesRouter.post(
     // suggestion page doesn't fall back to "Pickup nearby".
     const { data: fullRide } = await supabaseAdmin
       .from('rides')
-      .select('id, origin, origin_name, destination, destination_name, requester_destination, requester_destination_name, rider_id')
+      // select('*') — the generated Supabase types predate migration 119
+      // (companion_fare_cents), so naming that column in the select string
+      // collapses the row type to SelectQueryError. The wildcard keeps the
+      // generated Row type for the known columns; the seat-fee tiers are
+      // read through a Record cast below.
+      .select('*')
       .eq('id', rideId)
       .single()
     const { data: riderProfile } = await supabaseAdmin
@@ -1901,8 +1981,21 @@ ridesRouter.post(
             origin.coordinates[1], origin.coordinates[0],
             dest.coordinates[1], dest.coordinates[0],
           )
-          const platformFee = Math.round(fareCents * PLATFORM_FEE_RATE)
-          computedDriverEarnsCents = fareCents - platformFee
+          // 2026-06-10 — fold the ride's seat-fee tiers and persist the
+          // refreshed canonical estimate. The re-broadcast resets the
+          // ride to the rider's ORIGINAL destination, so the previous
+          // agreed estimate (which may reflect a since-abandoned
+          // transit dropoff) is stale.
+          const extrasRow = fullRide as Record<string, unknown>
+          const cgFare = typeof extrasRow['caregiver_fare_cents'] === 'number' ? extrasRow['caregiver_fare_cents'] as number : 0
+          const compFare = typeof extrasRow['companion_fare_cents'] === 'number' ? extrasRow['companion_fare_cents'] as number : 0
+          const totalEstimate = fareCents + cgFare + compFare
+          const platformFee = Math.round(totalEstimate * PLATFORM_FEE_RATE)
+          computedDriverEarnsCents = totalEstimate - platformFee
+          await supabaseAdmin
+            .from('rides')
+            .update({ estimated_fare_cents: totalEstimate } as never)
+            .eq('id', rideId)
         } catch (err) {
           console.error('[rides/find-new-driver] distance/fare estimate failed:', err)
         }
@@ -2530,6 +2623,35 @@ ridesRouter.patch(
     if (updateErr) {
       next(updateErr)
       return
+    }
+
+    // 2026-06-10 — the accepted drop-off arrangement re-prices the
+    // trip. The suggestion message that proposed it froze the server-
+    // computed fare in its meta; copy that onto the ride row so every
+    // surface shows the agreed number. No Google calls — frozen reuse.
+    {
+      const { data: latestFareMsg } = await supabaseAdmin
+        .from('messages')
+        .select('meta')
+        .eq('ride_id', rideId)
+        .in('type', ['dropoff_suggestion', 'transit_dropoff_suggestion'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      const fareMeta = (latestFareMsg as { meta?: { fare_cents?: unknown } } | null)?.meta
+      const acceptedFareCents = typeof fareMeta?.fare_cents === 'number' && fareMeta.fare_cents > 0
+        ? fareMeta.fare_cents
+        : null
+      if (acceptedFareCents !== null) {
+        await supabaseAdmin
+          .from('rides')
+          .update({ estimated_fare_cents: acceptedFareCents } as never)
+          .eq('id', rideId)
+        const farePayload = { type: 'fare_updated', ride_id: rideId, estimated_fare_cents: acceptedFareCents }
+        void realtimeBroadcast(`chat:${rideId}`, 'fare_updated', farePayload)
+        void realtimeBroadcast(`rider:${ride.rider_id}`, 'fare_updated', farePayload)
+        if (ride.driver_id) void realtimeBroadcast(`rider:${ride.driver_id}`, 'fare_updated', farePayload)
+      }
     }
 
     // Notify driver that rider accepted the drop-off
@@ -3892,6 +4014,48 @@ ridesRouter.post(
         }
       } catch (err) {
         console.warn(`[rides/accept-location] destination pickup sync failed for ${rideId}:`, err)
+      }
+    }
+
+    // 2026-06-10 — re-price the ride from the ACCEPTED proposal. The
+    // proposal endpoints (pickup-point / dropoff-point /
+    // suggest-transit-dropoff) already computed a server fare for the
+    // proposed location and froze it into the suggestion message's
+    // meta.fare_cents (caregiver + companion already folded in). The
+    // accept is the moment that number becomes the agreed estimate, so
+    // copy it onto the ride row — rides.estimated_fare_cents is the
+    // single source every surface displays. Zero extra Google calls:
+    // we reuse the frozen number instead of re-estimating.
+    {
+      const suggestionTypes = location_type === 'pickup'
+        ? ['pickup_suggestion']
+        : ['dropoff_suggestion', 'transit_dropoff_suggestion']
+      const { data: latestFareMsg } = await supabaseAdmin
+        .from('messages')
+        .select('meta')
+        .eq('ride_id', rideId)
+        .in('type', suggestionTypes)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      const fareMeta = (latestFareMsg as { meta?: { fare_cents?: unknown } } | null)?.meta
+      const acceptedFareCents = typeof fareMeta?.fare_cents === 'number' && fareMeta.fare_cents > 0
+        ? fareMeta.fare_cents
+        : null
+      if (acceptedFareCents !== null) {
+        await supabaseAdmin
+          .from('rides')
+          .update({ estimated_fare_cents: acceptedFareCents } as never)
+          .eq('id', rideId)
+        // Both parties' active surfaces refresh from this event.
+        const farePayload = {
+          type: 'fare_updated',
+          ride_id: rideId,
+          estimated_fare_cents: acceptedFareCents,
+        }
+        void realtimeBroadcast(`chat:${rideId}`, 'fare_updated', farePayload)
+        if (ride.rider_id) void realtimeBroadcast(`rider:${ride.rider_id}`, 'fare_updated', farePayload)
+        if (ride.driver_id) void realtimeBroadcast(`rider:${ride.driver_id}`, 'fare_updated', farePayload)
       }
     }
 
@@ -6962,7 +7126,7 @@ ridesRouter.post(
 
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, rider_id, driver_id, status, pickup_confirmed, dropoff_confirmed, requester_destination, requester_destination_name, destination, destination_name, origin, pickup_point, schedule_id')
+      .select('*')
       .eq('id', rideId)
       .single()
 
@@ -7069,6 +7233,28 @@ ridesRouter.post(
         const timeCents = Math.round(estDurationMin * PER_MIN_CENTS)
         fareEstimateCents = Math.max(MIN_FARE_CENTS, gasCents + timeCents)
       } catch { /* non-fatal */ }
+    }
+
+    // 2026-06-10 — the direct-dropoff confirm is a pricing event:
+    // persist the canonical estimate (base + the ride's caregiver +
+    // companion tiers) so every surface reads the same number, and
+    // tell both parties' live screens.
+    if (fareEstimateCents !== null) {
+      const extras = ride as unknown as {
+        caregiver_fare_cents: number | null
+        companion_fare_cents: number | null
+      }
+      const totalEstimate = fareEstimateCents
+        + (extras.caregiver_fare_cents ?? 0)
+        + (extras.companion_fare_cents ?? 0)
+      await supabaseAdmin
+        .from('rides')
+        .update({ estimated_fare_cents: totalEstimate } as never)
+        .eq('id', rideId)
+      const farePayload = { type: 'fare_updated', ride_id: rideId, estimated_fare_cents: totalEstimate }
+      void realtimeBroadcast(`chat:${rideId}`, 'fare_updated', farePayload)
+      if (ride.rider_id) void realtimeBroadcast(`rider:${ride.rider_id}`, 'fare_updated', farePayload)
+      if (ride.driver_id) void realtimeBroadcast(`rider:${ride.driver_id}`, 'fare_updated', farePayload)
     }
 
     // Push notification to rider
@@ -7845,6 +8031,88 @@ ridesRouter.get(
         segments,
         co_riders: coRiders,
         shares,
+      })
+    } catch (err) {
+      next(err)
+    }
+  },
+)
+
+/**
+ * GET /api/rides/:id — minimal ride snapshot.
+ *
+ * 2026-06-10 — this route did NOT exist even though iOS has been
+ * calling it since the WaitingRoom realtime-fallback poll shipped
+ * (GetRideEndpoint: WaitingRoomPage+Live, RideSuggestionPage,
+ * DropoffSelectionPage all `try?` it). Every call 404'd silently, so
+ * the realtime-miss fallback never actually worked. It now returns
+ * the snapshot iOS's `RideSnapshot` decodes, PLUS the canonical
+ * `estimated_fare_cents` so every screen can converge on the same
+ * fare number (the fare-preview-consistency fix).
+ *
+ * MUST stay registered at the END of this file: Express matches
+ * routes in registration order, and a bare '/:id' would otherwise
+ * swallow static GET paths like '/active' and '/driver-pending-offer'.
+ *
+ * Auth: only the two participants can read the snapshot.
+ */
+const RIDE_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+
+ridesRouter.get(
+  '/:id',
+  validateJwt,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const userId = res.locals['userId'] as string
+    const rideId = req.params['id'] as string
+
+    if (!RIDE_ID_RE.test(rideId)) {
+      res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+      return
+    }
+
+    try {
+      // select('*') + cast — generated Supabase types predate
+      // migrations 119/130 (companion_fare_cents / estimated_fare_cents),
+      // so naming those columns in the select string collapses the row
+      // type to SelectQueryError.
+      const { data: rideRaw, error } = await supabaseAdmin
+        .from('rides')
+        .select('*')
+        .eq('id', rideId)
+        .maybeSingle()
+
+      if (error) { next(error); return }
+      if (!rideRaw) {
+        res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+        return
+      }
+      const ride = rideRaw as unknown as {
+        id: string
+        status: string
+        rider_id: string | null
+        driver_id: string | null
+        pickup_point: unknown
+        destination_name: string | null
+        estimated_fare_cents: number | null
+        fare_cents: number | null
+        caregiver_fare_cents: number | null
+        companion_fare_cents: number | null
+      }
+      if (ride.rider_id !== userId && ride.driver_id !== userId) {
+        res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Not your ride' } })
+        return
+      }
+
+      res.status(200).json({
+        id: ride.id,
+        status: ride.status,
+        driver_id: ride.driver_id,
+        pickup_point: ride.pickup_point,
+        destination_name: ride.destination_name,
+        estimated_fare_cents: ride.estimated_fare_cents,
+        fare_cents: ride.fare_cents,
+        caregiver_fare_cents: ride.caregiver_fare_cents,
+        companion_fare_cents: ride.companion_fare_cents,
       })
     } catch (err) {
       next(err)

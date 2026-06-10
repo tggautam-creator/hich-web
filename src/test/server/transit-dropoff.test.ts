@@ -262,6 +262,24 @@ describe('PATCH /api/rides/:id/confirm-dropoff', () => {
       if (table === 'push_tokens') {
         return { select: mockTokenSelect }
       }
+      if (table === 'messages') {
+        // 2026-06-10 — confirm-dropoff reads the latest dropoff/transit
+        // suggestion's frozen meta.fare_cents to persist the agreed
+        // estimate. Returning no message = no fare re-price (legacy path).
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              in: vi.fn().mockReturnValue({
+                order: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        }
+      }
       return { select: vi.fn() }
     })
 
