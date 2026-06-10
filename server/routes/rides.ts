@@ -3851,6 +3851,50 @@ ridesRouter.post(
       return
     }
 
+    // V4 F6 5A.3 — pickup changes on a destination leg go through this same
+    // proposal→accept flow (Tarun: "reuse those"). On a pickup accept, sync
+    // the rider's Explore surfaces: rides.origin(+name) feed the driver's
+    // stop list / nav, and the waitlist row feeds the event-page pickup
+    // display. No-op for non-destination rides (no accepted offer).
+    if (location_type === 'pickup') {
+      try {
+        const { data: dOfferRow } = await supabaseAdmin
+          .from('destination_offers')
+          .select('id, waitlist_id')
+          .or(`outbound_ride_id.eq.${rideId},return_ride_id.eq.${rideId}`)
+          .eq('status', 'accepted')
+          .maybeSingle()
+        const dOffer = dOfferRow as { id: string; waitlist_id: string | null } | null
+        if (dOffer) {
+          const { data: freshRideRow } = await supabaseAdmin
+            .from('rides')
+            .select('pickup_point, pickup_note')
+            .eq('id', rideId)
+            .maybeSingle()
+          const fresh = freshRideRow as { pickup_point: GeoPoint | null; pickup_note: string | null } | null
+          const coords = fresh?.pickup_point?.coordinates
+          if (coords) {
+            const update: Record<string, unknown> = { origin: fresh?.pickup_point }
+            if (fresh?.pickup_note) update['origin_name'] = fresh.pickup_note
+            await supabaseAdmin.from('rides').update(update as never).eq('id', rideId)
+            if (dOffer.waitlist_id) {
+              await supabaseAdmin
+                .from('destination_waitlist')
+                .update({
+                  pickup_lat: coords[1],
+                  pickup_lng: coords[0],
+                  pickup_address: fresh?.pickup_note ?? null,
+                  updated_at: new Date().toISOString(),
+                } as never)
+                .eq('id', dOffer.waitlist_id)
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[rides/accept-location] destination pickup sync failed for ${rideId}:`, err)
+      }
+    }
+
     // Check if both are now confirmed → flip status to 'coordinating'
     const pickupDone = location_type === 'pickup' ? true : ride.pickup_confirmed
     const dropoffDone = location_type === 'dropoff' ? true : ride.dropoff_confirmed
