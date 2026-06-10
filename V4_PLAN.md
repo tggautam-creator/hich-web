@@ -778,6 +778,24 @@ Server-first per system. ⚠️ Admin slices (A.3, B.3) are the parallel-admin-s
 - **Return-leg settlement** — two independent `rides` each settled at end; confirm no special round-trip discount.
 - **Multi-day trips** (Yosemite weekend) — return date can be a different day; confirm date pickers allow it.
 
+### 5.6.1 — Shared multi-rider event trip + Trip Timeline (planned 2026-06-09, supersedes "Money" + return-leg-settlement rows above for event trips)
+
+> Decided with Tarun 2026-06-09 (option 2: board-parity cost split) + refined live from his 3-account device QA the same day. This subsection is the canonical plan for how event carpools group, price, and explain themselves over time. State lives in `V4_PROGRESS.md`.
+
+**The model:** one driver plan + leg = ONE shared `trips` row; every accepted rider's ride links to it (`getOrCreatePlanLegTrip`, mig 127), so the F17 segment engine splits gas+time per leg-aboard at each rider's own QR-end. Riders pay a SHARE (not N full fares); driver keeps 100% (reimbursement framing, not profit). Seat fees (companion/caregiver, F1) stay per-rider on top, un-split. Because both the price *and* the timeline are new concepts, **every stage must say: where are we, what happens next, and when.**
+
+**The timeline (phases, server-computed):** `scheduled` (matched, trip day ahead — calm plan card, QR + nav hidden AND server-gated 409 TRIP_NOT_TODAY) → `day_of` (driver "starts the run", riders see "driver on the way", QR appears) → active legs (scan-in → segments) → arrived + per-rider pay (split settle) → at-event free chat → return mirror (Stage-4 composition, `return_trip_id`).
+
+**Slices (1–4 + 5A SHIPPED 2026-06-09 — see progress doc; remaining below):**
+| # | Slice | Scope |
+|---|---|---|
+| 5A.2 | **Surfaces tell the truth** (Rides tab + banners + chat coherence + pickup control) | (a) Fix `MyRidesFormat.date` UTC-parse day-shift bug (hard rule in memory). (b) `/api/rides/active` returns `trip_id`; Rides tab folds a driver's N event rides into ONE event-trip group card (event name + date + rider avatars, tap → multi-rider trip screen) — `MultiRiderGroup` keyed by `MultiRideKey` (.schedule \| .trip). (c) Scheduled-future rides (trip_date > today-PT) read as **Upcoming · {date}** (badge + section split "Happening now" / "Upcoming"), never "Coordinating"/"En Route". (d) Home `ActiveRideBanner`: date-aware copy for scheduled trips; driver-multi tap → trip screen; rider tap → chat (chat-first, NEVER auto-nav). Audit every entry point that can auto-present `DriverPickupPage` for a destination ride. (e) Chat chrome flash fix: gate instant-vs-event chrome on tripContext arrival (one clean render, no "transforming" swap). (f) Pickup control: TripPlanCard gains **"View pickup on map"** (both roles) + rider **"Change pickup"** (OriginPickerSheet → new `POST /api/destinations/ride/:rideID/pickup` → updates ride + waitlist, seeds chat card, dual-notifies driver); driver multi-ride rider cards gain per-rider **Navigate** (Apple Maps to pickup coords). |
+| 5B | **Day-of run mode** | Driver "Start the run" CTA (day-of only) on the trip screen → riders dual-notified "driver is on the way" + chat stage flips; per-stop guidance (nav → QR at stop → next stop); trip reminders (day-before + morning-of cron sweep, bell+push, both roles); one-way riders tagged "won't ride back" on the roster. |
+| 5C | **Split receipts + money QA** | Post-ride: rider "your share of X mi, split across legs you rode" (reads `ride_rider_shares`); driver "reimbursed across N riders, covered gas+time". Then the scripted 2-rider end-to-end money QA on dev (real charges verified) — gate before any push. |
+| 6 | **Cancellation integrity** | Driver plan-cancel with matches: cancel legs + release holds + notify + re-open riders to interest + cancel shared trip. Rider backs out: free seats, notify driver, co-riders "share went up" notify, detach from trip. Completes §5.6 Cancellation spec. |
+
+**Standing rules for this feature:** estimates always labeled (real fare = GPS segments); preview math mirrored iOS↔server with paired tests (`fareSplit.test.ts` ↔ `FareTests`); education via `SharedFareInfoSheet` (ⓘ everywhere a fare shows, once-per-persona first-run); calendar dates never UTC-parsed for local display; QR/nav affordances are phase-gated AND server-gated; ship slices 1→6 as ONE release batch — never push the split active without its explanation surfaces.
+
 ---
 
 ### 5.7 — Sharing (rides + Explore)
