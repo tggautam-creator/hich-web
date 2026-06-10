@@ -15,7 +15,7 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { supabaseAdmin } from '../lib/supabaseAdmin.ts'
 import { validateJwt } from '../middleware/auth.ts'
-import { estimateFareCentsBetween, companionFareCentsFor, caregiverFareCentsFor, tripDayLabel } from './rides.ts'
+import { estimateFareCentsBetween, companionFareCentsFor, caregiverFareCentsFor, tripDayLabel, rideStartableToday } from './rides.ts'
 import { getOrCreateTripForRide, getOrCreatePlanLegTrip } from '../lib/trips.ts'
 import { computeProjectedSplit, type FareSplit } from '../lib/fareSplit.ts'
 import { sendFcmPush } from '../lib/fcm.ts'
@@ -2143,12 +2143,18 @@ destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request
   // anchors the phase below).
   const legIds = [offer.outbound_ride_id, offer.return_ride_id].filter((v): v is string => typeof v === 'string')
   const { data: rideRows } = await supabaseAdmin
-    .from('rides').select('id, status, payment_status, trip_date, trip_time').in('id', legIds)
-  const rides = new Map<string, { status: string; payment_status: string; trip_date: string | null; trip_time: string | null }>()
+    .from('rides').select('id, status, payment_status, trip_date, trip_time, trip_id').in('id', legIds)
+  const rides = new Map<string, {
+    status: string; payment_status: string; trip_date: string | null; trip_time: string | null; trip_id: string | null
+  }>()
   for (const r of (rideRows ?? []) as Array<{
     id: string; status: string; payment_status: string; trip_date: string | null; trip_time: string | null
+    trip_id: string | null
   }>) {
-    rides.set(r.id, { status: r.status, payment_status: r.payment_status, trip_date: r.trip_date, trip_time: r.trip_time })
+    rides.set(r.id, {
+      status: r.status, payment_status: r.payment_status,
+      trip_date: r.trip_date, trip_time: r.trip_time, trip_id: r.trip_id,
+    })
   }
   const outbound = offer.outbound_ride_id ? rides.get(offer.outbound_ride_id) : undefined
   const returnLeg = offer.return_ride_id ? rides.get(offer.return_ride_id) : undefined
@@ -2200,6 +2206,18 @@ destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request
   const todayPT = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' })
   const phase = focusedDate != null && focusedDate > todayPT ? 'scheduled' : 'day_of'
 
+  // V4 F6 5B — has the driver started the day-of run for this leg's shared
+  // drive? Flips the rider chat into the be-ready state before their own
+  // ride goes active.
+  let runStarted = false
+  const focusedTripId = focused?.trip_id ?? null
+  if (focusedTripId != null) {
+    const { data: legTripRow } = await supabaseAdmin
+      .from('trips').select('status, started_at').eq('id', focusedTripId).maybeSingle()
+    const legTrip = legTripRow as { status: string; started_at: string | null } | null
+    runStarted = legTrip?.started_at != null || legTrip?.status === 'active'
+  }
+
   res.status(200).json({
     is_destination: true,
     round_trip: roundTrip,
@@ -2209,11 +2227,143 @@ destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request
     destination_name: destinationName,
     stage,
     phase,
+    run_started: runStarted,
     trip_date: focusedDate,
     trip_time: focused?.trip_time ?? null,
     can_start_return: canStartReturn,
     outbound_ride_id: offer.outbound_ride_id,
     return_ride_id: offer.return_ride_id,
+  })
+})
+
+// ── Day-of run mode (V4 F6 5B) ───────────────────────────────────────────────
+
+// POST /api/destinations/run/:tripID/start — the driver starts the day-of
+// run for a shared leg trip. Flips the trip to active (CAS on pending) and
+// tells every committed rider "your driver is on the way" (chat line + bell
+// + push), which flips their chat into the be-ready state. Gated to trip
+// day — the whole point of the timeline is that nothing moves early.
+destinationsRouter.post('/run/:tripID/start', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const tripID = req.params['tripID'] as string
+
+  const { data: tripRow } = await supabaseAdmin
+    .from('trips')
+    .select('id, driver_id, status, started_at')
+    .eq('id', tripID)
+    .maybeSingle()
+  const trip = tripRow as { id: string; driver_id: string; status: string; started_at: string | null } | null
+  if (!trip) {
+    res.status(404).json({ error: { code: 'TRIP_NOT_FOUND', message: 'Trip not found' } })
+    return
+  }
+  if (trip.driver_id !== userId) {
+    res.status(403).json({ error: { code: 'NOT_DRIVER', message: 'Only the driver can start the run.' } })
+    return
+  }
+
+  const { data: rideRows } = await supabaseAdmin
+    .from('rides')
+    .select('id, rider_id, status, trip_date, origin_name')
+    .eq('trip_id', tripID)
+    .in('status', ['accepted', 'coordinating'])
+  const rides = (rideRows ?? []) as Array<{
+    id: string; rider_id: string; status: string; trip_date: string | null; origin_name: string | null
+  }>
+  if (rides.length === 0) {
+    res.status(409).json({ error: { code: 'NO_RIDERS', message: 'No riders are waiting on this trip.' } })
+    return
+  }
+
+  const tripDate = rides.find((r) => r.trip_date != null)?.trip_date ?? null
+  if (!rideStartableToday(tripDate)) {
+    res.status(409).json({
+      error: {
+        code: 'TRIP_NOT_TODAY',
+        message: `This trip is scheduled for ${tripDayLabel(tripDate as string)} — start the run on trip day.`,
+      },
+    })
+    return
+  }
+
+  // CAS pending → active so a double-tap doesn't re-notify everyone.
+  const startedAtIso = new Date().toISOString()
+  const { data: flipped } = await supabaseAdmin
+    .from('trips')
+    .update({ status: 'active', started_at: startedAtIso, updated_at: startedAtIso } as never)
+    .eq('id', tripID)
+    .eq('status', 'pending')
+    .select('id')
+    .maybeSingle()
+  if (!flipped) {
+    res.status(200).json({ ok: true, already_started: true })
+    return
+  }
+
+  for (const ride of rides) {
+    await seedChatMessage(
+      ride.id, userId,
+      "I'm on my way! Be ready at your pickup — scan my QR when you hop in.",
+      'text',
+    )
+    await notifyUserDual(
+      ride.rider_id,
+      'destination_run_started',
+      'Your driver is on the way!',
+      `Be ready at ${ride.origin_name ?? 'your pickup'} — scan their QR when you hop in.`,
+      { type: 'destination_run_started', ride_id: ride.id },
+    )
+  }
+
+  res.status(200).json({ ok: true, riders_notified: rides.length })
+})
+
+// GET /api/destinations/run/:tripID/roster — per-ride travel modes for the
+// driver's trip screen ("won't ride back" tags). Driver-gated.
+destinationsRouter.get('/run/:tripID/roster', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const tripID = req.params['tripID'] as string
+
+  const { data: tripRow } = await supabaseAdmin
+    .from('trips').select('id, driver_id, status, started_at').eq('id', tripID).maybeSingle()
+  const trip = tripRow as { id: string; driver_id: string; status: string; started_at: string | null } | null
+  if (!trip || trip.driver_id !== userId) {
+    res.status(404).json({ error: { code: 'TRIP_NOT_FOUND', message: 'Trip not found' } })
+    return
+  }
+
+  const { data: rideRows } = await supabaseAdmin
+    .from('rides').select('id').eq('trip_id', tripID)
+  const rideIds = ((rideRows ?? []) as Array<{ id: string }>).map((r) => r.id)
+  const modeByRide = new Map<string, string>()
+  if (rideIds.length > 0) {
+    const { data: offerRows } = await supabaseAdmin
+      .from('destination_offers')
+      .select('outbound_ride_id, return_ride_id, waitlist_id')
+      .or(rideIds.flatMap((id) => [`outbound_ride_id.eq.${id}`, `return_ride_id.eq.${id}`]).join(','))
+    const offers = (offerRows ?? []) as Array<{
+      outbound_ride_id: string | null; return_ride_id: string | null; waitlist_id: string | null
+    }>
+    const waitlistIds = [...new Set(offers.map((o) => o.waitlist_id).filter((v): v is string => v != null))]
+    const modeByWaitlist = new Map<string, string>()
+    if (waitlistIds.length > 0) {
+      const { data: wlRows } = await supabaseAdmin
+        .from('destination_waitlist').select('id, travel_mode').in('id', waitlistIds)
+      for (const w of (wlRows ?? []) as Array<{ id: string; travel_mode: string | null }>) {
+        modeByWaitlist.set(w.id, w.travel_mode ?? 'together')
+      }
+    }
+    for (const o of offers) {
+      const mode = o.waitlist_id != null ? (modeByWaitlist.get(o.waitlist_id) ?? 'together') : 'together'
+      for (const rid of [o.outbound_ride_id, o.return_ride_id]) {
+        if (rid != null && rideIds.includes(rid)) modeByRide.set(rid, mode)
+      }
+    }
+  }
+
+  res.status(200).json({
+    run_started: trip.started_at != null || trip.status === 'active',
+    riders: rideIds.map((id) => ({ ride_id: id, travel_mode: modeByRide.get(id) ?? 'together' })),
   })
 })
 

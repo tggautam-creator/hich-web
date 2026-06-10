@@ -34,6 +34,7 @@
  *   email sweep at the end) silently skipped.
  */
 import {
+  checkUpcomingDestinationRides,
   checkUpcomingRides,
   clearExpiredSnoozes,
   clearStaleOnlineFlags,
@@ -59,6 +60,7 @@ export async function runAllSweeps(reason: string): Promise<void> {
   console.log(`[cron] Starting sweep (${reason})`)
   const [
     reminders,
+    destReminders,
     expiry,
     missed,
     safetyNet,
@@ -77,6 +79,13 @@ export async function runAllSweeps(reason: string): Promise<void> {
     welcomeEmails,
   ] = await Promise.all([
     checkUpcomingRides(),
+    // V4 F6 5B — destination-trip reminder ladder (day-before / morning-of
+    // / 30 / 15). Isolated like the money-adjacent tasks below.
+    checkUpcomingDestinationRides().catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[cron] destination reminders failed: ${msg}`)
+      return { checked: 0, reminded: 0 }
+    }),
     expireStaleRequests(),
     expireMissedRides(),
     checkActiveRides(),
@@ -143,7 +152,7 @@ export async function runAllSweeps(reason: string): Promise<void> {
     }),
   ])
   console.log(
-    `[cron] Done: reminded=${reminders.reminded}, expired=${expiry.expired}, ` +
+    `[cron] Done: reminded=${reminders.reminded}, destReminded=${destReminders.reminded}, expired=${expiry.expired}, ` +
     `missed=${missed.expired}, safetyNet: checked=${safetyNet.checked} ` +
     `autoEnded=${safetyNet.autoEnded} reminders=${safetyNet.reminders}, ` +
     `sync: users=${sync.users} inserted=${sync.inserted}, ` +

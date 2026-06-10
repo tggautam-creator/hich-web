@@ -171,6 +171,141 @@ export async function checkUpcomingRides(): Promise<{ checked: number; reminded:
 }
 
 /**
+ * V4 F6 5B — reminder ladder for Explore DESTINATION trips. These rides are
+ * matched days/weeks ahead and are EXCLUDED from checkUpcomingRides (its
+ * filter requires a schedule_id; destination legs have none). Ladder:
+ *   - evening before (>= 6 PM local, trip_date == tomorrow): "Trip tomorrow"
+ *   - morning of (>= 9 AM local): "Trip today at {time}"
+ *   - 30 / 15 min: reuses the migration-038 flags + copy shape
+ * Identified by: trip_date set + schedule_id NULL (instant rides have no
+ * trip_date; board rides have a schedule_id). Both participants notified.
+ */
+export async function checkUpcomingDestinationRides(): Promise<{ checked: number; reminded: number }> {
+  const now = new Date()
+  const todayDate = getLocalDateString(now)
+  const tomorrowDate = getLocalDateString(new Date(now.getTime() + 24 * 60 * 60 * 1000))
+  const nowTime = getLocalTimeString(now)
+
+  type DestReminderRow = {
+    id: string
+    rider_id: string | null
+    driver_id: string | null
+    trip_date: string | null
+    trip_time: string | null
+    destination_name: string | null
+    reminder_daybefore_sent: boolean
+    reminder_today_sent: boolean
+    reminder_30_sent: boolean
+    reminder_15_sent: boolean
+  }
+  const { data: rideRows, error } = await supabaseAdmin
+    .from('rides')
+    .select(('id, rider_id, driver_id, trip_date, trip_time, destination_name, '
+      + 'reminder_daybefore_sent, reminder_today_sent, reminder_30_sent, reminder_15_sent') as never)
+    .is('schedule_id', null)
+    .not('trip_date', 'is', null)
+    .in('status', ['accepted', 'coordinating'])
+    .or('reminder_daybefore_sent.eq.false,reminder_today_sent.eq.false,reminder_30_sent.eq.false,reminder_15_sent.eq.false')
+    .in('trip_date', [todayDate, tomorrowDate])
+
+  if (error) {
+    console.error('[reminders] destination query failed:', error.message)
+    return { checked: 0, reminded: 0 }
+  }
+  const rides = (rideRows ?? []) as unknown as DestReminderRow[]
+  if (rides.length === 0) return { checked: 0, reminded: 0 }
+
+  let reminded = 0
+  // A multi-rider trip is N ride rows sharing one driver — without this the
+  // driver would get N identical pushes in the same sweep. First ride per
+  // (driver, date, rung) carries the driver; the rest go rider-only.
+  const driversNotified = new Set<string>()
+  for (const ride of rides) {
+    if (!ride.trip_date) continue
+    const destName = ride.destination_name ?? 'your trip'
+    const timeLabel = ride.trip_time ? formatLocalTimeLabel(ride.trip_time) : null
+    const recipients = (rung: string): string[] => {
+      const ids = [ride.rider_id].filter(Boolean) as string[]
+      if (ride.driver_id) {
+        const key = `${ride.driver_id}:${ride.trip_date}:${rung}`
+        if (!driversNotified.has(key)) {
+          driversNotified.add(key)
+          ids.push(ride.driver_id)
+        }
+      }
+      return ids
+    }
+
+    // Evening before (6 PM+ the day before).
+    if (!ride.reminder_daybefore_sent && ride.trip_date === tomorrowDate && nowTime >= '18:00:00') {
+      const body = timeLabel
+        ? `Trip tomorrow — ${destName} at ${timeLabel}. Check the trip chat for the plan.`
+        : `Trip tomorrow — ${destName}. Check the trip chat for the plan.`
+      await sendReminderNotification(ride.id, recipients('daybefore'), 'Trip tomorrow!', body)
+      await supabaseAdmin.from('rides').update({ reminder_daybefore_sent: true } as never).eq('id', ride.id)
+      reminded++
+      continue
+    }
+
+    if (ride.trip_date !== todayDate) continue
+
+    // Morning of (9 AM+).
+    if (!ride.reminder_today_sent && nowTime >= '09:00:00') {
+      const body = timeLabel
+        ? `${destName} today at ${timeLabel}. Your trip chat has the plan — be ready at your pickup.`
+        : `${destName} is today. Your trip chat has the plan — be ready at your pickup.`
+      await sendReminderNotification(ride.id, recipients('today'), "Today's the day!", body)
+      await supabaseAdmin.from('rides').update({ reminder_today_sent: true }).eq('id', ride.id)
+      reminded++
+      continue
+    }
+
+    // 30 / 15 min before departure (same shape as the board ladder).
+    if (!ride.trip_time) continue
+    const rideDateTime = parseScheduledRideDateTime(ride.trip_date, ride.trip_time)
+    if (isNaN(rideDateTime.getTime())) continue
+    const minutesUntil = (rideDateTime.getTime() - now.getTime()) / (1000 * 60)
+    if (minutesUntil > 30 || minutesUntil < -5) continue
+
+    if (!ride.reminder_30_sent && minutesUntil > 0 && minutesUntil <= 30) {
+      await sendReminderNotification(
+        ride.id, recipients('30'), 'Trip in 30 minutes',
+        `Your trip to ${destName} departs in ~${Math.round(minutesUntil)} min.`,
+      )
+      await supabaseAdmin.from('rides').update({ reminder_30_sent: true }).eq('id', ride.id)
+      reminded++
+    }
+    if (!ride.reminder_15_sent && minutesUntil <= 15) {
+      await sendReminderNotification(
+        ride.id, recipients('15'), 'Trip starting soon!',
+        minutesUntil > 0
+          ? `Your trip to ${destName} departs in ~${Math.round(minutesUntil)} min. Head to the pickup!`
+          : `Your trip to ${destName} departs now. Head to the pickup!`,
+      )
+      await supabaseAdmin
+        .from('rides')
+        .update({ reminder_15_sent: true, reminder_30_sent: true })
+        .eq('id', ride.id)
+      reminded++
+    }
+  }
+
+  console.log(`[reminders] destination: checked ${rides.length}, sent ${reminded}`)
+  return { checked: rides.length, reminded }
+}
+
+/** "21:00:00" -> "9:00 PM" for reminder copy. */
+function formatLocalTimeLabel(raw: string): string | null {
+  const match = /^(\d{2}):(\d{2})/.exec(raw)
+  if (!match) return null
+  const hour = Number(match[1])
+  const minute = match[2]
+  const suffix = hour >= 12 ? 'PM' : 'AM'
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12
+  return `${hour12}:${minute} ${suffix}`
+}
+
+/**
  * Sends FCM push + persists in-app notification for ride reminders.
  */
 async function sendReminderNotification(
