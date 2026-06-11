@@ -2195,8 +2195,13 @@ destinationsRouter.get('/trip-context/:rideID', validateJwt, async (req: Request
     } else if (returnLeg == null) {
       stage = 'at_destination'
       canStartReturn = true
-    } else if (returnLeg.status === 'accepted' || returnLeg.status === 'coordinating') {
-      stage = 'return_ready' // return created, awaiting QR-start
+    } else if (returnLeg.status === 'accepted') {
+      // V4 F6 R2/R3 — multi-rider return: created UNCONFIRMED (meetup +
+      // drop-off proposals still being accepted). NOT scannable yet — the
+      // rider sees the proposal cards, not a "scan to start" banner.
+      stage = 'return_coordinating'
+    } else if (returnLeg.status === 'coordinating') {
+      stage = 'return_ready' // both confirmed → ready to scan (QR-start)
     } else if (returnLeg.status === 'active') {
       stage = 'heading_home'
     } else if (returnLeg.status === 'cancelled') {
