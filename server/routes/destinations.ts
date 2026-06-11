@@ -2464,8 +2464,12 @@ destinationsRouter.get('/run/:tripID/roster', validateJwt, async (req: Request, 
       wants_return: boolean | null; outbound_trip_id: string | null; return_trip_id: string | null
     } | null
     returnTripId = plan?.return_trip_id ?? null
-    const hasReturner = rideIds.some((id) => (modeByRide.get(id) ?? 'together') !== 'one_way')
-    wantsReturn = (plan?.wants_return ?? false) && hasReturner
+    // V4 F6 R4 fix (Tarun) — offer the ride home whenever ANY rider isn't
+    // explicitly one-way, regardless of the plan's pre-set wants_return flag
+    // (the driver decides post-trip; the start-return endpoint skips one-way
+    // riders anyway). A manually-created/one-way-flagged plan was hiding the
+    // CTA even though the riders were round-trip.
+    wantsReturn = rideIds.some((id) => (modeByRide.get(id) ?? 'together') !== 'one_way')
   }
   const outboundComplete = rideRowsTyped.length > 0
     && rideRowsTyped.every((r) => r.status === 'completed' && r.payment_status === 'paid')
