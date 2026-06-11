@@ -1905,12 +1905,16 @@ destinationsRouter.get('/my-trips/list', validateJwt, async (_req: Request, res:
   const [{ data: plans }, { data: dests }, { data: rides }, { data: cps }] = await Promise.all([
     supabaseAdmin.from('destination_driver_plans').select('id, wants_return').in('id', planIds.length ? planIds : ['x']),
     supabaseAdmin.from('featured_destinations').select('id, name, image_url').in('id', destIds),
-    supabaseAdmin.from('rides').select('id, status, payment_status').in('id', rideIds.length ? rideIds : ['x']),
+    supabaseAdmin.from('rides').select('id, status, payment_status, trip_id').in('id', rideIds.length ? rideIds : ['x']),
     supabaseAdmin.from('users').select('id, full_name, avatar_url').in('id', cpIds),
   ])
   const planMap = new Map((plans ?? []).map((p: { id: string; wants_return: boolean }) => [p.id, p.wants_return]))
   const destMap = new Map((dests ?? []).map((d: { id: string; name: string; image_url: string | null }) => [d.id, d]))
-  const rideMap = new Map((rides ?? []).map((r: { id: string; status: string; payment_status: string | null }) => [r.id, r]))
+  const rideMap = new Map(
+    (rides ?? []).map(
+      (r: { id: string; status: string; payment_status: string | null; trip_id: string | null }) => [r.id, r],
+    ),
+  )
   const cpMap = new Map((cps ?? []).map((u: { id: string; full_name: string | null; avatar_url: string | null }) => [u.id, u]))
 
   const ACTIVE_STATUSES = ['requested', 'accepted', 'coordinating', 'active']
@@ -1933,9 +1937,15 @@ destinationsRouter.get('/my-trips/list', validateJwt, async (_req: Request, res:
   }).filter((t) => !t.fullyDone && !t.hasActiveLeg && t.o.outbound_ride_id != null).map((t) => {
     const cpId = t.o.driver_id === userId ? t.o.rider_id : t.o.driver_id
     const dest = destMap.get(t.o.destination_id)
+    // V4 F6 R0 — the outbound ride's shared trip_id, so the iOS Rides tab
+    // can consolidate a driver's N per-rider offers on one event trip into
+    // a single "manage your trip" card (fixes the post-drop-off fragment
+    // into two per-rider banners).
+    const outTripId = t.o.outbound_ride_id ? (rideMap.get(t.o.outbound_ride_id)?.trip_id ?? null) : null
     return {
       offer_id: t.o.id,
       ride_id: t.o.outbound_ride_id,
+      trip_id: outTripId,
       role: t.o.driver_id === userId ? 'driver' : 'rider',
       destination_name: dest?.name ?? 'Trip',
       destination_image_url: dest?.image_url ?? null,

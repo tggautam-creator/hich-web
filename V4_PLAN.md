@@ -799,6 +799,40 @@ Server-first per system. ⚠️ Admin slices (A.3, B.3) are the parallel-admin-s
 
 ---
 
+### 5.6.3 — Shared RETURN-run redesign (planned 2026-06-11, Tarun device-QA + 4 design decisions)
+
+> Driven by Tarun's drop-off device QA: after dropping both riders the unified "manage riders" card fragmented into two per-rider banners, and the return was still the old per-rider chat flow. He asked to mirror the outbound run for the return: driver-led, on the manage-riders screen, with a broadcast meetup proposal then an auto drop-off proposal. **Design decisions locked via AskUserQuestion (2026-06-11):** (1) riders can **Accept OR counter** the meetup (full proposal-card parity with outbound); (2) the run screen shows a **per-rider checklist + count** ("meetup — 1 of 2 confirmed"); (3) the return run (scan-in) unlocks only **after every drop-off is accepted too** (full plan locked first); (4) for multi-rider events the return is driven **only from the run/manage-riders screen** — the per-rider chat "Start return trip" is hidden for multi-rider (solo events keep it).
+
+**The bug (root cause, must fix first):** `/api/rides/active` filters out `completed` rides (`rides.ts` status-in gate), so the unified group card (built from it) vanishes at drop-off. The fallback `myTrips` list (`/api/destinations/my-trips/list`) returns **one row per offer** (not consolidated by trip) and only surfaces a trip once it has no active leg — hence two "with {rider}" banners. The outbound `trip_id` is stable on the completed rides, so we consolidate on it.
+
+**The return model (inverse of outbound):** outbound = navigate to each pickup (scan-in per stop) → drive to event (scan-out all at event). Return = **one shared meetup at the event** (scan-in all there) → navigate to each drop-off (scan-out per stop). Drop-off defaults to each rider's **outbound `rides.origin`** (exactly where they were picked up). The shared return `trips` row already exists (`getOrCreatePlanLegTrip(plan,'return')`, mig 127) so the F17 segment split still works.
+
+**The 5-phase return run (on the run/manage-riders screen):**
+1. **At the event (outbound done+paid):** run screen shows riders "Dropped at {event}" + bottom CTA **"Start the ride home."**
+2. **Propose meetup:** map sheet (default pin = event location; driver can nudge) → broadcasts ONE `return_pickup_suggestion` into every return ride's chat (loop like Start-the-run's `seedChatMessage`).
+3. **Watch confirmations (per-rider checklist + count):** each rider row shows Pending → Accepted (or "suggested a new spot" if countered → driver reviews/accepts the counter).
+4. **Auto drop-off proposals:** when ALL meetup pickups are confirmed → server auto-broadcasts a `return_dropoff_suggestion` per rider (default = their outbound `origin`) with **Accept / Change drop-off**.
+5. **Return run (gated on all drop-offs accepted):** run screen flips to the drop-off stop list (optimal order) → scan everyone in at the meetup → navigate + scan-out each at home. Reuses the outbound run chrome (DriverPickupPage QR, MKDirections ETAs, drag reorder).
+
+**Data model / state machine:**
+- Return rides are created **unconfirmed** (`status='accepted'`, `pickup_confirmed=false`, `dropoff_confirmed=false`) — NOT the old pre-confirmed `coordinating`. They flip to `coordinating` only when both the meetup pickup AND the home drop-off are accepted (reuses the existing accept-location CAS → `coordinating` transition).
+- `origin` = event (shared meetup, updated if the driver's proposed spot differs); `destination` = rider's outbound `origin` (home) by default, overrideable via "Change drop-off."
+- All return rides share `return_trip_id`; the run unlocks when **every** return ride on the trip is `coordinating`.
+
+**Slices (R-series, build in order; each gated + locally committed; comprehensive whole-workflow review before handoff):**
+| # | Slice | Scope |
+|---|---|---|
+| R0 | **Fragmentation fix** (the visible bug) | Server: add outbound `trip_id` to each `my-trips/list` row. iOS: group the DRIVER's `myTrips` rows by `trip_id` → ONE poster card ("You're driving N riders · {event} · manage your trip") under "Event trips"; tap → `DriverEventTripCover(tripID)` (run screen, which already includes `completed` rides). Riders unchanged (one offer/trip). New `onOpenEventTripRun(tripID)` callback wired through SignedInTabs → `pendingEventTrip`. |
+| R1 | **"Start the ride home" + broadcast meetup proposal** (server + driver UI) | Server `POST /api/destinations/run/:tripID/start-return` (driver-gated; validates outbound done+paid for all riders; mints/gets return trip; creates unconfirmed return rides; broadcasts `return_pickup_suggestion` to each, default = event or driver-chosen meetup). Run screen: "Start the ride home" CTA (shown when outbound all-completed) → meetup map sheet → POST; then the per-rider **confirmation checklist** ("meetup — 0 of N"). |
+| R2 | **Rider meetup accept/counter** (rider UI + server) | Return meetup proposal card in the rider's `EventTripChatPage` (reuse `PickupProposalCard`) with **Accept** (`POST /return/:rideID/accept-pickup` — flips `pickup_confirmed`; when all siblings confirmed, auto-broadcasts the drop-off proposals) + **Suggest another spot** (reuse `ProposePickupPoint` on the return ride → driver accepts via the existing card). Run-screen checklist reflects each state. |
+| R3 | **Auto drop-off proposals + accept/change** (rider + server) | `return_dropoff_suggestion` card (default = outbound `origin`, "Home — {addr}") with **Accept** (`POST /return/:rideID/accept-dropoff` — flips `dropoff_confirmed`; both confirmed → ride `coordinating`) + **Change drop-off** (MapPickerPage → proposal). Run-screen checklist row advances "meetup ✓ · drop-off ✓". |
+| R4 | **Return run (driver drive)** | When all return rides are `coordinating`: run screen flips to the **drop-off stop list** (greedy-shortest order, drag) — scan-in all at the meetup, then per-stop Navigate + scan-out at each home. Reuse outbound `DriverPickupPage`/`DriverActiveRidePage` chrome + ETAs. Hide the per-rider chat "Start return trip" for multi-rider events (decision 4). |
+| R5 | **Comprehensive review + whole-workflow QA** | UI/UX reviewer pass over the ENTIRE event workflow (request → match → outbound run → drop-off → return meetup → drop-off proposal → return run → done), both roles, every empty/loading/error/counter state; 2-rider scripted money QA across both legs; parity matrix; then hand off. |
+
+**Standing rules (additional, this redesign):** the meetup/drop-off proposals reuse the EXISTING proposal-card + `accept-location` machinery (no parallel silent paths — the reuse-proposal-flow memory rule); broadcasts loop `seedChatMessage` per return ride (riders see only their own thread; driver's merged All-tab dedups); the "all confirmed" triggers live in **destinations.ts** (my lane) via dedicated return endpoints, NOT in `rides.ts` accept-location (parallel-session lane); auto-advance only at the two server-computed gates (all-pickups → drop-off broadcast; all-drop-offs → run unlock), never client-guessed.
+
+---
+
 ### 5.7 — Sharing (rides + Explore)
 
 **Finalized:** 2026-06-05 (decided with Tarun via AskUserQuestion).
