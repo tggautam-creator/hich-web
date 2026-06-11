@@ -3059,6 +3059,99 @@ destinationsRouter.post('/return/:rideID/counter-pickup', validateJwt, async (re
   res.status(200).json({ ok: true })
 })
 
+// POST /api/destinations/return/:rideID/accept-dropoff — V4 F6 R3. The rider
+// confirms the proposed drop-off (their home by default). Flips
+// dropoff_confirmed; with the meetup already confirmed (drop-off cards only go
+// out after every meetup is in), the ride flips to 'coordinating' (startable).
+destinationsRouter.post('/return/:rideID/accept-dropoff', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const rideID = req.params['rideID'] as string
+  const { data: rideRow } = await supabaseAdmin
+    .from('rides')
+    .select('id, rider_id, driver_id, pickup_confirmed, dropoff_confirmed, status')
+    .eq('id', rideID)
+    .maybeSingle()
+  const ride = rideRow as {
+    id: string; rider_id: string; driver_id: string | null
+    pickup_confirmed: boolean | null; dropoff_confirmed: boolean | null; status: string
+  } | null
+  if (!ride) {
+    res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+    return
+  }
+  if (ride.rider_id !== userId && ride.driver_id !== userId) {
+    res.status(403).json({ error: { code: 'NOT_YOURS', message: 'Not your ride.' } })
+    return
+  }
+  await supabaseAdmin
+    .from('rides').update({ dropoff_confirmed: true } as never).eq('id', rideID).eq('dropoff_confirmed', false)
+  if (ride.pickup_confirmed === true && ride.status === 'accepted') {
+    await supabaseAdmin
+      .from('rides').update({ status: 'coordinating' } as never).eq('id', rideID).eq('status', 'accepted')
+  }
+  res.status(200).json({ ok: true })
+})
+
+// POST /api/destinations/return/:rideID/change-dropoff — V4 F6 R3. The rider
+// picks a DIFFERENT drop-off (it's their destination, so changing is final —
+// no driver re-accept). Re-prices the leg, marks dropoff_confirmed, and tells
+// the driver. Body: { lat, lng, note? }.
+destinationsRouter.post('/return/:rideID/change-dropoff', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const rideID = req.params['rideID'] as string
+  const body = (req.body ?? {}) as { lat?: unknown; lng?: unknown; note?: unknown }
+  const lat = typeof body.lat === 'number' ? body.lat : null
+  const lng = typeof body.lng === 'number' ? body.lng : null
+  if (lat == null || lng == null) {
+    res.status(400).json({ error: { code: 'MISSING_COORDS', message: 'Pick a spot on the map.' } })
+    return
+  }
+  const { data: rideRow } = await supabaseAdmin
+    .from('rides').select('id, rider_id, driver_id, pickup_confirmed, status, origin').eq('id', rideID).maybeSingle()
+  const ride = rideRow as {
+    id: string; rider_id: string; driver_id: string | null
+    pickup_confirmed: boolean | null; status: string; origin: GeoJSONPoint | null
+  } | null
+  if (!ride) {
+    res.status(404).json({ error: { code: 'RIDE_NOT_FOUND', message: 'Ride not found' } })
+    return
+  }
+  if (ride.rider_id !== userId && ride.driver_id !== userId) {
+    res.status(403).json({ error: { code: 'NOT_YOURS', message: 'Not your ride.' } })
+    return
+  }
+  const note = optString(body.note)
+  const meetup = ride.origin?.coordinates
+  const fareCents = meetup ? await estimateFareCentsBetween(meetup[1], meetup[0], lat, lng) : null
+  const update: Record<string, unknown> = {
+    destination: geoPoint(lat, lng),
+    dropoff_point: geoPoint(lat, lng),
+    dropoff_confirmed: true,
+  }
+  if (note) update['destination_name'] = note
+  if (fareCents != null) update['fare_cents'] = fareCents
+  await supabaseAdmin.from('rides').update(update as never).eq('id', rideID)
+  if (ride.pickup_confirmed === true && ride.status === 'accepted') {
+    await supabaseAdmin
+      .from('rides').update({ status: 'coordinating' } as never).eq('id', rideID).eq('status', 'accepted')
+  }
+  const { data: offerRow } = await supabaseAdmin
+    .from('destination_offers').select('outbound_ride_id').eq('return_ride_id', rideID).maybeSingle()
+  const chatRideId = (offerRow as { outbound_ride_id: string | null } | null)?.outbound_ride_id ?? rideID
+  await seedChatMessage(chatRideId, userId, `Updated drop-off to ${note ?? 'a new spot'}.`, 'text')
+  const other = userId === ride.driver_id ? ride.rider_id : ride.driver_id
+  if (other) {
+    await notifyUserDual(
+      other,
+      'destination_return_dropoff',
+      'Drop-off updated',
+      `A rider updated their ride-home drop-off${note ? ` to ${note}` : ''}.`,
+      { type: 'destination_return_dropoff', ride_id: chatRideId },
+    )
+  }
+  res.status(200).json({ ok: true })
+})
+
 // POST /api/destinations/return/:rideID/skip — at the destination, the rider
 // or driver decides NOT to take the ride home. The outbound already happened
 // and was paid, so there's nothing to cancel/refund — this just concludes the
