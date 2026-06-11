@@ -2407,18 +2407,30 @@ destinationsRouter.get('/run/:tripID/roster', validateJwt, async (req: Request, 
     return
   }
 
+  // V4 F6 R1 — carry per-ride status + confirm flags so the run screen can
+  // drive the return-meetup checklist (pickup/dropoff progress).
   const { data: rideRows } = await supabaseAdmin
-    .from('rides').select('id').eq('trip_id', tripID)
-  const rideIds = ((rideRows ?? []) as Array<{ id: string }>).map((r) => r.id)
+    .from('rides')
+    .select('id, status, payment_status, pickup_confirmed, dropoff_confirmed')
+    .eq('trip_id', tripID)
+  const rideRowsTyped = (rideRows ?? []) as Array<{
+    id: string; status: string; payment_status: string | null
+    pickup_confirmed: boolean | null; dropoff_confirmed: boolean | null
+  }>
+  const rideIds = rideRowsTyped.map((r) => r.id)
+  const statusById = new Map(rideRowsTyped.map((r) => [r.id, r]))
   const modeByRide = new Map<string, string>()
+  let planId: string | null = null
   if (rideIds.length > 0) {
     const { data: offerRows } = await supabaseAdmin
       .from('destination_offers')
-      .select('outbound_ride_id, return_ride_id, waitlist_id')
+      .select('driver_plan_id, outbound_ride_id, return_ride_id, waitlist_id')
       .or(rideIds.flatMap((id) => [`outbound_ride_id.eq.${id}`, `return_ride_id.eq.${id}`]).join(','))
     const offers = (offerRows ?? []) as Array<{
+      driver_plan_id: string | null
       outbound_ride_id: string | null; return_ride_id: string | null; waitlist_id: string | null
     }>
+    planId = offers.find((o) => o.driver_plan_id != null)?.driver_plan_id ?? null
     const waitlistIds = [...new Set(offers.map((o) => o.waitlist_id).filter((v): v is string => v != null))]
     const modeByWaitlist = new Map<string, string>()
     if (waitlistIds.length > 0) {
@@ -2436,10 +2448,223 @@ destinationsRouter.get('/run/:tripID/roster', validateJwt, async (req: Request, 
     }
   }
 
+  // V4 F6 R1 — return-eligibility for the run screen's "Start the ride home"
+  // CTA + leg-switch. `wants_return` = the plan wants a return AND ≥1 rider
+  // here isn't one-way; `outbound_complete` = every leg on this trip is
+  // done+paid; `return_trip_id` = the plan's return trip if it's been minted.
+  let wantsReturn = false
+  let returnTripId: string | null = null
+  if (planId != null) {
+    const { data: planRow } = await supabaseAdmin
+      .from('destination_driver_plans')
+      .select('wants_return, outbound_trip_id, return_trip_id')
+      .eq('id', planId)
+      .maybeSingle()
+    const plan = planRow as {
+      wants_return: boolean | null; outbound_trip_id: string | null; return_trip_id: string | null
+    } | null
+    returnTripId = plan?.return_trip_id ?? null
+    const hasReturner = rideIds.some((id) => (modeByRide.get(id) ?? 'together') !== 'one_way')
+    wantsReturn = (plan?.wants_return ?? false) && hasReturner
+  }
+  const outboundComplete = rideRowsTyped.length > 0
+    && rideRowsTyped.every((r) => r.status === 'completed' && r.payment_status === 'paid')
+  const isReturnLeg = returnTripId === tripID
+
   res.status(200).json({
     run_started: trip.started_at != null || trip.status === 'active',
-    riders: rideIds.map((id) => ({ ride_id: id, travel_mode: modeByRide.get(id) ?? 'together' })),
+    wants_return: wantsReturn,
+    outbound_complete: outboundComplete,
+    return_trip_id: returnTripId,
+    is_return_leg: isReturnLeg,
+    riders: rideIds.map((id) => {
+      const r = statusById.get(id)
+      return {
+        ride_id: id,
+        travel_mode: modeByRide.get(id) ?? 'together',
+        status: r?.status ?? 'accepted',
+        meetup_confirmed: r?.pickup_confirmed ?? false,
+        dropoff_confirmed: r?.dropoff_confirmed ?? false,
+      }
+    }),
   })
+})
+
+// POST /api/destinations/run/:tripID/start-return — V4 F6 R1. The driver-led,
+// trip-scoped ride-home kickoff (the multi-rider replacement for the per-rider
+// chat "Start return trip"). From the run/manage-riders screen at the event,
+// the driver proposes ONE shared meetup and starts the return for EVERY
+// returning rider at once. For each non-one-way rider it creates an UNCONFIRMED
+// return ride (status 'accepted', pickup/dropoff unconfirmed) on the shared
+// return trip — it flips to 'coordinating' only once the rider accepts both the
+// meetup pickup AND their home drop-off (R2/R3) — and broadcasts a
+// `return_pickup_suggestion` into each rider's (outbound) chat. :tripID is the
+// OUTBOUND trip. Body: { meetup_lat?, meetup_lng?, meetup_name? } (default = the
+// event location). Returns the return trip id + created ride ids.
+destinationsRouter.post('/run/:tripID/start-return', validateJwt, async (req: Request, res: Response) => {
+  const userId = res.locals['userId'] as string
+  const tripID = req.params['tripID'] as string
+  const body = (req.body ?? {}) as { meetup_lat?: unknown; meetup_lng?: unknown; meetup_name?: unknown }
+
+  const { data: tripRow } = await supabaseAdmin
+    .from('trips').select('id, driver_id').eq('id', tripID).maybeSingle()
+  const trip = tripRow as { id: string; driver_id: string } | null
+  if (!trip) {
+    res.status(404).json({ error: { code: 'TRIP_NOT_FOUND', message: 'Trip not found' } })
+    return
+  }
+  if (trip.driver_id !== userId) {
+    res.status(403).json({ error: { code: 'NOT_DRIVER', message: 'Only the driver can start the return.' } })
+    return
+  }
+
+  // Every outbound leg on this trip must be done + paid before the ride home.
+  const { data: rideRows } = await supabaseAdmin
+    .from('rides')
+    .select('id, status, payment_status, origin, origin_name, destination, destination_name, companion_a_id, companion_b_id, caregiver_id, trip_date, trip_time')
+    .eq('trip_id', tripID)
+  const outRides = (rideRows ?? []) as unknown as Array<{
+    id: string; status: string; payment_status: string | null
+    origin: GeoJSONPoint | null; origin_name: string | null
+    destination: GeoJSONPoint | null; destination_name: string | null
+    companion_a_id: string | null; companion_b_id: string | null; caregiver_id: string | null
+    trip_date: string | null; trip_time: string | null
+  }>
+  if (outRides.length === 0) {
+    res.status(404).json({ error: { code: 'TRIP_NOT_FOUND', message: 'No riders on this trip.' } })
+    return
+  }
+  if (!outRides.every((r) => r.status === 'completed' && r.payment_status === 'paid')) {
+    res.status(409).json({ error: { code: 'NOT_READY', message: 'Drop everyone off and settle up first.' } })
+    return
+  }
+
+  // Offers for these outbound rides → plan + travel modes (who rides back).
+  const outIds = outRides.map((r) => r.id)
+  const { data: offerRows } = await supabaseAdmin
+    .from('destination_offers')
+    .select('id, driver_plan_id, rider_id, outbound_ride_id, return_ride_id, waitlist_id')
+    .in('outbound_ride_id', outIds)
+    .eq('status', 'accepted')
+  const offers = (offerRows ?? []) as Array<{
+    id: string; driver_plan_id: string | null; rider_id: string
+    outbound_ride_id: string | null; return_ride_id: string | null; waitlist_id: string | null
+  }>
+  const waitlistIds = [...new Set(offers.map((o) => o.waitlist_id).filter((v): v is string => v != null))]
+  const modeByWaitlist = new Map<string, string>()
+  if (waitlistIds.length > 0) {
+    const { data: wlRows } = await supabaseAdmin
+      .from('destination_waitlist').select('id, travel_mode').in('id', waitlistIds)
+    for (const w of (wlRows ?? []) as Array<{ id: string; travel_mode: string | null }>) {
+      modeByWaitlist.set(w.id, w.travel_mode ?? 'together')
+    }
+  }
+
+  const planId = offers.find((o) => o.driver_plan_id != null)?.driver_plan_id ?? null
+  if (!planId) {
+    res.status(409).json({ error: { code: 'NO_PLAN', message: 'This trip has no driver plan to return on.' } })
+    return
+  }
+  const returnLegTrip = await getOrCreatePlanLegTrip(planId, 'return', userId)
+  if (returnLegTrip.error || !returnLegTrip.tripId) {
+    res.status(500).json({ error: { code: 'RETURN_TRIP_FAILED', message: 'Could not set up the ride home.' } })
+    return
+  }
+  const returnTripId = returnLegTrip.tripId
+
+  // Default meetup = the event (outbound destination); driver can override.
+  const eventCoords = outRides[0]?.destination?.coordinates
+  const meetupLat = typeof body.meetup_lat === 'number' ? body.meetup_lat : eventCoords?.[1]
+  const meetupLng = typeof body.meetup_lng === 'number' ? body.meetup_lng : eventCoords?.[0]
+  const meetupName = optString(body.meetup_name) ?? outRides[0]?.destination_name ?? 'the event'
+  if (meetupLat == null || meetupLng == null) {
+    res.status(400).json({ error: { code: 'MISSING_COORDS', message: 'Trip is missing location data.' } })
+    return
+  }
+
+  // One unconfirmed return ride + one meetup proposal per returning rider.
+  const created: string[] = []
+  for (const offer of offers) {
+    const mode = offer.waitlist_id != null ? (modeByWaitlist.get(offer.waitlist_id) ?? 'together') : 'together'
+    if (mode === 'one_way') continue
+    if (offer.return_ride_id != null) continue
+    const out = outRides.find((r) => r.id === offer.outbound_ride_id)
+    const homeCoords = out?.origin?.coordinates
+    if (!out || !homeCoords) continue
+    const homeLat = homeCoords[1]
+    const homeLng = homeCoords[0]
+    const homeName = out.origin_name ?? 'Home'
+    const fareCents = await estimateFareCentsBetween(meetupLat, meetupLng, homeLat, homeLng)
+    const { data: ride } = await supabaseAdmin
+      .from('rides')
+      .insert({
+        rider_id: offer.rider_id,
+        driver_id: userId,
+        origin: geoPoint(meetupLat, meetupLng),
+        origin_name: meetupName,
+        destination: geoPoint(homeLat, homeLng),
+        destination_name: homeName,
+        // UNCONFIRMED — flips to 'coordinating' only when the rider accepts
+        // BOTH the meetup pickup (R2) and the home drop-off (R3).
+        status: 'accepted',
+        fare_cents: fareCents,
+        payment_status: 'pending',
+        pickup_point: geoPoint(meetupLat, meetupLng),
+        pickup_confirmed: false,
+        dropoff_point: geoPoint(homeLat, homeLng),
+        dropoff_confirmed: false,
+        companion_a_id: out.companion_a_id,
+        companion_b_id: out.companion_b_id,
+        caregiver_id: out.caregiver_id,
+        trip_id: returnTripId,
+        trip_date: out.trip_date,
+        trip_time: out.trip_time,
+      } as never)
+      .select('id')
+      .single()
+    if (!ride) continue
+    const returnRideId = (ride as { id: string }).id
+    await supabaseAdmin
+      .from('destination_offers')
+      .update({ return_ride_id: returnRideId, updated_at: new Date().toISOString() } as never)
+      .eq('id', offer.id)
+    // Broadcast the meetup proposal into the rider's OUTBOUND chat (the
+    // thread they're looking at). `return_ride_id` in meta lets the rider's
+    // Accept/counter target the new return ride (R2).
+    if (offer.outbound_ride_id) {
+      await seedChatMessage(
+        offer.outbound_ride_id,
+        userId,
+        `Meet me at ${meetupName} for the ride home — accept the spot or suggest another.`,
+        'return_pickup_suggestion',
+        {
+          lat: meetupLat,
+          lng: meetupLng,
+          note: meetupName,
+          return_ride_id: returnRideId,
+          fare_cents: fareCents,
+          proposed_by: userId,
+        },
+      )
+      await notifyUserDual(
+        offer.rider_id,
+        'destination_return_pickup',
+        'Ride home — confirm the meetup',
+        `Your driver picked a meetup at ${meetupName}. Accept it or suggest another spot.`,
+        { type: 'destination_return_pickup', ride_id: offer.outbound_ride_id },
+      )
+    }
+    created.push(returnRideId)
+  }
+
+  if (created.length === 0) {
+    res.status(409).json({
+      error: { code: 'NO_RETURNERS', message: 'No riders are riding back, or the return already started.' },
+    })
+    return
+  }
+
+  res.status(200).json({ return_trip_id: returnTripId, ride_ids: created })
 })
 
 // PATCH /api/destinations/run/:tripID/order — driver persists the pickup
