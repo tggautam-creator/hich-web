@@ -1882,6 +1882,39 @@ destinationsRouter.get('/requests/list', validateJwt, async (req: Request, res: 
 destinationsRouter.get('/my-trips/list', validateJwt, async (_req: Request, res: Response) => {
   const userId = res.locals['userId'] as string
 
+  // V4 F6 E1 — the rider's PENDING event requests (waitlist 'waiting'), so the
+  // Rides tab can surface + withdraw them. Independent of the accepted trips
+  // below. Withdraw targets `DELETE /destinations/:destinationId/waitlist`.
+  const { data: pendingWl } = await supabaseAdmin
+    .from('destination_waitlist')
+    .select('id, destination_id, desired_date, travel_mode, group_size')
+    .eq('rider_id', userId)
+    .eq('status', 'waiting')
+  const pendingRows = (pendingWl ?? []) as Array<{
+    id: string; destination_id: string; desired_date: string | null
+    travel_mode: string | null; group_size: number | null
+  }>
+  const pendingDestIds = [...new Set(pendingRows.map((r) => r.destination_id))]
+  const pendingDestsRes = pendingDestIds.length
+    ? await supabaseAdmin.from('featured_destinations').select('id, name, image_url').in('id', pendingDestIds)
+    : { data: [] }
+  const pendingDestMap = new Map(
+    ((pendingDestsRes.data ?? []) as Array<{ id: string; name: string; image_url: string | null }>)
+      .map((d) => [d.id, d]),
+  )
+  const pendingRequests = pendingRows.map((r) => {
+    const dest = pendingDestMap.get(r.destination_id)
+    return {
+      waitlist_id: r.id,
+      destination_id: r.destination_id,
+      destination_name: dest?.name ?? 'Event trip',
+      destination_image_url: dest?.image_url ?? null,
+      desired_date: r.desired_date,
+      travel_mode: r.travel_mode ?? 'together',
+      group_size: r.group_size ?? 1,
+    }
+  })
+
   const { data: offerRows } = await supabaseAdmin
     .from('destination_offers')
     .select('id, driver_plan_id, destination_id, driver_id, rider_id, outbound_ride_id, return_ride_id')
@@ -1892,7 +1925,7 @@ destinationsRouter.get('/my-trips/list', validateJwt, async (_req: Request, res:
     driver_id: string; rider_id: string; outbound_ride_id: string | null; return_ride_id: string | null
   }>
   if (offers.length === 0) {
-    res.status(200).json({ trips: [] })
+    res.status(200).json({ trips: [], pending_requests: pendingRequests })
     return
   }
 
@@ -1953,7 +1986,7 @@ destinationsRouter.get('/my-trips/list', validateJwt, async (_req: Request, res:
     }
   })
 
-  res.status(200).json({ trips })
+  res.status(200).json({ trips, pending_requests: pendingRequests })
 })
 
 // ── Offer detail (Phase 1 — Event Request page) ───────────────────────────────
