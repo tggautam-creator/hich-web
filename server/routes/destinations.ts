@@ -2426,6 +2426,9 @@ destinationsRouter.get('/run/:tripID/roster', validateJwt, async (req: Request, 
   const statusById = new Map(rideRowsTyped.map((r) => [r.id, r]))
   const modeByRide = new Map<string, string>()
   let planId: string | null = null
+  // Return ride ids linked to these outbound offers — used to detect an
+  // already-started return even when the trip has no driver_plan_id.
+  const linkedReturnRideIds: string[] = []
   if (rideIds.length > 0) {
     const { data: offerRows } = await supabaseAdmin
       .from('destination_offers')
@@ -2436,6 +2439,9 @@ destinationsRouter.get('/run/:tripID/roster', validateJwt, async (req: Request, 
       outbound_ride_id: string | null; return_ride_id: string | null; waitlist_id: string | null
     }>
     planId = offers.find((o) => o.driver_plan_id != null)?.driver_plan_id ?? null
+    for (const o of offers) {
+      if (o.return_ride_id != null) linkedReturnRideIds.push(o.return_ride_id)
+    }
     const waitlistIds = [...new Set(offers.map((o) => o.waitlist_id).filter((v): v is string => v != null))]
     const modeByWaitlist = new Map<string, string>()
     if (waitlistIds.length > 0) {
@@ -2454,27 +2460,33 @@ destinationsRouter.get('/run/:tripID/roster', validateJwt, async (req: Request, 
   }
 
   // V4 F6 R1 — return-eligibility for the run screen's "Start the ride home"
-  // CTA + leg-switch. `wants_return` = the plan wants a return AND ≥1 rider
-  // here isn't one-way; `outbound_complete` = every leg on this trip is
-  // done+paid; `return_trip_id` = the plan's return trip if it's been minted.
-  let wantsReturn = false
+  // CTA + leg-switch. `wants_return` = ≥1 rider here isn't one-way (the driver
+  // decides post-trip; start-return skips one-way riders) — computed
+  // UNCONDITIONALLY so a trip with no driver_plan_id still offers the ride home
+  // (the planId-gated version hid the CTA on plan-less/manually-created trips —
+  // Tarun's "no option to start the return"). `outbound_complete` = every leg
+  // done+paid; `return_trip_id` = the return trip once one exists.
+  const wantsReturn = rideIds.some((id) => (modeByRide.get(id) ?? 'together') !== 'one_way')
   let returnTripId: string | null = null
   if (planId != null) {
     const { data: planRow } = await supabaseAdmin
       .from('destination_driver_plans')
-      .select('wants_return, outbound_trip_id, return_trip_id')
+      .select('return_trip_id')
       .eq('id', planId)
       .maybeSingle()
-    const plan = planRow as {
-      wants_return: boolean | null; outbound_trip_id: string | null; return_trip_id: string | null
-    } | null
-    returnTripId = plan?.return_trip_id ?? null
-    // V4 F6 R4 fix (Tarun) — offer the ride home whenever ANY rider isn't
-    // explicitly one-way, regardless of the plan's pre-set wants_return flag
-    // (the driver decides post-trip; the start-return endpoint skips one-way
-    // riders anyway). A manually-created/one-way-flagged plan was hiding the
-    // CTA even though the riders were round-trip.
-    wantsReturn = rideIds.some((id) => (modeByRide.get(id) ?? 'together') !== 'one_way')
+    returnTripId = (planRow as { return_trip_id: string | null } | null)?.return_trip_id ?? null
+  }
+  // Fallback (no plan / plan flag not set): derive the return trip from any
+  // already-linked return ride, so "Resume the ride home" still works.
+  if (returnTripId == null && linkedReturnRideIds.length > 0) {
+    const { data: retRow } = await supabaseAdmin
+      .from('rides')
+      .select('trip_id')
+      .in('id', linkedReturnRideIds)
+      .not('trip_id', 'is', null)
+      .limit(1)
+      .maybeSingle()
+    returnTripId = (retRow as { trip_id: string | null } | null)?.trip_id ?? null
   }
   const outboundComplete = rideRowsTyped.length > 0
     && rideRowsTyped.every((r) => r.status === 'completed' && r.payment_status === 'paid')
