@@ -2418,6 +2418,10 @@ destinationsRouter.get('/run/:tripID/roster', validateJwt, async (req: Request, 
     .from('rides')
     .select('id, status, payment_status, pickup_confirmed, dropoff_confirmed')
     .eq('trip_id', tripID)
+    // Exclude cancelled rides — a cancel+rematch leaves a cancelled row on the
+    // trip; counting it broke outbound_complete + showed a phantom rider (same
+    // class as the ORDER_MISMATCH fix).
+    .in('status', ['requested', 'accepted', 'coordinating', 'active', 'completed'])
   const rideRowsTyped = (rideRows ?? []) as Array<{
     id: string; status: string; payment_status: string | null
     pickup_confirmed: boolean | null; dropoff_confirmed: boolean | null
@@ -2488,8 +2492,11 @@ destinationsRouter.get('/run/:tripID/roster', validateJwt, async (req: Request, 
       .maybeSingle()
     returnTripId = (retRow as { trip_id: string | null } | null)?.trip_id ?? null
   }
+  // Ready to coordinate the ride home once everyone's DROPPED OFF — payment
+  // settles asynchronously (a charge stuck in 'processing' shouldn't block the
+  // return). Cancelled rides are already excluded above.
   const outboundComplete = rideRowsTyped.length > 0
-    && rideRowsTyped.every((r) => r.status === 'completed' && r.payment_status === 'paid')
+    && rideRowsTyped.every((r) => r.status === 'completed')
   const isReturnLeg = returnTripId === tripID
 
   res.status(200).json({
@@ -2539,11 +2546,15 @@ destinationsRouter.post('/run/:tripID/start-return', validateJwt, async (req: Re
     return
   }
 
-  // Every outbound leg on this trip must be done + paid before the ride home.
+  // Every NON-cancelled outbound leg must be dropped off (status completed)
+  // before the ride home — payment settles asynchronously, so a 'processing'
+  // charge shouldn't block the return (mirrors the roster's outbound_complete).
+  // Cancelled rows (cancel+rematch leftovers) are excluded.
   const { data: rideRows } = await supabaseAdmin
     .from('rides')
     .select('id, status, payment_status, origin, origin_name, destination, destination_name, companion_a_id, companion_b_id, caregiver_id, trip_date, trip_time')
     .eq('trip_id', tripID)
+    .in('status', ['requested', 'accepted', 'coordinating', 'active', 'completed'])
   const outRides = (rideRows ?? []) as unknown as Array<{
     id: string; status: string; payment_status: string | null
     origin: GeoJSONPoint | null; origin_name: string | null
@@ -2555,8 +2566,8 @@ destinationsRouter.post('/run/:tripID/start-return', validateJwt, async (req: Re
     res.status(404).json({ error: { code: 'TRIP_NOT_FOUND', message: 'No riders on this trip.' } })
     return
   }
-  if (!outRides.every((r) => r.status === 'completed' && r.payment_status === 'paid')) {
-    res.status(409).json({ error: { code: 'NOT_READY', message: 'Drop everyone off and settle up first.' } })
+  if (!outRides.every((r) => r.status === 'completed')) {
+    res.status(409).json({ error: { code: 'NOT_READY', message: 'Drop everyone off first.' } })
     return
   }
 
