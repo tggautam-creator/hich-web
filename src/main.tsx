@@ -25,6 +25,7 @@ const ForgotPassword = lazy(() => import('@/components/auth/ForgotPassword'))
 const ResetPasswordPage = lazy(() => import('@/components/auth/ResetPasswordPage'))
 const TermsPage = lazy(() => import('@/components/legal/TermsPage'))
 const PrivacyPage = lazy(() => import('@/components/legal/PrivacyPage'))
+const SmsOptInPage = lazy(() => import('@/components/legal/SmsOptInPage'))
 
 // ── Admin panel (Phase 0 shell; phases 1+ extend) ────────────────────────────
 const AdminGuard = lazy(() => import('@/components/admin/AdminGuard'))
@@ -161,6 +162,7 @@ createRoot(rootEl).render(
             <Route path="/track/:token" element={<Suspense fallback={<FormPageSkeleton />}><TrackPage /></Suspense>} />
             <Route path="/terms" element={<Suspense fallback={<FormPageSkeleton />}><TermsPage /></Suspense>} />
             <Route path="/privacy" element={<Suspense fallback={<FormPageSkeleton />}><PrivacyPage /></Suspense>} />
+            <Route path="/sms-opt-in" element={<Suspense fallback={<FormPageSkeleton />}><SmsOptInPage /></Suspense>} />
             <Route path="/c/:slug" element={<Suspense fallback={<FormPageSkeleton />}><CampaignDetailPage /></Suspense>} />
 
             {/* ── Authenticated routes — AuthGuard checks session + profile ── */}
